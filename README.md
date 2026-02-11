@@ -1,0 +1,258 @@
+# hlx — Helix Test Infrastructure CLI & MCP Server
+
+A CLI tool and MCP server for investigating [.NET Helix](https://helix.dot.net) test results. Designed for diagnosing CI failures in dotnet repos (runtime, sdk, aspnetcore, etc.).
+
+## Architecture
+
+The project is split into three layers:
+
+- **HelixTool.Core** — Shared library containing `HelixService`, `IHelixApiClient`, and model types. All Helix API logic lives here.
+- **HelixTool** — CLI tool built with [ConsoleAppFramework](https://github.com/Cysharp/ConsoleAppFramework). Serves both human-readable terminal commands and a stdio MCP server (`hlx mcp`).
+- **HelixTool.Mcp** — Standalone MCP HTTP server built with [ModelContextProtocol](https://github.com/modelcontextprotocol/csharp-sdk). Returns structured JSON for LLM agents over HTTP.
+
+Both the CLI and MCP server depend on Core but not on each other.
+
+## Installation
+
+### Build from Source
+
+```bash
+# Prerequisites: .NET 10 SDK
+
+# Clone and build
+git clone <repo-url>
+cd hlx
+dotnet build
+```
+
+### Install as Global Tool
+
+```bash
+dotnet pack src/HelixTool
+dotnet tool install -g --add-source src/HelixTool/nupkg hlx
+```
+
+After installation, `hlx` is available globally.
+
+> **NuGet feed requirement:** The `Microsoft.DotNet.Helix.Client` SDK package is published to the
+> [dotnet-eng](https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet-eng/nuget/v3/index.json)
+> Azure Artifacts feed. The included `nuget.config` references this feed. If you see restore errors
+> for `Microsoft.DotNet.Helix.Client`, ensure the feed is accessible.
+
+## Quick Start
+
+### CLI
+
+```bash
+# Build
+dotnet build
+
+# Check a Helix job (shows failed work items)
+dotnet run --project src/HelixTool -- status 02d8bd09-9400-4e86-8d2b-7a6ca21c5009
+
+# Show all work items including passed
+dotnet run --project src/HelixTool -- status 02d8bd09 --all
+
+# Download console log for a failed work item
+dotnet run --project src/HelixTool -- logs 02d8bd09 "dotnet-watch.Tests.dll.1"
+
+# List uploaded files (binlogs, test results, etc.)
+dotnet run --project src/HelixTool -- files 02d8bd09 "dotnet-watch.Tests.dll.1"
+
+# Download binlogs from a work item
+dotnet run --project src/HelixTool -- download 02d8bd09 "dotnet-watch.Tests.dll.1" "*.binlog"
+
+# Scan work items to find which ones have binlogs
+dotnet run --project src/HelixTool -- find-binlogs 02d8bd09
+
+# Download a file by direct URL (from hlx files output)
+dotnet run --project src/HelixTool -- download-url "https://helix..."
+
+# Show detailed info about a specific work item
+dotnet run --project src/HelixTool -- work-item 02d8bd09 "dotnet-watch.Tests.dll.1"
+
+# Check status of multiple jobs at once
+dotnet run --project src/HelixTool -- batch-status 02d8bd09 a1b2c3d4
+
+# Search console log for error patterns
+dotnet run --project src/HelixTool -- search-log 02d8bd09 "dotnet-watch.Tests.dll.1" "error CS"
+```
+
+Accepts bare GUIDs or full Helix URLs:
+```bash
+dotnet run --project src/HelixTool -- status https://helix.dot.net/api/jobs/02d8bd09-9400-4e86-8d2b-7a6ca21c5009/details
+```
+
+### MCP Server
+
+**Stdio (recommended for local use)** — launched automatically by MCP clients:
+
+```bash
+hlx mcp
+```
+
+**HTTP (for remote/shared servers)**:
+
+```bash
+# Start the HTTP MCP server (default port 5000)
+dotnet run --project src/HelixTool.Mcp
+
+# Or on a specific port
+dotnet run --project src/HelixTool.Mcp --urls http://localhost:3001
+```
+
+## MCP Configuration
+
+### VS Code / GitHub Copilot (Recommended: stdio)
+
+Add to `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "hlx": {
+      "type": "stdio",
+      "command": "hlx",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+HTTP alternative (for remote/shared servers):
+
+```json
+{
+  "servers": {
+    "hlx": {
+      "type": "http",
+      "url": "http://localhost:3001"
+    }
+  }
+}
+```
+
+### Claude Desktop
+
+Add to your Claude Desktop config:
+
+```json
+{
+  "mcpServers": {
+    "hlx": {
+      "command": "hlx",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### Claude Code / Cursor
+
+Add to your MCP config:
+
+```json
+{
+  "mcpServers": {
+    "hlx": {
+      "command": "hlx",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+HTTP alternative:
+
+```json
+{
+  "mcpServers": {
+    "hlx": {
+      "url": "http://localhost:3001"
+    }
+  }
+}
+```
+
+## MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `hlx_status` | Get work item pass/fail summary for a Helix job. Returns structured JSON with job metadata, failed items (with exit codes), and passed count. |
+| `hlx_logs` | Get console log content for a work item. Returns the last N lines (default 500). |
+| `hlx_files` | List uploaded files for a work item. Returns file names, URIs, and tags (binlog, test-results). |
+| `hlx_download` | Download files from a work item to a temp directory. Supports glob patterns (e.g., `*.binlog`). |
+| `hlx_download_url` | Download a file by direct blob storage URL (from `hlx_files` output). |
+| `hlx_find_binlogs` | Scan work items in a job to find which ones contain binlog files. |
+| `hlx_work_item` | Get detailed info about a specific work item: exit code, state, machine, duration, console log URL, and uploaded files. |
+| `hlx_batch_status` | Query status for multiple Helix jobs in parallel. Returns per-job summary and overall totals. |
+| `hlx_search_log` | Search a work item's console log for error patterns. Supports context lines and max match limits. |
+
+## Failure Categorization
+
+Failed work items are automatically classified into one of: **Timeout**, **Crash**, **BuildFailure**, **TestFailure**, **InfrastructureError**, **AssertionFailure**, or **Unknown**. The category appears in `status`, `work-item`, and `batch-status` output, and is available as `failureCategory` in JSON and MCP tool responses.
+
+## Project Structure
+
+```
+src/
+├── HelixTool.Core/         # Shared library — Helix API logic
+│   ├── HelixService.cs     # Core operations (status, logs, files, download)
+│   └── HelixIdResolver.cs  # GUID and URL parsing
+├── HelixTool/              # CLI tool + stdio MCP server
+│   ├── Program.cs           # Console commands via ConsoleAppFramework
+│   └── HelixMcpTools.cs     # MCP tool definitions (shared with stdio transport)
+└── HelixTool.Mcp/          # MCP HTTP server
+    ├── Program.cs           # ASP.NET Core + ModelContextProtocol
+    └── HelixMcpTools.cs     # MCP tool definitions (shared with HTTP transport)
+```
+
+## Authentication
+
+No authentication is needed for public Helix jobs (dotnet open-source CI). For internal/private jobs, set the `HELIX_ACCESS_TOKEN` environment variable:
+
+```bash
+# Get your token from https://helix.dot.net → Profile → Access Tokens
+export HELIX_ACCESS_TOKEN=your-token-here
+
+# Or for a single command
+HELIX_ACCESS_TOKEN=your-token hlx status <jobId>
+```
+
+For MCP clients, pass the token in the server config:
+
+```json
+{
+  "servers": {
+    "hlx": {
+      "type": "stdio",
+      "command": "hlx",
+      "args": ["mcp"],
+      "env": {
+        "HELIX_ACCESS_TOKEN": "your-token-here"
+      }
+    }
+  }
+}
+```
+
+If a job requires authentication and no token is set, hlx will show an actionable error message.
+
+## Requirements
+
+- .NET 10 SDK
+
+## Known Issues
+
+- **File listing uses `ListFiles` endpoint** — hlx uses the `ListFilesAsync` endpoint for work item
+  file listing, which correctly returns file URIs for files in subdirectories and files with unicode
+  characters. This avoids the known bug in the `Details` endpoint where file URIs are broken
+  ([dotnet/dnceng#6072](https://github.com/dotnet/dnceng/issues/6072)).
+
+## How to find Helix job IDs
+
+Helix job IDs appear in Azure DevOps build logs. Look for tasks like "Send to Helix" or "Wait for Helix" — the job ID is a GUID in the log output. You can also use the [`azp`](https://github.com/AzurePipelinesTool/AzurePipelinesTool) CLI to find them.
+
+## License
+
+MIT

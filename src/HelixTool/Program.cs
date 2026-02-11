@@ -1,0 +1,422 @@
+﻿using System.Text.Json;
+using ConsoleAppFramework;
+using HelixTool;
+using HelixTool.Core;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Server;
+
+var services = new ServiceCollection();
+services.AddSingleton<IHelixApiClient>(_ => new HelixApiClient(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
+services.AddSingleton<HelixService>();
+ConsoleApp.ServiceProvider = services.BuildServiceProvider();
+
+var app = ConsoleApp.Create();
+app.Add<Commands>();
+app.Run(args);
+
+/// <summary>
+/// CLI commands for interacting with .NET Helix test infrastructure.
+/// </summary>
+public class Commands
+{
+    private static readonly JsonSerializerOptions s_jsonOptions = new() { WriteIndented = true };
+
+    private readonly HelixService _svc;
+
+    public Commands(HelixService svc)
+    {
+        _svc = svc;
+    }
+
+    /// <summary>Show work item summary for a Helix job.</summary>
+    /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
+    /// <param name="all">Show all work items, not just failed ones.</param>
+    /// <param name="json">Output as structured JSON instead of human-readable text.</param>
+    [Command("status")]
+    public async Task Status([Argument] string jobId, bool all = false, bool json = false)
+    {
+        Console.Error.Write("Fetching job details...");
+        var summary = await _svc.GetJobStatusAsync(jobId);
+        Console.Error.WriteLine(" done.");
+
+        if (json)
+        {
+            var result = new
+            {
+                job = new { jobId = summary.JobId, summary.Name, summary.QueueId, summary.Creator, summary.Source, summary.Created, summary.Finished },
+                totalWorkItems = summary.TotalCount,
+                failedCount = summary.Failed.Count,
+                passedCount = summary.Passed.Count,
+                failed = summary.Failed.Select(f => new { f.Name, f.ExitCode, f.State, f.MachineName, duration = f.Duration?.ToString(), f.ConsoleLogUrl, failureCategory = f.FailureCategory?.ToString() }),
+                passed = all ? summary.Passed.Select(p => new { p.Name, p.ExitCode, p.State, p.MachineName, duration = p.Duration?.ToString(), p.ConsoleLogUrl, failureCategory = (string?)null }) : null
+            };
+            Console.WriteLine(JsonSerializer.Serialize(result, s_jsonOptions));
+            return;
+        }
+
+        Console.WriteLine($"Job: {summary.Name}");
+        Console.WriteLine($"Queue: {summary.QueueId}  Creator: {summary.Creator}  Source: {summary.Source}");
+        Console.WriteLine($"Created: {summary.Created}  Finished: {summary.Finished}");
+        Console.WriteLine($"Work items: {summary.TotalCount}");
+        Console.WriteLine();
+
+        if (summary.Failed.Count > 0)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Failed: {summary.Failed.Count}");
+            Console.ResetColor();
+            foreach (var item in summary.Failed)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.Write("  [FAIL] ");
+                Console.ResetColor();
+                Console.Write(item.Name);
+                if (item.FailureCategory.HasValue)
+                    Console.Write($" [{item.FailureCategory.Value}]");
+                Console.Write($" (exit code {item.ExitCode}");
+                if (item.Duration.HasValue)
+                    Console.Write($", {FormatDuration(item.Duration.Value)}");
+                if (!string.IsNullOrEmpty(item.MachineName))
+                    Console.Write($", machine: {item.MachineName}");
+                Console.WriteLine(")");
+                Console.WriteLine($"         {item.ConsoleLogUrl}");
+            }
+        }
+        else
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine("All work items passed.");
+            Console.ResetColor();
+        }
+
+        if (all)
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"\nPassed: {summary.Passed.Count}");
+            Console.ResetColor();
+            foreach (var item in summary.Passed)
+            {
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.Write("  [OK]   ");
+                Console.ResetColor();
+                Console.Write(item.Name);
+                if (item.Duration.HasValue)
+                    Console.Write($" ({FormatDuration(item.Duration.Value)})");
+                Console.WriteLine();
+            }
+        }
+        else if (summary.Passed.Count > 0)
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"Passed: {summary.Passed.Count} (use --all to show)");
+            Console.ResetColor();
+        }
+    }
+
+    /// <summary>Download console log for a work item to a temp file.</summary>
+    /// <param name="jobId">Helix job ID or URL.</param>
+    /// <param name="workItem">Work item name.</param>
+    [Command("logs")]
+    public async Task Logs([Argument] string jobId, [Argument] string workItem)
+    {
+        var path = await _svc.DownloadConsoleLogAsync(jobId, workItem);
+        Console.WriteLine(path);
+    }
+
+    /// <summary>List uploaded files for a work item.</summary>
+    /// <param name="jobId">Helix job ID or URL.</param>
+    /// <param name="workItem">Work item name.</param>
+    /// <param name="json">Output as structured JSON instead of human-readable text.</param>
+    [Command("files")]
+    public async Task Files([Argument] string jobId, [Argument] string workItem, bool json = false)
+    {
+        var files = await _svc.GetWorkItemFilesAsync(jobId, workItem);
+
+        if (json)
+        {
+            var result = new
+            {
+                binlogs = files.Where(f => f.IsBinlog).Select(f => new { f.Name, f.Uri }),
+                testResults = files.Where(f => f.IsTestResults).Select(f => new { f.Name, f.Uri }),
+                other = files.Where(f => !f.IsBinlog && !f.IsTestResults).Select(f => new { f.Name, f.Uri })
+            };
+            Console.WriteLine(JsonSerializer.Serialize(result, s_jsonOptions));
+            return;
+        }
+
+        foreach (var f in files)
+        {
+            var marker = f.IsBinlog ? " [binlog]"
+                       : f.IsTestResults ? " [test-results]"
+                       : "";
+            Console.WriteLine($"  {f.Name}{marker}");
+        }
+    }
+
+    /// <summary>Download a specific file from a work item.</summary>
+    /// <param name="jobId">Helix job ID or URL.</param>
+    /// <param name="workItem">Work item name.</param>
+    /// <param name="pattern">File name or glob pattern (e.g., *.binlog).</param>
+    [Command("download")]
+    public async Task Download([Argument] string jobId, [Argument] string workItem, string pattern = "*")
+    {
+        var paths = await _svc.DownloadFilesAsync(jobId, workItem, pattern);
+        if (paths.Count == 0)
+        {
+            Console.Error.WriteLine($"No files matching '{pattern}' found.");
+            return;
+        }
+        foreach (var p in paths)
+            Console.WriteLine(p);
+    }
+
+    /// <summary>Download a file by direct URL (e.g., blob storage URI).</summary>
+    /// <param name="url">Direct file URL to download.</param>
+    [Command("download-url")]
+    public async Task DownloadUrl([Argument] string url)
+    {
+        var path = await _svc.DownloadFromUrlAsync(url);
+        Console.WriteLine(path);
+    }
+
+    /// <summary>Scan work items in a job to find which ones contain binlog files.</summary>
+    /// <param name="jobId">Helix job ID or URL.</param>
+    /// <param name="maxItems">Max work items to scan (default 30).</param>
+    [Command("find-binlogs")]
+    public async Task FindBinlogs([Argument] string jobId, int maxItems = 30)
+    {
+        Console.WriteLine($"Scanning up to {maxItems} work items for binlogs...");
+        var results = await _svc.FindBinlogsAsync(jobId, maxItems);
+
+        foreach (var r in results)
+        {
+            Console.Write($"  {r.WorkItem}: ");
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine(string.Join(", ", r.Binlogs.Select(b => b.Name)));
+            Console.ResetColor();
+        }
+
+        if (results.Count == 0)
+            Console.WriteLine("  No binlogs found.");
+    }
+
+    /// <summary>Show detailed info about a specific work item.</summary>
+    /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
+    /// <param name="workItem">Work item name.</param>
+    /// <param name="json">Output as structured JSON instead of human-readable text.</param>
+    [Command("work-item")]
+    public async Task WorkItem([Argument] string jobId, [Argument] string workItem, bool json = false)
+    {
+        var detail = await _svc.GetWorkItemDetailAsync(jobId, workItem);
+
+        if (json)
+        {
+            var result = new
+            {
+                detail.Name,
+                detail.ExitCode,
+                detail.State,
+                detail.MachineName,
+                duration = detail.Duration?.ToString(),
+                detail.ConsoleLogUrl,
+                failureCategory = detail.FailureCategory?.ToString(),
+                files = detail.Files.Select(f => new { f.Name, f.Uri, f.IsBinlog, f.IsTestResults })
+            };
+            Console.WriteLine(JsonSerializer.Serialize(result, s_jsonOptions));
+            return;
+        }
+
+        Console.WriteLine($"Work Item: {detail.Name}");
+        Console.WriteLine($"Exit Code: {detail.ExitCode}");
+        if (detail.FailureCategory.HasValue)
+            Console.WriteLine($"Category:  {detail.FailureCategory.Value}");
+        if (!string.IsNullOrEmpty(detail.State))
+            Console.WriteLine($"State:     {detail.State}");
+        if (!string.IsNullOrEmpty(detail.MachineName))
+            Console.WriteLine($"Machine:   {detail.MachineName}");
+        if (detail.Duration.HasValue)
+            Console.WriteLine($"Duration:  {FormatDuration(detail.Duration.Value)}");
+        Console.WriteLine($"Log:       {detail.ConsoleLogUrl}");
+
+        if (detail.Files.Count > 0)
+        {
+            Console.WriteLine($"\nFiles ({detail.Files.Count}):");
+            foreach (var f in detail.Files)
+            {
+                var tag = f.IsBinlog ? " [binlog]"
+                    : f.IsTestResults ? " [test-results]"
+                    : "";
+                Console.WriteLine($"  {f.Name}{tag}");
+            }
+        }
+    }
+
+    /// <summary>Get status for multiple Helix jobs at once.</summary>
+    /// <param name="jobIds">One or more Helix job IDs or URLs.</param>
+    [Command("batch-status")]
+    public async Task BatchStatus([Argument] params string[] jobIds)
+    {
+        Console.Error.Write("Fetching batch status...");
+        var batch = await _svc.GetBatchStatusAsync(jobIds);
+        Console.Error.WriteLine(" done.");
+
+        foreach (var job in batch.Jobs)
+        {
+            var idPrefix = job.JobId.Length >= 8 ? job.JobId[..8] : job.JobId;
+            Console.WriteLine($"Job {idPrefix}...: {job.Name} — {job.Failed.Count} failed, {job.Passed.Count} passed");
+        }
+
+        Console.WriteLine($"Overall: {batch.TotalFailed} failed, {batch.TotalPassed} passed across {batch.Jobs.Count} jobs");
+
+        var allFailed = batch.Jobs.SelectMany(j => j.Failed).Where(f => f.FailureCategory.HasValue).ToList();
+        if (allFailed.Count > 0)
+        {
+            var breakdown = allFailed
+                .GroupBy(f => f.FailureCategory!.Value)
+                .OrderByDescending(g => g.Count())
+                .Select(g => $"{g.Count()} {g.Key}");
+            Console.WriteLine($"Failure breakdown: {string.Join(", ", breakdown)}");
+        }
+    }
+
+    /// <summary>Search a work item's console log for a pattern.</summary>
+    /// <param name="jobId">Helix job ID or URL.</param>
+    /// <param name="workItem">Work item name.</param>
+    /// <param name="pattern">Text pattern to search for (case-insensitive substring match).</param>
+    /// <param name="context">Number of context lines before and after each match.</param>
+    /// <param name="maxMatches">Maximum number of matches to return (default 50).</param>
+    [Command("search-log")]
+    public async Task SearchLog([Argument] string jobId, [Argument] string workItem,
+        [Argument] string pattern, int context = 2, int maxMatches = 50)
+    {
+        var result = await _svc.SearchConsoleLogAsync(jobId, workItem, pattern, context, maxMatches);
+
+        Console.WriteLine($"Searching for \"{pattern}\" in console log ({result.TotalLines} lines)...");
+        Console.WriteLine($"Found {result.Matches.Count} matches:");
+        Console.WriteLine();
+
+        foreach (var match in result.Matches)
+        {
+            Console.WriteLine($"--- Line {match.LineNumber} ---");
+            if (match.Context != null && context > 0)
+            {
+                int startLine = Math.Max(1, match.LineNumber - context);
+                for (int i = 0; i < match.Context.Count; i++)
+                {
+                    int lineNum = startLine + i;
+                    if (lineNum == match.LineNumber)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Yellow;
+                        Console.WriteLine($"  {lineNum}: {match.Context[i]}");
+                        Console.ResetColor();
+                    }
+                    else
+                    {
+                        Console.WriteLine($"  {lineNum}: {match.Context[i]}");
+                    }
+                }
+            }
+            else
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"  {match.LineNumber}: {match.Line}");
+                Console.ResetColor();
+            }
+            Console.WriteLine();
+        }
+
+        Console.WriteLine($"{result.Matches.Count} matches found (showing up to {maxMatches}).");
+    }
+
+    /// <summary>Print comprehensive tool documentation for LLM agents.</summary>
+    [Command("llmstxt")]
+    public void LlmsTxt()
+    {
+        var text = """
+# hlx - Helix Test Infrastructure CLI
+
+## CLI Commands
+- `hlx status <jobId> [--all]` — Work item summary (failed items with exit code, duration, machine)
+- `hlx logs <jobId> <workItem>` — Download console log to temp file
+- `hlx files <jobId> <workItem>` — List uploaded files for a work item
+- `hlx download <jobId> <workItem> [--pattern PATTERN]` — Download artifacts (e.g., *.binlog)
+- `hlx download-url <url>` — Download a file by direct blob storage URL
+- `hlx find-binlogs <jobId> [--max-items N]` — Scan work items for binlog files
+- `hlx work-item <jobId> <workItem> [--json]` — Detailed work item info (exit code, state, machine, duration, files)
+- `hlx batch-status <jobId1> <jobId2> ...` — Status for multiple jobs in parallel
+- `hlx search-log <jobId> <workItem> <pattern> [--context N] [--max-matches N]` — Search console log for patterns
+
+## MCP Server
+- `hlx mcp` — Start MCP server over stdio (for VS Code, Claude Desktop, etc.)
+- `hlx-mcp` or `dotnet run --project src/HelixTool.Mcp` — HTTP MCP server
+
+### MCP Tools
+- `hlx_status` — Job pass/fail summary with consoleLogUrl per work item
+- `hlx_logs` — Console log content (last N lines)
+- `hlx_files` — List uploaded files, grouped by type (binlogs, testResults, other)
+- `hlx_download` — Download files by glob pattern to temp dir
+- `hlx_download_url` — Download a file by direct blob storage URL
+- `hlx_find_binlogs` — Scan work items for binlog files
+- `hlx_work_item` — Detailed work item info with exit code, state, machine, duration, files
+- `hlx_batch_status` — Status for multiple jobs in parallel with per-job and overall totals
+- `hlx_search_log` — Search a work item's console log for error patterns
+
+## Authentication
+Set HELIX_ACCESS_TOKEN env var for internal jobs. Public jobs need no auth.
+
+## Input
+- Accepts bare GUIDs: `hlx status 02d8bd09-9400-4e86-8d2b-7a6ca21c5009`
+- Accepts Helix URLs: `hlx status https://helix.dot.net/api/jobs/02d8bd09.../details`
+- jobId and workItem are positional arguments (no --job-id flag needed)
+
+## Failure Categorization
+Failed work items are auto-classified: Timeout, Crash, BuildFailure, TestFailure, InfrastructureError, AssertionFailure, Unknown.
+Available as `failureCategory` in JSON and MCP output.
+
+## Output
+- `status` prints summary with per-work-item state, exit code, duration, machine, consoleLogUrl, failureCategory
+- `work-item` shows detailed info including all uploaded files
+- `batch-status` shows per-job summary and overall totals with failure breakdown
+- `logs` and `download` save files to %TEMP% and print paths
+""";
+        Console.Write(text);
+    }
+
+    /// <summary>Start the MCP server over stdio for use with MCP clients (VS Code, Claude Desktop, etc.).</summary>
+    [Command("mcp")]
+    public async Task Mcp()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Logging.ClearProviders();
+        builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
+        builder.Services.AddSingleton<IHelixApiClient>(_ => new HelixApiClient(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
+        builder.Services.AddSingleton<HelixService>();
+        builder.Services
+            .AddMcpServer(options =>
+            {
+                options.ServerInfo = new() { Name = "hlx", Version = "1.0.0" };
+            })
+            .WithStdioServerTransport()
+            .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly);
+        await builder.Build().RunAsync();
+    }
+
+    internal static string FormatDuration(TimeSpan duration)
+    {
+        if (duration.TotalHours >= 1)
+        {
+            var hours = (int)duration.TotalHours;
+            var minutes = duration.Minutes;
+            return minutes > 0 ? $"{hours}h {minutes}m" : $"{hours}h";
+        }
+        if (duration.TotalMinutes >= 1)
+        {
+            var minutes = (int)duration.TotalMinutes;
+            var seconds = duration.Seconds;
+            return seconds > 0 ? $"{minutes}m {seconds}s" : $"{minutes}m";
+        }
+        return $"{(int)duration.TotalSeconds}s";
+    }
+}

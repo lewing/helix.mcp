@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/HelixTool.Core/HelixTool.Core.csproj" />
+    <Project Path="src/HelixTool.Mcp/HelixTool.Mcp.csproj" />
+    <Project Path="src/HelixTool/HelixTool.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="src/HelixTool.Tests/HelixTool.Tests.csproj" />
+  </Folder>
+</Solution>

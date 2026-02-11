@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\HelixTool.Core\HelixTool.Core.csproj" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="0.8.0-preview.1" />
+  </ItemGroup>
+
+</Project>
