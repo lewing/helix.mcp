@@ -329,3 +329,23 @@ If we want to optimize bandwidth in the future, we could add an `If-Modified-Sin
 - **D10:** `JsonSerializerOptions` hoisted to static field in `HelixMcpTools`
 
 **Key risks:** MCP SDK may not support instance tool methods; Helix SDK return types may be concrete (may need DTOs).
+
+### 2026-02-11: P0 Implementation — Runtime Decisions
+
+**By:** Ripley
+**Date:** 2026-02-11
+**Context:** Discovered during P0 implementation (US-12, US-13)
+
+- **TaskCanceledException timeout detection:** Use `cancellationToken.IsCancellationRequested` (true = real cancellation, false = HTTP timeout), NOT `ex.CancellationToken == cancellationToken`. The equality check fails when both tokens are `CancellationToken.None` (default parameter).
+- **Helix SDK model types are concrete:** `JobDetails`, `WorkItemSummary`, `WorkItemDetails`, `UploadedFile` have no interfaces. Solved with projection interfaces (`IJobDetails`, `IWorkItemSummary`, `IWorkItemDetails`, `IWorkItemFile`) in `IHelixApiClient.cs` and private adapter classes in `HelixApiClient.cs`.
+- **ConsoleAppFramework DI:** CLI uses `ConsoleApp.ServiceProvider = services.BuildServiceProvider()` before `ConsoleApp.Create()`. CAF v5 supports DI natively via this static property pattern.
+
+### 2026-02-11: P0 Test Infrastructure Decisions
+
+**By:** Lambert
+**Date:** 2026-02-11
+**Context:** Test creation for P0 foundation
+
+- **NSubstitute 5.* chosen as mocking framework** per Dallas's D9 recommendation. Simpler API than Moq (no `Setup(...).Returns(...)` ceremony, no `.Object` property). `.ThrowsAsync()` from `NSubstitute.ExceptionExtensions` maps cleanly to D6 error handling contract.
+- **HelixIdResolver invalid-input tests updated for D7 breaking change:** Replaced 5 pass-through tests with `ArgumentException` throw assertions. Happy-path GUID/URL extraction tests unchanged.
+- **Proactive parallel test writing validated:** 19 tests written against design spec before implementation existed. All compiled and passed once Ripley's code landed.

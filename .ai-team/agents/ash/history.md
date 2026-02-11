@@ -35,6 +35,8 @@
 
 📌 Team update (2026-02-11): P0 Foundation design decisions D1–D10 merged — IHelixApiClient, constructor injection, HelixException, CancellationToken, input validation. Ripley and Lambert assigned implementation and testing. — decided by Dallas
 
+📌 Session 2026-02-11-p0-implementation: US-12 (DI/testability) and US-13 (error handling) are DONE. 38 tests pass. P0 complete — P1 work can proceed.
+
 **How hlx fits into ci-analysis's workflow:**
 - ci-analysis is a 2262-line PowerShell script that orchestrates CI failure investigation across AzDO and Helix. It has THREE modes: PR analysis, Build ID analysis, and direct Helix job query.
 - The Helix job query mode (lines 1580-1713) is essentially what hlx replaces. Six functions (`Get-HelixJobDetails`, `Get-HelixWorkItems`, `Get-HelixWorkItemFiles`, `Get-HelixWorkItemDetails`, `Get-HelixConsoleLog`, `Find-WorkItemsWithBinlogs`) map directly to hlx commands.

@@ -35,3 +35,5 @@
 
 📌 Team update (2026-02-11): Ran P0 Foundation design review. Decided: IHelixApiClient wrapper interface (6 methods), HelixService constructor injection, HelixException single exception type, CancellationToken on all async methods, ArgumentException guards, MCP tools become instance methods. Key risks: MCP SDK may not support instance tool methods (verify first), Helix SDK return types may be concrete (may need DTOs). See log/2026-02-11-design-review-p0-foundation.md for full decisions.
 📌 Team update (2026-02-11): Requirements backlog formalized — 30 user stories (US-1 through US-30) including 12 from ci-analysis skill review. P0 confirmed: US-12 + US-13. — decided by Ash
+
+📌 Session 2026-02-11-p0-implementation: D1–D10 design implemented by Ripley, tested by Lambert. All design decisions validated. Key runtime findings: TaskCanceledException needs IsCancellationRequested check (not token equality), Helix SDK types needed adapter pattern, CAF v5 DI works via static ServiceProvider property. 38 tests pass.
