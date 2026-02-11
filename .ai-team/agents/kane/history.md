@@ -62,3 +62,9 @@
 
 📌 Team update (2026-02-11): US-21 failure categorization implemented — FailureCategory enum + ClassifyFailure heuristic classifier added to HelixService. WorkItemResult/WorkItemDetail records expanded. — decided by Ripley
 
+📌 Session 2026-02-12-new-features-docs: Updated docs for US-10, US-21, US-22, US-23:
+1. **README.md** — Added `work-item`, `batch-status`, `search-log` CLI examples to Quick Start. Added `hlx_work_item`, `hlx_batch_status`, `hlx_search_log` rows to MCP Tools table. Added Failure Categorization section documenting auto-classification categories and `failureCategory` field.
+2. **llmstxt output** in Program.cs — Added `work-item`, `batch-status`, `search-log` to CLI Commands list. Added `hlx_work_item`, `hlx_batch_status`, `hlx_search_log` to MCP Tools list. Added Failure Categorization section. Expanded Output section to cover new commands.
+- Build: 0 warnings, 0 errors.
+- US-22 (search-log) documented proactively — implementation being built in parallel by Ripley.
+

@@ -579,3 +579,32 @@ Added `FailureCategory` enum and `ClassifyFailure` heuristic classifier to `Heli
 ## Test Impact
 
 No test modifications needed — all 100 existing tests pass. The new `FailureCategory?` parameter is transparently constructed inside `GetJobStatusAsync`/`GetWorkItemDetailAsync`. Lambert should add tests for `ClassifyFailure` covering all heuristic branches.
+
+---
+
+### 2026-02-12: US-22: Console Log Search / Pattern Extraction
+
+**By:** Ripley
+**Date:** 2026-02-12
+**Requested by:** Larry Ewing
+
+## Decision
+
+Implemented `SearchConsoleLogAsync` in HelixService to search console log content for patterns. Added CLI command `search-log` and MCP tool `hlx_search_log` in both HelixMcpTools.cs files.
+
+## Design Choices
+
+1. **Reuses DownloadConsoleLogAsync**: Rather than adding a new streaming search path, the method downloads the log to a temp file (existing infrastructure), reads all lines, searches in memory, then cleans up. Simple and correct for typical log sizes.
+
+2. **LogMatch record with optional Context**: `LogMatch(int LineNumber, string Line, List<string>? Context = null)` — Context is the full window of lines (before + match + after) when contextLines > 0. This avoids the CLI/MCP needing to re-read the file for context rendering.
+
+3. **Temp file cleanup**: The downloaded log file is deleted in a `finally` block after search completes, since it's only needed transiently.
+
+4. **No error handler duplication**: SearchConsoleLogAsync delegates to DownloadConsoleLogAsync which already has the standard error handling pattern (HttpRequestException, TaskCanceledException, etc.), so no additional try/catch needed in the search method itself.
+
+## Files Changed
+
+- `src/HelixTool.Core/HelixService.cs` — Added LogSearchResult, LogMatch records and SearchConsoleLogAsync method
+- `src/HelixTool/Program.cs` — Added `search-log` CLI command
+- `src/HelixTool/HelixMcpTools.cs` — Added `hlx_search_log` MCP tool
+- `src/HelixTool.Mcp/HelixMcpTools.cs` — Added `hlx_search_log` MCP tool (mirror)

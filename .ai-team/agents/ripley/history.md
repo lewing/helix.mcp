@@ -38,3 +38,10 @@
 
 📌 Team update (2026-02-11): US-21 failure categorization implemented — FailureCategory enum + ClassifyFailure heuristic classifier added to HelixService. WorkItemResult/WorkItemDetail records expanded. — decided by Ripley
 
+📌 Team update (2026-02-12): US-22 console log search implemented — SearchConsoleLogAsync in HelixService with case-insensitive pattern matching, context lines, and maxMatches cap. CLI `search-log` command with colored output. MCP `hlx_search_log` tool in both HelixMcpTools.cs files with URL resolution and JSON output (context array per match). — decided by Ripley
+
+## Learnings
+- SearchConsoleLogAsync downloads the log via DownloadConsoleLogAsync to a temp file, reads all lines, searches, then deletes the temp file. This reuses the existing download infrastructure rather than streaming.
+- LogMatch record uses optional `Context` property (`List<string>?`) to carry the full context window (before + match + after lines) when contextLines > 0. This lets the CLI and MCP tools render context without re-reading the file.
+- Both HelixMcpTools.cs files must always be updated together (established pattern from history).
+

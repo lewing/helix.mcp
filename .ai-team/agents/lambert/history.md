@@ -41,3 +41,13 @@
 
 📌 Team update (2026-02-11): US-21 failure categorization implemented — FailureCategory enum + ClassifyFailure heuristic classifier added to HelixService. WorkItemResult/WorkItemDetail records expanded. — decided by Ripley
 
+## Learnings
+
+- US-21 FailureCategoryTests: 12 tests written in `FailureCategoryTests.cs` — 10 static ClassifyFailure tests + 2 integration tests via GetJobStatusAsync mock
+- ClassifyFailure is a public static method on HelixService — directly testable without mocks
+- Priority order in ClassifyFailure matters: timeout state check → crash (exit code < 0 or >= 128, with -1/null-state special case) → build keyword → test keyword/dll suffix → infrastructure error state → exit code 1 default → unknown
+- WorkItemResult record now has 7 positional params (added FailureCategory? as 7th)
+- FailureCategory is set to null for passing work items (exit code 0) and non-null for failures — tested via GetJobStatusAsync integration tests
+
+📌 Team update (2026-02-12): US-22 console log search implemented — SearchConsoleLogAsync, LogSearchResult, LogMatch records added to HelixService. CLI `search-log` command and MCP `hlx_search_log` tool in both HelixMcpTools.cs files. Tests needed. — decided by Ripley
+
