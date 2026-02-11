@@ -227,7 +227,7 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 **What:** Changed `HelixService.MatchesPattern` from `private static` to `internal static` and added `<InternalsVisibleTo Include="HelixTool.Tests" />` to `HelixTool.Core.csproj` to enable direct unit testing.
 **Why:** Cleanest approach for testing private logic — no reflection, no test helpers, no public API surface change. The method stays invisible to external consumers while being testable. If anyone adds more internal methods to Core, they're automatically testable too.
 
-### 2025-07-14: Caching Strategy for Helix API Responses and Artifacts
+### 2025-07-14: Caching Strategy for Helix API Responses and Artifacts *(superseded by 2025-07-18 Revised Cache TTL Policy)*
 
 **By:** Dallas
 **What:** A two-tier caching system in `HelixTool.Core` — an in-memory LRU cache for API metadata and a disk cache for downloaded artifacts, keyed by `{jobId}/{workItem}/{fileName}`, with job-completion-aware invalidation.
@@ -433,3 +433,37 @@ If we want to optimize bandwidth in the future, we could add an `If-Modified-Sin
 - **US-5 (dotnet tool):** Added `<Version>0.1.0</Version>` to HelixTool.csproj. Updated `<Description>` and `<Authors>`. `PackAsTool`, `ToolCommandName`, `PackageId` already existed.
 - **US-25 (ConsoleLogUrl):** `WorkItemResult` record gained 6th positional parameter `string ConsoleLogUrl`. URL: `https://helix.dot.net/api/2019-06-17/jobs/{id}/workitems/{name}/console`. CLI shows URL below failed items. MCP JSON includes `consoleLogUrl` for all items.
 - Both `HelixMcpTools.cs` copies (HelixTool + HelixTool.Mcp) updated. Must be kept in sync.
+
+### US-17: Namespace Cleanup — Project-correct namespaces
+
+**By:** Ripley
+**Date:** 2026-02-12
+**Requested by:** Larry Ewing
+
+**What:** Changed all production code namespaces to match their project names:
+- `HelixTool.Core` (5 files): `namespace HelixTool;` → `namespace HelixTool.Core;`
+- `HelixTool.Mcp` (1 file): `namespace HelixTool;` → `namespace HelixTool.Mcp;`
+- `HelixTool` CLI (2 files): kept as `namespace HelixTool;` (correct for the leaf app)
+
+**Why:** All three projects previously used `namespace HelixTool;`, making it impossible to tell which assembly a type came from. With distinct namespaces, `using` directives now make assembly provenance explicit.
+
+**Changes:**
+- Removed `<RootNamespace>HelixTool</RootNamespace>` from `HelixTool.Mcp.csproj`
+- Added `using HelixTool.Core;` to all consumers and `using HelixTool.Mcp;` to test files referencing MCP tools
+
+**Impact:** No behavioral changes — pure mechanical refactoring. All 74 tests pass. New files in Core/Mcp should use `namespace HelixTool.Core;` / `namespace HelixTool.Mcp;`.
+
+### US-24 + US-30 Implementation — Download by URL + Structured Agent-Friendly JSON
+
+**By:** Ripley
+**Date:** 2026-02-12
+
+**US-30 (Structured agent-friendly JSON):**
+- `hlx_files` changed from flat array to grouped object `{ binlogs, testResults, other }` (breaking change).
+- `hlx_status` job object now includes `jobId` (resolved GUID) and `helixUrl`.
+- `JobSummary` record gained `JobId` as first positional parameter (breaking change).
+
+**US-24 (Download by direct URL):**
+- Static `HttpClient` in HelixService for direct URL downloads (separate from `IHelixApiClient`).
+- `DownloadFromUrlAsync` not mockable through existing test boundary — uses raw HTTP, not Helix SDK.
+- Filename extraction via `Uri.Segments[^1]` with `Uri.UnescapeDataString`.

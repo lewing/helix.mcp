@@ -46,3 +46,6 @@
 
 📌 Team update (2026-02-11): Ripley implemented stdio MCP — separate DI container, HelixMcpTools.cs duplicated. 55/55 tests pass. — decided by Ripley
 📌 Team update (2026-02-11): Lambert's MCP test strategy — tests reference HelixTool.Mcp via ProjectReference. FormatDuration tested indirectly. Download error returns JSON. If HelixMcpTools refactored, tests need updating but mock pattern stays. — decided by Lambert
+
+📌 Team update (2026-02-11): US-17 namespace cleanup complete — `HelixTool.Core` and `HelixTool.Mcp` now have distinct namespaces. `<RootNamespace>HelixTool</RootNamespace>` removed from Mcp csproj. All consumers need `using HelixTool.Core;`. — decided by Ripley
+📌 Team update (2026-02-11): US-24 + US-30 implemented — `hlx_files` returns grouped JSON (breaking change), `hlx_status` includes `jobId`/`helixUrl`, `DownloadFromUrlAsync` uses static HttpClient (not mockable via IHelixApiClient). — decided by Ripley

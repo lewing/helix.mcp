@@ -46,3 +46,9 @@
 
 📌 Team update (2026-02-11): US-4 auth design approved — HELIX_ACCESS_TOKEN env var. README auth section and MCP client config example needed (D-AUTH-6). — decided by Dallas
 📌 Team update (2026-02-11): Stdio MCP implemented as `hlx mcp` subcommand. README/llmstxt already updated in previous session. — decided by Dallas/Ripley
+
+📌 Session 2026-02-12-shipped-features-docs: Updated docs for shipped features:
+1. **llmstxt output** — Rewrote raw string literal using `var text = """..."""; Console.Write(text);` pattern. Added `download-url` command, MCP Tools section listing all 6 tools (hlx_status, hlx_logs, hlx_files, hlx_download, hlx_download_url, hlx_find_binlogs), auth section ("Set HELIX_ACCESS_TOKEN env var for internal jobs"), noted consoleLogUrl in status output, noted hlx_files groups by type.
+2. **README.md** — Added `download-url` CLI example in Quick Start. Added `hlx_download_url` row to MCP Tools table. Added "Install as Global Tool" subsection under Installation (`dotnet pack` + `dotnet tool install -g`). Verified Authentication section is accurate (unchanged).
+- Build: 0 warnings, 0 errors.
+- The `download-url` CLI command and `hlx_download_url` MCP tool are documented but implementation was not verified in this session (docs-only scope).

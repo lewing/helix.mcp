@@ -52,3 +52,15 @@
 📌 Team update (2026-02-11): US-4 auth design approved — HELIX_ACCESS_TOKEN env var, optional token on HelixApiClient constructor, 401/403 catch in HelixService. ~35 lines, no interface changes. — decided by Dallas
 📌 Team update (2026-02-11): Stdio MCP approved as `hlx mcp` subcommand (Option B). Add ModelContextProtocol + Microsoft.Extensions.Hosting to CLI. Copy HelixMcpTools.cs. Keep HelixTool.Mcp for HTTP. — decided by Dallas
 📌 Team update (2026-02-11): MCP test strategy — tests reference HelixTool.Mcp via ProjectReference. If HelixMcpTools moves, test ref must change. — decided by Lambert
+
+📌 Session US-24 + US-30 implementation:
+- **US-30 (Structured agent-friendly JSON):** `hlx_files` now returns grouped JSON `{ binlogs: [...], testResults: [...], other: [...] }` instead of flat array with tags. `hlx_status` `job` object now includes `jobId` (resolved GUID) and `helixUrl` (portal link `https://helix.dot.net/api/jobs/{jobId}/details`). `JobSummary` record gained `JobId` as first positional parameter.
+- **US-24 (Download by direct URL):** Added `DownloadFromUrlAsync` to `HelixService` with static `HttpClient`, standard error handling pattern. Added `download-url` CLI command and `hlx_download_url` MCP tool in both HelixMcpTools.cs copies. Filename extracted from URL last path segment, URL-decoded, saved to `helix-download-{filename}` in temp dir.
+- **Test fixes:** Updated `Files_ReturnsValidJsonWithFileTags` and `Files_IncludesNameAndUri` tests to match new grouped JSON structure (was flat array, now object with binlogs/testResults/other arrays). 68/68 tests pass.
+- **Key files modified:** `src/HelixTool.Core/HelixService.cs`, `src/HelixTool/HelixMcpTools.cs`, `src/HelixTool.Mcp/HelixMcpTools.cs`, `src/HelixTool/Program.cs`, `src/HelixTool.Tests/HelixMcpToolsTests.cs`.
+
+📌 Session US-17 (Namespace Cleanup):
+- **Namespace changes:** `HelixTool.Core` files (HelixApiClient, HelixService, HelixIdResolver, HelixException, IHelixApiClient) changed from `namespace HelixTool;` → `namespace HelixTool.Core;`. `HelixTool.Mcp/HelixMcpTools.cs` changed to `namespace HelixTool.Mcp;`. CLI project files kept `namespace HelixTool;`.
+- **Using directives added:** `using HelixTool.Core;` added to CLI's Program.cs, CLI's HelixMcpTools.cs, Mcp's HelixMcpTools.cs, Mcp's Program.cs, and all 8 test files (HelixAuthTests, ConsoleLogUrlTests, HelixIdResolverTests, HelixMcpToolsTests, HelixServiceDITests, MatchesPatternTests, DownloadFromUrlTests, StructuredJsonTests). Test files referencing MCP tools also got `using HelixTool.Mcp;`.
+- **Mcp csproj:** Removed `<RootNamespace>HelixTool</RootNamespace>` from `HelixTool.Mcp.csproj` — the default root namespace now correctly matches the project name.
+- **Build and tests:** All 74 tests pass. Zero compilation errors.
