@@ -14,18 +14,32 @@ Both the CLI and MCP server depend on Core but not on each other.
 
 ## Installation
 
-### Build from Source
+### Run with dnx (no install needed)
+
+`dnx` (new in .NET 10) auto-downloads and runs NuGet tool packages — no install step required:
 
 ```bash
-# Prerequisites: .NET 10 SDK
-
-# Clone and build
-git clone <repo-url>
-cd hlx
-dotnet build
+dnx hlx mcp
 ```
 
+This is the recommended approach for MCP server configuration (see below).
+
 ### Install as Global Tool
+
+```bash
+dotnet tool install -g hlx
+```
+
+> **Not yet published to nuget.org.** Until then, install from a local build (see below) or from an internal feed if available.
+
+For repo-local installation via a [tool manifest](https://learn.microsoft.com/dotnet/core/tools/local-tools-how-to-use):
+
+```bash
+dotnet new tool-manifest   # if .config/dotnet-tools.json doesn't exist
+dotnet tool install --local hlx
+```
+
+### Install from Local Build
 
 ```bash
 dotnet pack src/HelixTool
@@ -33,6 +47,15 @@ dotnet tool install -g --add-source src/HelixTool/nupkg hlx
 ```
 
 After installation, `hlx` is available globally.
+
+### Build from Source
+
+```bash
+# Prerequisites: .NET 10 SDK
+git clone <repo-url>
+cd hlx
+dotnet build
+```
 
 > **NuGet feed requirement:** The `Microsoft.DotNet.Helix.Client` SDK package is published to the
 > [dotnet-eng](https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet-eng/nuget/v3/index.json)
@@ -112,12 +135,14 @@ Add to `.vscode/mcp.json`:
   "servers": {
     "hlx": {
       "type": "stdio",
-      "command": "hlx",
-      "args": ["mcp"]
+      "command": "dnx",
+      "args": ["hlx", "mcp"]
     }
   }
 }
 ```
+
+> If you've installed hlx as a global tool, you can use `hlx` directly instead of `dnx hlx`.
 
 HTTP alternative (for remote/shared servers):
 
@@ -140,12 +165,14 @@ Add to your Claude Desktop config:
 {
   "mcpServers": {
     "hlx": {
-      "command": "hlx",
-      "args": ["mcp"]
+      "command": "dnx",
+      "args": ["hlx", "mcp"]
     }
   }
 }
 ```
+
+> If you've installed hlx as a global tool, you can use `hlx` directly instead of `dnx hlx`.
 
 ### Claude Code / Cursor
 
@@ -155,12 +182,14 @@ Add to your MCP config:
 {
   "mcpServers": {
     "hlx": {
-      "command": "hlx",
-      "args": ["mcp"]
+      "command": "dnx",
+      "args": ["hlx", "mcp"]
     }
   }
 }
 ```
+
+> If you've installed hlx as a global tool, you can use `hlx` directly instead of `dnx hlx`.
 
 HTTP alternative:
 
@@ -226,8 +255,8 @@ For MCP clients, pass the token in the server config:
   "servers": {
     "hlx": {
       "type": "stdio",
-      "command": "hlx",
-      "args": ["mcp"],
+      "command": "dnx",
+      "args": ["hlx", "mcp"],
       "env": {
         "HELIX_ACCESS_TOKEN": "your-token-here"
       }
