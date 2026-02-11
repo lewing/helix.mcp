@@ -1,0 +1,27 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schemas/draft/2025-07-09/server.json",
+  "description": "CLI tool and MCP server for investigating .NET Helix test results — diagnosing CI failures in dotnet repos",
+  "name": "io.github.lewing/hlx",
+  "packages": [
+    {
+      "registry_name": "nuget",
+      "name": "hlx",
+      "version": "0.1",
+      "package_arguments": [
+        {
+          "type": "positional",
+          "value": "mcp",
+          "value_hint": "mcp"
+        }
+      ],
+      "environment_variables": []
+    }
+  ],
+  "repository": {
+    "url": "https://github.com/lewing/hlx",
+    "source": "github"
+  },
+  "version_detail": {
+    "version": "0.1"
+  }
+}
