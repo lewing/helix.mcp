@@ -26,3 +26,9 @@
 
 📌 Team update (2026-02-11): MatchesPattern changed to internal static; InternalsVisibleTo added to Core csproj for test access. — decided by Lambert
 📌 Team update (2026-02-11): Documentation audit found 15 improvements needed — missing XML docs on public records, no install instructions, no LICENSE file. — decided by Kane
+
+- Console logs for running Helix jobs must never be cached — they're append-only streams and any cached version is immediately stale. No TTL is short enough to be correct; skip the cache entirely.
+- Completed jobs should not be cached indefinitely. 4-hour sliding expiration for in-memory metadata, 7-day last-access expiry for disk artifacts. Covers a debugging session and next-day follow-up without unbounded growth.
+- Running-job metadata needs per-data-type TTLs, not a blanket value. Job details and work item lists change state (15s). File listings update as artifacts appear (30s). Console logs change continuously (no cache).
+- Disk cache needs automatic eviction — manual-only `cache clear` is not a real policy. LRU with a 500MB cap plus 7-day expiry on startup covers it.
+- The "log grew since last fetch" problem cannot be solved with TTL-based caching. The only correct approach is to bypass the cache for running-job logs. Range-request optimization is a future concern that depends on Helix API support.

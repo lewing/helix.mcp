@@ -226,3 +226,81 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 **By:** Lambert
 **What:** Changed `HelixService.MatchesPattern` from `private static` to `internal static` and added `<InternalsVisibleTo Include="HelixTool.Tests" />` to `HelixTool.Core.csproj` to enable direct unit testing.
 **Why:** Cleanest approach for testing private logic — no reflection, no test helpers, no public API surface change. The method stays invisible to external consumers while being testable. If anyone adds more internal methods to Core, they're automatically testable too.
+
+### 2025-07-14: Caching Strategy for Helix API Responses and Artifacts
+
+**By:** Dallas
+**What:** A two-tier caching system in `HelixTool.Core` — an in-memory LRU cache for API metadata and a disk cache for downloaded artifacts, keyed by `{jobId}/{workItem}/{fileName}`, with job-completion-aware invalidation.
+**Why:** Helix API calls are slow (especially when fanning out across work items), and downloaded artifacts (binlogs, TRX files) are large and immutable once a job completes. Caching avoids redundant network I/O in both the short-lived CLI (repeated commands during a debugging session) and the long-lived MCP server (same job queried multiple times by an agent). The design below is opinionated, concrete, and implementable.
+
+### 2025-07-18: Revised Cache TTL Policy — Per-Data-Type × Job-State Matrix, Bounded Lifetimes, Automatic Eviction
+
+**By:** Dallas
+**What:** Replaces the previous caching strategy's TTL model (indefinite for completed, blanket 60s for running) with a granular TTL matrix per data type and job state, plus automatic disk eviction.
+**Why:** Larry correctly identified two problems: (1) "cache forever" for completed jobs is a disk leak — there's no reason to keep months-old job data around, and (2) a single 60s TTL for running jobs doesn't match real debugging behavior. Console logs grow continuously. File listings change as work items produce artifacts. Job details change state. These need different cache lifetimes. The revised design treats each data type independently.
+
+---
+
+## Changes from Previous Design
+
+### 1. TTL Matrix
+
+| Data Type | Running Job | Completed Job |
+|---|---|---|
+| **Job details** (name, queue, creator, state) | 15s | 4h |
+| **Work item list** (names, counts) | 15s | 4h |
+| **Work item details** (exit code, state per item) | 15s | 4h |
+| **File listing** (per work item) | 30s | 4h |
+| **Console log content** | **NO CACHE** | 1h |
+| **Downloaded artifact** (binlog, trx, files on disk) | Until eviction (see §3) | Until eviction (see §3) |
+| **Binlog scan results** (FindBinlogsAsync) | 30s | 4h |
+
+### 2. Console Logs — Never Cache While Running
+
+Console logs for running work items are append-only streams. Any cached version is stale the moment it's stored. The previous design's 60s TTL would serve stale logs to a user who's actively tailing output.
+
+**Decision:** `GetConsoleLogContentAsync` and `DownloadConsoleLogAsync` bypass the cache entirely when the job is not yet finished. For completed jobs, cache for 1 hour — the log is immutable at that point but doesn't need to live in memory forever.
+
+To determine job state: the cache layer checks whether a `JobSummary` for that job ID has a non-null `Finished` timestamp. If the job summary isn't cached yet, one API call is made to get it (and that call itself is cached per the matrix above).
+
+### 3. Completed Job Max TTL: 4 Hours (Memory), 7 Days (Disk)
+
+The previous design said "indefinite" for completed jobs. Revised:
+
+- **Memory cache:** 4-hour sliding expiration for all completed-job metadata. A debugging session rarely spans more than a few hours. After 4h of no access, entries are evicted.
+- **Disk cache:** Downloaded artifacts (binlogs, trx files) live for 7 days from last access. After that, automatic eviction (see §4).
+
+Rationale: Completed jobs don't change, but they don't need to live in cache indefinitely either. 4h covers a debugging session. 7 days covers "I'll come back to this tomorrow." Beyond that, re-fetching is fine.
+
+### 4. Disk Cache Eviction Policy
+
+Previous design: manual `cache clear` only. Revised — automatic eviction on two triggers:
+
+1. **LRU with max size:** Disk cache directory has a configurable max size (default: 500 MB). When exceeded, oldest-accessed files are deleted first. Size check runs at startup and after every download.
+2. **TTL-based cleanup:** Files older than 7 days (by last access time) are deleted. Cleanup runs at startup.
+3. **Manual override preserved:** `cache clear` command still works for immediate wipe.
+
+Cache directory: `{TEMP}/hlx-cache/{jobId-prefix}/{workItem}/{fileName}`
+
+Startup eviction is synchronous but fast — it's a directory scan, not API calls. The MCP server runs it once on startup. The CLI runs it before the first cache-writing operation.
+
+### 5. Cache Key Design (Unchanged)
+
+Same as previous design: `{jobId}/{workItem}/{fileName}` for artifacts, `{jobId}` for job-level metadata, `{jobId}/{workItem}` for work-item-level metadata. No changes here.
+
+### 6. The "Log Grew Since Last Fetch" Problem
+
+This is inherently unsolvable with caching — you can't cache a stream that's still being written to. The correct answer is: **don't cache it.** For running jobs, every console log request hits the API fresh.
+
+If we want to optimize bandwidth in the future, we could add an `If-Modified-Since` or byte-range approach (fetch only bytes after the last-known position). But that's an optimization for later and depends on the Helix API supporting range requests. For now: no cache, full re-fetch. It's the only correct behavior.
+
+### 7. Summary of What Changed
+
+| Aspect | Previous | Revised |
+|---|---|---|
+| Completed job TTL | Indefinite | 4h memory, 7d disk |
+| Running job TTL | Blanket 60s | 15-30s per data type; console logs: none |
+| Console log caching (running) | 60s | **Disabled** |
+| Disk eviction | Manual only | Automatic: 500MB cap + 7-day expiry |
+| File listing TTL (running) | 60s | 30s |
+| Job details TTL (running) | 60s | 15s |
