@@ -24,6 +24,8 @@ dnx hlx mcp
 
 This is the recommended approach for MCP server configuration (see below).
 
+> **Note:** `dnx` requires the package to be available on a NuGet feed. Until `hlx` is published to nuget.org, use a local build or global tool install instead (see below).
+
 ### Install as Global Tool
 
 ```bash
