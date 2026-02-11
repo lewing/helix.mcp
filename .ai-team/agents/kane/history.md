@@ -37,3 +37,12 @@
 - Remaining docs gaps: HelixIdResolver class/method XML docs, HelixMcpTools class-level doc comment, LICENSE file missing.
 
 📌 Team update (2026-02-11): Ripley implemented US-1 (positional args on all commands) and US-20 (rich status output with State, ExitCode, Duration, MachineName). `IWorkItemDetails` interface expanded, `WorkItemResult` record updated. FormatDuration duplicated in CLI/MCP. 38/38 tests pass.
+
+📌 Session 2026-02-12-mcp-stdio-docs: Updated documentation for `hlx mcp` stdio transport:
+1. **README.md** — Architecture section updated to note HelixTool serves both CLI commands and stdio MCP. MCP Server section now shows both stdio (recommended) and HTTP transports. MCP Configuration section reorganized: VS Code/GitHub Copilot shows stdio as primary with HTTP fallback; added Claude Desktop config; updated Claude Code/Cursor with stdio-first config. Project Structure updated to show HelixMcpTools.cs in both HelixTool and HelixTool.Mcp.
+2. **llmstxt output** in Program.cs — MCP Server section now documents `hlx mcp` (stdio) and `hlx-mcp`/`dotnet run` (HTTP) as two separate lines.
+- No code logic changes — documentation only.
+- When the `hlx mcp` command implementation lands (Ripley), the docs are already in place.
+
+📌 Team update (2026-02-11): US-4 auth design approved — HELIX_ACCESS_TOKEN env var. README auth section and MCP client config example needed (D-AUTH-6). — decided by Dallas
+📌 Team update (2026-02-11): Stdio MCP implemented as `hlx mcp` subcommand. README/llmstxt already updated in previous session. — decided by Dallas/Ripley

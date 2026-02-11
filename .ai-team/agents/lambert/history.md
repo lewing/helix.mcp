@@ -37,3 +37,13 @@
 📌 Team update (2026-02-11): Caching strategy proposed — HelixService gets optional HelixCache parameter; tests will need to account for cache behavior. — decided by Dallas
 📌 Team update (2026-02-11): Requirements backlog formalized — 30 user stories. P0: US-12 and US-13 must land before feature work. — decided by Ash
 📌 Team update (2026-02-11): P0 Foundation design decisions D1–D10 merged — IHelixApiClient is the only mock boundary, add NSubstitute, write tests for HelixService with mocked IHelixApiClient. See decisions.md. — decided by Dallas
+
+📌 Session 2025-07-18-mcp-tests: Added 17 HelixMcpTools tests (55 total). Tests cover: Status JSON structure (4 tests), FormatDuration through Status output (6 tests covering seconds/minutes/hours/null), Files with tags (2 tests), FindBinlogs scan results (2 tests), Download error JSON (2 tests), constructor (1 test). Pattern: mock IHelixApiClient → construct HelixService → construct HelixMcpTools → call MCP tool method → parse JSON output → assert structure. Added ProjectReference to HelixTool.Mcp in test csproj.
+- HelixTool.Mcp uses `namespace HelixTool` (via `<RootNamespace>HelixTool</RootNamespace>`) so HelixMcpTools is in same namespace as HelixService — no extra `using` needed
+- FormatDuration is private static, only testable through Status output — tested all 6 branches (seconds, m+s, exact minutes, h+m, exact hours, null)
+- HelixTool.Mcp.csproj uses `Microsoft.NET.Sdk.Web` — may cause issues if a running MCP server process locks bin output; killed PID 14288 during test run
+- Download error path: when `DownloadFilesAsync` returns empty list, `Download` returns `{error: "No files matching '...' found."}` — tested with pattern mismatch and empty file list
+
+📌 Team update (2026-02-11): US-4 auth design approved — HELIX_ACCESS_TOKEN env var, optional token on HelixApiClient constructor. No IHelixApiClient changes, no test impact. — decided by Dallas
+📌 Team update (2026-02-11): Stdio MCP implemented as `hlx mcp` subcommand. HelixMcpTools.cs duplicated in CLI project. If removed from HelixTool.Mcp, test ProjectReference must change. — decided by Dallas/Ripley
+📌 Team update (2026-02-11): Ripley's stdio MCP implementation creates separate DI container for mcp command. HelixMcpTools.cs now in both projects. 55/55 tests pass. — decided by Ripley

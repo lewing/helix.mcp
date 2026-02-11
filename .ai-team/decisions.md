@@ -372,3 +372,64 @@ If we want to optimize bandwidth in the future, we could add an `If-Modified-Sin
 - **XML doc comments** — Added to `IHelixApiClient` (all 6 methods), `HelixApiClient`, `HelixException`, `HelixService` (constructor, all public methods, all 4 public record types).
 - **Decision for team:** The llmstxt content and README now serve as the authoritative docs for the public API surface. When new commands or MCP tools are added, both must be updated together.
 - **Remaining gaps:** `HelixIdResolver` XML docs, `HelixMcpTools` class-level doc comment, LICENSE file, `dotnet tool install` instructions.
+
+### 2026-02-12: US-4 Authentication Design — HELIX_ACCESS_TOKEN env var, optional token constructor
+
+**By:** Dallas
+**Date:** 2026-02-12
+**Requested by:** Larry Ewing
+
+- **D-AUTH-1:** Token source is `HELIX_ACCESS_TOKEN` environment variable. Matches arcade naming convention. No config file, no secrets on disk.
+- **D-AUTH-2:** `HelixApiClient` constructor accepts optional `string? accessToken`. Null/empty → anonymous (zero breakage). Non-empty → authenticated via `HelixApiTokenCredential`.
+- **D-AUTH-3:** All 3 DI registrations (CLI, MCP stdio, MCP HTTP) read env var at startup with `Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")`.
+- **D-AUTH-4:** `IHelixApiClient` interface unchanged. Auth is a transport concern inside `HelixApiClient`. No test impact.
+- **D-AUTH-5:** `HelixService` catches 401/403 with actionable error: "Set HELIX_ACCESS_TOKEN environment variable to access internal builds."
+- **D-AUTH-6:** MCP client config example: `{ "command": "hlx", "args": ["mcp"], "env": { "HELIX_ACCESS_TOKEN": "<token>" } }`
+- **D-AUTH-7:** No token acquisition built into tool. No `hlx auth login`. Token is opaque string from env var. ~35 lines of code, no new dependencies.
+
+### 2026-02-12: Stdio MCP Transport — `hlx mcp` subcommand (Option B approved)
+
+**By:** Dallas
+**Date:** 2026-02-12
+**Requested by:** Larry Ewing
+
+- **Decision:** Support stdio MCP via `hlx mcp` subcommand in CLI binary. Not in separate HelixTool.Mcp project.
+- **Why:** All primary consumers (Copilot CLI, Claude Desktop, VS Code, ci-analysis skill) use stdio. Single binary install aligns with US-5.
+- **Packages:** CLI adds `ModelContextProtocol` (base, ~100KB) + `Microsoft.Extensions.Hosting`. No ASP.NET Core for stdio.
+- **HelixTool.Mcp kept:** HTTP transport remains for remote/multi-client scenarios.
+- **Logging:** All output to stderr via `LogToStandardErrorThreshold = LogLevel.Trace`.
+- **MCP client config:** `{ "command": "hlx", "args": ["mcp"] }`
+- **Risks:** ConsoleAppFramework + Host may conflict; `mcp` command bypasses CAF and runs Host directly. Tool assembly scanning needs explicit assembly reference if tools are in Core.
+
+### 2026-02-12: Stdio MCP Implementation — Runtime decisions
+
+**By:** Ripley
+**Date:** 2026-02-12
+**Implements:** Dallas's stdio MCP design
+
+- `HelixMcpTools.cs` copied to CLI project (same namespace, discovered by `WithToolsFromAssembly()`).
+- `mcp` command creates its own DI container via `Host.CreateApplicationBuilder()` — does not reuse CLI's `ServiceCollection`.
+- HelixTool.Mcp unchanged (HTTP transport stays).
+- Duplication accepted; extract to Core if maintenance burden grows.
+- Build and 55/55 tests pass.
+
+### 2026-02-12: MCP Tools Test Strategy
+
+**By:** Lambert
+**Date:** 2025-07-18
+
+- Tests reference HelixTool.Mcp via `ProjectReference`. `HelixMcpTools` lives in `namespace HelixTool`.
+- `FormatDuration` tested indirectly through Status output (6 branches via arranged timestamps).
+- MCP tool methods return JSON strings; tests parse with `JsonDocument` and assert structure/values.
+- Download error path returns `{error: "..."}` JSON rather than throwing.
+- **Impact:** If `HelixMcpTools` is removed from HelixTool.Mcp, test ProjectReference must change.
+
+### 2026-02-12: US-5 + US-25 Implementation — dotnet tool packaging + ConsoleLogUrl
+
+**By:** Ripley
+**Date:** 2026-02-12
+**Requested by:** Larry Ewing
+
+- **US-5 (dotnet tool):** Added `<Version>0.1.0</Version>` to HelixTool.csproj. Updated `<Description>` and `<Authors>`. `PackAsTool`, `ToolCommandName`, `PackageId` already existed.
+- **US-25 (ConsoleLogUrl):** `WorkItemResult` record gained 6th positional parameter `string ConsoleLogUrl`. URL: `https://helix.dot.net/api/2019-06-17/jobs/{id}/workitems/{name}/console`. CLI shows URL below failed items. MCP JSON includes `consoleLogUrl` for all items.
+- Both `HelixMcpTools.cs` copies (HelixTool + HelixTool.Mcp) updated. Must be kept in sync.
