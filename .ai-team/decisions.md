@@ -608,3 +608,32 @@ Implemented `SearchConsoleLogAsync` in HelixService to search console log conten
 - `src/HelixTool/Program.cs` — Added `search-log` CLI command
 - `src/HelixTool/HelixMcpTools.cs` — Added `hlx_search_log` MCP tool
 - `src/HelixTool.Mcp/HelixMcpTools.cs` — Added `hlx_search_log` MCP tool (mirror)
+
+---
+
+### 2026-02-12: Consolidate HelixMcpTools into HelixTool.Core
+
+**By:** Ripley
+**Requested by:** Larry Ewing
+
+`HelixMcpTools.cs` was duplicated in two projects:
+- `src/HelixTool/HelixMcpTools.cs` (namespace `HelixTool`) — used by stdio MCP via `hlx mcp`
+- `src/HelixTool.Mcp/HelixMcpTools.cs` (namespace `HelixTool.Mcp`) — used by HTTP MCP server
+
+Both copies contained identical logic and had to be kept in sync manually. Consolidated to a single `src/HelixTool.Core/HelixMcpTools.cs` with `namespace HelixTool.Core`.
+
+**Changes:**
+
+1. **Created** `src/HelixTool.Core/HelixMcpTools.cs` — single source of truth, namespace `HelixTool.Core`
+2. **Added** `ModelContextProtocol` v0.8.0-preview.1 package to `HelixTool.Core.csproj` (needed for `[McpServerToolType]`/`[McpServerTool]` attributes)
+3. **Deleted** `src/HelixTool/HelixMcpTools.cs`
+4. **Deleted** `src/HelixTool.Mcp/HelixMcpTools.cs`
+5. **Updated** `src/HelixTool/Program.cs` — `.WithToolsFromAssembly(typeof(HelixMcpTools).Assembly)` (explicit assembly reference since tools now live in Core)
+6. **Updated** `src/HelixTool.Mcp/Program.cs` — same explicit assembly reference
+7. **Updated** test files — changed `using HelixTool.Mcp;` → `using HelixTool.Core;`, removed duplicate using directives
+8. **Updated** `HelixTool.Tests.csproj` — removed `ProjectReference` to `HelixTool.Mcp` (no longer needed; tests only need Core)
+
+**Key insight:** `WithToolsFromAssembly()` without arguments only scans the calling assembly. Since `HelixMcpTools` moved to `HelixTool.Core.dll`, both consumers must use `WithToolsFromAssembly(typeof(HelixMcpTools).Assembly)`.
+
+**Verification:** `dotnet build` — 0 errors, 0 warnings. `dotnet test` — 126/126 passed.
+

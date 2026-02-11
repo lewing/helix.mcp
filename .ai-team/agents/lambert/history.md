@@ -51,3 +51,13 @@
 
 📌 Team update (2026-02-12): US-22 console log search implemented — SearchConsoleLogAsync, LogSearchResult, LogMatch records added to HelixService. CLI `search-log` command and MCP `hlx_search_log` tool in both HelixMcpTools.cs files. Tests needed. — decided by Ripley
 
+- US-22 SearchLogTests: 14 tests written in `SearchLogTests.cs` (8 test methods, 3 are Theory with 3 InlineData each)
+- SearchConsoleLogAsync calls DownloadConsoleLogAsync internally, which uses `_api.GetConsoleLogAsync` (returns Stream). Mock returns MemoryStream with known content — the method writes to temp file then reads back, so file I/O happens transparently
+- LogMatch.LineNumber is 1-based; LogMatch.Context includes the match line itself plus surrounding lines
+- contextLines=1 produces 3 context entries (1 before + match + 1 after); contextLines=0 means Context is null
+- maxMatches caps early — loop stops scanning once limit reached, so only first N matches returned
+- SetupLogContent helper pattern: `_mockApi.GetConsoleLogAsync(...).Returns(_ => new MemoryStream(...))` — lambda needed so each call gets a fresh stream
+
+
+📌 Team update (2026-02-11): Wrote 14 tests for US-22 search-log in SearchLogTests.cs. Test count 112 → 126. — decided by Lambert
+📌 Team update (2026-02-11): HelixMcpTools.cs consolidated into HelixTool.Core — test using directives changed from HelixTool.Mcp to HelixTool.Core, Mcp ProjectReference removed from HelixTool.Tests.csproj. — decided by Ripley

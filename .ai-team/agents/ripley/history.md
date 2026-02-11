@@ -43,5 +43,9 @@
 ## Learnings
 - SearchConsoleLogAsync downloads the log via DownloadConsoleLogAsync to a temp file, reads all lines, searches, then deletes the temp file. This reuses the existing download infrastructure rather than streaming.
 - LogMatch record uses optional `Context` property (`List<string>?`) to carry the full context window (before + match + after lines) when contextLines > 0. This lets the CLI and MCP tools render context without re-reading the file.
-- Both HelixMcpTools.cs files must always be updated together (established pattern from history).
+- HelixMcpTools consolidated into HelixTool.Core — single copy, no more dual-update requirement. Both HelixTool (stdio) and HelixTool.Mcp (HTTP) reference Core for MCP tool discovery via `WithToolsFromAssembly(typeof(HelixMcpTools).Assembly)`.
+- `WithToolsFromAssembly()` (no args) only scans the calling assembly. When tools live in a referenced library, you must pass `typeof(SomeToolClass).Assembly` explicitly.
+- ModelContextProtocol package added to HelixTool.Core for `[McpServerToolType]` and `[McpServerTool]` attributes. This is the base package (not AspNetCore variant).
 
+
+📌 Team update (2026-02-11): Consolidated HelixMcpTools.cs from 2 copies (HelixTool + HelixTool.Mcp) into 1 in HelixTool.Core. Updated tool discovery to typeof(HelixMcpTools).Assembly. Removed Mcp ProjectReference from tests. Build clean, 126/126 tests passed. — decided by Ripley
