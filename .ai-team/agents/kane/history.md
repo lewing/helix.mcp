@@ -52,3 +52,5 @@
 2. **README.md** — Added `download-url` CLI example in Quick Start. Added `hlx_download_url` row to MCP Tools table. Added "Install as Global Tool" subsection under Installation (`dotnet pack` + `dotnet tool install -g`). Verified Authentication section is accurate (unchanged).
 - Build: 0 warnings, 0 errors.
 - The `download-url` CLI command and `hlx_download_url` MCP tool are documented but implementation was not verified in this session (docs-only scope).
+
+📌 Team update (2026-02-11): US-29 MCP input flexibility — `workItem` now optional on `hlx_logs`, `hlx_files`, `hlx_download` MCP tools. [Description] attributes updated. llmstxt and README may need updating to reflect optional workItem and URL-based input. — decided by Ripley

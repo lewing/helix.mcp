@@ -467,3 +467,24 @@ If we want to optimize bandwidth in the future, we could add an `If-Modified-Sin
 - Static `HttpClient` in HelixService for direct URL downloads (separate from `IHelixApiClient`).
 - `DownloadFromUrlAsync` not mockable through existing test boundary — uses raw HTTP, not Helix SDK.
 - Filename extraction via `Uri.Segments[^1]` with `Uri.UnescapeDataString`.
+
+### US-29: MCP Input Flexibility — URL parsing for jobId + workItem
+
+**By:** Ripley
+**Date:** 2026-02-12
+**Requested by:** Larry Ewing
+
+**What:** MCP tools (`hlx_logs`, `hlx_files`, `hlx_download`) now accept full Helix work item URLs in the `jobId` parameter, automatically extracting both job ID and work item name. The `workItem` parameter is now optional when the URL contains both values.
+
+**Changes:**
+- `HelixIdResolver.TryResolveJobAndWorkItem(string input, out string jobId, out string? workItem)` — new method in Core. Parses Helix URLs to extract GUID after `jobs/` and work item name after `workitems/`. URL-decodes work item names. Skips known trailing segments (`console`, `files`, `details`).
+- `hlx_logs`, `hlx_files`, `hlx_download` in both `HelixMcpTools.cs` copies — `workItem` changed from required `string` to optional `string?`. URL resolution logic runs when `workItem` is empty. Returns structured JSON error if `workItem` still missing.
+- `hlx_status`, `hlx_find_binlogs` — unchanged (no `workItem` parameter).
+
+**Design decisions:**
+- **Try-pattern over exceptions:** `TryResolveJobAndWorkItem` returns bool + out params rather than throwing. The existing `ResolveJobId` (which throws) is unchanged.
+- **Known trailing segments list:** `["console", "files", "details"]` — hardcoded array.
+- **Resolution only when workItem is empty:** Explicit parameters always win.
+- **Both HelixMcpTools copies updated in sync.**
+
+**Impact:** Non-breaking. 81/81 tests pass.

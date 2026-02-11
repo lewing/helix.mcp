@@ -57,3 +57,8 @@
 - `DownloadFromUrlAsync` uses a static `HttpClient` (not `IHelixApiClient`) — only argument validation is testable without injecting a mock HttpClient. HTTP error paths (404, 401) can't be tested without refactoring.
 - Ripley's US-17 namespace cleanup landed concurrently: `namespace HelixTool.Core` for Core types, `namespace HelixTool.Mcp` for MCP tools. All test files now need `using HelixTool.Core;` and `using HelixTool.Mcp;`.
 - HelixMcpTools is now in `HelixTool.Mcp` namespace — `using HelixTool.Mcp;` required in test files that reference it.
+
+📌 Session 2025-07-18-us29-url-tests: Added 7 HelixIdResolverUrlTests (81 total). Tests cover `TryResolveJobAndWorkItem`: work item URL with /console suffix, work item URL without /console, job-only URL with /details, plain GUID (no work item), work item name with dots/dashes, invalid input returns false, URL without /jobs segment returns false. Ripley's implementation already existed — all tests compiled and passed on first run.
+- `TryResolveJobAndWorkItem` returns `bool` with `out string jobId, out string? workItem` — TryParse pattern, no exceptions on invalid input (unlike `ResolveJobId` which throws `ArgumentException`)
+- Known trailing segments (`console`, `files`, `details`) are stripped — they're not work item names
+- Test file: `HelixIdResolverUrlTests.cs` — separate from `HelixIdResolverTests.cs` to keep URL-specific tests isolated

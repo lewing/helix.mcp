@@ -64,3 +64,11 @@
 - **Using directives added:** `using HelixTool.Core;` added to CLI's Program.cs, CLI's HelixMcpTools.cs, Mcp's HelixMcpTools.cs, Mcp's Program.cs, and all 8 test files (HelixAuthTests, ConsoleLogUrlTests, HelixIdResolverTests, HelixMcpToolsTests, HelixServiceDITests, MatchesPatternTests, DownloadFromUrlTests, StructuredJsonTests). Test files referencing MCP tools also got `using HelixTool.Mcp;`.
 - **Mcp csproj:** Removed `<RootNamespace>HelixTool</RootNamespace>` from `HelixTool.Mcp.csproj` — the default root namespace now correctly matches the project name.
 - **Build and tests:** All 74 tests pass. Zero compilation errors.
+
+📌 Session US-29 (MCP Input Flexibility):
+- **`TryResolveJobAndWorkItem` added to `HelixIdResolver`** — parses Helix URLs to extract both jobId (GUID) and workItem name. Handles URLs with/without API version segments, with/without trailing segments (`console`, `files`, `details`). URL-decodes work item names. Returns `true` when jobId found (workItem may be null), `false` when no valid jobId.
+- **MCP tools `hlx_logs`, `hlx_files`, `hlx_download` updated** in both `HelixMcpTools.cs` copies (HelixTool + HelixTool.Mcp). `workItem` parameter changed from required to optional (`string? workItem = null`). URL resolution logic added at top of each method. Returns JSON error if workItem still missing after resolution.
+- **`hlx_status` and `hlx_find_binlogs` unchanged** — they only take jobId, no workItem parameter.
+- **Description attributes updated** — `jobId` now says "Helix job ID (GUID), Helix job URL, or full work item URL (which includes both job ID and work item name)". `workItem` now says "Work item name (optional if included in the jobId URL)".
+- **Known trailing segments** in URL parsing: `console`, `files`, `details` — these are skipped when looking for work item name. If Helix adds new trailing segments, the array in `TryResolveJobAndWorkItem` needs updating.
+- **Build and tests:** All 81 tests pass. Zero compilation errors.
