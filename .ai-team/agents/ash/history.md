@@ -79,3 +79,7 @@ After reading the full script, I can now quantify what hlx replaces more precise
 - US-9 (script removability) is now partially done — the mapping above IS the removability analysis. Remaining work: formalize the function→command mapping into a table.
 - US-20 (per-work-item detail in status) should be P1 not P2 — it's the single biggest gap preventing ci-analysis from using hlx. ci-analysis fetches details for every work item individually; hlx should do this in its status command.
 - US-30 (structured MCP output) is P1 — agents can't effectively use hlx if the MCP responses are just raw data.
+
+
+📌 Team update (2026-02-11): US-10 (GetWorkItemDetailAsync) and US-23 (GetBatchStatusAsync) implemented — new CLI commands work-item and batch-status, MCP tools hlx_work_item and hlx_batch_status added. — decided by Ripley
+

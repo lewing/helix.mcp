@@ -54,3 +54,7 @@
 - The `download-url` CLI command and `hlx_download_url` MCP tool are documented but implementation was not verified in this session (docs-only scope).
 
 📌 Team update (2026-02-11): US-29 MCP input flexibility — `workItem` now optional on `hlx_logs`, `hlx_files`, `hlx_download` MCP tools. [Description] attributes updated. llmstxt and README may need updating to reflect optional workItem and URL-based input. — decided by Ripley
+
+
+📌 Team update (2026-02-11): US-10 (GetWorkItemDetailAsync) and US-23 (GetBatchStatusAsync) implemented — new CLI commands work-item and batch-status, MCP tools hlx_work_item and hlx_batch_status added. — decided by Ripley
+

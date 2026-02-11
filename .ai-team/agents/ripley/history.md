@@ -3,78 +3,35 @@
 ## Project Learnings (from import)
 - **Project:** hlx — Helix Test Infrastructure CLI & MCP Server
 - **User:** Larry Ewing (lewing@microsoft.com)
-- **Stack:** C# .NET 10, ConsoleAppFramework, Spectre.Console, ModelContextProtocol, Microsoft.DotNet.Helix.Client
+- **Stack:** C# .NET 10, ConsoleAppFramework, ModelContextProtocol, Microsoft.DotNet.Helix.Client
 - **Structure:** Three projects — HelixTool.Core (shared library), HelixTool (CLI), HelixTool.Mcp (HTTP MCP server)
-- **Key service methods:** GetJobStatusAsync, GetWorkItemFilesAsync, DownloadConsoleLogAsync, GetConsoleLogContentAsync, FindBinlogsAsync, DownloadFilesAsync
-- **HelixIdResolver:** Handles both bare GUIDs and full Helix URLs (extracts job ID from URL path)
+- **Key service methods:** GetJobStatusAsync, GetWorkItemFilesAsync, DownloadConsoleLogAsync, GetConsoleLogContentAsync, FindBinlogsAsync, DownloadFilesAsync, GetWorkItemDetailAsync, GetBatchStatusAsync, DownloadFromUrlAsync
+- **HelixIdResolver:** Handles bare GUIDs, full Helix URLs, and `TryResolveJobAndWorkItem` for URL-based jobId+workItem extraction
 - **MatchesPattern:** Simple glob — `*` matches all, `*.ext` matches suffix, else substring match
 
-## Learnings
+## Summarized History (through 2026-02-11)
 
-📌 Team update (2026-02-11): Architecture review filed — P0: DI/testability + error handling needed before feature work. No changes until Larry confirms priorities. — decided by Dallas
-📌 Team update (2026-02-11): MatchesPattern changed to internal static; InternalsVisibleTo added to Core csproj for test access. — decided by Lambert
-📌 Team update (2026-02-11): Documentation audit found missing XML doc comments on public records and HelixIdResolver. — decided by Kane
-📌 Team update (2026-02-11): Caching strategy proposed — two-tier (memory LRU + disk) with job-completion-aware invalidation. Optional HelixCache parameter on HelixService. — decided by Dallas
-📌 Team update (2026-02-11): Cache TTL policy revised — console logs never cached for running jobs, completed jobs: 4h memory / 7d disk, 500MB auto-eviction. See decisions.md. — decided by Dallas
-📌 Team update (2026-02-11): Requirements backlog formalized — 30 user stories (US-1 through US-30). P0: US-12 (DI/testability) and US-13 (error handling) must land before feature work. — decided by Ash
-📌 Team update (2026-02-11): P0 Foundation design decisions D1–D10 merged — IHelixApiClient interface, constructor injection, HelixException, CancellationToken, input validation, mock boundaries. You are assigned implementation. See decisions.md. — decided by Dallas
+**Architecture & DI (P0):** Implemented IHelixApiClient interface with projection interfaces for Helix SDK types, HelixApiClient wrapper, HelixException, constructor injection on HelixService, CancellationToken on all methods, input validation (D1-D10). DI for CLI via `ConsoleApp.ServiceProvider`, for MCP via `builder.Services.AddSingleton<>()`.
 
-- **Helix SDK return types are concrete classes**, not interfaces: `JobDetails`, `WorkItemSummary`, `WorkItemDetails`, `UploadedFile` (all in `Microsoft.DotNet.Helix.Client.Models`). Defined mockable projection interfaces (`IJobDetails`, `IWorkItemSummary`, `IWorkItemDetails`, `IWorkItemFile`) in `IHelixApiClient.cs` with adapter classes in `HelixApiClient.cs`.
-- **All Helix SDK API methods already accept `CancellationToken`** as their last parameter with a default value — `IJob.DetailsAsync`, `IWorkItem.ListAsync`, `IWorkItem.DetailsAsync`, `IWorkItem.ListFilesAsync`, `IWorkItem.ConsoleLogAsync`, `IWorkItem.GetFileAsync`.
-- **MCP SDK (`ModelContextProtocol` v0.8.0-preview.1) supports DI for instance `[McpServerToolType]` classes** when registered as singletons. `WithToolsFromAssembly()` resolves them from the service provider. Scoped/transient not supported.
-- **ConsoleAppFramework v5 supports DI** via `ConsoleApp.ServiceProvider = serviceProvider`. Constructor injection works for command classes registered with `.Add<T>()`.
-- **`TaskCanceledException` timeout vs. cancellation**: Don't check `ex.CancellationToken == cancellationToken` — it matches when both are `CancellationToken.None` (timeout from `default` parameter). Use `cancellationToken.IsCancellationRequested` instead: `true` = real cancellation, `false` = HTTP timeout.
-- **Short string guard for `id[..8]`**: Use `id.Length >= 8 ? id[..8] : id` in temp file naming paths (`DownloadConsoleLogAsync`, `DownloadFilesAsync`).
-- **New file locations**: `IHelixApiClient.cs` (interface + DTOs), `HelixApiClient.cs` (SDK wrapper + adapters), `HelixException.cs` — all in `HelixTool.Core/`.
-- **HelixIdResolver now throws `ArgumentException` on invalid input** instead of silent pass-through. All callers go through `HelixService` which has its own `ArgumentException.ThrowIfNullOrWhiteSpace` guards first.
-- **DI pattern for CLI**: `ServiceCollection` → register singletons → `ConsoleApp.ServiceProvider = provider`. For MCP: `builder.Services.AddSingleton<>()` in `Program.cs`.
-- **ConsoleAppFramework v5 `[Argument]` attribute** works on positional parameters. Applied to `jobId` on all commands and `workItem` on logs/files/download. Named flags (e.g., `--pattern`, `--max-items`, `--all`) remain as regular parameters with defaults.
-- **Helix SDK `WorkItemDetails` has 19 properties** including `State` (string), `MachineName` (string), `Started` (DateTimeOffset?), `Finished` (DateTimeOffset?), `Duration` (string), `ExitCode` (int?), `FailureReason` (enum). We compute Duration as `TimeSpan?` from Started/Finished rather than using the SDK's pre-formatted string.
-- **`IWorkItemDetails` interface expanded** with State, MachineName, Started, Finished fields. `WorkItemResult` record now has 5 fields: `(string Name, int ExitCode, string? State, string? MachineName, TimeSpan? Duration)`.
-- **Duration formatting** uses human-readable format: "2m 34s", "45s", "1h 2m". Helper method `FormatDuration` defined in both CLI (`Commands` class, `internal static`) and MCP (`HelixMcpTools`, `private static`).
-- **Program.cs has UTF-8 BOM** (EF BB BF) — the `view` tool strips it but `edit` tool's old_str matching fails if it's not accounted for. Use PowerShell `[System.IO.File]::WriteAllText` with `UTF8Encoding($true)` to preserve it.
+**Key patterns established:**
+- Helix SDK types are concrete — mockable via projection interfaces (IJobDetails, IWorkItemSummary, IWorkItemDetails, IWorkItemFile)
+- `TaskCanceledException`: use `cancellationToken.IsCancellationRequested` to distinguish timeout vs cancellation
+- Program.cs has UTF-8 BOM — use `UTF8Encoding($true)` when writing
+- `FormatDuration` duplicated in CLI/MCP — extract to Core if third consumer appears
+- HelixMcpTools.cs duplicated in HelixTool and HelixTool.Mcp — both must be updated together
+- Two DI containers in CLI: one for commands, separate `Host.CreateApplicationBuilder()` for `hlx mcp`
 
-📌 Session 2026-02-11-p0-implementation: P0 foundation complete. IHelixApiClient, HelixApiClient, HelixException created; HelixService refactored with constructor injection, CancellationToken, error handling, input validation; MCP tools converted to instance class with DI; both hosts updated. All 38 tests pass.
+**Features implemented:**
+- US-1 (positional args), US-5 (dotnet tool packaging v0.1.0), US-11 (--json flag on status/files)
+- US-17 (namespace cleanup: HelixTool.Core, HelixTool.Mcp), US-18 (removed unused Spectre.Console)
+- US-20 (rich status: State, ExitCode, Duration, MachineName), US-24 (download by URL)
+- US-25 (ConsoleLogUrl on WorkItemResult), US-29 (MCP URL parsing for optional workItem)
+- US-30 (structured JSON: grouped files, jobId+helixUrl in status)
+- US-10 (WorkItemDetail + work-item command + hlx_work_item MCP tool)
+- US-23 (BatchJobSummary + batch-status command + hlx_batch_status MCP tool, SemaphoreSlim(5) throttling)
+- Stdio MCP transport via `hlx mcp` subcommand
 
-📌 Session 2026-02-11-p1-features: Implemented US-1 (positional arguments on all 5 commands) and US-20 (rich status output with State, ExitCode, Duration, MachineName per work item). Updated CLI display and MCP JSON responses. FormatDuration duplicated in CLI/MCP — extract to Core if third consumer appears. 38/38 tests pass.
-📌 Team update (2026-02-12): Kane completed docs fixes — llmstxt indentation fixed, MCP tools added to llmstxt, README updated with architecture/install/known-issues, XML doc comments on all P0 public types. llmstxt + README are now authoritative docs — update both when adding commands/tools.
+**Team updates received:**
+- Architecture review, caching strategy, cache TTL policy, requirements backlog (30 US), docs fixes (Kane), auth design (US-4), MCP test strategy — all in decisions.md
 
-- **`hlx mcp` stdio transport implemented.** Added `[Command("mcp")]` to Commands class in Program.cs. Uses `Host.CreateApplicationBuilder()` + `WithStdioServerTransport()` from base `ModelContextProtocol` package (not AspNetCore). Creates its own DI container — does NOT use the constructor-injected `_svc`. Copied `HelixMcpTools.cs` from HelixTool.Mcp into HelixTool (same namespace, same file). `WithToolsFromAssembly()` scans entry assembly and finds `[McpServerToolType]`. Added `ModelContextProtocol` 0.8.0-preview.1 and `Microsoft.Extensions.Hosting` 10.0.0 to HelixTool.csproj. HelixTool.Mcp left unchanged for HTTP transport. Build succeeds, 55/55 tests pass.
-- **Two DI containers coexist in HelixTool.** The CLI path uses `ServiceCollection` → `ConsoleApp.ServiceProvider`. The `mcp` command creates a separate `Host.CreateApplicationBuilder()` with its own DI. This is intentional — the MCP server is a long-lived host process, not a one-shot command.
-- **HelixMcpTools.cs is now duplicated** in both HelixTool and HelixTool.Mcp. Both files are identical. If changes are needed, both must be updated. Consider extracting to Core in the future if this becomes a maintenance burden.
-
-📌 Session US-5 + US-25 implementation:
-- **US-5 (Package as dotnet tool):** Added `<Version>0.1.0</Version>` to top PropertyGroup in `HelixTool.csproj`. Updated `<Description>` and `<Authors>` in Package Metadata group. `<PackAsTool>`, `<ToolCommandName>`, `<PackageId>` already existed. Removed `<PackageLicenseExpression>` is still present (not in spec but harmless).
-- **US-25 (ConsoleLogUrl):** Added `string ConsoleLogUrl` parameter to `WorkItemResult` record in `HelixService.cs`. URL constructed as `https://helix.dot.net/api/2019-06-17/jobs/{id}/workitems/{wi.Name}/console`. CLI `status` command prints URL on line after each failed work item. Both `HelixMcpTools.cs` copies (HelixTool + HelixTool.Mcp) include `consoleLogUrl` in per-work-item JSON output for both failed and passed items.
-- **Key files modified:** `src/HelixTool/HelixTool.csproj`, `src/HelixTool.Core/HelixService.cs`, `src/HelixTool/Program.cs`, `src/HelixTool/HelixMcpTools.cs`, `src/HelixTool.Mcp/HelixMcpTools.cs`.
-- **Tests:** All 65 tests pass — no test mocks needed updating (the new `ConsoleLogUrl` field was apparently already handled by test infrastructure or positional record construction).
-
-📌 Team update (2026-02-11): US-4 auth design approved — HELIX_ACCESS_TOKEN env var, optional token on HelixApiClient constructor, 401/403 catch in HelixService. ~35 lines, no interface changes. — decided by Dallas
-📌 Team update (2026-02-11): Stdio MCP approved as `hlx mcp` subcommand (Option B). Add ModelContextProtocol + Microsoft.Extensions.Hosting to CLI. Copy HelixMcpTools.cs. Keep HelixTool.Mcp for HTTP. — decided by Dallas
-📌 Team update (2026-02-11): MCP test strategy — tests reference HelixTool.Mcp via ProjectReference. If HelixMcpTools moves, test ref must change. — decided by Lambert
-
-📌 Session US-24 + US-30 implementation:
-- **US-30 (Structured agent-friendly JSON):** `hlx_files` now returns grouped JSON `{ binlogs: [...], testResults: [...], other: [...] }` instead of flat array with tags. `hlx_status` `job` object now includes `jobId` (resolved GUID) and `helixUrl` (portal link `https://helix.dot.net/api/jobs/{jobId}/details`). `JobSummary` record gained `JobId` as first positional parameter.
-- **US-24 (Download by direct URL):** Added `DownloadFromUrlAsync` to `HelixService` with static `HttpClient`, standard error handling pattern. Added `download-url` CLI command and `hlx_download_url` MCP tool in both HelixMcpTools.cs copies. Filename extracted from URL last path segment, URL-decoded, saved to `helix-download-{filename}` in temp dir.
-- **Test fixes:** Updated `Files_ReturnsValidJsonWithFileTags` and `Files_IncludesNameAndUri` tests to match new grouped JSON structure (was flat array, now object with binlogs/testResults/other arrays). 68/68 tests pass.
-- **Key files modified:** `src/HelixTool.Core/HelixService.cs`, `src/HelixTool/HelixMcpTools.cs`, `src/HelixTool.Mcp/HelixMcpTools.cs`, `src/HelixTool/Program.cs`, `src/HelixTool.Tests/HelixMcpToolsTests.cs`.
-
-📌 Session US-17 (Namespace Cleanup):
-- **Namespace changes:** `HelixTool.Core` files (HelixApiClient, HelixService, HelixIdResolver, HelixException, IHelixApiClient) changed from `namespace HelixTool;` → `namespace HelixTool.Core;`. `HelixTool.Mcp/HelixMcpTools.cs` changed to `namespace HelixTool.Mcp;`. CLI project files kept `namespace HelixTool;`.
-- **Using directives added:** `using HelixTool.Core;` added to CLI's Program.cs, CLI's HelixMcpTools.cs, Mcp's HelixMcpTools.cs, Mcp's Program.cs, and all 8 test files (HelixAuthTests, ConsoleLogUrlTests, HelixIdResolverTests, HelixMcpToolsTests, HelixServiceDITests, MatchesPatternTests, DownloadFromUrlTests, StructuredJsonTests). Test files referencing MCP tools also got `using HelixTool.Mcp;`.
-- **Mcp csproj:** Removed `<RootNamespace>HelixTool</RootNamespace>` from `HelixTool.Mcp.csproj` — the default root namespace now correctly matches the project name.
-- **Build and tests:** All 74 tests pass. Zero compilation errors.
-
-📌 Session US-29 (MCP Input Flexibility):
-- **`TryResolveJobAndWorkItem` added to `HelixIdResolver`** — parses Helix URLs to extract both jobId (GUID) and workItem name. Handles URLs with/without API version segments, with/without trailing segments (`console`, `files`, `details`). URL-decodes work item names. Returns `true` when jobId found (workItem may be null), `false` when no valid jobId.
-- **MCP tools `hlx_logs`, `hlx_files`, `hlx_download` updated** in both `HelixMcpTools.cs` copies (HelixTool + HelixTool.Mcp). `workItem` parameter changed from required to optional (`string? workItem = null`). URL resolution logic added at top of each method. Returns JSON error if workItem still missing after resolution.
-- **`hlx_status` and `hlx_find_binlogs` unchanged** — they only take jobId, no workItem parameter.
-- **Description attributes updated** — `jobId` now says "Helix job ID (GUID), Helix job URL, or full work item URL (which includes both job ID and work item name)". `workItem` now says "Work item name (optional if included in the jobId URL)".
-- **Known trailing segments** in URL parsing: `console`, `files`, `details` — these are skipped when looking for work item name. If Helix adds new trailing segments, the array in `TryResolveJobAndWorkItem` needs updating.
-- **Build and tests:** All 81 tests pass. Zero compilation errors.
-
-📌 Session US-18 + US-11 implementation:
-- **US-18 (Remove Spectre.Console):** Removed `<PackageReference Include="Spectre.Console" Version="0.54.1-alpha.0.31" />` from `HelixTool.csproj`. Deleted empty `src/HelixTool/Commands/` and `src/HelixTool/Display/` directories. The dependency was never used in any `.cs` file.
-- **US-11 (--json flag):** Added `bool json = false` parameter to `status` and `files` CLI commands in `Program.cs`. When `--json` is passed, output is serialized using `System.Text.Json` with the same structure as MCP tools. Added `private static readonly JsonSerializerOptions s_jsonOptions` to `Commands` class (matches `HelixMcpTools` pattern per D10). Added `using System.Text.Json;` to top of Program.cs. Status JSON uses `{ job, totalWorkItems, failedCount, passedCount, failed, passed }` structure. Files JSON uses `{ binlogs, testResults, other }` grouped structure matching US-30.
-- **Key files modified:** `src/HelixTool/HelixTool.csproj`, `src/HelixTool/Program.cs`.
-- **Build and tests:** All 81 tests pass. Zero compilation errors.
+📌 Team update (2026-02-11): US-10 (GetWorkItemDetailAsync) and US-23 (GetBatchStatusAsync) implemented — new CLI commands work-item and batch-status, MCP tools hlx_work_item and hlx_batch_status added. — decided by Ripley

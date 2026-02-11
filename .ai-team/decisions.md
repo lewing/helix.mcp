@@ -508,3 +508,40 @@ If we want to optimize bandwidth in the future, we could add an `If-Modified-Sin
 - JSON output goes to stdout; progress messages (`Fetching job details...`) still go to stderr.
 
 **Impact:** Non-breaking. All 81 tests pass. No new dependencies added. One dependency removed.
+
+
+### 2026-02-12: US-10 (Work Item Detail) and US-23 (Batch Status) Implementation
+
+
+**By:** Ripley
+**Date:** 2026-02-12
+**Status:** Implemented
+
+## US-10: Work Item Detail
+
+### What
+New `GetWorkItemDetailAsync` method in `HelixService` returns detailed info about a single work item — exit code, state, machine, duration, console log URL, and file list with type tags.
+
+### Design Choices
+- **Parallel fetch:** Details and files are fetched concurrently via `Task.WhenAll` since they're independent API calls.
+- **Record type:** `WorkItemDetail` is a new nested record in `HelixService`, reusing existing `FileEntry` for file list.
+- **CLI command:** `hlx work-item <jobId> <workItem> [--json]` — human-readable by default, structured JSON with `--json`.
+- **MCP tool:** `hlx_work_item` uses US-29 `TryResolveJobAndWorkItem` pattern for optional `workItem` parameter.
+- **Error handling:** Standard pattern (401/403, 404, general, timeout) consistent with all other methods.
+
+## US-23: Multi-Job Batch Status
+
+### What
+New `GetBatchStatusAsync` method queries status for multiple jobs in parallel with `SemaphoreSlim(5)` throttling. Returns `BatchJobSummary` with per-job results and aggregate totals.
+
+### Design Choices
+- **Simple error propagation:** If any job throws, the exception bubbles up (no per-job error capture). This is intentional per spec — keep it simple for now.
+- **Throttling:** `SemaphoreSlim(5)` limits concurrent Helix API calls to avoid overloading the API.
+- **CLI output:** One summary line per job, then overall totals. No `--json` flag (can be added later if needed).
+- **MCP tool:** Accepts comma-separated job IDs as a single string, splits and passes to service.
+
+## Files Changed
+- `src/HelixTool.Core/HelixService.cs` — `WorkItemDetail`, `GetWorkItemDetailAsync`, `BatchJobSummary`, `GetBatchStatusAsync`
+- `src/HelixTool/Program.cs` — `work-item` and `batch-status` commands
+- `src/HelixTool/HelixMcpTools.cs` — `hlx_work_item` and `hlx_batch_status` tools
+- `src/HelixTool.Mcp/HelixMcpTools.cs` — same tools for HTTP MCP server
