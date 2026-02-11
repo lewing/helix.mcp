@@ -16,3 +16,5 @@
 📌 Team update (2026-02-11): Documentation audit found missing XML doc comments on public records and HelixIdResolver. — decided by Kane
 📌 Team update (2026-02-11): Caching strategy proposed — two-tier (memory LRU + disk) with job-completion-aware invalidation. Optional HelixCache parameter on HelixService. — decided by Dallas
 📌 Team update (2026-02-11): Cache TTL policy revised — console logs never cached for running jobs, completed jobs: 4h memory / 7d disk, 500MB auto-eviction. See decisions.md. — decided by Dallas
+📌 Team update (2026-02-11): Requirements backlog formalized — 30 user stories (US-1 through US-30). P0: US-12 (DI/testability) and US-13 (error handling) must land before feature work. — decided by Ash
+📌 Team update (2026-02-11): P0 Foundation design decisions D1–D10 merged — IHelixApiClient interface, constructor injection, HelixException, CancellationToken, input validation, mock boundaries. You are assigned implementation. See decisions.md. — decided by Dallas

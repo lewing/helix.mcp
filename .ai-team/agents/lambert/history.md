@@ -23,3 +23,5 @@
 📌 Team update (2026-02-11): Architecture review filed — P0: DI/testability + error handling needed. Tests will need updating when DI is added to HelixService. — decided by Dallas
 📌 Team update (2026-02-11): Documentation audit found 15 improvements needed across README, XML docs, llmstxt, MCP descriptions. — decided by Kane
 📌 Team update (2026-02-11): Caching strategy proposed — HelixService gets optional HelixCache parameter; tests will need to account for cache behavior. — decided by Dallas
+📌 Team update (2026-02-11): Requirements backlog formalized — 30 user stories. P0: US-12 and US-13 must land before feature work. — decided by Ash
+📌 Team update (2026-02-11): P0 Foundation design decisions D1–D10 merged — IHelixApiClient is the only mock boundary, add NSubstitute, write tests for HelixService with mocked IHelixApiClient. See decisions.md. — decided by Dallas

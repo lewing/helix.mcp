@@ -18,4 +18,5 @@
 | Ripley | Backend Dev | .ai-team/agents/ripley/charter.md | ✅ Active |
 | Lambert | Tester | .ai-team/agents/lambert/charter.md | ✅ Active |
 | Kane | Docs | .ai-team/agents/kane/charter.md | ✅ Active |
+| Ash | Product Analyst | .ai-team/agents/ash/charter.md | ✅ Active |
 | Scribe | Scribe | .ai-team/agents/scribe/charter.md | ✅ Active |

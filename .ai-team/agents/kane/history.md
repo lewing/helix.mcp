@@ -24,3 +24,4 @@
 
 📌 Team update (2026-02-11): Architecture review filed — P0: DI/testability + error handling. Documentation changes should wait until P0 refactoring is done to avoid rework. — decided by Dallas
 📌 Team update (2026-02-11): MatchesPattern changed to internal static; InternalsVisibleTo added to Core csproj. — decided by Lambert
+📌 Team update (2026-02-11): P0 Foundation design decisions D1–D10 merged — DI refactoring and error handling. Documentation changes should wait until P0 implementation lands. — decided by Dallas

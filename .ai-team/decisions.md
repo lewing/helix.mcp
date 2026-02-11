@@ -304,3 +304,28 @@ If we want to optimize bandwidth in the future, we could add an `If-Modified-Sin
 | Disk eviction | Manual only | Automatic: 500MB cap + 7-day expiry |
 | File listing TTL (running) | 60s | 30s |
 | Job details TTL (running) | 60s | 15s |
+
+### 2025-07-18: Requirements backlog formalized — 18 user stories extracted from session 72e659c1
+**By:** Ash
+**What:** Created `.ai-team/requirements.md` with 18 user stories (US-1 through US-18), categorized into Implemented, Planned, Architectural, and Discovered requirements. Prioritized P0–P3 with ownership assignments. P0 items are: layered architecture (US-7), logs-out-of-context principle (US-8), DI/testability (US-12), and error handling (US-13).
+**Why:** The session contained requirements scattered across plan.md, architecture docs, checkpoint notes, and implicit workflow observations. No single source had the full picture. The team needs a single backlog to prioritize from, and the P0 items (testability + error handling) must land before any feature work — Dallas identified this correctly and I'm reinforcing it as the requirements owner. Ripley should not pick up P1/P2 stories until US-12 and US-13 are done.
+
+### 2026-02-11: P0 Foundation Design Review — IHelixApiClient, DI, HelixException, CancellationToken (D1–D10)
+
+**By:** Dallas
+**Date:** 2026-02-11
+**Context:** Design review for US-12 (DI/testability) and US-13 (error handling)
+
+**Decisions:**
+- **D1:** `IHelixApiClient` interface in `HelixTool.Core` — 6 methods mirroring actual SDK usage, all with `CancellationToken`
+- **D2:** `HelixApiClient` wraps `new HelixApi()` — single instantiation point
+- **D3:** `HelixService` constructor-injects `IHelixApiClient`, no default constructor
+- **D4:** CLI constructs `HelixService(new HelixApiClient())` manually
+- **D5:** MCP `HelixMcpTools` becomes non-static with constructor injection; `IHelixApiClient` and `HelixService` as singletons
+- **D6:** `HelixException` — single exception type; catches `HttpRequestException` and `TaskCanceledException` only
+- **D7:** Input validation — `ArgumentException.ThrowIfNullOrWhiteSpace` guards; `ResolveJobId` throws on invalid input
+- **D8:** `CancellationToken cancellationToken = default` on all async methods, threaded through all awaits
+- **D9:** `IHelixApiClient` is the only mock boundary; Lambert uses NSubstitute
+- **D10:** `JsonSerializerOptions` hoisted to static field in `HelixMcpTools`
+
+**Key risks:** MCP SDK may not support instance tool methods; Helix SDK return types may be concrete (may need DTOs).

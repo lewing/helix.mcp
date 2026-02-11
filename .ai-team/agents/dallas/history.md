@@ -32,3 +32,6 @@
 - Running-job metadata needs per-data-type TTLs, not a blanket value. Job details and work item lists change state (15s). File listings update as artifacts appear (30s). Console logs change continuously (no cache).
 - Disk cache needs automatic eviction — manual-only `cache clear` is not a real policy. LRU with a 500MB cap plus 7-day expiry on startup covers it.
 - The "log grew since last fetch" problem cannot be solved with TTL-based caching. The only correct approach is to bypass the cache for running-job logs. Range-request optimization is a future concern that depends on Helix API support.
+
+📌 Team update (2026-02-11): Ran P0 Foundation design review. Decided: IHelixApiClient wrapper interface (6 methods), HelixService constructor injection, HelixException single exception type, CancellationToken on all async methods, ArgumentException guards, MCP tools become instance methods. Key risks: MCP SDK may not support instance tool methods (verify first), Helix SDK return types may be concrete (may need DTOs). See log/2026-02-11-design-review-p0-foundation.md for full decisions.
+📌 Team update (2026-02-11): Requirements backlog formalized — 30 user stories (US-1 through US-30) including 12 from ci-analysis skill review. P0 confirmed: US-12 + US-13. — decided by Ash

@@ -27,6 +27,13 @@
       "created_at": "2026-02-11T04:50:22Z",
       "legacy_named": false,
       "status": "active"
+    },
+    "ash": {
+      "persistent_name": "Ash",
+      "universe": "Alien",
+      "created_at": "2026-02-11T05:11:02Z",
+      "legacy_named": false,
+      "status": "active"
     }
   }
 }
