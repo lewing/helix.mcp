@@ -68,3 +68,18 @@
 - Build: 0 warnings, 0 errors.
 - US-22 (search-log) documented proactively — implementation being built in parallel by Ripley.
 
+📌 Session 2026-02-12-install-section-rework: Reworked README.md Installation section:
+1. **"Install as Global Tool (Recommended)"** — now the primary section, showing `dotnet tool install -g hlx` as first-class pattern. Noted not yet published to nuget.org. Added `dotnet tool install --local` option for repo-local tool manifests.
+2. **"Install from Local Build"** — moved the `dotnet pack` + `--add-source` flow into its own subsection.
+3. **"Build from Source"** — kept as-is, moved below install sections since most users want to install, not build.
+- Key file: `README.md` lines 15–53.
+- No code changes — documentation only.
+
+📌 Session 2026-02-13-dnx-zero-install: Updated README.md to add `dnx` zero-install pattern as the primary MCP server configuration approach:
+1. **Installation section** — Added "Run with dnx (no install needed)" subsection before "Install as Global Tool". Shows `dnx hlx mcp` as the simplest way to run the tool. Demoted "Install as Global Tool" heading (removed "Recommended" label).
+2. **MCP Configuration section** — Updated all three client configs (VS Code/GitHub Copilot, Claude Desktop, Claude Code/Cursor) to use `"command": "dnx", "args": ["hlx", "mcp"]` as the primary pattern. Added blockquote note to each: "If you've installed hlx as a global tool, you can use `hlx` directly instead of `dnx hlx`."
+3. **Authentication section** — Updated MCP client env config example to use `dnx` command with `["hlx", "mcp"]` args.
+4. **Requirements section** — No change needed; already says ".NET 10 SDK" which is required for `dnx`.
+- `dnx` is a .NET 10 feature that auto-downloads and runs NuGet tool packages without pre-installation — ideal for MCP server configs where the client launches the tool.
+- No code changes — documentation only.
+
