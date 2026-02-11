@@ -62,3 +62,11 @@
 - `TryResolveJobAndWorkItem` returns `bool` with `out string jobId, out string? workItem` — TryParse pattern, no exceptions on invalid input (unlike `ResolveJobId` which throws `ArgumentException`)
 - Known trailing segments (`console`, `files`, `details`) are stripped — they're not work item names
 - Test file: `HelixIdResolverUrlTests.cs` — separate from `HelixIdResolverTests.cs` to keep URL-specific tests isolated
+
+📌 Session 2025-07-18-us29-mcp-input: Added 4 McpInputFlexibilityTests (85 total). Tests cover US-29 MCP optional workItem: full URL extracts jobId+workItem for Files, full URL extracts for Logs, plain GUID without workItem returns error JSON, explicit workItem parameter takes precedence over URL extraction. Pattern: same NSubstitute mock setup as HelixMcpToolsTests — mock IHelixApiClient → HelixService → HelixMcpTools.
+- `HelixMcpTools.Files/Logs/Download` use `HelixIdResolver.TryResolveJobAndWorkItem` internally when `workItem` is null/empty — tests verify end-to-end through the MCP tool method, not the resolver directly.
+- `GetConsoleLogAsync` returns `Stream` — test uses `MemoryStream` with UTF-8 bytes, and the result from `Logs()` is the string content (not JSON).
+- When `workItem` is null and `jobId` is a plain GUID, `TryResolveJobAndWorkItem` returns true with `workItem: null` — the MCP tool then hits the `string.IsNullOrEmpty(workItem)` guard and returns error JSON.
+- NSubstitute `Received(1)` verification confirms the mock was called with the correct extracted/explicit parameters.
+
+📌 Team update (2026-02-12): Ripley removed Spectre.Console dependency and empty Commands/Display dirs (US-18). Added `--json` flag to status/files CLI commands (US-11). 81 tests unchanged by these changes. — decided by Ripley

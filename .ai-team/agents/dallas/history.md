@@ -50,3 +50,5 @@
 📌 Team update (2026-02-11): US-17 namespace cleanup complete — `HelixTool.Core` and `HelixTool.Mcp` now have distinct namespaces. `<RootNamespace>HelixTool</RootNamespace>` removed from Mcp csproj. All consumers need `using HelixTool.Core;`. — decided by Ripley
 📌 Team update (2026-02-11): US-24 + US-30 implemented — `hlx_files` returns grouped JSON (breaking change), `hlx_status` includes `jobId`/`helixUrl`, `DownloadFromUrlAsync` uses static HttpClient (not mockable via IHelixApiClient). — decided by Ripley
 📌 Team update (2026-02-11): US-29 MCP input flexibility — `TryResolveJobAndWorkItem` added to HelixIdResolver (Try-pattern, not exceptions). `workItem` now optional on `hlx_logs`, `hlx_files`, `hlx_download`. Both HelixMcpTools.cs copies updated. 81/81 tests pass. — decided by Ripley
+
+📌 Team update (2026-02-12): Ripley removed Spectre.Console dependency and empty Commands/Display dirs (US-18). Added `--json` flag to status/files commands (US-11), matching MCP tool JSON structure per D10 convention. Resolves architecture review items 1d (empty Display/) and 4c (raw console output). — decided by Ripley

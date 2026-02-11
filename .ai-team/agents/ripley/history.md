@@ -72,3 +72,9 @@
 - **Description attributes updated** — `jobId` now says "Helix job ID (GUID), Helix job URL, or full work item URL (which includes both job ID and work item name)". `workItem` now says "Work item name (optional if included in the jobId URL)".
 - **Known trailing segments** in URL parsing: `console`, `files`, `details` — these are skipped when looking for work item name. If Helix adds new trailing segments, the array in `TryResolveJobAndWorkItem` needs updating.
 - **Build and tests:** All 81 tests pass. Zero compilation errors.
+
+📌 Session US-18 + US-11 implementation:
+- **US-18 (Remove Spectre.Console):** Removed `<PackageReference Include="Spectre.Console" Version="0.54.1-alpha.0.31" />` from `HelixTool.csproj`. Deleted empty `src/HelixTool/Commands/` and `src/HelixTool/Display/` directories. The dependency was never used in any `.cs` file.
+- **US-11 (--json flag):** Added `bool json = false` parameter to `status` and `files` CLI commands in `Program.cs`. When `--json` is passed, output is serialized using `System.Text.Json` with the same structure as MCP tools. Added `private static readonly JsonSerializerOptions s_jsonOptions` to `Commands` class (matches `HelixMcpTools` pattern per D10). Added `using System.Text.Json;` to top of Program.cs. Status JSON uses `{ job, totalWorkItems, failedCount, passedCount, failed, passed }` structure. Files JSON uses `{ binlogs, testResults, other }` grouped structure matching US-30.
+- **Key files modified:** `src/HelixTool/HelixTool.csproj`, `src/HelixTool/Program.cs`.
+- **Build and tests:** All 81 tests pass. Zero compilation errors.

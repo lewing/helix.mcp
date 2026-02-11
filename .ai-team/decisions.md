@@ -488,3 +488,23 @@ If we want to optimize bandwidth in the future, we could add an `If-Modified-Sin
 - **Both HelixMcpTools copies updated in sync.**
 
 **Impact:** Non-breaking. 81/81 tests pass.
+
+### US-18 + US-11: Remove Spectre.Console + Add --json CLI flag
+
+**By:** Ripley
+**Date:** 2026-02-12
+**Requested by:** Larry Ewing
+
+**US-18 (Remove unused Spectre.Console):**
+- Removed `Spectre.Console` v0.54.1-alpha.0.31 from `HelixTool.csproj`. The package was never imported or used in any `.cs` file — CLI output uses raw `Console.ForegroundColor`/`Console.ResetColor`.
+- Deleted empty `Commands/` and `Display/` directories from `src/HelixTool/`.
+- If Spectre.Console rendering is desired in the future, re-add the dependency and create proper display classes.
+
+**US-11 (--json flag on status and files commands):**
+- `status` command: Added `bool json = false` parameter. When `--json`, serializes `JobSummary` to JSON matching MCP tool structure (`job`, `totalWorkItems`, `failedCount`, `passedCount`, `failed`, `passed`). Passed items included only when `--all --json` used together.
+- `files` command: Added `bool json = false` parameter. When `--json`, serializes file list to grouped JSON (`binlogs`, `testResults`, `other`) matching MCP's US-30 structure.
+- Shared `JsonSerializerOptions` via `private static readonly` field on `Commands` class (per D10 convention from `HelixMcpTools`).
+- `using System.Text.Json;` added to `Program.cs`.
+- JSON output goes to stdout; progress messages (`Fetching job details...`) still go to stderr.
+
+**Impact:** Non-breaking. All 81 tests pass. No new dependencies added. One dependency removed.
