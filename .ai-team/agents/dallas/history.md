@@ -37,3 +37,5 @@
 📌 Team update (2026-02-11): Requirements backlog formalized — 30 user stories (US-1 through US-30) including 12 from ci-analysis skill review. P0 confirmed: US-12 + US-13. — decided by Ash
 
 📌 Session 2026-02-11-p0-implementation: D1–D10 design implemented by Ripley, tested by Lambert. All design decisions validated. Key runtime findings: TaskCanceledException needs IsCancellationRequested check (not token equality), Helix SDK types needed adapter pattern, CAF v5 DI works via static ServiceProvider property. 38 tests pass.
+
+📌 Session 2026-02-11-p1-features: Ripley implemented US-1 and US-20. Kane completed documentation fixes. IWorkItemDetails expanded (State, MachineName, Started, Finished), WorkItemResult updated. FormatDuration duplicated in CLI/MCP — acceptable for now per Ripley's decision. llmstxt + README are now authoritative docs (Kane decision). 38/38 tests pass.

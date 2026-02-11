@@ -37,6 +37,8 @@
 
 📌 Session 2026-02-11-p0-implementation: US-12 (DI/testability) and US-13 (error handling) are DONE. 38 tests pass. P0 complete — P1 work can proceed.
 
+📌 Session 2026-02-11-p1-features: US-1 (positional args) and US-20 (rich status output) implemented by Ripley. Kane completed docs fixes (llmstxt, README, XML doc comments). 38/38 tests pass. US-1 and US-20 can be marked DONE in requirements.md.
+
 **How hlx fits into ci-analysis's workflow:**
 - ci-analysis is a 2262-line PowerShell script that orchestrates CI failure investigation across AzDO and Helix. It has THREE modes: PR analysis, Build ID analysis, and direct Helix job query.
 - The Helix job query mode (lines 1580-1713) is essentially what hlx replaces. Six functions (`Get-HelixJobDetails`, `Get-HelixWorkItems`, `Get-HelixWorkItemFiles`, `Get-HelixWorkItemDetails`, `Get-HelixConsoleLog`, `Find-WorkItemsWithBinlogs`) map directly to hlx commands.

@@ -28,5 +28,13 @@
 - **New file locations**: `IHelixApiClient.cs` (interface + DTOs), `HelixApiClient.cs` (SDK wrapper + adapters), `HelixException.cs` — all in `HelixTool.Core/`.
 - **HelixIdResolver now throws `ArgumentException` on invalid input** instead of silent pass-through. All callers go through `HelixService` which has its own `ArgumentException.ThrowIfNullOrWhiteSpace` guards first.
 - **DI pattern for CLI**: `ServiceCollection` → register singletons → `ConsoleApp.ServiceProvider = provider`. For MCP: `builder.Services.AddSingleton<>()` in `Program.cs`.
+- **ConsoleAppFramework v5 `[Argument]` attribute** works on positional parameters. Applied to `jobId` on all commands and `workItem` on logs/files/download. Named flags (e.g., `--pattern`, `--max-items`, `--all`) remain as regular parameters with defaults.
+- **Helix SDK `WorkItemDetails` has 19 properties** including `State` (string), `MachineName` (string), `Started` (DateTimeOffset?), `Finished` (DateTimeOffset?), `Duration` (string), `ExitCode` (int?), `FailureReason` (enum). We compute Duration as `TimeSpan?` from Started/Finished rather than using the SDK's pre-formatted string.
+- **`IWorkItemDetails` interface expanded** with State, MachineName, Started, Finished fields. `WorkItemResult` record now has 5 fields: `(string Name, int ExitCode, string? State, string? MachineName, TimeSpan? Duration)`.
+- **Duration formatting** uses human-readable format: "2m 34s", "45s", "1h 2m". Helper method `FormatDuration` defined in both CLI (`Commands` class, `internal static`) and MCP (`HelixMcpTools`, `private static`).
+- **Program.cs has UTF-8 BOM** (EF BB BF) — the `view` tool strips it but `edit` tool's old_str matching fails if it's not accounted for. Use PowerShell `[System.IO.File]::WriteAllText` with `UTF8Encoding($true)` to preserve it.
 
 📌 Session 2026-02-11-p0-implementation: P0 foundation complete. IHelixApiClient, HelixApiClient, HelixException created; HelixService refactored with constructor injection, CancellationToken, error handling, input validation; MCP tools converted to instance class with DI; both hosts updated. All 38 tests pass.
+
+📌 Session 2026-02-11-p1-features: Implemented US-1 (positional arguments on all 5 commands) and US-20 (rich status output with State, ExitCode, Duration, MachineName per work item). Updated CLI display and MCP JSON responses. FormatDuration duplicated in CLI/MCP — extract to Core if third consumer appears. 38/38 tests pass.
+📌 Team update (2026-02-12): Kane completed docs fixes — llmstxt indentation fixed, MCP tools added to llmstxt, README updated with architecture/install/known-issues, XML doc comments on all P0 public types. llmstxt + README are now authoritative docs — update both when adding commands/tools.

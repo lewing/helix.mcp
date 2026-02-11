@@ -29,6 +29,9 @@
 
 📌 Session 2026-02-11-p0-implementation: P0 foundation complete. 19 DI/error handling tests + 7 updated HelixIdResolver tests all passing (38 total). NSubstitute validated as mock framework. Proactive parallel test writing worked — tests compiled and passed on first run with Ripley's code.
 
+📌 Team update (2026-02-11-p1-features): Ripley implemented US-1 (positional args) and US-20 (rich status). `IWorkItemDetails` expanded with State, MachineName, Started, Finished. `WorkItemResult` record updated. Mock setup in `HelixServiceDITests` updated for new fields. 38/38 tests pass.
+📌 Team update (2026-02-12): Kane completed docs fixes — XML doc comments on all P0 public types (IHelixApiClient, HelixApiClient, HelixException, HelixService + all records). llmstxt + README now authoritative docs.
+
 📌 Team update (2026-02-11): Architecture review filed — P0: DI/testability + error handling needed. Tests will need updating when DI is added to HelixService. — decided by Dallas
 📌 Team update (2026-02-11): Documentation audit found 15 improvements needed across README, XML docs, llmstxt, MCP descriptions. — decided by Kane
 📌 Team update (2026-02-11): Caching strategy proposed — HelixService gets optional HelixCache parameter; tests will need to account for cache behavior. — decided by Dallas

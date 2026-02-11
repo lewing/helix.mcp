@@ -216,11 +216,11 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 
 **Decision:** This proposal is ready for discussion. No changes should be made until Larry confirms priorities. The P0 items (testability + error handling) should be tackled first as they're foundational — everything else is harder to do safely without tests.
 
-### 2025-07-17: Documentation improvement proposal — all public APIs need XML doc comments, llmstxt needs MCP coverage, README needs install/troubleshooting sections
+### 2025-07-17: Documentation improvement proposal *(superseded by 2026-02-12 implementation)*
 
 **By:** Kane
-**What:** After a full audit of README.md, XML doc comments, llmstxt output, and MCP tool descriptions, I've identified 15 specific improvements needed across these areas. The biggest gaps are: (1) llmstxt command doesn't document MCP tools at all, (2) public records in HelixService lack XML doc comments, (3) README has no installation instructions despite the tool being packaged as a dotnet tool, (4) no LICENSE file exists despite MIT claim in README, (5) llmstxt output has a whitespace indentation bug from the raw string literal.
-**Why:** LLM agents using the `llmstxt` command get an incomplete picture of the tool's capabilities (no MCP info). Developers discovering the tool can't install it (no `dotnet tool install` instructions). Missing XML doc comments on public records hurt IntelliSense and generated API docs. These are all low-effort, high-impact fixes.
+**What:** Audit identified 15 documentation improvements needed: llmstxt missing MCP tools, public records missing XML doc comments, README missing install instructions, no LICENSE file, llmstxt indentation bug.
+**Status:** Items 1–4 implemented in session 2026-02-11-p1-features. Remaining gaps: HelixIdResolver XML docs, HelixMcpTools class doc, LICENSE file, `dotnet tool install` instructions.
 
 ### 2025-07-14: MatchesPattern exposed via InternalsVisibleTo
 **By:** Lambert
@@ -349,3 +349,26 @@ If we want to optimize bandwidth in the future, we could add an `If-Modified-Sin
 - **NSubstitute 5.* chosen as mocking framework** per Dallas's D9 recommendation. Simpler API than Moq (no `Setup(...).Returns(...)` ceremony, no `.Object` property). `.ThrowsAsync()` from `NSubstitute.ExceptionExtensions` maps cleanly to D6 error handling contract.
 - **HelixIdResolver invalid-input tests updated for D7 breaking change:** Replaced 5 pass-through tests with `ArgumentException` throw assertions. Happy-path GUID/URL extraction tests unchanged.
 - **Proactive parallel test writing validated:** 19 tests written against design spec before implementation existed. All compiled and passed once Ripley's code landed.
+
+### 2026-02-11: US-1 & US-20 Implementation — Positional Args + Rich Status Output
+
+**By:** Ripley
+**Date:** 2025-07-18
+
+- **US-1 (Positional Arguments):** Applied `[Argument]` attribute to `jobId` on all 5 commands and `workItem` on logs/files/download. Named `--job-id` flag still works. Updated `llmstxt` to reflect positional syntax.
+- **US-20 (Rich Status Output):** Expanded `IWorkItemDetails` with `State`, `MachineName`, `Started`, `Finished`. `WorkItemResult` now includes `State`, `MachineName`, `Duration`. CLI shows `[FAIL] Name (exit code 1, 2m 34s, machine: helix-win-01)`. MCP JSON includes per-work-item `state`, `machineName`, `duration`.
+- **FormatDuration duplication:** Helper is duplicated between CLI and MCP. Acceptable for two consumers; extract to Core if a third appears.
+- **Test impact:** Updated mock setup for new `IWorkItemDetails` fields. 38/38 tests pass.
+
+### 2026-02-12: Documentation fixes — llmstxt, README, XML doc comments
+
+**By:** Kane
+**Date:** 2026-02-12
+**Requested by:** Larry Ewing
+
+- **llmstxt indentation fix** — Raw string literal now uses `var text = """...""";` pattern with proper indentation stripping.
+- **MCP tools added to llmstxt** — All five MCP tools documented with JSON return shapes, parameters, and CLI-vs-MCP guidance.
+- **README.md updated** — Added Architecture section, Installation section (build-from-source + NuGet feed), Known Issues section (dnceng#6072 workaround, US-28).
+- **XML doc comments** — Added to `IHelixApiClient` (all 6 methods), `HelixApiClient`, `HelixException`, `HelixService` (constructor, all public methods, all 4 public record types).
+- **Decision for team:** The llmstxt content and README now serve as the authoritative docs for the public API surface. When new commands or MCP tools are added, both must be updated together.
+- **Remaining gaps:** `HelixIdResolver` XML docs, `HelixMcpTools` class-level doc comment, LICENSE file, `dotnet tool install` instructions.

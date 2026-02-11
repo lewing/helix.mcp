@@ -27,3 +27,13 @@
 📌 Team update (2026-02-11): P0 Foundation design decisions D1–D10 merged — DI refactoring and error handling. Documentation changes should wait until P0 implementation lands. — decided by Dallas
 
 📌 Session 2026-02-11-p0-implementation: P0 implementation landed. IHelixApiClient, HelixException, refactored HelixService with DI — public API surface changed. XML doc comments and README updates can now proceed without rework risk.
+
+📌 Session 2026-02-12-docs-fixes: Completed all four documentation tasks:
+1. Fixed llmstxt indentation bug — raw string literal now uses `var text = """...""";` pattern with proper indentation stripping. Output verified flush-left.
+2. Added MCP tool docs to llmstxt — all five tools (hlx_status, hlx_logs, hlx_files, hlx_download, hlx_find_binlogs) with return JSON shapes, parameters, and CLI-vs-MCP guidance.
+3. Updated README.md — added Architecture section (Core/CLI/MCP split), Installation section (build-from-source + NuGet feed requirement for dotnet-eng), Known Issues section documenting the ListFiles workaround for dnceng#6072 (US-28).
+4. Added XML doc comments to IHelixApiClient (all 6 methods + dnceng#6072 note on ListWorkItemFilesAsync), HelixApiClient (class + `<inheritdoc />` on all methods), HelixException (class + constructor), HelixService (constructor, all public methods, all public records: WorkItemResult, JobSummary, FileEntry, BinlogResult).
+- Build: 0 warnings, 0 errors. Tests: 38/38 pass.
+- Remaining docs gaps: HelixIdResolver class/method XML docs, HelixMcpTools class-level doc comment, LICENSE file missing.
+
+📌 Team update (2026-02-11): Ripley implemented US-1 (positional args on all commands) and US-20 (rich status output with State, ExitCode, Duration, MachineName). `IWorkItemDetails` interface expanded, `WorkItemResult` record updated. FormatDuration duplicated in CLI/MCP. 38/38 tests pass.
