@@ -97,3 +97,11 @@
 
 📌 Team update (2025-02-12): NuGet Trusted Publishing workflow added — publish via git tag v*
 
+📌 Session 2025-02-13-readme-consolidation: Consolidated README.md MCP configuration section and added `--yes` flag:
+1. **Added `--yes` to all `dnx` args** — MCP server configs now use `["lewing.helix.mcp", "--yes", "mcp"]`. The `--yes` flag prevents `dnx` from prompting for confirmation, which is essential for MCP server definitions where the client launches the process non-interactively. Applied to main MCP config example and Authentication section example.
+2. **Consolidated duplicate MCP config sections** — Replaced three nearly-identical JSON blocks (VS Code, Claude Desktop, Claude Code/Cursor) with ONE canonical example (VS Code `servers` format) plus a table of config file locations per client. Added note explaining the `servers` vs `mcpServers` key difference.
+3. **Removed stale "not yet published" notes** — Package v0.1.0 is live on nuget.org. Removed the `dnx` availability warning and the "Not yet published to nuget.org" note from the Install as Global Tool section.
+4. **HTTP alternative kept to one example** — Single HTTP config block instead of repeated per client.
+- Key pattern: When documenting configs that differ only by file path and top-level key name, use ONE example + a table of locations rather than duplicating the full JSON block.
+- No code changes — documentation only.
+

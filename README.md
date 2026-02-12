@@ -24,15 +24,11 @@ dnx lewing.helix.mcp mcp
 
 This is the recommended approach for MCP server configuration (see below).
 
-> **Note:** `dnx` requires the package to be available on a NuGet feed. Until `lewing.helix.mcp` is published to nuget.org, use a local build or global tool install instead (see below).
-
 ### Install as Global Tool
 
 ```bash
 dotnet tool install -g lewing.helix.mcp
 ```
-
-> **Not yet published to nuget.org.** Until then, install from a local build (see below) or from an internal feed if available.
 
 For repo-local installation via a [tool manifest](https://learn.microsoft.com/dotnet/core/tools/local-tools-how-to-use):
 
@@ -128,9 +124,7 @@ dotnet run --project src/HelixTool.Mcp --urls http://localhost:3001
 
 ## MCP Configuration
 
-### VS Code / GitHub Copilot (Recommended: stdio)
-
-Add to `.vscode/mcp.json`:
+Add the following to your MCP client config. The `--yes` flag ensures `dnx` doesn't prompt for confirmation:
 
 ```json
 {
@@ -138,67 +132,32 @@ Add to `.vscode/mcp.json`:
     "hlx": {
       "type": "stdio",
       "command": "dnx",
-      "args": ["lewing.helix.mcp", "mcp"]
+      "args": ["lewing.helix.mcp", "--yes"]
     }
   }
 }
 ```
 
-> If you've installed `lewing.helix.mcp` as a global tool, you can use `hlx` directly instead of `dnx lewing.helix.mcp`.
+> If you've installed `lewing.helix.mcp` as a global tool, you can use `"command": "hlx"` with `"args": []` instead of `dnx`.
 
-HTTP alternative (for remote/shared servers):
+### Config file locations
+
+| Client | Config file | Top-level key |
+|--------|------------|---------------|
+| **VS Code / GitHub Copilot** | `.vscode/mcp.json` | `servers` |
+| **Claude Desktop** (macOS) | `~/Library/Application Support/Claude/claude_desktop_config.json` | `mcpServers` |
+| **Claude Desktop** (Windows) | `%APPDATA%\Claude\claude_desktop_config.json` | `mcpServers` |
+| **Claude Code / Cursor** | `.cursor/mcp.json` | `mcpServers` |
+
+> **Note:** VS Code uses the `servers` key (shown above). Claude Desktop, Claude Code, and Cursor use `mcpServers` instead — the rest of the JSON is identical.
+
+### HTTP alternative (for remote/shared servers)
 
 ```json
 {
   "servers": {
     "hlx": {
       "type": "http",
-      "url": "http://localhost:3001"
-    }
-  }
-}
-```
-
-### Claude Desktop
-
-Add to your Claude Desktop config:
-
-```json
-{
-  "mcpServers": {
-    "hlx": {
-      "command": "dnx",
-      "args": ["lewing.helix.mcp", "mcp"]
-    }
-  }
-}
-```
-
-> If you've installed `lewing.helix.mcp` as a global tool, you can use `hlx` directly instead of `dnx lewing.helix.mcp`.
-
-### Claude Code / Cursor
-
-Add to your MCP config:
-
-```json
-{
-  "mcpServers": {
-    "hlx": {
-      "command": "dnx",
-      "args": ["lewing.helix.mcp", "mcp"]
-    }
-  }
-}
-```
-
-> If you've installed `lewing.helix.mcp` as a global tool, you can use `hlx` directly instead of `dnx lewing.helix.mcp`.
-
-HTTP alternative:
-
-```json
-{
-  "mcpServers": {
-    "hlx": {
       "url": "http://localhost:3001"
     }
   }
@@ -258,7 +217,7 @@ For MCP clients, pass the token in the server config:
     "hlx": {
       "type": "stdio",
       "command": "dnx",
-      "args": ["lewing.helix.mcp", "mcp"],
+      "args": ["lewing.helix.mcp", "--yes"],
       "env": {
         "HELIX_ACCESS_TOKEN": "your-token-here"
       }

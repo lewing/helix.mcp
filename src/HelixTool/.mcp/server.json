@@ -10,13 +10,7 @@
       "registryType": "nuget",
       "identifier": "lewing.helix.mcp",
       "version": "0.1.0",
-      "package_arguments": [
-        {
-          "type": "positional",
-          "value": "mcp",
-          "value_hint": "mcp"
-        }
-      ],
+      "package_arguments": [],
       "environment_variables": []
     }
   ],
