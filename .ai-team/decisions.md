@@ -517,28 +517,9 @@ If we want to optimize bandwidth in the future, we could add an `If-Modified-Sin
 **Date:** 2026-02-12
 **Status:** Implemented
 
-## US-10: Work Item Detail
+**US-10 (Work Item Detail):** New `GetWorkItemDetailAsync` method in `HelixService` returns detailed info about a single work item — exit code, state, machine, duration, console log URL, and file list with type tags. Design: parallel fetch via `Task.WhenAll`, `WorkItemDetail` nested record, CLI `hlx work-item <jobId> <workItem> [--json]`, MCP `hlx_work_item` with US-29 URL resolution, standard error handling.
 
-### What
-New `GetWorkItemDetailAsync` method in `HelixService` returns detailed info about a single work item — exit code, state, machine, duration, console log URL, and file list with type tags.
-
-### Design Choices
-- **Parallel fetch:** Details and files are fetched concurrently via `Task.WhenAll` since they're independent API calls.
-- **Record type:** `WorkItemDetail` is a new nested record in `HelixService`, reusing existing `FileEntry` for file list.
-- **CLI command:** `hlx work-item <jobId> <workItem> [--json]` — human-readable by default, structured JSON with `--json`.
-- **MCP tool:** `hlx_work_item` uses US-29 `TryResolveJobAndWorkItem` pattern for optional `workItem` parameter.
-- **Error handling:** Standard pattern (401/403, 404, general, timeout) consistent with all other methods.
-
-## US-23: Multi-Job Batch Status
-
-### What
-New `GetBatchStatusAsync` method queries status for multiple jobs in parallel with `SemaphoreSlim(5)` throttling. Returns `BatchJobSummary` with per-job results and aggregate totals.
-
-### Design Choices
-- **Simple error propagation:** If any job throws, the exception bubbles up (no per-job error capture). This is intentional per spec — keep it simple for now.
-- **Throttling:** `SemaphoreSlim(5)` limits concurrent Helix API calls to avoid overloading the API.
-- **CLI output:** One summary line per job, then overall totals. No `--json` flag (can be added later if needed).
-- **MCP tool:** Accepts comma-separated job IDs as a single string, splits and passes to service.
+**US-23 (Batch Status):** New `GetBatchStatusAsync` method queries status for multiple jobs in parallel with `SemaphoreSlim(5)` throttling. Returns `BatchJobSummary` with per-job results and aggregate totals. Design: simple error propagation (exceptions bubble up), CLI one-line-per-job summary, MCP accepts comma-separated job IDs.
 
 ## Files Changed
 - `src/HelixTool.Core/HelixService.cs` — `WorkItemDetail`, `GetWorkItemDetailAsync`, `BatchJobSummary`, `GetBatchStatusAsync`
@@ -636,4 +617,21 @@ Both copies contained identical logic and had to be kept in sync manually. Conso
 **Key insight:** `WithToolsFromAssembly()` without arguments only scans the calling assembly. Since `HelixMcpTools` moved to `HelixTool.Core.dll`, both consumers must use `WithToolsFromAssembly(typeof(HelixMcpTools).Assembly)`.
 
 **Verification:** `dotnet build` — 0 errors, 0 warnings. `dotnet test` — 126/126 passed.
+
+
+
+### 2025-07-21: CI workflow added at .github/workflows/ci.yml
+**By:** Ripley
+**What:** Created a GitHub Actions CI workflow that runs on push/PR to main/master. Matrix: ubuntu-latest + windows-latest. Uses .NET 10 preview SDK. Steps: checkout, restore, build, test. NuGet restore uses the repo-root nuget.config which already includes the dotnet-eng Azure Artifacts feed.
+**Why:** The project had no CI. This gives us build+test validation on every PR and push to main branches, on both Linux and Windows, matching the cross-platform nature of the tool.
+
+### 2026-02-11: McpServer package type support
+**By:** Ripley
+**What:** Added PackageType McpServer and .mcp/server.json to HelixTool.csproj for dnx zero-install support
+**Why:** Enables `dnx hlx mcp` pattern — MCP clients can reference hlx without requiring pre-installation
+
+### 2025-07-23: Rename NuGet package from `hlx` to `lewing.helix.mcp`
+**By:** Ripley
+**What:** Changed PackageId from `hlx` to `lewing.helix.mcp` in HelixTool.csproj. Updated `.mcp/server.json` to use Chet's 2025-10-17 schema format with `registryType`/`identifier` fields, added `title`, `version`, `websiteUrl`. Added PackageTags, PackageReadmeFile, PublishRepositoryUrl, and Content item to pack README.md. ToolCommandName (`hlx`) is unchanged.
+**Why:** Follows the established `{owner}.{tool}.mcp` naming convention (same as `baronfel.binlog.mcp`). The old bare `hlx` name was too generic for a public NuGet package and didn't convey ownership or purpose. The server.json update aligns with the latest MCP server registry schema that tools like VS Code and Copilot CLI consume for zero-install discovery.
 

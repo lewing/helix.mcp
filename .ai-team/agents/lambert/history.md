@@ -61,3 +61,6 @@
 
 📌 Team update (2026-02-11): Wrote 14 tests for US-22 search-log in SearchLogTests.cs. Test count 112 → 126. — decided by Lambert
 📌 Team update (2026-02-11): HelixMcpTools.cs consolidated into HelixTool.Core — test using directives changed from HelixTool.Mcp to HelixTool.Core, Mcp ProjectReference removed from HelixTool.Tests.csproj. — decided by Ripley
+
+📌 Team update (2025-02-12): PackageId renamed to lewing.helix.mcp — decided by Ripley/Larry
+

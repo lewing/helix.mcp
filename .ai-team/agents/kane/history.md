@@ -83,3 +83,14 @@
 - `dnx` is a .NET 10 feature that auto-downloads and runs NuGet tool packages without pre-installation — ideal for MCP server configs where the client launches the tool.
 - No code changes — documentation only.
 
+📌 Session 2026-02-13-package-rename: Updated README.md for NuGet package rename from `hlx` to `lewing.helix.mcp`:
+1. **Installation section** — All `dotnet tool install` and `dnx` commands now reference `lewing.helix.mcp` as the package name. Covers "Run with dnx", "Install as Global Tool" (global + local), and "Install from Local Build" subsections.
+2. **MCP Configuration section** — All three client configs (VS Code/GitHub Copilot, Claude Desktop, Claude Code/Cursor) updated: `"args": ["lewing.helix.mcp", "mcp"]` in dnx examples. Blockquote notes updated to reference the new package name.
+3. **Authentication section** — MCP client env config example updated to `["lewing.helix.mcp", "mcp"]`.
+- The CLI command remains `hlx` — ToolCommandName is unchanged. JSON server alias keys (`"hlx"`) and all CLI usage examples (`hlx mcp`, `hlx status`, etc.) are intentionally preserved.
+- Key distinction: **package name** = `lewing.helix.mcp` (what you `dotnet tool install` or `dnx`), **command name** = `hlx` (what you type to run it).
+- No code changes — documentation only.
+
+
+📌 Team update (2025-02-12): PackageId renamed to lewing.helix.mcp — decided by Ripley/Larry
+

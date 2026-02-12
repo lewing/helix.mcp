@@ -51,3 +51,8 @@
 📌 Team update (2026-02-11): Consolidated HelixMcpTools.cs from 2 copies (HelixTool + HelixTool.Mcp) into 1 in HelixTool.Core. Updated tool discovery to typeof(HelixMcpTools).Assembly. Removed Mcp ProjectReference from tests. Build clean, 126/126 tests passed. — decided by Ripley
 - Added `<PackageType>McpServer</PackageType>` to HelixTool.csproj and created `.mcp/server.json` for dnx zero-install MCP server support. The server.json describes the package as `hlx` on nuget with `mcp` positional argument. The json file is packed into the nupkg at `/.mcp/` via a `<None>` item with `Pack=true`.
 - Created `.github/workflows/ci.yml` — GitHub Actions CI workflow. Triggers on push/PR to main/master. Matrix builds on ubuntu-latest and windows-latest. Uses .NET 10 preview SDK via `actions/setup-dotnet@v4`. Steps: checkout → restore → build → test. The repo-root `nuget.config` (with dotnet-eng feed) is picked up automatically by `dotnet restore`.
+- Renamed NuGet PackageId from `hlx` to `lewing.helix.mcp` following baronfel's `baronfel.binlog.mcp` naming convention. Added PackageTags, PackageReadmeFile, PublishRepositoryUrl. Added Content item to pack README.md into nupkg. ToolCommandName stays `hlx` — the CLI command is unchanged.
+- Updated `.mcp/server.json` to Chet's 2025-10-17 schema format: new schema URL, `registryType`/`identifier` fields replacing `registry_name`/`name`, added `title`, `version`, and `websiteUrl` top-level fields. Dropped `version_detail` block.
+
+📌 Team update (2025-02-12): PackageId renamed to lewing.helix.mcp — decided by Ripley/Larry
+
