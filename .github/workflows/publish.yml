@@ -1,0 +1,46 @@
+name: Publish Tool
+
+permissions:
+  id-token: write
+  contents: write
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  pack-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: tag_name
+        run: echo "current_version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Pack
+        run: dotnet pack src/HelixTool -c Release -o src/HelixTool/nupkg
+
+      - name: Create Release
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: src/HelixTool/nupkg/*.nupkg
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: "Release ${{ github.ref_name }}"
+
+      - name: NuGet login
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Push to NuGet
+        run: dotnet nuget push "src/HelixTool/nupkg/*.nupkg" --source https://api.nuget.org/v3/index.json --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
