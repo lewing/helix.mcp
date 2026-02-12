@@ -12,14 +12,18 @@
   </PropertyGroup>
 
   <PropertyGroup Label="Package Metadata">
-    <PackageId>hlx</PackageId>
+    <PackageId>lewing.helix.mcp</PackageId>
     <Description>CLI tool and MCP server for investigating .NET Helix test results</Description>
     <Authors>Larry Ewing</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>helix;mcp;dotnet;ci;testing</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
   </PropertyGroup>
 
   <ItemGroup>
     <None Include=".mcp\server.json" Pack="true" PackagePath="/.mcp/" />
+    <Content Include="..\..\README.md" Pack="true" PackagePath="/README.md" />
   </ItemGroup>
 
   <ItemGroup>

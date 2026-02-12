@@ -19,17 +19,17 @@ Both the CLI and MCP server depend on Core but not on each other.
 `dnx` (new in .NET 10) auto-downloads and runs NuGet tool packages — no install step required:
 
 ```bash
-dnx hlx mcp
+dnx lewing.helix.mcp mcp
 ```
 
 This is the recommended approach for MCP server configuration (see below).
 
-> **Note:** `dnx` requires the package to be available on a NuGet feed. Until `hlx` is published to nuget.org, use a local build or global tool install instead (see below).
+> **Note:** `dnx` requires the package to be available on a NuGet feed. Until `lewing.helix.mcp` is published to nuget.org, use a local build or global tool install instead (see below).
 
 ### Install as Global Tool
 
 ```bash
-dotnet tool install -g hlx
+dotnet tool install -g lewing.helix.mcp
 ```
 
 > **Not yet published to nuget.org.** Until then, install from a local build (see below) or from an internal feed if available.
@@ -38,14 +38,14 @@ For repo-local installation via a [tool manifest](https://learn.microsoft.com/do
 
 ```bash
 dotnet new tool-manifest   # if .config/dotnet-tools.json doesn't exist
-dotnet tool install --local hlx
+dotnet tool install --local lewing.helix.mcp
 ```
 
 ### Install from Local Build
 
 ```bash
 dotnet pack src/HelixTool
-dotnet tool install -g --add-source src/HelixTool/nupkg hlx
+dotnet tool install -g --add-source src/HelixTool/nupkg lewing.helix.mcp
 ```
 
 After installation, `hlx` is available globally.
@@ -138,13 +138,13 @@ Add to `.vscode/mcp.json`:
     "hlx": {
       "type": "stdio",
       "command": "dnx",
-      "args": ["hlx", "mcp"]
+      "args": ["lewing.helix.mcp", "mcp"]
     }
   }
 }
 ```
 
-> If you've installed hlx as a global tool, you can use `hlx` directly instead of `dnx hlx`.
+> If you've installed `lewing.helix.mcp` as a global tool, you can use `hlx` directly instead of `dnx lewing.helix.mcp`.
 
 HTTP alternative (for remote/shared servers):
 
@@ -168,13 +168,13 @@ Add to your Claude Desktop config:
   "mcpServers": {
     "hlx": {
       "command": "dnx",
-      "args": ["hlx", "mcp"]
+      "args": ["lewing.helix.mcp", "mcp"]
     }
   }
 }
 ```
 
-> If you've installed hlx as a global tool, you can use `hlx` directly instead of `dnx hlx`.
+> If you've installed `lewing.helix.mcp` as a global tool, you can use `hlx` directly instead of `dnx lewing.helix.mcp`.
 
 ### Claude Code / Cursor
 
@@ -185,13 +185,13 @@ Add to your MCP config:
   "mcpServers": {
     "hlx": {
       "command": "dnx",
-      "args": ["hlx", "mcp"]
+      "args": ["lewing.helix.mcp", "mcp"]
     }
   }
 }
 ```
 
-> If you've installed hlx as a global tool, you can use `hlx` directly instead of `dnx hlx`.
+> If you've installed `lewing.helix.mcp` as a global tool, you can use `hlx` directly instead of `dnx lewing.helix.mcp`.
 
 HTTP alternative:
 
@@ -258,7 +258,7 @@ For MCP clients, pass the token in the server config:
     "hlx": {
       "type": "stdio",
       "command": "dnx",
-      "args": ["hlx", "mcp"],
+      "args": ["lewing.helix.mcp", "mcp"],
       "env": {
         "HELIX_ACCESS_TOKEN": "your-token-here"
       }
