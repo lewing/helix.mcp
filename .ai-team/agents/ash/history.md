@@ -90,3 +90,6 @@ After reading the full script, I can now quantify what hlx replaces more precise
 
 📌 Team update (2025-02-12): PackageId renamed to lewing.helix.mcp — decided by Ripley/Larry
 
+
+📌 Team update (2025-02-12): NuGet Trusted Publishing workflow added — publish via git tag v*
+

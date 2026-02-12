@@ -94,3 +94,6 @@
 
 📌 Team update (2025-02-12): PackageId renamed to lewing.helix.mcp — decided by Ripley/Larry
 
+
+📌 Team update (2025-02-12): NuGet Trusted Publishing workflow added — publish via git tag v*
+

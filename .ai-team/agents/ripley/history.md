@@ -56,3 +56,10 @@
 
 📌 Team update (2025-02-12): PackageId renamed to lewing.helix.mcp — decided by Ripley/Larry
 
+- Created `.github/workflows/publish.yml` — NuGet Trusted Publishing workflow. Triggers on `v*` tag push. Uses OIDC via `NuGet/login@v1` (no API key secret needed — just `NUGET_USER`). Packs with `dotnet pack src/HelixTool -c Release -o src/HelixTool/nupkg`, pushes with glob `*.nupkg`. Creates GitHub Release via `ncipollo/release-action@v1` with nupkg attached. Uses `$GITHUB_OUTPUT` (not deprecated `set-output`). Matched CI's .NET 10 preview SDK config. Pattern adapted from baronfel/mcp-binlog-tool release.yml.
+
+📌 Team update (2025-02-12): Publish workflow created at .github/workflows/publish.yml — NuGet Trusted Publishing via OIDC — decided by Ripley
+
+
+📌 Team update (2025-02-12): NuGet Trusted Publishing workflow added — publish via git tag v*
+
