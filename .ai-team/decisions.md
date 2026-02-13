@@ -1107,3 +1107,42 @@ Ripley should target the interfaces first so Lambert can write tests in parallel
 **Files modified:**
 - `src/HelixTool.Core/HelixTool.Core.csproj` (added Microsoft.Data.Sqlite)
 - `src/HelixTool/Program.cs` (DI, cache commands, llmstxt update)
+
+---
+
+### 2026-02-13: Cache Auth Isolation (Security Fix)
+**By:** Ripley
+**Requested by:** Larry Ewing
+
+Separate SQLite databases and artifact directories per auth context, derived from HELIX_ACCESS_TOKEN:
+- No token → `{base}/public/cache.db` + `{base}/public/artifacts/`
+- Token present → `{base}/cache-{hash}/cache.db` + `{base}/cache-{hash}/artifacts/`
+
+Where `{hash}` = first 8 hex chars of SHA256 of the token (lowercase, deterministic).
+
+**Changes:**
+- `CacheOptions.cs`: Added `AuthTokenHash` property, `GetBaseCacheRoot()` method, `ComputeTokenHash()` static helper. `GetEffectiveCacheRoot()` now subdivides by auth context.
+- `Program.cs`: Both DI containers pass `CacheOptions.ComputeTokenHash(HELIX_ACCESS_TOKEN)` as `AuthTokenHash`.
+- `cache clear` wipes ALL auth context subdirectories. `cache status` shows current auth context info.
+- `SqliteCacheStore` unchanged — already uses `GetEffectiveCacheRoot()`.
+- Same token always produces the same hash → cache reuse across restarts. Different tokens → different caches.
+
+---
+
+### 2026-02-13: Path Traversal Hardening for Cache and Download Paths (Security Fix)
+**By:** Ripley
+**Requested by:** Larry Ewing
+
+Defense-in-depth against path traversal attacks via crafted inputs (job IDs, work item names, file names).
+
+**New: `Cache/CacheSecurity.cs`** — Static helper class with three methods:
+- `ValidatePathWithinRoot(path, root)` — canonical path traversal defense via `Path.GetFullPath` + prefix check with directory separator.
+- `SanitizePathSegment(segment)` — strips `..` and replaces `/` and `\` with `_`.
+- `SanitizeCacheKeySegment(value)` — same sanitization for `:`-delimited cache key components.
+
+**Hardened sites:**
+- `SqliteCacheStore`: Get/Set/Delete artifact operations validate paths within artifacts dir.
+- `CachingHelixApiClient`: All 6 cache key construction sites sanitize user inputs.
+- `HelixService`: 3 download methods (DownloadFilesAsync, DownloadFromUrlAsync, DownloadConsoleLogAsync) sanitize file names and validate output paths.
+
+All 182 existing tests pass unchanged — sanitization is transparent for well-formed inputs.

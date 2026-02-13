@@ -70,3 +70,5 @@
 
 📌 Session 2026-02-12-cache-implementation: Cache implementation complete. Ripley implemented R-CACHE-1 through R-CACHE-11 (5 new files in Cache/, DI wiring, CLI commands). Lambert wrote 56 tests (L-CACHE-1 through L-CACHE-10) across 3 new test files. All 182 tests pass, build clean. Committed as d62d0d1. Previous cache strategy decisions (2025-07-14, 2025-07-18) marked superseded in decisions.md — replaced by 2026-02-12 refined requirements (SQLite-backed, 1GB cap, XDG paths).
 
+📌 Session 2026-02-12-cache-security: Two security fixes applied to cache layer. (1) Auth context isolation — separate SQLite DB + artifacts per HELIX_ACCESS_TOKEN hash (SHA256, first 8 hex). No token → `{base}/public/`, token → `{base}/cache-{hash}/`. (2) Path traversal hardening — new `CacheSecurity.cs` with ValidatePathWithinRoot/SanitizePathSegment/SanitizeCacheKeySegment, applied to SqliteCacheStore, CachingHelixApiClient, and HelixService download methods. Lambert added 24 security tests (206 total). Committed as f8b49a3. — decided by Ripley
+

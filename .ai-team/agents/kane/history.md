@@ -47,3 +47,5 @@
 
 📌 Session 2026-02-12-cache-implementation: SQLite-backed caching layer landed (d62d0d1). New CLI commands: `cache clear`, `cache status`. New env var: `HLX_CACHE_MAX_SIZE_MB`. llmstxt already updated by Ripley. README may need cache documentation section added.
 
+📌 Session 2026-02-12-cache-security: Security hardening on cache layer (f8b49a3). (1) Auth context isolation — separate cache DBs per HELIX_ACCESS_TOKEN hash. (2) Path traversal hardening — new CacheSecurity.cs. llmstxt updated by Ripley with auth isolation docs. README may need security/auth context section update. — decided by Ripley
+
