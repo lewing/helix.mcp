@@ -59,5 +59,6 @@ builder.Services
     .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly);
 
 var app = builder.Build();
+app.UseApiKeyAuthIfConfigured();
 app.MapMcp();
 app.Run();
