@@ -12,6 +12,8 @@ The project is split into three layers:
 
 Both the CLI and MCP server depend on Core but not on each other.
 
+> **ci-analysis replacement:** hlx provides 100% coverage of the Helix API surface used by the `ci-analysis` skill's ~150 lines of PowerShell, with structured caching, failure categorization, and MCP tool support on top.
+
 ## Installation
 
 ### Run with dnx (no install needed)
@@ -195,10 +197,19 @@ src/
 │   ├── HelixIdResolver.cs  # GUID and URL parsing
 │   ├── IHelixApiClient.cs  # Helix API abstraction
 │   ├── HelixApiClient.cs   # Helix API implementation
-│   └── HelixException.cs   # Typed exceptions
+│   ├── IHelixApiClientFactory.cs  # Per-request client creation (HTTP multi-auth)
+│   ├── IHelixTokenAccessor.cs     # Token resolution abstraction
+│   ├── HelixException.cs   # Typed exceptions
+│   └── Cache/              # SQLite-backed response caching
+│       ├── SqliteCacheStore.cs       # Cache storage implementation
+│       ├── CachingHelixApiClient.cs  # Transparent caching wrapper
+│       ├── CacheSecurity.cs          # Path traversal protection
+│       ├── CacheOptions.cs           # TTL, size, auth isolation config
+│       └── ICacheStore.cs            # Cache store abstraction
 ├── HelixTool.Mcp/          # MCP HTTP server
-│   └── Program.cs           # ASP.NET Core + ModelContextProtocol
-└── HelixTool.Tests/        # Unit tests
+│   ├── Program.cs                         # ASP.NET Core + ModelContextProtocol
+│   └── HttpContextHelixTokenAccessor.cs   # Per-request token from Authorization header
+└── HelixTool.Tests/        # Unit tests (298 tests)
 ```
 
 ## Authentication
@@ -230,7 +241,40 @@ For MCP clients, pass the token in the server config:
 }
 ```
 
+### HTTP MCP server (per-request auth)
+
+The HTTP MCP server (`HelixTool.Mcp`) supports per-request authentication via the `Authorization` header:
+
+```
+Authorization: Bearer <token>
+Authorization: token <token>
+```
+
+Each authenticated client gets isolated cache storage. If no header is present, the server falls back to the `HELIX_ACCESS_TOKEN` environment variable. This enables shared/remote MCP server deployments where multiple users connect with different credentials.
+
 If a job requires authentication and no token is set, hlx will show an actionable error message.
+
+## Caching
+
+Helix API responses are automatically cached to a local SQLite database — no configuration needed.
+
+| Setting | Default | Env var |
+|---------|---------|---------|
+| Max cache size | 1 GB | `HLX_CACHE_MAX_SIZE_MB` (set to `0` to disable) |
+| Cache location (Windows) | `%LOCALAPPDATA%\hlx\` | — |
+| Cache location (Linux/macOS) | `$XDG_CACHE_HOME/hlx/` | — |
+| Artifact expiry | 7 days without access | — |
+
+**TTL policy:** Running jobs use short TTLs (15–30s). Completed jobs cache for 1–4h. Console logs are never cached while a job is still running.
+
+**Auth isolation:** Each unique token gets its own cache directory (`cache-{hash}`). Unauthenticated requests use `public/`. The HTTP MCP server isolates per-request tokens automatically.
+
+**CLI commands:**
+
+```bash
+hlx cache status   # Show cache size, entry count, oldest/newest entries
+hlx cache clear    # Wipe all cached data (all auth contexts)
+```
 
 ## Requirements
 

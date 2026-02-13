@@ -49,3 +49,6 @@
 
 📌 Session 2026-02-12-cache-security: Security hardening on cache layer (f8b49a3). (1) Auth context isolation — separate cache DBs per HELIX_ACCESS_TOKEN hash. (2) Path traversal hardening — new CacheSecurity.cs. llmstxt updated by Ripley with auth isolation docs. README may need security/auth context section update. — decided by Ripley
 
+- **2026-02-15-readme-comprehensive-update:** Updated README with Caching section (SQLite cache, TTL policy, auth isolation, CLI commands table), HTTP multi-auth subsection under Authentication (Bearer/token header, per-request isolation, env var fallback), expanded Project Structure (Cache/ directory, IHelixTokenAccessor, IHelixApiClientFactory, HttpContextHelixTokenAccessor, 298 tests), added ci-analysis replacement note in Architecture section. Known Issues section verified accurate (ListFilesAsync confirmed in HelixApiClient.cs:46). All updates match source code in HelixTool.Core/Cache/, HelixTool.Mcp/HttpContextHelixTokenAccessor.cs, and Program.cs files.
+- Documentation pattern: Cache docs use a settings table + bold-label bullets for policies — concise, scannable, no prose paragraphs.
+- Documentation pattern: HTTP auth documented as a subsection under Authentication (### level) since it extends the existing auth story rather than being a standalone topic.
