@@ -36,3 +36,17 @@
 
 📌 Team update (2026-02-13): US-9 script removability analysis complete — 100% core API coverage, 3-phase migration plan, Phase 1 can proceed immediately — decided by Ash
 📌 Team update (2026-02-13): US-6 download E2E verification complete — 46 tests, all 298 tests pass, all P1s done — decided by Lambert
+
+📌 Team update (2026-02-13): Requirements audit complete — 25/30 stories implemented, US-22 structured test failure parsing is only remaining P2 gap — audited by Ash
+
+## Learnings
+
+### MCP API Design Review (2026-02-13)
+- **Key files reviewed:** `src/HelixTool.Core/HelixMcpTools.cs` (9 MCP tools), `src/HelixTool.Core/HelixService.cs` (core service layer), `src/HelixTool/Program.cs` (CLI commands), `src/HelixTool.Core/IHelixApiClient.cs` (API abstraction)
+- **Architecture pattern:** MCP tools are thin wrappers over HelixService — they handle URL resolution, JSON serialization, and parameter adaptation. Business logic stays in HelixService. This is correct.
+- **Convention established:** MCP tool naming follows `hlx_{verb}` or `hlx_{noun}` pattern with `_` separators. All tools return JSON strings.
+- **Design observation:** The MCP surface maps to Helix domain primitives (jobs, work items, files, logs), NOT to ci-analysis-specific workflows. This is the right abstraction level.
+- **Gap identified:** No `hlx_list_work_items` tool exists — consumers must call `hlx_status` (which fetches details for every work item) just to get work item names. This is an N+1 problem for navigation.
+- **Anti-pattern found:** `hlx_batch_status` takes `string jobIds` (comma-separated) instead of `string[] jobIds`. MCP SDK supports array parameters; this should use them.
+- **Inconsistency found:** `hlx_status` uses `bool all` parameter — should be `bool includePassed` for self-documentation.
+- **URL resolution pattern:** 5 of 9 tools share identical URL-resolution boilerplate (`TryResolveJobAndWorkItem`). Could be extracted to a helper, but current duplication is tolerable at this scale.

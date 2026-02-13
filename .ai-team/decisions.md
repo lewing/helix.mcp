@@ -1,7 +1,6 @@
 # Decisions
 
 > Shared team decisions — the single source of truth for architectural and process choices.
-
 ### 2025-07-18: Architecture Review — hlx project improvement proposal
 
 **By:** Dallas
@@ -1608,3 +1607,19 @@ Re-evaluate if: (a) Helix deploys multiple independent instances that users need
 **By:** Kane
 **What:** Added Caching section with settings table and policy docs; added HTTP per-request auth subsection under Authentication; expanded Project Structure to include Cache/, IHelixTokenAccessor, IHelixApiClientFactory, HttpContextHelixTokenAccessor, and 298 test count; added ci-analysis replacement note in Architecture.
 **Why:** README was stale — caching, HTTP multi-auth, and new source files were undocumented. These are user-facing features (caching affects performance; HTTP auth matters for shared deployments). Kept documentation concise with tables and bold-label bullets to match existing README tone.
+
+### 2026-02-13: Requirements audit — P0/P1/P2 completion status
+**By:** Ash
+**What:** Comprehensive audit of all 30 user stories against the actual codebase. Marked 25 stories as ✅ Implemented in requirements.md. Replaced the "Implementation Gaps" section with "Resolved Gaps" (all 8 original gaps fixed) and a new "Remaining Implementation Gaps" section (5 minor items). Updated the feature table from 7 features to 15. Identified 7 acceptance criteria that were NOT met despite the parent feature being functional — left these unchecked with explanatory notes.
+**Why:** The requirements document was significantly out of date — it still described the project as an MVP with 6 commands and 8 implementation gaps, when in reality it has 15 capabilities and all original gaps are resolved. This caused confusion about project maturity and remaining work. The updated document now accurately reflects that hlx is feature-complete for ci-analysis integration (all P1s done), with only P3 stories and one partial P2 (structured test failure parsing) remaining.
+
+**Key findings for the team:**
+1. **US-22 (structured test failure parsing)** is the only P2 that's NOT fully done. `hlx_search_log` provides generic search, but the structured `hlx_test_failures` tool was never built. This is the single remaining gap for full ci-analysis migration.
+2. **US-21 failure categorization** uses heuristics (exit code + state + work item name) rather than log content parsing as originally specified. The log-based criteria (checking for "Traceback", "Failures: 0") were not implemented. Current approach is sufficient for most cases.
+3. **US-17 code organization** is functionally complete (namespaces fixed) but the models-extraction and Display/ cleanup criteria are outstanding — minor refactoring debt.
+4. **US-11 --json flag** doesn't cover `find-binlogs` or `batch-status` — minor gap for power users.
+
+### 2026-02-13: MCP API design review
+**By:** Dallas
+**What:** Comprehensive API design review of all 9 MCP tool endpoints in HelixMcpTools.cs. Verdict: the surface is well-designed for its domain and NOT overly ci-analysis-specific — it's a general-purpose Helix job inspection API that ci-analysis happens to consume. Identified 6 actionable improvements: (1) rename `hlx_logs` → `hlx_log_content`, (2) rename `hlx_download_url` → `hlx_download_file_url`, (3) fix `hlx_batch_status` comma-separated string → proper array parameter, (4) add `hlx_list_work_items` as a missing navigation tool, (5) standardize response envelope with consistent `{data, error?}` shape, (6) fix `hlx_status` inconsistent `all` parameter naming. Priority order: P0 batch_status array fix, P1 list_work_items gap, P2 naming improvements, P3 response envelope standardization.
+**Why:** Larry raised concern that the MCP surface was too tightly coupled to ci-analysis workflows. After thorough review, the tools map to Helix API primitives (jobs, work items, files, logs) rather than ci-analysis-specific orchestrations. The naming uses `hlx_` prefix consistently and maps to Helix domain concepts. However, there are real usability issues that would trip up non-ci-analysis consumers: the comma-separated jobIds string in batch_status is hostile to programmatic callers, the missing list_work_items tool forces consumers to use hlx_status (heavy) just to discover work item names, and some tool names don't self-document well. These fixes would make the API genuinely general-purpose.
