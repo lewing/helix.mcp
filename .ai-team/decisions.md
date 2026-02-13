@@ -1623,3 +1623,123 @@ Re-evaluate if: (a) Helix deploys multiple independent instances that users need
 **By:** Dallas
 **What:** Comprehensive API design review of all 9 MCP tool endpoints in HelixMcpTools.cs. Verdict: the surface is well-designed for its domain and NOT overly ci-analysis-specific — it's a general-purpose Helix job inspection API that ci-analysis happens to consume. Identified 6 actionable improvements: (1) rename `hlx_logs` → `hlx_log_content`, (2) rename `hlx_download_url` → `hlx_download_file_url`, (3) fix `hlx_batch_status` comma-separated string → proper array parameter, (4) add `hlx_list_work_items` as a missing navigation tool, (5) standardize response envelope with consistent `{data, error?}` shape, (6) fix `hlx_status` inconsistent `all` parameter naming. Priority order: P0 batch_status array fix, P1 list_work_items gap, P2 naming improvements, P3 response envelope standardization.
 **Why:** Larry raised concern that the MCP surface was too tightly coupled to ci-analysis workflows. After thorough review, the tools map to Helix API primitives (jobs, work items, files, logs) rather than ci-analysis-specific orchestrations. The naming uses `hlx_` prefix consistently and maps to Helix domain concepts. However, there are real usability issues that would trip up non-ci-analysis consumers: the comma-separated jobIds string in batch_status is hostile to programmatic callers, the missing list_work_items tool forces consumers to use hlx_status (heavy) just to discover work item names, and some tool names don't self-document well. These fixes would make the API genuinely general-purpose.
+
+### 2026-02-14: Generalize hlx_find_binlogs to hlx_find_files with pattern parameter
+**By:** Dallas
+**Requested by:** Larry Ewing
+
+---
+
+## Question
+
+Should `hlx_find_binlogs` (which hardcodes `.binlog` extension matching across work items in a job) become a generic `hlx_find_files` with a pattern parameter?
+
+## Recommendation: **Yes — add generic `FindFilesAsync` in Core, keep `hlx_find_binlogs` as a convenience alias**
+
+This is a two-layer solution:
+
+### Layer 1: Core — Generic `FindFilesAsync`
+
+Rename/generalize `FindBinlogsAsync` → `FindFilesAsync(string jobId, string pattern = "*", int maxItems = 30)`:
+
+- Reuse the existing `MatchesPattern` helper (already used by `DownloadFilesAsync`)
+- Rename `BinlogResult` → `FileSearchResult(string WorkItem, List<FileEntry> Files)`
+- The old `FindBinlogsAsync` becomes a one-liner: `FindFilesAsync(jobId, "*.binlog", maxItems)`
+
+**Rationale:** The core method should not encode knowledge of a specific file type. `DownloadFilesAsync` already proves this pattern works — it takes a glob and delegates to `MatchesPattern`. The scan-across-work-items operation is the same regardless of file type.
+
+### Layer 2: MCP — Add `hlx_find_files`, keep `hlx_find_binlogs`
+
+Add a **new** MCP tool `hlx_find_files` with a `pattern` parameter (defaulting to `"*"`). Keep `hlx_find_binlogs` as an alias that calls `hlx_find_files` with `pattern = "*.binlog"`.
+
+**Rationale for keeping both:**
+
+1. **Backward compatibility.** `hlx_find_binlogs` is referenced by the `ci-analysis` skill and potentially other LLM consumers. MCP tool names are effectively a public API contract for LLM agents. Removing it would break existing tool-use patterns that are baked into prompt engineering and skill definitions.
+
+2. **LLM ergonomics.** Specific tool names are easier for LLMs to select correctly. When an LLM sees `hlx_find_binlogs`, it knows exactly what to call. A generic `hlx_find_files` requires the LLM to also figure out the right pattern. Keeping the specific tool as a convenience reduces LLM decision-making overhead.
+
+3. **Discoverability.** Binlogs are the dominant use case. Having a named tool for the common case improves tool-list scanning. The generic tool serves the long tail (crash dumps, coverage files, test results).
+
+### Layer 3: CLI — Add `find-files`, keep `find-binlogs`
+
+Same pattern as MCP:
+- Add `find-files <jobId> --pattern "*.dmp" [--max-items N]`
+- Keep `find-binlogs` as shorthand for `find-files --pattern "*.binlog"`
+
+---
+
+## Use cases beyond binlogs
+
+Real scenarios that justify the generic method:
+
+| Pattern | Use case |
+|---------|----------|
+| `*.binlog` | MSBuild binary logs for build analysis |
+| `*.dmp` / `*.mdmp` | Crash dump analysis |
+| `testResults.xml` / `*.trx` | Test result files |
+| `*.gcov` / `*.cobertura.xml` | Code coverage artifacts |
+| `*.etl` | ETW trace files |
+| `console.log` | Console output files |
+
+These are all cases where an LLM or human needs to scan across work items to find which ones produced a specific artifact type.
+
+---
+
+## What NOT to do
+
+- **Do NOT remove `hlx_find_binlogs`.** It's a stable contract.
+- **Do NOT add per-file-type convenience tools** (`hlx_find_dumps`, `hlx_find_coverage`, etc.). One generic + one common-case convenience is the right surface area. More than that is tool sprawl.
+- **Do NOT change the `hlx_files` tool.** `hlx_files` operates on a single work item and already returns all files grouped by type. `hlx_find_files` operates across work items in a job — different scope, different operation.
+
+---
+
+## Implementation guidance
+
+**Core changes:**
+```csharp
+// Rename BinlogResult → FileSearchResult
+public record FileSearchResult(string WorkItem, List<FileEntry> Files);
+
+// Generic method
+public async Task<List<FileSearchResult>> FindFilesAsync(
+    string jobId, string pattern = "*", int maxItems = 30, CancellationToken ct = default)
+{
+    // Same logic as FindBinlogsAsync, but use MatchesPattern(f.Name, pattern)
+    // instead of hardcoded .binlog check
+}
+
+// Convenience (can be extension method or just kept in HelixService)
+public Task<List<FileSearchResult>> FindBinlogsAsync(
+    string jobId, int maxItems = 30, CancellationToken ct = default)
+    => FindFilesAsync(jobId, "*.binlog", maxItems, ct);
+```
+
+**MCP changes:**
+```csharp
+[McpServerTool(Name = "hlx_find_files")]
+public async Task<string> FindFiles(string jobId, string pattern = "*", int maxItems = 30) { ... }
+
+[McpServerTool(Name = "hlx_find_binlogs")]
+public async Task<string> FindBinlogs(string jobId, int maxItems = 30)
+    => await FindFiles(jobId, "*.binlog", maxItems);
+```
+
+**CLI changes:**
+```
+[Command("find-files")]
+public async Task FindFiles(string jobId, string pattern = "*", int maxItems = 30) { ... }
+
+[Command("find-binlogs")]
+public async Task FindBinlogs(string jobId, int maxItems = 30)
+    => await FindFiles(jobId, "*.binlog", maxItems);
+```
+
+---
+
+## Status
+
+**Decision:** Approved by Dallas
+**Implementation:** Assigned to Ripley
+**Tests:** Assigned to Lambert (update existing FindBinlogsAsync tests, add FindFilesAsync tests with various patterns)
+**Docs:** Assigned to Kane (update CLI help text, README)
+

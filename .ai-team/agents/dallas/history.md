@@ -50,3 +50,11 @@
 - **Anti-pattern found:** `hlx_batch_status` takes `string jobIds` (comma-separated) instead of `string[] jobIds`. MCP SDK supports array parameters; this should use them.
 - **Inconsistency found:** `hlx_status` uses `bool all` parameter — should be `bool includePassed` for self-documentation.
 - **URL resolution pattern:** 5 of 9 tools share identical URL-resolution boilerplate (`TryResolveJobAndWorkItem`). Could be extracted to a helper, but current duplication is tolerable at this scale.
+
+### find-binlogs → find-files Generalization Decision (2026-02-14)
+- **Question:** Should `hlx_find_binlogs` become generic `hlx_find_files` with a pattern parameter?
+- **Answer:** Yes — add generic `FindFilesAsync` in Core with pattern parameter, add `hlx_find_files` MCP tool, but **keep `hlx_find_binlogs` as a convenience alias** that delegates with `pattern="*.binlog"`.
+- **Key rationale:** MCP tool names are a public API contract for LLM consumers (ci-analysis skill references `hlx_find_binlogs`). Removing it would break existing tool-use patterns. Specific named tools are also easier for LLMs to select. The generic tool serves the long tail (crash dumps, coverage files, ETW traces, test results).
+- **Design principle established:** For cross-work-item file scanning, one generic tool + one common-case convenience is the right surface area. Do NOT add per-file-type convenience tools (`hlx_find_dumps`, etc.) — that's tool sprawl.
+- **Core pattern:** `FindBinlogsAsync` generalizes to `FindFilesAsync` using the existing `MatchesPattern` helper (already proven by `DownloadFilesAsync`). `BinlogResult` renames to `FileSearchResult`.
+- **Decision written to:** `.ai-team/decisions/inbox/dallas-find-files-api.md`
