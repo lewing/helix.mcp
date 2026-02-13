@@ -227,83 +227,15 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 **What:** Changed `HelixService.MatchesPattern` from `private static` to `internal static` and added `<InternalsVisibleTo Include="HelixTool.Tests" />` to `HelixTool.Core.csproj` to enable direct unit testing.
 **Why:** Cleanest approach for testing private logic — no reflection, no test helpers, no public API surface change. The method stays invisible to external consumers while being testable. If anyone adds more internal methods to Core, they're automatically testable too.
 
-### 2025-07-14: Caching Strategy for Helix API Responses and Artifacts *(superseded by 2025-07-18 Revised Cache TTL Policy)*
+### 2025-07-14: Caching Strategy for Helix API Responses and Artifacts *(superseded by 2026-02-12 Cache Implementation)*
 
 **By:** Dallas
-**What:** A two-tier caching system in `HelixTool.Core` — an in-memory LRU cache for API metadata and a disk cache for downloaded artifacts, keyed by `{jobId}/{workItem}/{fileName}`, with job-completion-aware invalidation.
-**Why:** Helix API calls are slow (especially when fanning out across work items), and downloaded artifacts (binlogs, TRX files) are large and immutable once a job completes. Caching avoids redundant network I/O in both the short-lived CLI (repeated commands during a debugging session) and the long-lived MCP server (same job queried multiple times by an agent). The design below is opinionated, concrete, and implementable.
+**Status:** ⛔ Superseded — see "2026-02-12: Refined Cache Requirements" and "2026-02-12: Cache Implementation Design Review" below.
 
-### 2025-07-18: Revised Cache TTL Policy — Per-Data-Type × Job-State Matrix, Bounded Lifetimes, Automatic Eviction
+### 2025-07-18: Revised Cache TTL Policy *(superseded by 2026-02-12 Cache Implementation)*
 
 **By:** Dallas
-**What:** Replaces the previous caching strategy's TTL model (indefinite for completed, blanket 60s for running) with a granular TTL matrix per data type and job state, plus automatic disk eviction.
-**Why:** Larry correctly identified two problems: (1) "cache forever" for completed jobs is a disk leak — there's no reason to keep months-old job data around, and (2) a single 60s TTL for running jobs doesn't match real debugging behavior. Console logs grow continuously. File listings change as work items produce artifacts. Job details change state. These need different cache lifetimes. The revised design treats each data type independently.
-
----
-
-## Changes from Previous Design
-
-### 1. TTL Matrix
-
-| Data Type | Running Job | Completed Job |
-|---|---|---|
-| **Job details** (name, queue, creator, state) | 15s | 4h |
-| **Work item list** (names, counts) | 15s | 4h |
-| **Work item details** (exit code, state per item) | 15s | 4h |
-| **File listing** (per work item) | 30s | 4h |
-| **Console log content** | **NO CACHE** | 1h |
-| **Downloaded artifact** (binlog, trx, files on disk) | Until eviction (see §3) | Until eviction (see §3) |
-| **Binlog scan results** (FindBinlogsAsync) | 30s | 4h |
-
-### 2. Console Logs — Never Cache While Running
-
-Console logs for running work items are append-only streams. Any cached version is stale the moment it's stored. The previous design's 60s TTL would serve stale logs to a user who's actively tailing output.
-
-**Decision:** `GetConsoleLogContentAsync` and `DownloadConsoleLogAsync` bypass the cache entirely when the job is not yet finished. For completed jobs, cache for 1 hour — the log is immutable at that point but doesn't need to live in memory forever.
-
-To determine job state: the cache layer checks whether a `JobSummary` for that job ID has a non-null `Finished` timestamp. If the job summary isn't cached yet, one API call is made to get it (and that call itself is cached per the matrix above).
-
-### 3. Completed Job Max TTL: 4 Hours (Memory), 7 Days (Disk)
-
-The previous design said "indefinite" for completed jobs. Revised:
-
-- **Memory cache:** 4-hour sliding expiration for all completed-job metadata. A debugging session rarely spans more than a few hours. After 4h of no access, entries are evicted.
-- **Disk cache:** Downloaded artifacts (binlogs, trx files) live for 7 days from last access. After that, automatic eviction (see §4).
-
-Rationale: Completed jobs don't change, but they don't need to live in cache indefinitely either. 4h covers a debugging session. 7 days covers "I'll come back to this tomorrow." Beyond that, re-fetching is fine.
-
-### 4. Disk Cache Eviction Policy
-
-Previous design: manual `cache clear` only. Revised — automatic eviction on two triggers:
-
-1. **LRU with max size:** Disk cache directory has a configurable max size (default: 500 MB). When exceeded, oldest-accessed files are deleted first. Size check runs at startup and after every download.
-2. **TTL-based cleanup:** Files older than 7 days (by last access time) are deleted. Cleanup runs at startup.
-3. **Manual override preserved:** `cache clear` command still works for immediate wipe.
-
-Cache directory: `{TEMP}/hlx-cache/{jobId-prefix}/{workItem}/{fileName}`
-
-Startup eviction is synchronous but fast — it's a directory scan, not API calls. The MCP server runs it once on startup. The CLI runs it before the first cache-writing operation.
-
-### 5. Cache Key Design (Unchanged)
-
-Same as previous design: `{jobId}/{workItem}/{fileName}` for artifacts, `{jobId}` for job-level metadata, `{jobId}/{workItem}` for work-item-level metadata. No changes here.
-
-### 6. The "Log Grew Since Last Fetch" Problem
-
-This is inherently unsolvable with caching — you can't cache a stream that's still being written to. The correct answer is: **don't cache it.** For running jobs, every console log request hits the API fresh.
-
-If we want to optimize bandwidth in the future, we could add an `If-Modified-Since` or byte-range approach (fetch only bytes after the last-known position). But that's an optimization for later and depends on the Helix API supporting range requests. For now: no cache, full re-fetch. It's the only correct behavior.
-
-### 7. Summary of What Changed
-
-| Aspect | Previous | Revised |
-|---|---|---|
-| Completed job TTL | Indefinite | 4h memory, 7d disk |
-| Running job TTL | Blanket 60s | 15-30s per data type; console logs: none |
-| Console log caching (running) | 60s | **Disabled** |
-| Disk eviction | Manual only | Automatic: 500MB cap + 7-day expiry |
-| File listing TTL (running) | 60s | 30s |
-| Job details TTL (running) | 60s | 15s |
+**Status:** ⛔ Superseded — TTL matrix carried forward into the 2026-02-12 refined requirements. Key change: storage moved from in-memory to SQLite-backed (cross-process), max size bumped from 500MB to 1GB, XDG-compliant cache location.
 
 ### 2025-07-18: Requirements backlog formalized — 18 user stories extracted from session 72e659c1
 **By:** Ash
@@ -641,3 +573,537 @@ Both copies contained identical logic and had to be kept in sync manually. Conso
 **What:** Created `.github/workflows/publish.yml` that publishes `lewing.helix.mcp` to nuget.org on `v*` tag push using NuGet Trusted Publishing (OIDC) via `NuGet/login@v1`. Creates a GitHub Release with the nupkg attached. No API key secrets — only `NUGET_USER` is needed. Pattern adapted from baronfel/mcp-binlog-tool.
 **Why:** Trusted Publishing is the modern NuGet approach — OIDC tokens are short-lived and scoped to the workflow, eliminating long-lived API key secrets. The workflow mirrors CI's .NET 10 preview SDK setup for consistency. Using `-o src/HelixTool/nupkg` gives a predictable output path for both the push glob and the release artifact attachment. Changelog support intentionally deferred — simple `Release ${{ github.ref_name }}` body for now.
 
+
+### 2026-02-12: Refined Cache Requirements — SQLite-backed, Cross-Process Shared Cache
+**By:** Larry (via Coordinator)
+**What:** Refined caching requirements superseding the original Dallas design. Key changes: SQLite-backed (not in-memory), cross-process shared cache for stdio MCP server instances, XDG-compliant cache location, 1GB default cap (configurable).
+
+**Why:** Each MCP stdio invocation is a fresh process — in-memory cache is useless for the primary use case. SQLite provides safe concurrent access across multiple hlx instances (WAL mode), structured queryable metadata, and reliable cross-process sharing.
+
+---
+
+#### Architecture
+
+- **Storage:** SQLite database for API metadata + disk files for downloaded artifacts (tracked by SQLite)
+- **SQLite location:** `{cache_root}/hlx/cache.db`
+- **Artifact directory:** `{cache_root}/hlx/artifacts/{jobId-prefix}/{workItem}/{fileName}`
+- **Cache root resolution:**
+  - Windows: `%LOCALAPPDATA%`
+  - Linux/macOS: `$XDG_CACHE_HOME` (fallback: `~/.cache`)
+- **Concurrency:** SQLite WAL mode for safe concurrent reads/writes across processes
+
+#### TTL Matrix (per Dallas's revised design, unchanged)
+
+| Data Type | Running Job | Completed Job |
+|---|---|---|
+| Job details (name, queue, creator, state) | 15s | 4h |
+| Work item list (names, counts) | 15s | 4h |
+| Work item details (exit code, state per item) | 15s | 4h |
+| File listing (per work item) | 30s | 4h |
+| Console log content | **NO CACHE** | 1h |
+| Downloaded artifact (binlog, trx, files on disk) | Until eviction | Until eviction |
+| Binlog scan results (FindBinlogsAsync) | 30s | 4h |
+
+#### Console Logs — Never Cache While Running
+
+Console logs for running work items are append-only streams. Bypass cache entirely when job has no `Finished` timestamp. For completed jobs, cache for 1 hour.
+
+#### Disk Cache Eviction
+
+- **Max size:** Configurable, default 1 GB
+- **TTL-based cleanup:** Artifacts older than 7 days (by last access) are evicted
+- **LRU eviction:** When over max size, oldest-accessed files deleted first
+- **Cleanup triggers:** At startup + after every download operation
+
+#### CLI Commands
+
+- `hlx cache clear` — Wipe all cached data (SQLite + artifact files)
+- `hlx cache status` — Show cache size, entry count, oldest/newest entries
+
+#### Configuration
+
+- Max cache size configurable (environment variable or config file — TBD by implementer)
+- Default: 1 GB
+
+### 2026-02-12: Cache Implementation Design Review
+**By:** Dallas
+**What:** SQLite-backed cross-process caching layer for hlx — interface design, integration strategy, schema, risk assessment, and action items for Ripley (implementation) and Lambert (tests).
+**Why:** Each MCP stdio invocation (`hlx mcp`) is a fresh process. In-memory caching is useless for the primary use case. SQLite provides safe concurrent access across multiple hlx instances (WAL mode), structured queryable metadata, and reliable cross-process sharing. This design review translates Larry's refined requirements into concrete interfaces, classes, and tasks.
+
+---
+
+## 1. Architectural Decision: Decorator on IHelixApiClient
+
+**Decision: Decorator pattern — `CachingHelixApiClient` wrapping `IHelixApiClient`.**
+
+Rejected alternative: caching inside `HelixService`. Reasons:
+- `HelixService` is already 600 lines. Adding cache logic doubles it.
+- Cache concerns (TTL, eviction, SQLite) are orthogonal to business logic (failure classification, log search, batch status).
+- The decorator is invisible to `HelixService` — it sees the same `IHelixApiClient` interface it already depends on.
+- Testing: Lambert can test cache behavior by wrapping a mock `IHelixApiClient` with `CachingHelixApiClient`, without touching `HelixService` tests.
+
+**The decorator intercepts 6 `IHelixApiClient` methods with cache-aware logic:**
+
+| Method | Cache Strategy |
+|---|---|
+| `GetJobDetailsAsync` | Cache. Running: 15s TTL. Completed: 4h TTL. |
+| `ListWorkItemsAsync` | Cache. Running: 15s TTL. Completed: 4h TTL. |
+| `GetWorkItemDetailsAsync` | Cache. Running: 15s TTL. Completed: 4h TTL. |
+| `ListWorkItemFilesAsync` | Cache. Running: 30s TTL. Completed: 4h TTL. |
+| `GetConsoleLogAsync` | **Running: NO CACHE.** Completed: 1h TTL. Returns Stream — cache to disk, serve from disk. |
+| `GetFileAsync` | Cache to disk. Eviction-based only (no TTL). LRU with 1GB cap. |
+
+**Job state determination:** To apply the correct TTL, the decorator must know if a job is running or completed. Strategy: before checking the TTL for any sub-resource, the decorator checks its own SQLite cache for that job's `Finished` timestamp. If not cached, it calls the inner client's `GetJobDetailsAsync` (which is itself cached). This is a single extra call at most, amortized across all subsequent lookups for that job.
+
+---
+
+## 2. New Types and File Layout
+
+All new code lives in `HelixTool.Core` (namespace `HelixTool.Core`).
+
+### New Files
+
+| File | Type | Purpose |
+|---|---|---|
+| `Cache/ICacheStore.cs` | Interface | Abstract cache storage — enables testing without real SQLite |
+| `Cache/SqliteCacheStore.cs` | Class | SQLite + disk file implementation of `ICacheStore` |
+| `Cache/CachingHelixApiClient.cs` | Class | Decorator implementing `IHelixApiClient`, delegates to inner client + `ICacheStore` |
+| `Cache/CacheOptions.cs` | Record | Configuration: max size, cache root, TTLs |
+| `Cache/CacheStatus.cs` | Record | Return type for `hlx cache status` |
+
+### Interface: `ICacheStore`
+
+```csharp
+namespace HelixTool.Core;
+
+/// <summary>
+/// Abstract cache storage for API metadata and artifact files.
+/// Implementations handle persistence (SQLite+disk) and eviction.
+/// </summary>
+public interface ICacheStore : IDisposable
+{
+    // Metadata (JSON-serialized API responses)
+    Task<string?> GetMetadataAsync(string cacheKey, CancellationToken ct = default);
+    Task SetMetadataAsync(string cacheKey, string jsonValue, TimeSpan ttl, CancellationToken ct = default);
+
+    // Artifact files (console logs, binlogs, downloaded files)
+    Task<Stream?> GetArtifactAsync(string cacheKey, CancellationToken ct = default);
+    Task SetArtifactAsync(string cacheKey, Stream content, CancellationToken ct = default);
+
+    // Job state cache (needed for TTL decisions)
+    Task<bool?> IsJobCompletedAsync(string jobId, CancellationToken ct = default);
+    Task SetJobCompletedAsync(string jobId, bool completed, TimeSpan ttl, CancellationToken ct = default);
+
+    // Management
+    Task ClearAsync(CancellationToken ct = default);
+    Task<CacheStatus> GetStatusAsync(CancellationToken ct = default);
+    Task EvictExpiredAsync(CancellationToken ct = default);
+}
+
+public record CacheStatus(
+    long TotalSizeBytes,
+    int MetadataEntryCount,
+    int ArtifactFileCount,
+    DateTimeOffset? OldestEntry,
+    DateTimeOffset? NewestEntry,
+    long MaxSizeBytes);
+```
+
+### Class: `CacheOptions`
+
+```csharp
+namespace HelixTool.Core;
+
+public record CacheOptions
+{
+    /// <summary>Maximum cache size in bytes. Default: 1 GB.</summary>
+    public long MaxSizeBytes { get; init; } = 1L * 1024 * 1024 * 1024;
+
+    /// <summary>Cache root directory. Default: platform-appropriate XDG path.</summary>
+    public string? CacheRoot { get; init; }
+
+    /// <summary>Artifact expiry (last access). Default: 7 days.</summary>
+    public TimeSpan ArtifactMaxAge { get; init; } = TimeSpan.FromDays(7);
+
+    /// <summary>Resolve the actual cache root, respecting XDG conventions.</summary>
+    public string GetEffectiveCacheRoot()
+    {
+        if (!string.IsNullOrEmpty(CacheRoot)) return CacheRoot;
+        if (OperatingSystem.IsWindows())
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "hlx");
+        var xdg = Environment.GetEnvironmentVariable("XDG_CACHE_HOME");
+        return Path.Combine(!string.IsNullOrEmpty(xdg) ? xdg : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache"), "hlx");
+    }
+}
+```
+
+### Class: `CachingHelixApiClient`
+
+```csharp
+namespace HelixTool.Core;
+
+/// <summary>
+/// Decorator that adds SQLite-backed caching to any IHelixApiClient.
+/// Injected between DI registration and HelixService.
+/// </summary>
+public sealed class CachingHelixApiClient : IHelixApiClient
+{
+    private readonly IHelixApiClient _inner;
+    private readonly ICacheStore _cache;
+
+    public CachingHelixApiClient(IHelixApiClient inner, ICacheStore cache) { ... }
+
+    // Each method: check cache → return if hit → call inner → store → return
+    // TTL selection based on IsJobCompletedAsync result
+}
+```
+
+---
+
+## 3. DI Integration — Program.cs Changes
+
+Current registration (CLI):
+```csharp
+services.AddSingleton<IHelixApiClient>(_ => new HelixApiClient(...));
+services.AddSingleton<HelixService>();
+```
+
+New registration:
+```csharp
+services.AddSingleton<CacheOptions>(_ =>
+{
+    var opts = new CacheOptions();
+    var maxStr = Environment.GetEnvironmentVariable("HLX_CACHE_MAX_SIZE_MB");
+    if (int.TryParse(maxStr, out var mb))
+        opts = opts with { MaxSizeBytes = (long)mb * 1024 * 1024 };
+    return opts;
+});
+services.AddSingleton<ICacheStore>(sp =>
+{
+    var opts = sp.GetRequiredService<CacheOptions>();
+    return new SqliteCacheStore(opts);
+});
+services.AddSingleton<HelixApiClient>(_ => new HelixApiClient(...));
+services.AddSingleton<IHelixApiClient>(sp =>
+    new CachingHelixApiClient(
+        sp.GetRequiredService<HelixApiClient>(),
+        sp.GetRequiredService<ICacheStore>()));
+services.AddSingleton<HelixService>();
+```
+
+**Same pattern applies to the `mcp` command's DI container.** The `HelixTool.Mcp` HTTP project gets the same registration if desired, but it's lower priority since it's long-lived (in-memory cache matters more there).
+
+**`cache clear` and `cache status` commands** access `ICacheStore` directly from DI:
+```csharp
+[Command("cache clear")]
+public async Task CacheClear()
+{
+    var cache = ConsoleApp.ServiceProvider!.GetRequiredService<ICacheStore>();
+    await cache.ClearAsync();
+    Console.WriteLine("Cache cleared.");
+}
+
+[Command("cache status")]
+public async Task CacheStatus()
+{
+    var cache = ConsoleApp.ServiceProvider!.GetRequiredService<ICacheStore>();
+    var status = await cache.GetStatusAsync();
+    // Format and print
+}
+```
+
+**Note on ConsoleAppFramework:** CAF v5 supports nested command groups. `hlx cache clear` and `hlx cache status` may need to be registered as `app.Add("cache", ...)` or as a separate `CacheCommands` class. Ripley should verify the CAF subcommand routing pattern.
+
+---
+
+## 4. SQLite Schema
+
+### Package Choice: `Microsoft.Data.Sqlite`
+
+**Decision: `Microsoft.Data.Sqlite` (Microsoft's ADO.NET provider).**
+
+Rejected:
+- `sqlite-net-pcl` — ORM-ish, auto-creates tables from C# classes. Convenient but hides SQL, harder to control schema precisely, no built-in migration story.
+- `EF Core SQLite` — massive dependency for what's essentially two tables. EF migrations are overkill.
+- `Microsoft.Data.Sqlite` — lightweight (~200KB), raw SQL, explicit schema control, first-party Microsoft package. We need two tables and a few indexes. This is the right tool.
+
+### Tables
+
+```sql
+-- API metadata cache (JSON blobs)
+CREATE TABLE IF NOT EXISTS cache_metadata (
+    cache_key   TEXT PRIMARY KEY,
+    json_value  TEXT NOT NULL,
+    created_at  TEXT NOT NULL,  -- ISO 8601
+    expires_at  TEXT NOT NULL,  -- ISO 8601
+    job_id      TEXT NOT NULL   -- for join/cleanup queries
+);
+
+CREATE INDEX IF NOT EXISTS idx_metadata_expires ON cache_metadata(expires_at);
+CREATE INDEX IF NOT EXISTS idx_metadata_job ON cache_metadata(job_id);
+
+-- Downloaded artifact files (tracked by SQLite, stored on disk)
+CREATE TABLE IF NOT EXISTS cache_artifacts (
+    cache_key       TEXT PRIMARY KEY,
+    file_path       TEXT NOT NULL,    -- relative to artifacts dir
+    file_size       INTEGER NOT NULL, -- bytes
+    created_at      TEXT NOT NULL,    -- ISO 8601
+    last_accessed   TEXT NOT NULL,    -- ISO 8601, updated on read
+    job_id          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_artifacts_accessed ON cache_artifacts(last_accessed);
+CREATE INDEX IF NOT EXISTS idx_artifacts_job ON cache_artifacts(job_id);
+
+-- Job completion state (for TTL decisions)
+CREATE TABLE IF NOT EXISTS cache_job_state (
+    job_id       TEXT PRIMARY KEY,
+    is_completed INTEGER NOT NULL,  -- 0 or 1
+    finished_at  TEXT,              -- ISO 8601, null if running
+    cached_at    TEXT NOT NULL,     -- ISO 8601
+    expires_at   TEXT NOT NULL      -- ISO 8601
+);
+```
+
+### Cache Key Format
+
+| Data Type | Cache Key Pattern |
+|---|---|
+| Job details | `job:{jobId}:details` |
+| Work item list | `job:{jobId}:workitems` |
+| Work item details | `job:{jobId}:wi:{workItem}:details` |
+| File listing | `job:{jobId}:wi:{workItem}:files` |
+| Console log | `job:{jobId}:wi:{workItem}:console` |
+| Downloaded file | `job:{jobId}:wi:{workItem}:file:{fileName}` |
+
+### Artifact File Path on Disk
+
+`{cache_root}/hlx/artifacts/{jobId[0:8]}/{workItem}/{fileName}`
+
+Using first 8 chars of jobId as directory prefix keeps the directory tree shallow and avoids filesystem limits.
+
+### WAL Mode and Concurrency
+
+```csharp
+// On connection open:
+connection.Execute("PRAGMA journal_mode=WAL;");
+connection.Execute("PRAGMA busy_timeout=5000;");  // 5s retry on lock
+```
+
+WAL mode allows concurrent reads across processes. Writers queue with busy_timeout. This is safe for our use case: multiple `hlx mcp` processes reading simultaneously, occasional writes when cache misses occur.
+
+---
+
+## 5. Stream Caching Strategy
+
+`GetConsoleLogAsync` and `GetFileAsync` return `Stream`. These need special handling because:
+1. We can't serialize a `Stream` to SQLite — we need to write to disk.
+2. The caller expects a `Stream` back, not a file path.
+
+**Strategy for cached stream responses:**
+1. On cache miss: call inner client, tee the stream to a temp file, return a `FileStream` from the temp file, then move the temp file to the artifact cache location.
+2. On cache hit: return `File.OpenRead(cachedFilePath)`.
+3. Update `last_accessed` in `cache_artifacts` on every cache hit.
+
+**Implementation detail:** Use a write-then-rename pattern to avoid partial files on crash:
+```csharp
+var tempPath = artifactPath + ".tmp";
+using (var fs = File.Create(tempPath))
+    await sourceStream.CopyToAsync(fs, ct);
+File.Move(tempPath, artifactPath, overwrite: true);
+```
+
+---
+
+## 6. Eviction Implementation
+
+Eviction runs at two points:
+1. **Startup** — `SqliteCacheStore` constructor calls `EvictExpiredAsync()` synchronously (or fires-and-forgets with a small delay). Removes expired metadata entries and artifact files older than 7 days.
+2. **After every artifact write** — Check total artifact size. If over cap, delete LRU entries until under cap.
+
+```sql
+-- Remove expired metadata
+DELETE FROM cache_metadata WHERE expires_at < @now;
+
+-- Remove expired artifacts (7-day last-access)
+SELECT cache_key, file_path FROM cache_artifacts WHERE last_accessed < @cutoff;
+-- Then delete files + rows
+
+-- LRU eviction when over cap
+SELECT cache_key, file_path, file_size FROM cache_artifacts ORDER BY last_accessed ASC;
+-- Iterate, summing sizes, delete until total <= max
+```
+
+After deleting artifact rows, also delete the corresponding disk files. Handle `FileNotFoundException` gracefully (file may have been deleted by another process or manually).
+
+---
+
+## 7. Configuration
+
+**Decision:** Environment variable `HLX_CACHE_MAX_SIZE_MB` (integer, megabytes).
+
+Rejected config file approach — adds complexity for one setting. Environment variables work in all contexts (shell, MCP client config, CI).
+
+Default: `1024` (1 GB per Larry's refined requirements — note: original Dallas design had 500 MB, Larry bumped to 1 GB).
+
+To disable caching entirely: `HLX_CACHE_MAX_SIZE_MB=0` → `CachingHelixApiClient` passes through to inner client without caching.
+
+---
+
+## 8. Risk Assessment
+
+### R1: SQLite Locking Under Heavy Concurrent Access
+**Severity:** Medium
+**Detail:** Multiple `hlx mcp` processes writing simultaneously could hit SQLITE_BUSY despite WAL mode. Mitigated by `busy_timeout=5000` (5s retry), but under extreme load (10+ concurrent MCP instances all cache-missing on the same job), contention is possible.
+**Mitigation:** WAL + busy_timeout is the standard solution. If problems appear in practice, consider connection pooling or write-serialization via a named mutex. Monitor for now.
+
+### R2: Schema Migration
+**Severity:** Low (but important to plan for)
+**Detail:** Once users have `cache.db` files, we can't casually change the schema. First release must get the schema right.
+**Mitigation:** Add a `PRAGMA user_version` check on startup. Current version = 1. If the version doesn't match, drop all tables and recreate (destructive migration is acceptable for a cache — it's all regenerable data).
+
+### R3: Stale "Running" Classification
+**Severity:** Low
+**Detail:** A job's `is_completed` status is cached. If a job completes while the "running" cache entry is still live (15s TTL), we serve shorter-TTL data for a few extra seconds. This is harmless — worst case we re-fetch data that just became cacheable for longer.
+**Mitigation:** None needed. 15s staleness on job state is acceptable.
+
+### R4: Disk Space Accounting Accuracy
+**Severity:** Low
+**Detail:** `file_size` in `cache_artifacts` is set at write time. If a file is modified externally (shouldn't happen, but possible), the accounting drifts.
+**Mitigation:** `cache clear` resets everything. `cache status` could optionally do a fresh disk scan for accurate reporting. Periodic re-scan is overkill.
+
+### R5: Testing Without Real SQLite
+**Severity:** Medium (affects Lambert)
+**Detail:** `ICacheStore` is the mock boundary for Lambert. Tests should NOT require a real SQLite database. However, `SqliteCacheStore` itself needs integration tests with a real (in-memory or temp-file) SQLite database.
+**Mitigation:** Two test tiers:
+- **Unit tests:** Mock `ICacheStore` with NSubstitute. Test `CachingHelixApiClient` logic (TTL selection, bypass for running logs, cache hit/miss flow).
+- **Integration tests:** Real `SqliteCacheStore` with `:memory:` connection string or temp file. Test schema creation, eviction, concurrent access.
+
+### R6: File Descriptor Leaks on Cached Streams
+**Severity:** Medium
+**Detail:** `GetArtifactAsync` returns a `FileStream`. If the caller doesn't dispose it, file handles leak. But this is the same contract as the inner client — callers already `await using` the streams.
+**Mitigation:** Ensure all returned streams are documented as disposable. No code change needed — existing callers already use `await using`.
+
+---
+
+## 9. Action Items
+
+### For Ripley (Implementation)
+
+| ID | Task | Depends On | Notes |
+|---|---|---|---|
+| R-CACHE-1 | Add `Microsoft.Data.Sqlite` to `HelixTool.Core.csproj` | — | Version: latest stable |
+| R-CACHE-2 | Create `Cache/ICacheStore.cs` | — | Interface per §2 |
+| R-CACHE-3 | Create `Cache/CacheOptions.cs` | — | Record per §2, XDG path resolution |
+| R-CACHE-4 | Create `Cache/CacheStatus.cs` | — | Record per §2 |
+| R-CACHE-5 | Create `Cache/SqliteCacheStore.cs` | R-CACHE-2, R-CACHE-3 | Schema per §4, WAL mode, eviction per §6, `PRAGMA user_version=1` |
+| R-CACHE-6 | Create `Cache/CachingHelixApiClient.cs` | R-CACHE-2 | Decorator per §2, TTL matrix per §1, stream caching per §5 |
+| R-CACHE-7 | Update CLI `Program.cs` DI | R-CACHE-5, R-CACHE-6 | Registration per §3, both CLI container and `mcp` command container |
+| R-CACHE-8 | Add `cache clear` command | R-CACHE-2 | Calls `ICacheStore.ClearAsync()` |
+| R-CACHE-9 | Add `cache status` command | R-CACHE-2, R-CACHE-4 | Calls `ICacheStore.GetStatusAsync()`, format output |
+| R-CACHE-10 | Update `llmstxt` | R-CACHE-8, R-CACHE-9 | Document new cache commands |
+| R-CACHE-11 | Verify CAF subcommand routing | — | `hlx cache clear` / `hlx cache status` — test that CAF supports this or find workaround |
+
+### For Lambert (Tests)
+
+| ID | Task | Depends On | Notes |
+|---|---|---|---|
+| L-CACHE-1 | Unit tests: `CachingHelixApiClient` cache hit | R-CACHE-6 | Mock `ICacheStore`, verify inner client NOT called on cache hit |
+| L-CACHE-2 | Unit tests: `CachingHelixApiClient` cache miss | R-CACHE-6 | Mock `ICacheStore` returning null, verify inner client called, result stored |
+| L-CACHE-3 | Unit tests: TTL selection (running vs completed) | R-CACHE-6 | Mock `IsJobCompletedAsync` returning true/false, verify correct TTL passed to `SetMetadataAsync` |
+| L-CACHE-4 | Unit tests: Console log bypass for running jobs | R-CACHE-6 | When `IsJobCompletedAsync` returns false, `GetConsoleLogAsync` must NOT cache |
+| L-CACHE-5 | Unit tests: Console log cached for completed jobs | R-CACHE-6 | When `IsJobCompletedAsync` returns true, `GetConsoleLogAsync` must cache with 1h TTL |
+| L-CACHE-6 | Integration tests: `SqliteCacheStore` CRUD | R-CACHE-5 | Use `:memory:` SQLite. Test set/get/evict/clear/status |
+| L-CACHE-7 | Integration tests: Eviction (TTL + LRU) | R-CACHE-5 | Set entries with past expiry, verify eviction. Set entries over max size, verify LRU deletion |
+| L-CACHE-8 | Integration tests: Schema creation idempotent | R-CACHE-5 | Open store twice on same DB file, verify no errors |
+| L-CACHE-9 | Unit tests: `CacheOptions.GetEffectiveCacheRoot()` | R-CACHE-3 | Test Windows path, test XDG override, test default fallback |
+| L-CACHE-10 | Unit tests: Cache disabled when max size = 0 | R-CACHE-6, R-CACHE-7 | `HLX_CACHE_MAX_SIZE_MB=0` → `CachingHelixApiClient` passes through |
+
+---
+
+## 10. Sequencing Recommendation
+
+1. **R-CACHE-1 through R-CACHE-4** — Types and interfaces (no behavior yet). Lambert can start writing test skeletons against `ICacheStore`.
+2. **R-CACHE-5** — `SqliteCacheStore` implementation. Lambert writes integration tests (L-CACHE-6 through L-CACHE-8).
+3. **R-CACHE-6** — `CachingHelixApiClient` decorator. Lambert writes unit tests (L-CACHE-1 through L-CACHE-5).
+4. **R-CACHE-7** — DI wiring. Smoke-test manually.
+5. **R-CACHE-8, R-CACHE-9** — CLI commands. Lambert adds L-CACHE-9, L-CACHE-10.
+6. **R-CACHE-10, R-CACHE-11** — Documentation and CAF verification.
+
+Ripley should target the interfaces first so Lambert can write tests in parallel.
+
+---
+
+## 11. Open Questions (for Larry)
+
+1. **Should HelixTool.Mcp (HTTP project) also get caching?** It's long-lived so in-memory caching matters more there, but SQLite would give persistence across restarts. Recommendation: yes, same DI registration, low incremental effort.
+2. **Should `cache status` show per-job breakdown?** Or just totals? Recommendation: totals only for v1, per-job in v2 if useful.
+3. **Should cache be opt-out?** Currently always on. `HLX_CACHE_MAX_SIZE_MB=0` disables, but should there be `--no-cache` flag on individual commands? Recommendation: defer to v2 unless MCP consumers need it.
+
+### 2025-02-13: Consolidate MCP config examples in README — one example + file path table
+
+**By:** Kane
+**What:** Replaced three duplicate MCP client config JSON blocks (VS Code, Claude Desktop, Claude Code/Cursor) with a single canonical example plus a table of config file locations and key names. Added `--yes` flag to all `dnx` args. Removed stale "not yet published to nuget.org" notes since v0.1.0 is live.
+**Why:** The three JSON blocks were nearly identical — only the top-level key (`servers` vs `mcpServers`) and file path differed. Duplicating them made maintenance error-prone (changes had to be made in 3+ places) and made the README unnecessarily long. The consolidated format is easier to maintain and scan. The `--yes` flag is required for MCP server definitions because `dnx` runs non-interactively when launched by an MCP client. Pattern established: when configs differ only by file path and a single key name, use one example + a table rather than repeating the full block.
+
+### 2025-02-12: Cache Test Suite Complete (L-CACHE-1 through L-CACHE-10)
+**By:** Lambert
+**What:** 56 tests covering all 10 Dallas cache test action items, across 3 new test files.
+
+---
+
+## Files Created
+
+| File | Tests | Coverage |
+|---|---|---|
+| `CachingHelixApiClientTests.cs` | 26 | L-CACHE-1 (cache hit), L-CACHE-2 (cache miss), L-CACHE-3 (TTL selection), L-CACHE-4 (console log bypass), L-CACHE-5 (console log cached), L-CACHE-10 (disabled cache) |
+| `SqliteCacheStoreTests.cs` | 18 | L-CACHE-6 (CRUD), L-CACHE-7 (eviction), L-CACHE-8 (idempotent schema) |
+| `CacheOptionsTests.cs` | 12 | L-CACHE-9 (XDG path resolution, defaults) |
+
+## Test Count
+
+126 → 182 (all passing, 0 warnings)
+
+## Decisions Made
+
+1. **No null-guard constructor tests:** Ripley's `CachingHelixApiClient` constructor does not null-guard its parameters. Rather than writing tests that would immediately fail, I wrote a `Constructor_MaxSizeZero_DisablesCache` test that verifies the important behavioral contract instead. **Suggestion for Ripley:** Consider adding `ArgumentNullException.ThrowIfNull()` guards to the constructor — this is a cheap safety net.
+
+2. **Temp directories for SqliteCacheStore tests:** `SqliteCacheStore` requires file-based SQLite (constructor calls `Directory.CreateDirectory`). Tests use `Path.GetTempPath()` + GUID subdirs with cleanup in `Dispose()`/finally blocks. This is slightly slower than `:memory:` but matches the real usage pattern.
+
+3. **Console log cache miss mock pattern:** The decorator's console log flow calls `GetArtifactAsync` twice (once for miss check, once to return stored result). NSubstitute's `.Returns(null, stream)` sequential return pattern handles this correctly.
+
+## Notes for Ripley
+
+- The `SchemaCreation_OpenTwice_NoErrors` test opens two `SqliteCacheStore` instances on the same directory. This works because of WAL mode but may show occasional `SQLITE_BUSY` under CI load. If this becomes flaky, consider adding `busy_timeout` to the test or serializing access.
+- The LRU eviction test uses `MaxSizeBytes = 100` with 60-byte artifacts. This verifies the eviction fires but doesn't deeply test the LRU ordering — a more thorough test would need controlled `last_accessed` timestamps.
+
+### 2026-02-12: Cache Implementation Details
+**By:** Ripley
+**What:** SQLite-backed caching layer implemented per Dallas's design review (R-CACHE-1 through R-CACHE-11).
+
+**Implementation decisions:**
+
+1. **Microsoft.Data.Sqlite v9.0.7** — latest stable at time of implementation.
+
+2. **CachingHelixApiClient DTO round-tripping** — Private record types (`JobDetailsDto`, `WorkItemSummaryDto`, `WorkItemDetailsDto`, `WorkItemFileDto`) implement the projection interfaces (`IJobDetails`, etc.) directly. This avoids needing a separate deserialization step — the DTOs are both the serialization format and the return type.
+
+3. **Artifact path strategy** — Instead of nested `{jobId[0:8]}/{workItem}/{fileName}`, I used `{jobId[0:8]}/{sanitized_cache_key}` where colons/slashes in the cache key are replaced with underscores. This is simpler and avoids ambiguity when work item names contain path-unsafe characters.
+
+4. **ConsoleAppFramework subcommand routing** — CAF v5 supports `[Command("cache clear")]` and `[Command("cache status")]` directly. No special `app.Add("cache", ...)` registration needed — verified by successful build (R-CACHE-11).
+
+5. **Schema migration strategy** — `PRAGMA user_version=1`. On mismatch, all tables are dropped and recreated (destructive migration is acceptable for cache data). This handles future schema changes cleanly.
+
+6. **Startup eviction** — `EvictExpiredAsync()` is fire-and-forget via `Task.Run()` in the constructor. This avoids blocking startup while still cleaning up stale data.
+
+**For Lambert:** All new types are in `HelixTool.Core` namespace. `ICacheStore` is the mock boundary for unit tests. `SqliteCacheStore` can be tested with `:memory:` connection string or temp file for integration tests. The `CachingHelixApiClient` constructor takes `(IHelixApiClient inner, ICacheStore cache, CacheOptions options)`.
+
+**Files created:**
+- `src/HelixTool.Core/Cache/ICacheStore.cs`
+- `src/HelixTool.Core/Cache/CacheOptions.cs`
+- `src/HelixTool.Core/Cache/CacheStatus.cs`
+- `src/HelixTool.Core/Cache/SqliteCacheStore.cs`
+- `src/HelixTool.Core/Cache/CachingHelixApiClient.cs`
+
+**Files modified:**
+- `src/HelixTool.Core/HelixTool.Core.csproj` (added Microsoft.Data.Sqlite)
+- `src/HelixTool/Program.cs` (DI, cache commands, llmstxt update)

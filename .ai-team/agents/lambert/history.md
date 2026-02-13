@@ -77,3 +77,5 @@
 - CachingHelixApiClient uses private DTOs (JobDetailsDto, WorkItemSummaryDto, etc.) that implement the interface types for JSON round-tripping. Cache hit deserialization returns these DTOs, not the original mock objects.
 - GetTtlAsync internally calls IsJobCompletedAsync which may trigger GetJobDetailsAsync (itself cached). Mock setup for TTL tests needs to account for this call chain.
 
+📌 Session 2026-02-12-cache-implementation: All 56 cache tests (L-CACHE-1 through L-CACHE-10) pass against Ripley's implementation. 182 total tests, build clean. Committed as d62d0d1, pushed to origin/main.
+

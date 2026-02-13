@@ -74,3 +74,5 @@
 
 📌 Team update (2026-02-12): SQLite-backed caching layer implemented — ICacheStore, SqliteCacheStore, CachingHelixApiClient, cache clear/status commands, DI wiring for CLI and MCP containers — decided by Ripley
 
+📌 Session 2026-02-12-cache-implementation: Lambert wrote 56 tests (L-CACHE-1 through L-CACHE-10) against cache implementation — all pass. 182 total tests, build clean. Committed as d62d0d1, pushed to origin/main.
+
