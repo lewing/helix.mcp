@@ -2,7 +2,7 @@
 
 A CLI tool and MCP server for investigating [.NET Helix](https://helix.dot.net) test results. Designed for diagnosing CI failures in dotnet repos (runtime, sdk, aspnetcore, etc.).
 
-Built with [Squad](https://github.com/bradygaster/squad) — [meet the team](.ai-team/SQUAD.md).
+Built with [Squad](https://github.com/bradygaster/squad) — [meet the squad](.ai-team/SQUAD.md).
 
 ## Architecture
 
