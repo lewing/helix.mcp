@@ -1,4 +1,4 @@
-# Meet the Team
+# Meet the Squad
 
 This project uses [Squad](https://github.com/bradygaster/squad), an AI team orchestration framework for GitHub Copilot. Squad lets you define a roster of specialized AI agents that collaborate on a codebase — each with a clear role, scope, and set of responsibilities.
 
