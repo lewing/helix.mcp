@@ -64,45 +64,46 @@ dotnet build
 
 ### CLI
 
-```bash
-# Build
-dotnet build
+After [installing](#installation) `lewing.helix.mcp` as a global or local tool, the `hlx` command is available:
 
+```bash
 # Check a Helix job (shows failed work items)
-dotnet run --project src/HelixTool -- status 02d8bd09-9400-4e86-8d2b-7a6ca21c5009
+hlx status 02d8bd09-9400-4e86-8d2b-7a6ca21c5009
 
 # Show all work items including passed
-dotnet run --project src/HelixTool -- status 02d8bd09 --all
+hlx status 02d8bd09 --all
 
 # Download console log for a failed work item
-dotnet run --project src/HelixTool -- logs 02d8bd09 "dotnet-watch.Tests.dll.1"
+hlx logs 02d8bd09 "dotnet-watch.Tests.dll.1"
 
 # List uploaded files (binlogs, test results, etc.)
-dotnet run --project src/HelixTool -- files 02d8bd09 "dotnet-watch.Tests.dll.1"
+hlx files 02d8bd09 "dotnet-watch.Tests.dll.1"
 
 # Download binlogs from a work item
-dotnet run --project src/HelixTool -- download 02d8bd09 "dotnet-watch.Tests.dll.1" "*.binlog"
+hlx download 02d8bd09 "dotnet-watch.Tests.dll.1" "*.binlog"
 
 # Scan work items to find which ones have binlogs
-dotnet run --project src/HelixTool -- find-binlogs 02d8bd09
+hlx find-binlogs 02d8bd09
 
 # Download a file by direct URL (from hlx files output)
-dotnet run --project src/HelixTool -- download-url "https://helix..."
+hlx download-url "https://helix..."
 
 # Show detailed info about a specific work item
-dotnet run --project src/HelixTool -- work-item 02d8bd09 "dotnet-watch.Tests.dll.1"
+hlx work-item 02d8bd09 "dotnet-watch.Tests.dll.1"
 
 # Check status of multiple jobs at once
-dotnet run --project src/HelixTool -- batch-status 02d8bd09 a1b2c3d4
+hlx batch-status 02d8bd09 a1b2c3d4
 
 # Search console log for error patterns
-dotnet run --project src/HelixTool -- search-log 02d8bd09 "dotnet-watch.Tests.dll.1" "error CS"
+hlx search-log 02d8bd09 "dotnet-watch.Tests.dll.1" "error CS"
 ```
 
 Accepts bare GUIDs or full Helix URLs:
 ```bash
-dotnet run --project src/HelixTool -- status https://helix.dot.net/api/jobs/02d8bd09-9400-4e86-8d2b-7a6ca21c5009/details
+hlx status https://helix.dot.net/api/jobs/02d8bd09-9400-4e86-8d2b-7a6ca21c5009/details
 ```
+
+> If running from a local build instead of the installed tool, substitute `dotnet run --project src/HelixTool --` for `hlx`.
 
 ### MCP Server
 
