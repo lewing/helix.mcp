@@ -67,3 +67,13 @@
 
 📌 Team update (2025-02-12): NuGet Trusted Publishing workflow added — publish via git tag v*
 
+- Cache tests (L-CACHE-1 through L-CACHE-10): 56 tests written across 3 new files. Test count 126 → 182.
+- CachingHelixApiClientTests.cs: 26 unit tests — cache hit/miss, TTL selection, console log bypass for running jobs, disabled cache pass-through. Uses NSubstitute mocks of ICacheStore and IHelixApiClient.
+- SqliteCacheStoreTests.cs: 18 integration tests — metadata/artifact/job-state CRUD, clear, status, TTL expiry eviction, LRU eviction with small MaxSizeBytes, idempotent schema creation. Uses temp directories with real SQLite.
+- CacheOptionsTests.cs: 12 unit tests — GetEffectiveCacheRoot() explicit/default/Windows/XDG/fallback paths, default values, record `with` expression.
+- Key pattern: SqliteCacheStore requires file-backed SQLite (constructor calls `Directory.CreateDirectory`), so integration tests use `Path.GetTempPath()` + GUID subdirs with cleanup in `Dispose()`/finally.
+- CachingHelixApiClient constructor is 3-arg: `(IHelixApiClient inner, ICacheStore cache, CacheOptions options)`. No null-guard on params — `_enabled = options.MaxSizeBytes > 0` controls pass-through.
+- Console log cache miss flow: decorator calls inner, stores via SetArtifactAsync, disposes original stream, then returns `GetArtifactAsync()` result. Mock setup needs `.Returns(null, stream)` for sequential returns.
+- CachingHelixApiClient uses private DTOs (JobDetailsDto, WorkItemSummaryDto, etc.) that implement the interface types for JSON round-tripping. Cache hit deserialization returns these DTOs, not the original mock objects.
+- GetTtlAsync internally calls IsJobCompletedAsync which may trigger GetJobDetailsAsync (itself cached). Mock setup for TTL tests needs to account for this call chain.
+

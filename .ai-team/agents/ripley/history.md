@@ -63,3 +63,14 @@
 
 📌 Team update (2025-02-12): NuGet Trusted Publishing workflow added — publish via git tag v*
 
+- Implemented SQLite-backed caching layer (R-CACHE-1 through R-CACHE-11). New files: `Cache/ICacheStore.cs` (interface), `Cache/CacheOptions.cs` (XDG path resolution), `Cache/CacheStatus.cs` (status record), `Cache/SqliteCacheStore.cs` (SQLite + disk implementation with WAL mode, PRAGMA user_version=1, eviction), `Cache/CachingHelixApiClient.cs` (decorator with TTL matrix: 15s/30s running, 1h/4h completed, console log bypass for running jobs, stream caching via disk).
+- DI updated in both CLI container and `hlx mcp` container in Program.cs. `HelixApiClient` registered as concrete type, `IHelixApiClient` resolved as `CachingHelixApiClient` wrapping it.
+- Added `cache clear` and `cache status` CLI commands using ConsoleAppFramework's `[Command("cache clear")]` pattern for subcommand routing.
+- Cache key format: `job:{jobId}:details`, `job:{jobId}:workitems`, `job:{jobId}:wi:{workItem}:details`, etc.
+- Artifact files stored at `{cache_root}/artifacts/{jobId[0:8]}/{sanitized_key}` with write-then-rename pattern.
+- `CachingHelixApiClient` uses private DTO records (`JobDetailsDto`, `WorkItemSummaryDto`, etc.) that implement the projection interfaces for JSON round-tripping.
+- `HLX_CACHE_MAX_SIZE_MB=0` disables caching entirely (pass-through mode).
+- llmstxt updated with cache commands and caching section.
+
+📌 Team update (2026-02-12): SQLite-backed caching layer implemented — ICacheStore, SqliteCacheStore, CachingHelixApiClient, cache clear/status commands, DI wiring for CLI and MCP containers — decided by Ripley
+

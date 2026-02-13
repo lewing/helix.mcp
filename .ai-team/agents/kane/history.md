@@ -120,3 +120,10 @@
 - Key distinction reinforced: **package name** = `lewing.helix.mcp`, **repo name** = `helix.mcp`, **CLI command** = `hlx`.
 - No code changes — documentation only.
 
+📌 Session 2025-02-14-cli-examples-hlx: Updated Quick Start CLI examples to use installed tool command:
+1. **Removed `# Build` / `dotnet build` lines** from CLI code block — building is already covered in the "Build from Source" section, so duplicating it in Quick Start was unnecessary and confusing.
+2. **Replaced all `dotnet run --project src/HelixTool --` with `hlx`** across all 12 CLI examples (status, logs, files, download, find-binlogs, download-url, work-item, batch-status, search-log) plus the URL example. The `hlx` command is the installed tool name (`ToolCommandName`) and is what users get after `dotnet tool install`.
+3. **Added blockquote note** after the CLI examples: "If running from a local build instead of the installed tool, substitute `dotnet run --project src/HelixTool --` for `hlx`." — gives build-from-source users the escape hatch without cluttering every example.
+4. **MCP HTTP section left unchanged** — `dotnet run --project src/HelixTool.Mcp` is correct there since the HTTP MCP server is a separate project not installed as a tool.
+- No code changes — documentation only.
+

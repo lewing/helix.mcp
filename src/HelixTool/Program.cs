@@ -8,7 +8,21 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 
 var services = new ServiceCollection();
-services.AddSingleton<IHelixApiClient>(_ => new HelixApiClient(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
+services.AddSingleton<CacheOptions>(_ =>
+{
+    var opts = new CacheOptions();
+    var maxStr = Environment.GetEnvironmentVariable("HLX_CACHE_MAX_SIZE_MB");
+    if (int.TryParse(maxStr, out var mb))
+        opts = opts with { MaxSizeBytes = (long)mb * 1024 * 1024 };
+    return opts;
+});
+services.AddSingleton<ICacheStore>(sp => new SqliteCacheStore(sp.GetRequiredService<CacheOptions>()));
+services.AddSingleton<HelixApiClient>(_ => new HelixApiClient(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
+services.AddSingleton<IHelixApiClient>(sp =>
+    new CachingHelixApiClient(
+        sp.GetRequiredService<HelixApiClient>(),
+        sp.GetRequiredService<ICacheStore>(),
+        sp.GetRequiredService<CacheOptions>()));
 services.AddSingleton<HelixService>();
 ConsoleApp.ServiceProvider = services.BuildServiceProvider();
 
@@ -349,6 +363,8 @@ public class Commands
 - `hlx work-item <jobId> <workItem> [--json]` — Detailed work item info (exit code, state, machine, duration, files)
 - `hlx batch-status <jobId1> <jobId2> ...` — Status for multiple jobs in parallel
 - `hlx search-log <jobId> <workItem> <pattern> [--context N] [--max-matches N]` — Search console log for patterns
+- `hlx cache status` — Show cache size, entry count, oldest/newest entries
+- `hlx cache clear` — Wipe all cached data (SQLite + artifact files)
 
 ## MCP Server
 - `hlx mcp` — Start MCP server over stdio (for VS Code, Claude Desktop, etc.)
@@ -382,6 +398,13 @@ Available as `failureCategory` in JSON and MCP output.
 - `work-item` shows detailed info including all uploaded files
 - `batch-status` shows per-job summary and overall totals with failure breakdown
 - `logs` and `download` save files to %TEMP% and print paths
+
+## Caching
+- SQLite-backed cross-process cache (shared across `hlx mcp` stdio instances)
+- Cache location: `%LOCALAPPDATA%/hlx/cache.db` (Windows) or `$XDG_CACHE_HOME/hlx/cache.db` (Linux/macOS)
+- Default max size: 1 GB. Configure via `HLX_CACHE_MAX_SIZE_MB` env var. Set to 0 to disable.
+- Running jobs: 15-30s TTL. Completed jobs: 1-4h TTL. Console logs never cached while running.
+- Eviction: TTL-based + LRU when over max size. Artifacts expire after 7 days without access.
 """;
         Console.Write(text);
     }
@@ -393,7 +416,21 @@ Available as `failureCategory` in JSON and MCP output.
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
         builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
-        builder.Services.AddSingleton<IHelixApiClient>(_ => new HelixApiClient(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
+        builder.Services.AddSingleton<CacheOptions>(_ =>
+        {
+            var opts = new CacheOptions();
+            var maxStr = Environment.GetEnvironmentVariable("HLX_CACHE_MAX_SIZE_MB");
+            if (int.TryParse(maxStr, out var mb))
+                opts = opts with { MaxSizeBytes = (long)mb * 1024 * 1024 };
+            return opts;
+        });
+        builder.Services.AddSingleton<ICacheStore>(sp => new SqliteCacheStore(sp.GetRequiredService<CacheOptions>()));
+        builder.Services.AddSingleton<HelixApiClient>(_ => new HelixApiClient(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
+        builder.Services.AddSingleton<IHelixApiClient>(sp =>
+            new CachingHelixApiClient(
+                sp.GetRequiredService<HelixApiClient>(),
+                sp.GetRequiredService<ICacheStore>(),
+                sp.GetRequiredService<CacheOptions>()));
         builder.Services.AddSingleton<HelixService>();
         builder.Services
             .AddMcpServer(options =>
@@ -403,6 +440,44 @@ Available as `failureCategory` in JSON and MCP output.
             .WithStdioServerTransport()
             .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly);
         await builder.Build().RunAsync();
+    }
+
+    /// <summary>Clear all cached data (SQLite metadata + artifact files).</summary>
+    [Command("cache clear")]
+    public async Task CacheClear()
+    {
+        var cache = ConsoleApp.ServiceProvider!.GetRequiredService<ICacheStore>();
+        await cache.ClearAsync();
+        Console.WriteLine("Cache cleared.");
+    }
+
+    /// <summary>Show cache size, entry count, oldest/newest entries.</summary>
+    [Command("cache status")]
+    public async Task CacheStatusCmd()
+    {
+        var cache = ConsoleApp.ServiceProvider!.GetRequiredService<ICacheStore>();
+        var status = await cache.GetStatusAsync();
+
+        Console.WriteLine($"Cache status:");
+        Console.WriteLine($"  Max size:        {FormatBytes(status.MaxSizeBytes)}");
+        Console.WriteLine($"  Current size:    {FormatBytes(status.TotalSizeBytes)}");
+        Console.WriteLine($"  Metadata entries: {status.MetadataEntryCount}");
+        Console.WriteLine($"  Artifact files:   {status.ArtifactFileCount}");
+        if (status.OldestEntry.HasValue)
+            Console.WriteLine($"  Oldest entry:    {status.OldestEntry.Value:u}");
+        if (status.NewestEntry.HasValue)
+            Console.WriteLine($"  Newest entry:    {status.NewestEntry.Value:u}");
+    }
+
+    internal static string FormatBytes(long bytes)
+    {
+        if (bytes >= 1L * 1024 * 1024 * 1024)
+            return $"{bytes / (1024.0 * 1024 * 1024):F1} GB";
+        if (bytes >= 1024 * 1024)
+            return $"{bytes / (1024.0 * 1024):F1} MB";
+        if (bytes >= 1024)
+            return $"{bytes / 1024.0:F1} KB";
+        return $"{bytes} B";
     }
 
     internal static string FormatDuration(TimeSpan duration)
