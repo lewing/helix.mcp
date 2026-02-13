@@ -109,3 +109,28 @@
 
 
 📌 Team update (2026-02-13): Remote search design — 2 new tools (hlx_search_file, hlx_test_results) designed with 8 decisions pending Larry's review. US-31/US-32 created. Lambert to write tests for search logic and TRX parsing (including XXE, oversized, malformed .trx files) — decided by Dallas
+
+## 2026-02-15: US-31 SearchFileAsync Tests (Phase 1)
+
+**SearchFileTests.cs** — 17 tests covering SearchFileAsync and config toggle:
+
+- **Input validation (3 tests, Theory with 3 InlineData each):** null/empty/whitespace jobId, workItem, fileName all throw ArgumentException
+- **Config toggle (2 tests):** SearchFileAsync and SearchConsoleLogAsync both throw InvalidOperationException when HLX_DISABLE_FILE_SEARCH=true. Env var set/reset in try/finally.
+- **Binary file detection (1 test):** file content with null bytes → IsBinary=true, empty matches
+- **Basic search (3 tests):** simple pattern match (correct line numbers, 1-based), case-insensitive matching ("ERROR" matches "error"), context lines (1 before + match + 1 after)
+- **Max matches (1 test):** maxMatches=3 limits results, Truncated=true
+- **No matches (1 test):** pattern not found → empty matches, IsBinary=false, Truncated=false
+- **Total test count:** 322 → 339 (all passing)
+
+## Learnings
+
+- SearchFileAsync mock setup: requires both `ListWorkItemFilesAsync` (return IWorkItemFile list) and `GetFileAsync` (return stream). The DownloadFilesAsync flow filters by MatchesPattern, so the mock file name must match the fileName parameter exactly.
+- Binary detection: null byte (0x00) anywhere in first 8KB triggers IsBinary=true. Use raw `byte[]` with `SetupFileBytes` helper.
+- Config toggle test pattern: set env var before call, reset in finally block. Both SearchFileAsync and SearchConsoleLogAsync check `IsFileSearchDisabled` before argument validation.
+- Truncated flag: set when `Matches.Count >= maxMatches` — tests can verify this by providing fewer maxMatches than matching lines.
+- Each test class uses a UNIQUE ValidJobId GUID to avoid temp directory collisions during parallel xUnit execution (established pattern from DownloadTests).
+
+
+📌 Team update (2026-02-13): HLX_DISABLE_FILE_SEARCH config toggle added as security safeguard for disabling file content search operations — decided by Larry Ewing (via Copilot)
+
+📌 Team update (2026-02-13): US-31 hlx_search_file Phase 1 implemented (SearchFileAsync, MCP tool, CLI command, config toggle) — decided by Ripley

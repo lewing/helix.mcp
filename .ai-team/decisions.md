@@ -2529,3 +2529,51 @@ internal const int MaxSearchFileSizeBytes = 50 * 1024 * 1024; // 50 MB
 | TRX data exfiltration | Low | Same trust level as console logs (already exposed) |
 | Cache poisoning of parsed results | Low | Existing cache isolation patterns apply |
 
+
+
+---
+
+### 2026-02-13: User directive
+**By:** Larry Ewing (via Copilot)
+**What:** Remote file search and structured parsing features (hlx_search_file, hlx_test_results) should be disableable via a configuration setting, as a security safeguard for operators who want to restrict file content access.
+**Why:** User request — defense-in-depth. Operators deploying the HTTP MCP server may want to limit the attack surface by disabling content parsing features while still allowing file listing and download.
+
+---
+
+# US-31: hlx_search_file Phase 1 Implementation
+
+**By:** Ripley
+**Date:** 2025-07-23
+
+## What was implemented
+
+1. **Extracted `SearchLines` helper** — private static method in HelixService that encapsulates the line-matching + context-gathering logic. Both `SearchConsoleLogAsync` and the new `SearchFileAsync` use it, eliminating duplication.
+
+2. **`SearchFileAsync`** — downloads a single file via `DownloadFilesAsync(exact fileName)`, checks for binary content (null byte in first 8KB), enforces 50MB size limit (`MaxSearchFileSizeBytes`), then delegates to `SearchLines`. Returns `FileContentSearchResult` record.
+
+3. **Config toggle** — `HLX_DISABLE_FILE_SEARCH=true` env var disables both `SearchConsoleLogAsync` and `SearchFileAsync` (throws `InvalidOperationException`). MCP tools check via `HelixService.IsFileSearchDisabled` and return JSON error instead of throwing.
+
+4. **MCP tool `hlx_search_file`** — follows exact `SearchLog` pattern with URL resolution and config toggle.
+
+5. **CLI command `search-file`** — follows `search-log` pattern with positional args.
+
+## Decisions made
+
+- **Binary detection strategy**: Check for null byte in first 8KB. Simple and effective — avoids searching compiled binaries, zip files, etc.
+- **File download reuse**: Used existing `DownloadFilesAsync` with exact fileName as pattern rather than adding a new download method. Works because `MatchesPattern` does substring match.
+- **Config toggle scope**: Applied to both search-log and search-file per Larry's directive. The env var name `HLX_DISABLE_FILE_SEARCH` covers all file content search operations.
+
+## For Lambert
+
+Tests needed:
+- `SearchLines` helper (extracted logic, same behavior as before)
+- `SearchFileAsync` — binary detection, size limit, normal search, file-not-found
+- `IsFileSearchDisabled` toggle — both service methods and MCP tools
+- `SearchFile` MCP tool — URL resolution, config toggle, binary file JSON error
+- `SearchFile` CLI command smoke test
+
+## Files changed
+
+- `src/HelixTool.Core/HelixService.cs` — SearchLines helper, SearchFileAsync, FileContentSearchResult, IsFileSearchDisabled, MaxSearchFileSizeBytes
+- `src/HelixTool.Core/HelixMcpTools.cs` — hlx_search_file tool, config toggle on hlx_search_log
+- `src/HelixTool/Program.cs` — search-file CLI command

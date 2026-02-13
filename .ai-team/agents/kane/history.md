@@ -59,3 +59,8 @@
 
 
 📌 Team update (2026-02-13): Remote search design — 2 new MCP tools (hlx_search_file, hlx_test_results) and CLI commands (search-file, test-results) designed. README and llmstxt will need updates when implemented — decided by Dallas
+
+
+📌 Team update (2026-02-13): HLX_DISABLE_FILE_SEARCH config toggle added as security safeguard for disabling file content search operations — decided by Larry Ewing (via Copilot)
+
+📌 Team update (2026-02-13): US-31 hlx_search_file Phase 1 implemented (SearchFileAsync, MCP tool, CLI command, config toggle) — decided by Ripley
