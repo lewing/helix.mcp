@@ -1868,3 +1868,664 @@ Also, `FindBinlogs` MCP tool now delegates to `FindFiles`, so the test on line 2
 4. **MCP tool tests verify propagation:** `hlx_batch_status` tests confirm that the service-layer `ArgumentException` propagates through the MCP tool method. No separate MCP-layer validation needed — the service enforces the limit.
 
 **Files:** `src/HelixTool.Tests/SecurityValidationTests.cs` — 18 tests (all passing)
+
+### 2026-02-13: Remote search and structured file querying — feature design
+
+**By:** Dallas
+**Requested by:** Larry Ewing
+**What:** Feature design for remote search/grep across Helix work item artifacts — general text search, structured TRX/XML querying, and the boundary with external binlog tools.
+**Why:** Users need to find patterns in Helix artifacts without downloading files locally. The current `hlx_search_log` only covers console logs. This design extends search to arbitrary text files and adds structured querying for test results (TRX). It maps to existing backlog (US-22, US-14) and identifies new stories needed.
+
+---
+
+## 1. Current State
+
+### What we have
+
+| Tool | Scope | How it works |
+|------|-------|-------------|
+| `hlx_search_log` | Console logs only | Downloads log via Helix SDK `ConsoleLogAsync`, searches in-memory with `string.Contains`, deletes temp file |
+| `hlx_files` | File listing | Lists work item files, categorizes by extension (.binlog, .trx, other) |
+| `hlx_find_files` | Cross-work-item scan | Scans up to N work items to find files matching a glob pattern |
+| `hlx_download` / `hlx_download_url` | File retrieval | Downloads files to temp dir for local processing |
+
+### The gap
+
+Once a user identifies a file via `hlx_files` or `hlx_find_files`, they must download it to search its contents. For text files (logs, XML, TRX), this means:
+1. `hlx_download` → local file path
+2. Client reads file, searches locally
+
+For MCP clients (LLM agents), this is expensive — each file download consumes tool calls and context window. The client must also know *how* to parse structured formats (TRX XML, binlogs).
+
+### The goal
+
+Enable "search without download" for:
+- **Text files** — any uploaded text artifact (not just console logs)
+- **TRX files** — structured test result queries (which tests failed? what were their error messages?)
+- **Binlogs** — already handled by external `mcp-binlog-tool-*` MCP tools (what's our role?)
+
+---
+
+## 2. General Text Search (Remote Grep)
+
+### 2.1 Architecture: Streaming vs. Download-and-Search
+
+**Option A: Download-and-search (like `hlx_search_log` today)**
+- Download file via `IHelixApiClient.GetFileAsync` → stream to temp file → search → delete
+- Proven pattern, already works for console logs
+- File size is bounded by Helix upload limits (typically <100MB for text artifacts)
+
+**Option B: Streaming search (line-by-line from HTTP stream)**
+- Read lines from the HTTP response stream, match as they arrive, discard non-matches
+- Lower memory footprint for large files
+- More complex: can't do context lines easily (need a sliding window), can't report `totalLines` without reading everything
+
+**Recommendation:** Option A. The download-and-search pattern is proven (`SearchConsoleLogAsync` already does this), the files are bounded in size, and it enables context lines trivially. Memory optimization (streaming) can be deferred — it's the same internal refactor either way.
+
+### 2.2 Proposed MCP Tool: `hlx_search_file`
+
+```csharp
+[McpServerTool(Name = "hlx_search_file"),
+ Description("Search a work item's uploaded file for lines matching a text pattern. " +
+              "Returns matching lines with context. Works with any text file " +
+              "(logs, XML, config, scripts). Use hlx_files to find available files first.")]
+public async Task<string> SearchFile(
+    [Description("Helix job ID (GUID), Helix URL, or full work item URL")]
+    string jobId,
+
+    [Description("Work item name (optional if included in jobId URL)")]
+    string? workItem = null,
+
+    [Description("File name to search (must match a file name from hlx_files output)")]
+    string fileName,
+
+    [Description("Text pattern to search for (case-insensitive substring match)")]
+    string pattern,
+
+    [Description("Lines of context before and after each match (default: 2)")]
+    int contextLines = 2,
+
+    [Description("Maximum number of matches to return (default: 50)")]
+    int maxMatches = 50)
+```
+
+**Return format** (follows `hlx_search_log` pattern exactly):
+```json
+{
+  "workItem": "tests.dll.1",
+  "fileName": "testResults.trx",
+  "pattern": "FAIL",
+  "totalLines": 1250,
+  "matchCount": 7,
+  "matches": [
+    { "lineNumber": 42, "line": "...", "context": ["..."] }
+  ]
+}
+```
+
+### 2.3 Design Decisions for Larry
+
+**Decision 1: File size limit?**
+- **Option A:** No limit — download whatever Helix has, search it. Simple, but a 500MB dump file could OOM the process.
+- **Option B:** Hard limit (e.g., 50MB) — reject with error if file is too large. Clear, but blocks legitimate use cases.
+- **Option C:** Soft limit with warning — search first N bytes (e.g., 50MB), return results with `truncated: true` flag. User knows they got partial results.
+- **Recommendation:** Option C with 50MB default. The parameter could be exposed as `maxFileSize` if needed later, but start without it.
+
+**Decision 2: Should `hlx_search_log` be deprecated in favor of `hlx_search_file`?**
+- **Option A:** Keep both — `hlx_search_log` continues to use the Helix `ConsoleLogAsync` endpoint (which doesn't require knowing the file name), `hlx_search_file` uses `GetFileAsync` (requires file name from `hlx_files`).
+- **Option B:** Make `hlx_search_log` delegate to `hlx_search_file` internally.
+- **Recommendation:** Option A. `hlx_search_log` is a shortcut — console logs have a dedicated API endpoint that doesn't require listing files first. It's the most common search target by far. Keep the convenience path. `hlx_search_file` is for everything else.
+
+**Decision 3: Pattern matching — substring or regex?**
+- Current `hlx_search_log` uses `string.Contains(pattern, OrdinalIgnoreCase)` — no regex.
+- Threat model (E2) explicitly notes this is good: "no regex in user-facing pattern matching" eliminates ReDoS risk.
+- **Option A:** Keep substring-only. Simple, safe, handles 90% of use cases.
+- **Option B:** Add an optional `useRegex` boolean parameter (default false). Adds power but introduces ReDoS risk.
+- **Option C:** Support a limited "glob-like" syntax (e.g., `error*CS*` using wildcards only). Middle ground but invents a custom syntax.
+- **Recommendation:** Option A. Substring matching with case-insensitive comparison covers the vast majority of CI investigation patterns ("error", "FAIL", "CS1234", "Exception", "timeout"). If regex is needed, the user can download the file. Maintaining the no-regex invariant is worth the tradeoff.
+
+**Decision 4: Binary file detection?**
+- `hlx_search_file` should not try to search binary files (binlogs, DLLs, crash dumps).
+- **Proposal:** Check the first 8KB for null bytes. If found, return `{ "error": "File appears to be binary. Use hlx_download to retrieve it locally." }`. This is how `git diff` and `ripgrep` detect binary files.
+
+### 2.4 Core Service Method
+
+```csharp
+// In HelixService
+public async Task<FileSearchResult> SearchFileAsync(
+    string jobId, string workItem, string fileName,
+    string pattern, int contextLines = 2, int maxMatches = 50,
+    long maxFileSizeBytes = 50 * 1024 * 1024,
+    CancellationToken cancellationToken = default)
+```
+
+Implementation: reuse the same download-search-delete pattern from `SearchConsoleLogAsync`, but use `GetFileAsync` instead of `GetConsoleLogAsync`. Factor out the search logic into a private helper shared between the two.
+
+### 2.5 CLI Command
+
+```bash
+hlx search-file <jobId> <workItem> <fileName> <pattern> [--context 2] [--max 50]
+```
+
+---
+
+## 3. Structured Search: TRX Test Results
+
+### 3.1 The Problem
+
+TRX files are XML documents containing test results from xUnit, NUnit, and MSTest runs. They're the richest source of "which tests failed and why" — more structured than parsing console log output for `[FAIL]` lines.
+
+The current workflow is: `hlx_files` → find .trx file → `hlx_download` → parse locally. An MCP client (LLM agent) cannot parse XML natively — it needs hlx to do the structured extraction.
+
+### 3.2 Proposed MCP Tool: `hlx_test_results`
+
+```csharp
+[McpServerTool(Name = "hlx_test_results"),
+ Description("Parse TRX test result files from a work item. Returns structured test outcomes " +
+              "including test names, pass/fail status, duration, and error messages. " +
+              "Failed tests are listed first.")]
+public async Task<string> TestResults(
+    [Description("Helix job ID (GUID), Helix URL, or full work item URL")]
+    string jobId,
+
+    [Description("Work item name (optional if included in jobId URL)")]
+    string? workItem = null,
+
+    [Description("Include passed tests in output (default: false — only failures shown)")]
+    bool includePassed = false,
+
+    [Description("Maximum number of test results to return (default: 200)")]
+    int maxResults = 200)
+```
+
+**Return format:**
+```json
+{
+  "workItem": "tests.dll.1",
+  "trxFile": "testResults.trx",
+  "summary": {
+    "total": 150,
+    "passed": 142,
+    "failed": 5,
+    "skipped": 3,
+    "duration": "2m 31s"
+  },
+  "failed": [
+    {
+      "testName": "Namespace.Class.MethodName",
+      "outcome": "Failed",
+      "duration": "1.2s",
+      "errorMessage": "Assert.Equal() Failure...",
+      "stackTrace": "at Namespace.Class.MethodName() in ..."
+    }
+  ],
+  "passed": null
+}
+```
+
+### 3.3 Design Decisions for Larry
+
+**Decision 5: Which TRX file to parse when there are multiple?**
+- A work item might upload multiple .trx files (e.g., if multiple test assemblies run).
+- **Option A:** Parse ALL .trx files, merge results. Simple API for the caller, but merging across files loses the "which file had the failure" info.
+- **Option B:** Parse all .trx files, return results grouped by file name. More verbose but preserves provenance.
+- **Option C:** Accept an optional `trxFileName` parameter to parse a specific one. If omitted, parse all (Option B behavior).
+- **Recommendation:** Option C. The tool auto-discovers .trx files from `hlx_files`, parses all by default, groups by file, but allows narrowing to one file for large work items. The parameter is optional so the simple case ("just show me failures") stays simple.
+
+**Decision 6: What TRX content to extract?**
+- TRX schema is large. The minimum viable extraction is:
+  - `/TestRun/Results/UnitTestResult` → `@testName`, `@outcome`, `@duration`
+  - `/TestRun/Results/UnitTestResult/Output/ErrorInfo/Message` → error message
+  - `/TestRun/Results/UnitTestResult/Output/ErrorInfo/StackTrace` → stack trace
+  - `/TestRun/ResultSummary` → counters (total, passed, failed, etc.)
+- **Option A:** Extract all the above. Good starting point.
+- **Option B:** Also extract `@computerName`, `@startTime`, `@endTime`. Useful for timing analysis.
+- **Recommendation:** Start with Option A. The method signature should be extensible (add fields later without breaking the API shape).
+
+**Decision 7: Error message truncation?**
+- Some test failures produce enormous error messages (e.g., large expected/actual diffs from `Assert.Equal` on multi-line strings).
+- **Option A:** Return full error messages. Let the MCP client deal with context window limits.
+- **Option B:** Truncate error messages to N characters (e.g., 500) with a `"...[truncated]"` suffix.
+- **Recommendation:** Option B with 500 character default. MCP tool responses go into LLM context windows. A single test with a 50KB diff string would blow the budget. Add a `maxErrorLength` parameter so callers can override.
+
+### 3.4 Security Considerations (Flag for Ash)
+
+**SEC-1: XML External Entity (XXE) Injection**
+- TRX files are XML. If parsed with default `XmlReader`/`XDocument` settings, they could contain `<!ENTITY>` declarations that reference external resources (file:// URLs, HTTP endpoints) or expand to gigabytes of text (billion laughs attack).
+- **Mitigation:** Use `XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null }`. This is the standard .NET defense. Zero tolerance for DTDs in TRX files.
+- **Risk level:** High if unmitigated; Low with the above settings.
+
+**SEC-2: TRX files from untrusted CI jobs**
+- Helix work items are submitted by CI jobs. The CI job author controls the content of uploaded .trx files. A malicious actor could craft a .trx file that:
+  - Contains XXE payloads (mitigated by SEC-1)
+  - Has extremely large test names or error messages (DoS via memory exhaustion)
+  - Embeds content designed to confuse LLM agents when returned via MCP (prompt injection via test names)
+- **Mitigation for size:** Cap parsed content — `maxResults` parameter limits number of tests returned; `maxErrorLength` truncates messages.
+- **Mitigation for content:** We return test data as structured JSON fields, not as raw prompts. The MCP client (LLM) sees them as data, not instructions. No special mitigation needed beyond standard output sanitization.
+- **Trust boundary:** TRX content has the same trust level as console logs (semi-trusted — user-submitted but from within Microsoft CI infrastructure for the primary use case). Document this.
+
+**SEC-3: File size limits for in-memory XML parsing**
+- `XDocument.Load()` reads the entire XML into memory as a DOM tree. A 100MB TRX file would consume several hundred MB of RAM.
+- **Mitigation:** Check file size before parsing. Reject files > 50MB with a clear error. TRX files from normal test runs are typically 100KB–5MB.
+
+**SEC-4: Pattern complexity (text search)**
+- Current design uses `string.Contains` — O(n*m) worst case but no catastrophic backtracking.
+- **No regex** — explicitly maintained from existing threat model finding E2.
+- **No risk of ReDoS.**
+
+**SEC-5: Trust boundary for file content from Helix**
+- All file content retrieved from Helix blob storage is semi-trusted:
+  - The Helix API returns signed Azure Blob Storage URLs with SAS tokens
+  - The content was uploaded by a CI job that ran on Helix infrastructure
+  - The CI job author (or a PR contributor) controls what gets uploaded
+  - For open-source repos, ANY pull request author can submit CI jobs
+- **Principle:** Treat all file content as untrusted input. Parse defensively. Never execute, evaluate, or interpret content as code.
+- **This applies to:** TRX parsing, text search results, and any future structured parsers.
+
+---
+
+## 4. Structured Search: Binlogs
+
+### 4.1 Current State
+
+External `mcp-binlog-tool-*` MCP tools already exist (visible in the MCP tool inventory this conversation has access to). They provide rich binlog analysis:
+- `load_binlog` / `search_binlog` / `get_diagnostics` / `get_expensive_targets` etc.
+- These tools operate on local file paths — they need the binlog downloaded first.
+
+### 4.2 hlx's Role
+
+hlx's role with binlogs is **discovery and retrieval**, not parsing:
+
+| hlx responsibility | External binlog tool responsibility |
+|---|---|
+| `hlx_find_binlogs` — find which work items have binlogs | `load_binlog` — load a local .binlog file |
+| `hlx_find_files *.binlog` — same, generic | `search_binlog` — query the loaded binlog |
+| `hlx_download` — download binlog to local path | `get_diagnostics` — extract errors/warnings |
+| `hlx_download_url` — download by direct URI | All other analysis tools |
+
+**Decision 8: Should hlx wrap binlog tools for a one-stop experience?**
+- **Option A:** No — hlx discovers/downloads, external tools analyze. Clean separation. The MCP client orchestrates the two-step workflow.
+- **Option B:** hlx adds convenience tools like `hlx_binlog_errors <jobId> <workItem>` that download + delegate to binlog tools. Reduces MCP round-trips but creates a dependency on the binlog tool being co-installed.
+- **Option C:** hlx adds binlog analysis directly (embed MSBuild Structured Log Viewer library). Full self-contained solution but large dependency.
+- **Recommendation:** Option A. hlx is a Helix API tool, not an MSBuild analysis tool. The MCP client is the orchestrator — it calls `hlx_download` then `mcp-binlog-tool-load_binlog`. Adding binlog parsing to hlx would violate the single-responsibility principle and create a maintenance burden. The external binlog tools are mature and actively maintained.
+
+If the two-step workflow is too many round-trips, the right fix is an MCP "workflow" or "composite tool" at the client layer, not embedding analysis into hlx.
+
+---
+
+## 5. Backlog Mapping
+
+### Existing Stories Covered
+
+| Story | Title | Coverage |
+|-------|-------|----------|
+| **US-22** | Console Log Content Search / Pattern Extraction | **Generic search ✅ done** (`hlx_search_log`). Structured test failure parsing from console logs NOT done — this design proposes `hlx_test_results` (TRX-based) as the better solution. The "parse `[FAIL]` lines from logs" approach in US-22's original spec is fragile (format-dependent). TRX gives us structured data directly. **Recommendation: close the structured parsing acceptance criteria in US-22 as "won't fix — superseded by TRX parsing (US-14)".** |
+| **US-14** | TRX Test Results Parsing | **Directly addressed** by `hlx_test_results`. All acceptance criteria map to the proposed tool. Promote from P3 to P2. |
+| **US-16** | Retry/Correlation Support | **Not directly addressed** by this design. Cross-job work item correlation is a separate feature. However, `hlx_search_file` + `hlx_test_results` make it easier to compare failures across jobs (search for a test name in multiple work items). |
+
+### New Stories Needed
+
+| ID | Title | Priority | Description |
+|----|-------|----------|-------------|
+| **US-31** | Remote file text search | P2 | `hlx_search_file` MCP tool + `hlx search-file` CLI. Search uploaded text files for patterns without downloading. Extends `hlx_search_log` to arbitrary files. |
+| **US-32** | TRX test results parsing | P2 | `hlx_test_results` MCP tool + `hlx test-results` CLI. Parse .trx XML, return structured pass/fail/error data. **Replaces the structured parsing portion of US-22 and implements US-14.** Requires SEC-1 through SEC-5 mitigations. |
+
+### Stories NOT needed
+
+- No new story for binlog analysis — hlx's role (discovery/download) is already covered by `hlx_find_binlogs` and `hlx_download`.
+- No new story for regex support — deliberately excluded (Decision 3).
+- No story for `hlx_search_log` changes — it stays as-is.
+
+---
+
+## 6. Implementation Phasing
+
+### Phase 1: `hlx_search_file` (US-31)
+**Ships first. Low risk. Incremental.**
+
+- Refactor `SearchConsoleLogAsync` to extract shared search logic into a private helper
+- Add `SearchFileAsync` to `HelixService` using the same download-search-delete pattern
+- Add `hlx_search_file` MCP tool and `hlx search-file` CLI command
+- Add binary file detection (null byte check)
+- Add file size cap (50MB default)
+- **Estimated scope:** ~100 lines Core + ~30 lines MCP + CLI wiring
+- **Tests:** Lambert writes unit tests for search logic (mock `IHelixApiClient.GetFileAsync`)
+- **Security:** Minimal new attack surface — same patterns as existing `hlx_search_log`
+
+### Phase 2: `hlx_test_results` (US-32)
+**Ships second. Medium risk. Requires security review.**
+
+- Add `ParseTrxAsync` to `HelixService` — download .trx, parse with safe `XmlReader`, extract results
+- Add `hlx_test_results` MCP tool and `hlx test-results` CLI command
+- **Pre-implementation:** Ash reviews SEC-1 through SEC-5 and produces XML parsing security guidelines
+- **Implementation constraints:**
+  - `XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null }`
+  - File size check before parsing (reject > 50MB)
+  - `maxResults` cap on returned test entries
+  - `maxErrorLength` truncation on error messages
+- **Estimated scope:** ~200 lines Core + ~40 lines MCP + CLI wiring
+- **Tests:** Lambert writes tests with crafted .trx files (valid, malformed, XXE attempts, oversized)
+
+### Phase 3 (deferred): Structured console log failure extraction
+**Not recommended now.**
+
+The original US-22 structured parsing (xUnit `[FAIL]`, NUnit, MSTest format detection) is fragile — it depends on console output format which varies by test framework version, CI runner, and configuration. TRX parsing (Phase 2) gives us the same information in a reliable, structured format. If specific scenarios arise where TRX files are unavailable but console logs have extractable failure patterns, revisit this.
+
+### Phase 4 (deferred): Cross-file search
+**Future capability if demand materializes.**
+
+Search across ALL files in a work item (or across work items) for a pattern. Like `hlx_find_files` but for content, not names. This is expensive (download every file, search each one) and the use cases are unclear. Defer until a concrete scenario drives it.
+
+---
+
+## 7. API Shape Summary
+
+### New tools (2)
+
+| Tool | Phase | Parameters | Returns |
+|------|-------|-----------|---------|
+| `hlx_search_file` | 1 | `jobId`, `workItem?`, `fileName`, `pattern`, `contextLines=2`, `maxMatches=50` | JSON: matches with line numbers, context, totalLines |
+| `hlx_test_results` | 2 | `jobId`, `workItem?`, `includePassed=false`, `maxResults=200` | JSON: test summary + failed/passed test entries with names, outcomes, error messages |
+
+### Existing tools (unchanged)
+
+| Tool | Notes |
+|------|-------|
+| `hlx_search_log` | Stays as console-log-specific shortcut. Not deprecated. |
+| `hlx_files` | Already categorizes .trx files. No changes needed. |
+| `hlx_find_files` | Already supports `*.trx` pattern. No changes needed. |
+| `hlx_download` / `hlx_download_url` | Still needed for binlogs and binary files. |
+
+### Existing tools (future consideration)
+
+| Tool | Possible change | Priority |
+|------|----------------|----------|
+| `hlx_find_binlogs` | Already aliased to `hlx_find_files *.binlog` — no change | N/A |
+
+---
+
+## 8. Open Questions for Larry
+
+1. **File size cap** — 50MB for text search, 50MB for TRX parsing. Are these reasonable defaults, or should they be configurable via parameters?
+
+2. **US-22 structured parsing** — Can we formally close the "parse `[FAIL]` from console logs" acceptance criteria as superseded by TRX parsing? Or are there scenarios where TRX files are unavailable and console log parsing is the only option?
+
+3. **Phase 1 vs Phase 2 priority** — `hlx_search_file` (text grep) is safer and simpler. `hlx_test_results` (TRX parsing) has more immediate value for CI investigation. Which ships first, or should they be developed in parallel?
+
+4. **`hlx_test_results` auto-discovery** — Should the tool automatically find and parse ALL .trx files in a work item, or require the caller to specify which file? (Decision 5 above recommends auto-discovery with optional filtering.)
+
+5. **Error message length** — 500 character default for `maxErrorLength` on test failure messages. Too aggressive? Too generous? Should this even be a parameter?
+
+---
+
+## 9. Appendix: Relationship to External Tools
+
+### MCP Tool Ecosystem Context
+
+In a typical CI investigation session, an MCP client has access to:
+- **hlx** tools — Helix job/work item discovery, file listing, download, log search
+- **mcp-binlog-tool** — MSBuild binary log analysis (load, search, diagnostics)
+- **azure-devops** tools — AzDO build pipelines, PRs, work items
+
+hlx's value proposition is being the **Helix-specific layer** — it knows how to find, list, and retrieve Helix artifacts. It should NOT try to replicate analysis capabilities that other tools provide (binlog parsing, AzDO build analysis). The new `hlx_search_file` and `hlx_test_results` tools are the exception — they handle Helix-specific file formats (TRX) that no other MCP tool covers, and they avoid the download round-trip for simple text search.
+
+### Decision Principle (reaffirmed)
+
+From the `find-binlogs → find-files` generalization decision:
+> "For cross-work-item file scanning, one generic tool + one common-case convenience is the right surface area. Do NOT add per-file-type convenience tools — that's tool sprawl."
+
+`hlx_test_results` is justified as a convenience tool because TRX parsing requires structured XML analysis that cannot be done with text search alone. It's not "another file-type convenience" — it's a fundamentally different operation (structured extraction vs. text matching).
+
+
+### 2026-02-13: Security analysis — structured file parsing
+
+**By:** Ash
+**What:** STRIDE-aligned security analysis for proposed XML/TRX parsing, text search extension, and binlog parsing features in hlx.
+**Why:** These features introduce new attack surface — untrusted file content from Helix work items will be parsed into structured data. XML parsers have well-known vulnerability classes (XXE, entity expansion DoS), and extending text search to arbitrary files changes the trust boundary. This analysis provides concrete .NET API recommendations and size limits, grounded in the existing codebase patterns.
+
+---
+
+## 1. XML Parsing Threats
+
+### 1a. XXE (XML External Entity) Attacks
+
+**Threat:** A malicious TRX or XML file uploaded to a Helix work item could contain external entity declarations that exfiltrate local data when parsed:
+
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "file:///etc/passwd">
+]>
+<TestRun><Results>&xxe;</Results></TestRun>
+```
+
+**Risk level:** **High** if using default `XmlDocument` or `XDocument.Load(stream)` without settings. .NET's default XML parsing behavior varies by API:
+
+| API | XXE by default? | Notes |
+|-----|----------------|-------|
+| `XmlReader.Create()` with default `XmlReaderSettings` | **No** (.NET Core+) | `DtdProcessing = Prohibit` since .NET Core 1.0 |
+| `XmlDocument.Load()` | **No** (.NET Core+) | Uses `XmlReader` internally with safe defaults |
+| `XDocument.Load(stream)` | **No** (.NET Core+) | Uses `XmlReader` internally with safe defaults |
+| `XmlTextReader` (legacy) | **Yes** | DTD processing enabled by default — DO NOT USE |
+
+**.NET-specific mitigations we get for free:** On .NET Core/.NET 5+, the default `XmlReaderSettings` has `DtdProcessing = DtdProcessing.Prohibit` and `XmlResolver = null`. This means XXE is **blocked by default** on our target platform (.NET 10). However, we should still set these explicitly for defense-in-depth and clarity.
+
+**Recommendation — concrete `XmlReaderSettings`:**
+
+```csharp
+var settings = new XmlReaderSettings
+{
+    DtdProcessing = DtdProcessing.Prohibit,  // Blocks all DTD processing (XXE, entity expansion)
+    XmlResolver = null,                       // No external resource resolution
+    MaxCharactersFromEntities = 0,            // No entity expansion at all
+    MaxCharactersInDocument = 50_000_000,     // 50MB character limit (~100MB UTF-16)
+    Async = true                              // Enable async reading
+};
+```
+
+This should be defined once as a `static readonly` field (following the `s_jsonOptions` pattern in `HelixMcpTools.cs` line 10-14) and reused for all XML parsing.
+
+### 1b. Billion Laughs / Entity Expansion DoS
+
+**Threat:** Even without external entities, internal entity expansion can cause exponential memory growth:
+
+```xml
+<!DOCTYPE lolz [
+  <!ENTITY lol "lol">
+  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+  <!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;">
+  <!-- ... exponential expansion -->
+]>
+```
+
+**Mitigation:** `DtdProcessing.Prohibit` blocks this entirely — DTDs are rejected before any entity declaration is parsed. The `MaxCharactersFromEntities = 0` setting is a belt-and-suspenders defense. Both are included in our recommended settings above.
+
+**Verdict:** Fully mitigated by the recommended `XmlReaderSettings`. No residual risk on .NET 10.
+
+---
+
+## 2. TRX File Trust Boundary
+
+### 2a. Trust Level Assessment
+
+TRX files are MSTest XML result files produced by test runners inside Helix work items. The trust chain is:
+
+```
+CI job creator → Helix work item → test runner → TRX file → blob storage → hlx parser
+```
+
+- CI job creators are internal Microsoft engineers (typically), but Helix supports external contributors' PRs.
+- A malicious PR author could craft a test that produces a TRX file with adversarial content.
+- The TRX file schema is well-defined (`vstst:TestRun`) but content is arbitrary text (test names, error messages, stack traces).
+
+**Trust level:** Semi-trusted. The XML structure is constrained by the test runner, but text content within elements is attacker-controlled.
+
+### 2b. Data Exposure vs. Sanitization
+
+**Safe to expose directly:**
+- Test outcome (Passed/Failed/Skipped) — enum values from test framework
+- Test name, class name, method name — these are code identifiers, not user input
+- Duration, start/end times — numeric/datetime values
+- Error message and stack trace — already visible in console logs (not a new disclosure)
+- Test counters (total, passed, failed, skipped)
+
+**Sanitize or limit:**
+- `StdOut` / `StdErr` capture — may contain accidentally logged secrets. Apply the same treatment as console logs (expose but document risk, per threat model finding I1).
+- File paths in stack traces — may reveal internal directory structures. Not a blocker but note in documentation.
+- Custom properties / deployment metadata — could contain arbitrary key-value pairs. Expose but don't interpret.
+
+**Verdict:** TRX content is no more sensitive than console logs, which we already serve verbatim (threat model I1). Apply the same policy: expose the data, document that it may contain secrets, rely on Helix API access control as the primary gate.
+
+### 2c. Beyond-XML Harm from TRX Files
+
+Once XML parsing is secure (XXE/DoS blocked), the remaining risk from TRX files is:
+- **Memory exhaustion from very large TRX files** — a test suite with 100K tests could produce a multi-GB TRX file. Mitigate with file size limits (see §5).
+- **Misleading test results** — a malicious TRX could claim all tests passed when they didn't. This is a data integrity concern, not a security concern. The MCP tool should document that it reports what the TRX contains, not ground truth.
+
+---
+
+## 3. Text Search / Grep Concerns
+
+### 3a. Simple Matching vs. Regex
+
+**Current state:** `SearchConsoleLogAsync` (HelixService.cs:586) and `MatchesPattern` (HelixService.cs:613-619) use `string.Contains` and `string.EndsWith` — simple string operations with zero ReDoS risk. This was a deliberate design choice documented in the threat model (E2).
+
+**Recommendation: Stay with simple matching.** The benefits of adding regex are marginal for CI log search (users want to find "error", "CS1234", stack traces — all work with substring matching). The ReDoS risk is real: MCP tool parameters come from AI agents that may be prompt-injected, and crafting a ReDoS payload is trivial.
+
+If regex is ever needed, use:
+```csharp
+var regex = new Regex(pattern, RegexOptions.None, matchTimeout: TimeSpan.FromSeconds(5));
+```
+The `matchTimeout` parameter (available since .NET 4.5) prevents catastrophic backtracking. But simple matching is preferred.
+
+### 3b. File Size Limits for In-Memory Search
+
+**Current state:** `SearchConsoleLogAsync` calls `File.ReadAllLinesAsync` (line 581) which reads the entire file into memory. Console logs are typically 1-10 MB but can reach 100+ MB for verbose test suites.
+
+**Recommendation for extending to arbitrary files:**
+
+| File type | Recommended max size | Rationale |
+|-----------|---------------------|-----------|
+| Console logs | 50 MB | Current behavior, acceptable for text search |
+| TRX/XML files | 50 MB | Parsed into DOM; memory amplification ~3-5x |
+| Arbitrary text files | 50 MB | Consistent limit across all text operations |
+| Binlog files | Delegate to external tool | Binary format, no text search applicable |
+
+Enforce with a pre-check before loading:
+```csharp
+var fileInfo = new FileInfo(path);
+if (fileInfo.Length > MaxSearchFileSizeBytes)
+    throw new HelixException($"File too large for search ({fileInfo.Length / 1_048_576} MB, max {MaxSearchFileSizeMB} MB).");
+```
+
+This follows the pattern of `MaxBatchSize` (HelixService.cs:488) — a constant with a clear error message.
+
+### 3c. Encoding Detection
+
+**Threat:** Files from CI environments can be any encoding — UTF-8, UTF-16, Windows-1252, even binary files misnamed as `.txt`. `File.ReadAllLinesAsync` uses UTF-8 by default and will silently produce garbled text for other encodings.
+
+**Recommendation:**
+- Default to UTF-8 (covers >95% of CI output).
+- For XML/TRX: rely on the XML declaration (`<?xml version="1.0" encoding="utf-8"?>`). `XmlReader` handles this automatically.
+- For arbitrary text search: accept UTF-8 only. If the file contains invalid UTF-8 sequences, skip those lines rather than crashing. Use `Encoding.UTF8` with `DecoderFallback.ReplacementFallback` (the .NET default) which replaces invalid bytes with `�`.
+- Do NOT auto-detect encoding — encoding detection libraries add complexity and can be wrong.
+
+---
+
+## 4. Binlog Security
+
+### 4a. Parsing Risks
+
+MSBuild binary logs (.binlog) are a custom binary format. Parsing them requires the `MSBuild.StructuredLogger` NuGet package (or the newer `Microsoft.Build.Logging.StructuredLogger`). Risks:
+
+- **Deserialization vulnerabilities** — binary format parsers can have buffer overflow, integer overflow, or type confusion bugs. The MSBuild structured logger is widely used but has had bugs.
+- **Resource exhaustion** — binlogs can be very large (100+ MB). Loading one fully into memory uses 3-10x the file size.
+- **Embedded file content** — binlogs can embed source file snapshots, environment variables, and MSBuild property values. These may contain secrets.
+
+### 4b. Build vs. Delegate Decision
+
+**Current state:** hlx already integrates with external binlog MCP tools (the `mcp-binlog-tool-*` functions visible in the tool registry). These tools provide comprehensive binlog analysis: project listing, target inspection, task analysis, diagnostic extraction, and freetext search.
+
+**Recommendation: Delegate binlog parsing to the external binlog MCP tool. Do NOT parse binlogs in hlx.**
+
+Reasons:
+1. **The external tool already exists and is comprehensive** — it has 20+ operations covering all binlog analysis needs.
+2. **Parsing binlogs requires a heavy dependency** (`Microsoft.Build.Logging.StructuredLogger`) which would significantly increase hlx's package size and attack surface.
+3. **hlx's role is Helix API integration** — downloading binlogs and providing their file paths to the external tool is the correct layered architecture (per the original architecture proposal in decisions.md §1).
+4. **Binary format parsing is higher-risk than XML** — we'd inherit any deserialization bugs in the structured logger library.
+
+hlx should continue to: download binlogs (`hlx_download`, `hlx_download_url`), find binlogs (`hlx_find_binlogs`), and hand off file paths to the binlog MCP tool for parsing.
+
+### 4c. Cache Poisoning for Parsed Results
+
+If we were to cache parsed binlog results (we shouldn't parse, but for completeness):
+- The existing cache isolation pattern (per-token SQLite databases, `CacheSecurity.SanitizeCacheKeySegment`) would apply.
+- Cache key must include a content hash of the binlog file, not just the URL (URLs can be reused with different content if SAS tokens rotate).
+- TTL should match artifact TTL (7 days per current cache policy).
+
+Since we recommend delegating binlog parsing, this concern is moot for hlx. The external binlog tool manages its own state.
+
+---
+
+## 5. Recommendations Summary
+
+### Concrete .NET API Recommendations
+
+| Concern | API | Settings |
+|---------|-----|----------|
+| XML parsing | `XmlReader.Create(stream, settings)` | `DtdProcessing = Prohibit`, `XmlResolver = null`, `MaxCharactersFromEntities = 0`, `MaxCharactersInDocument = 50_000_000` |
+| JSON serialization | `System.Text.Json` (existing) | Already safe — no polymorphic deserialization, no `TypeNameHandling` equivalent |
+| Text search | `string.Contains(pattern, StringComparison.OrdinalIgnoreCase)` | Keep current pattern — no regex |
+| Encoding | `Encoding.UTF8` with default fallback | Skip encoding auto-detection |
+
+### Size/Complexity Limits
+
+| Resource | Limit | Rationale |
+|----------|-------|-----------|
+| XML/TRX file for parsing | 50 MB | DOM parsing amplifies memory ~3-5x |
+| Text file for search | 50 MB | `ReadAllLines` loads entire file into string array |
+| Max search results | 50 (existing) | Already enforced in `SearchConsoleLogAsync` |
+| Max batch size | 50 (existing) | Already enforced in `GetBatchStatusAsync` |
+| XML nesting depth | No explicit limit needed | `XmlReader` has internal limits; `DtdProcessing.Prohibit` blocks the main amplification vector |
+
+### In-Scope vs. Delegate
+
+| Feature | Recommendation | Rationale |
+|---------|---------------|-----------|
+| TRX/XML parsing | **In-scope for hlx** | Natural extension of Helix file analysis. XML parsing is safe with correct settings. |
+| Text search on artifact files | **In-scope for hlx** | Extension of existing `SearchConsoleLogAsync` pattern. |
+| Binlog parsing | **Delegate to external binlog MCP tool** | Heavy dependency, complex binary format, tool already exists. |
+| Structured test failure extraction (US-22) | **In-scope for hlx** | Parse TRX files to extract test name, outcome, error message, stack trace. |
+
+### Implementation Pattern for XML Parsing
+
+Follow existing patterns in the codebase:
+1. **Define a static `XmlReaderSettings`** — like `s_jsonOptions` in `HelixMcpTools.cs:10`
+2. **Download file first, then parse** — like `SearchConsoleLogAsync` downloads to temp, reads, deletes
+3. **Check file size before parsing** — like `MaxBatchSize` check in `GetBatchStatusAsync:496`
+4. **Sanitize all path segments** — reuse `CacheSecurity.SanitizePathSegment` (Cache/CacheSecurity.cs:32)
+5. **Validate paths within root** — reuse `CacheSecurity.ValidatePathWithinRoot` (Cache/CacheSecurity.cs:12)
+
+### New Security Constant Recommendations
+
+```csharp
+// In HelixService.cs or a dedicated SecurityLimits.cs
+internal const int MaxParseFileSizeBytes = 50 * 1024 * 1024;  // 50 MB
+internal const int MaxSearchFileSizeBytes = 50 * 1024 * 1024; // 50 MB
+```
+
+---
+
+## Risk Summary
+
+| Threat | Severity | Mitigation |
+|--------|----------|-----------|
+| XXE in TRX/XML files | Low (with correct settings) | `DtdProcessing.Prohibit`, `XmlResolver = null` — .NET 10 defaults are safe but set explicitly |
+| Entity expansion DoS | None | Blocked by `DtdProcessing.Prohibit` |
+| Memory exhaustion from large files | Medium | 50 MB file size limit pre-check |
+| ReDoS in text search | None | Keep simple `string.Contains` matching — no regex |
+| Encoding issues | Low | UTF-8 default with replacement fallback |
+| Binlog deserialization bugs | N/A | Delegate to external tool — not parsed in hlx |
+| TRX data exfiltration | Low | Same trust level as console logs (already exposed) |
+| Cache poisoning of parsed results | Low | Existing cache isolation patterns apply |
+

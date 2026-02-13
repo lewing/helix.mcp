@@ -106,3 +106,6 @@
 - Batch boundary tests need mock setup for all N job IDs — use `Enumerable.Range` with formatted GUID strings (`$"{i:x8}-0000-0000-0000-000000000000"`) for bulk generation.
 
 📌 Team update (2026-02-13): P1 security fixes E1+D1 implemented (URL scheme validation, batch size cap, MCP description) — decided by Ripley
+
+
+📌 Team update (2026-02-13): Remote search design — 2 new tools (hlx_search_file, hlx_test_results) designed with 8 decisions pending Larry's review. US-31/US-32 created. Lambert to write tests for search logic and TRX parsing (including XXE, oversized, malformed .trx files) — decided by Dallas

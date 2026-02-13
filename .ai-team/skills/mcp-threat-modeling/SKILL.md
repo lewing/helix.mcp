@@ -2,7 +2,7 @@
 name: "mcp-threat-modeling"
 description: "STRIDE threat modeling patterns specific to MCP servers"
 domain: "security-analysis"
-confidence: "low"
+confidence: "medium"
 source: "earned"
 ---
 
@@ -39,3 +39,25 @@ MCP stdio servers are often ephemeral processes. Cross-process caches (SQLite, f
 - **Adding HTTP transport without auth** — Stdio-first tools that grow HTTP support often forget to add authentication middleware.
 - **Using regex for user-facing pattern matching** — ReDoS risk. Prefer simple string operations (`Contains`, `EndsWith`) for glob-like matching.
 - **Unbounded batch/fan-out operations** — AI agents can request very large batch sizes. Always cap parallel operations.
+
+## Structured File Parsing in MCP Servers
+
+### XML/TRX Parsing
+MCP servers that parse XML from semi-trusted sources (CI artifacts, test results) must use explicit safe settings even on .NET Core+ where defaults are safe:
+```csharp
+var settings = new XmlReaderSettings
+{
+    DtdProcessing = DtdProcessing.Prohibit,
+    XmlResolver = null,
+    MaxCharactersFromEntities = 0,
+    MaxCharactersInDocument = 50_000_000,
+    Async = true
+};
+```
+Never use `XmlTextReader`. Define settings as a `static readonly` field. Enforce file size limits (50 MB) before loading into DOM parsers.
+
+### File Size Guards for Parsed Content
+All files parsed or searched in-memory should have a size pre-check before loading. XML DOM parsing amplifies memory ~3-5x; text `ReadAllLines` creates per-line string objects. Pattern: check `FileInfo.Length` against a constant limit, throw a descriptive error if exceeded.
+
+### Binary Format Delegation
+Binary formats (binlogs, PDBs, core dumps) should be delegated to specialized external tools rather than parsed in-process. This avoids importing heavy deserialization dependencies and reduces attack surface from format-specific bugs.

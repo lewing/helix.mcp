@@ -72,3 +72,13 @@
 - **Decision written to:** `.ai-team/decisions/inbox/dallas-threat-model-review.md`
 📌 Team update (2026-02-13): P1 security fixes E1+D1 implemented (URL scheme validation, batch size cap) — decided by Ripley
 📌 Team update (2026-02-13): Security validation test strategy (18 tests, negative assertion pattern) — decided by Lambert
+
+### Remote Search Feature Design (2026-02-13)
+- **Design principle established:** hlx's role is Helix-specific discovery/retrieval/search. Structured analysis of non-Helix formats (binlogs) stays with external tools. TRX is in-scope because it's a test-result format with no dedicated external MCP tool.
+- **Pattern: download-search-delete** — `SearchConsoleLogAsync` downloads a file to temp, searches in-memory, deletes the temp file. This pattern generalizes to `SearchFileAsync` for arbitrary text files. The search logic (line matching with context) should be extracted into a shared private helper.
+- **Security invariant maintained:** No regex in user-facing pattern matching. `string.Contains` with `OrdinalIgnoreCase` covers CI investigation use cases without ReDoS risk.
+- **XML parsing security requirements:** TRX parsing MUST use `XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null }` to prevent XXE. File size check before parsing (reject >50MB). Error message truncation to prevent context window exhaustion.
+- **Tool naming convention:** `hlx_search_file` (general text), `hlx_test_results` (structured TRX). Follows established `hlx_{verb}` / `hlx_{noun}` naming.
+- **Backlog mapping:** US-31 (new — remote file text search), US-32 (new — TRX parsing, supersedes US-14 and the structured portion of US-22). Structured console log failure parsing (US-22 partial) recommended for closure — TRX parsing is more reliable than format-dependent `[FAIL]` line parsing.
+- **Trust boundary for file content:** All file content from Helix blob storage is semi-trusted (uploaded by CI jobs, which are authored by PR contributors in open-source repos). Parse defensively, never execute.
+- **Key file:** `.ai-team/decisions/inbox/dallas-remote-search-design.md` — full feature design with 8 numbered decisions for Larry to review.

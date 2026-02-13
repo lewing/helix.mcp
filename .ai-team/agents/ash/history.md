@@ -90,3 +90,27 @@
 **Output:** `.ai-team/analysis/threat-model.md` — full STRIDE analysis with 16 findings, priority recommendations
 📌 Team update (2026-02-13): P1 security fixes E1+D1 implemented (URL scheme validation, batch size cap) — decided by Ripley
 📌 Team update (2026-02-13): Security validation test strategy (18 tests) — decided by Lambert
+
+### 2026-02-13: Security analysis — structured file parsing (XML/TRX, text search, binlog)
+
+**XML parsing on .NET 10:**
+- .NET Core+ defaults are safe: `XmlReaderSettings` has `DtdProcessing = Prohibit` and `XmlResolver = null` by default. XXE and billion laughs are blocked out of the box. Still set explicitly for defense-in-depth.
+- Use `MaxCharactersFromEntities = 0` and `MaxCharactersInDocument = 50_000_000` as additional guards.
+- Never use `XmlTextReader` — legacy API with unsafe defaults.
+- Define `XmlReaderSettings` as a `static readonly` field (same pattern as `s_jsonOptions` in `HelixMcpTools.cs`).
+
+**TRX files are no more sensitive than console logs:**
+- Same trust chain applies (CI job creator → Helix → blob storage → hlx). Helix API access control is the primary gate.
+- TRX content (test names, error messages, stack traces) is already visible in console logs. No new disclosure surface.
+- Apply 50 MB file size limit for XML DOM parsing (memory amplification ~3-5x).
+
+**Text search should stay with simple string matching:**
+- `string.Contains` with `StringComparison.OrdinalIgnoreCase` — no regex, no ReDoS risk.
+- MCP tool parameters come from AI agents that may be prompt-injected — regex patterns are an unnecessary attack surface.
+- If regex is ever needed, `matchTimeout: TimeSpan.FromSeconds(5)` is mandatory.
+
+**Binlog parsing should be delegated:**
+- External binlog MCP tool already has 20+ operations. Duplicating this in hlx adds heavy dependencies and binary deserialization risk.
+- hlx's role is download + handoff, not parsing. This aligns with the layered architecture.
+
+**File size limits: 50 MB for all parsed/searched files.** Enforce with pre-check before loading, following `MaxBatchSize` pattern.
