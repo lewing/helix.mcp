@@ -33,3 +33,6 @@
 
 
 📌 Team update (2026-02-13): HTTP/SSE auth test suites written by Lambert (L-HTTP-1 through L-HTTP-5) — 45 tests covering token accessors, factories, concurrent cache, and HTTP context token extraction. All 252 tests passing. — decided by Lambert
+
+📌 Team update (2026-02-13): US-9 script removability analysis complete — 100% core API coverage, 3-phase migration plan, Phase 1 can proceed immediately — decided by Ash
+📌 Team update (2026-02-13): US-6 download E2E verification complete — 46 tests, all 298 tests pass, all P1s done — decided by Lambert

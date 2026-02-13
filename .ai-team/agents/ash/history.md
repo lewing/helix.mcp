@@ -116,3 +116,5 @@ After reading the full script, I can now quantify what hlx replaces more precise
 2. Phase 2 (NEXT): Replace Format-TestFailure with hlx_search_log → ~73 additional line reduction
 3. Phase 3 (LATER): Promote US-22 to P1 only if ci-analysis agents consistently need structured failure JSON
 
+
+📌 Team update (2026-02-13): US-6 download E2E verification complete — 46 tests covering DownloadFilesAsync/DownloadFromUrlAsync, all 298 tests pass — decided by Lambert
