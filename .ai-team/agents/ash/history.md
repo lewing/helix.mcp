@@ -114,3 +114,6 @@
 - hlx's role is download + handoff, not parsing. This aligns with the layered architecture.
 
 **File size limits: 50 MB for all parsed/searched files.** Enforce with pre-check before loading, following `MaxBatchSize` pattern.
+
+
+📌 Team update (2026-02-13): Status filter changed from bool to enum (failed|passed|all) — decided by Larry/Ripley

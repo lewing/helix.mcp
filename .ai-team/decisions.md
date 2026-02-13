@@ -2577,3 +2577,92 @@ Tests needed:
 - `src/HelixTool.Core/HelixService.cs` — SearchLines helper, SearchFileAsync, FileContentSearchResult, IsFileSearchDisabled, MaxSearchFileSizeBytes
 - `src/HelixTool.Core/HelixMcpTools.cs` — hlx_search_file tool, config toggle on hlx_search_log
 - `src/HelixTool/Program.cs` — search-file CLI command
+
+---
+
+# Decision: Status filter refactored from boolean to enum-style string
+
+**By:** Ripley
+**Date:** 2025-07-23
+**Requested by:** Larry Ewing
+
+## Context
+
+The `status` command/tool previously used a boolean `--all`/`includePassed` flag to toggle showing passed work items. This was limited — you could only see "failed only" or "everything". There was no way to see "passed only".
+
+## Decision
+
+Replaced the boolean with a three-value string `filter` parameter:
+- `"failed"` (default) — shows only failed items (backward-compatible default)
+- `"passed"` — shows only passed items
+- `"all"` — shows both failed and passed items
+
+Validation throws `ArgumentException` for invalid values. Comparison uses `StringComparison.OrdinalIgnoreCase`.
+
+## Impact
+
+- **MCP tool (`hlx_status`):** `bool includePassed` → `string filter = "failed"`. When filter is `"passed"`, `failed` is null in output. When `"failed"`, `passed` is null. When `"all"`, both populated.
+- **CLI command (`status`):** `bool all` → `[Argument] string filter = "failed"`. Second positional arg. Usage: `hlx status <jobId> [failed|passed|all]`.
+- **Breaking change:** Existing callers using `--all` or `includePassed=true` must update to `filter="all"`.
+- **Tests:** Lambert needs to update tests for the new parameter signature and filter logic.
+
+
+---
+
+# US-32: TRX Parsing Implementation Notes
+
+**By:** Ripley  
+**Date:** 2025-07-23
+
+## What was implemented
+
+Phase 2 of US-32 — structured TRX test result parsing via `ParseTrxResultsAsync` in HelixService, `hlx_test_results` MCP tool, and `test-results` CLI command.
+
+## Key decisions made during implementation
+
+1. **XmlReaderSettings as static readonly field** — Named `s_trxReaderSettings` following the `s_jsonOptions` naming convention. Security settings per Ash's review: `DtdProcessing.Prohibit`, `XmlResolver=null`, `MaxCharactersFromEntities=0`, `MaxCharactersInDocument=50_000_000`.
+
+2. **Error truncation limits** — 500 chars for error messages, 1000 chars for stack traces. These are hard-coded in `ParseTrxFile`. If consumers need full error text, they can use `hlx_search_file` on the TRX file directly.
+
+3. **Reuses `IsFileSearchDisabled` and `MaxSearchFileSizeBytes`** — Same config toggle and size guard as `SearchFileAsync`. TRX parsing is a form of file content analysis, so the same security controls apply.
+
+4. **Filter logic** — Failed tests always included, non-pass/non-fail (skipped, etc.) always included, passed tests only when `includePassed=true`. This keeps default output focused on actionable results.
+
+## For Lambert
+
+Tests needed for:
+- `ParseTrxResultsAsync` — happy path, file not found, oversized file, disabled toggle
+- `ParseTrxFile` — valid TRX, empty TRX, error truncation, includePassed filter, maxResults cap
+- `hlx_test_results` MCP tool — URL resolution, config toggle, missing workItem
+- `test-results` CLI command — basic invocation
+
+
+---
+
+# Decision: Status Filter Test Coverage Strategy
+
+**By:** Lambert (Tester)
+**Date:** 2026-02-15
+**Context:** Status API migration from `includePassed: bool` to `filter: string`
+
+## Decision
+
+The `filter: "passed"` case introduces a new behavioral pattern where `failed` is null (the reverse of `filter: "failed"` nulling `passed`). Tests cover this symmetry explicitly, plus case-insensitivity and invalid input rejection.
+
+Test naming convention follows the pattern `Status_Filter{Value}_{Assertion}` for consistency with the new API shape. The old `Status_AllTrue`/`Status_AllFalse` names are retired.
+
+## Tests Added (5 new + 2 renamed)
+
+| Test | Filter | Validates |
+|------|--------|-----------|
+| `Status_FilterFailed_PassedIsNull` | "failed" | passed=null (renamed) |
+| `Status_FilterAll_PassedIncludesItems` | "all" | passed populated (renamed) |
+| `Status_DefaultFilter_ShowsOnlyFailed` | (none) | default = "failed" behavior |
+| `Status_FilterPassed_FailedIsNull` | "passed" | failed=null, passed populated |
+| `Status_FilterPassed_IncludesPassedItems` | "passed" | item structure verification |
+| `Status_FilterCaseInsensitive` | "ALL" | uppercase accepted |
+| `Status_InvalidFilter_ThrowsArgumentException` | "invalid" | ArgumentException thrown |
+
+## Impact
+
+Test count: 364 → 369 (net +5). All 15 status tests pass.

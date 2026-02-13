@@ -82,3 +82,6 @@
 - **Backlog mapping:** US-31 (new — remote file text search), US-32 (new — TRX parsing, supersedes US-14 and the structured portion of US-22). Structured console log failure parsing (US-22 partial) recommended for closure — TRX parsing is more reliable than format-dependent `[FAIL]` line parsing.
 - **Trust boundary for file content:** All file content from Helix blob storage is semi-trusted (uploaded by CI jobs, which are authored by PR contributors in open-source repos). Parse defensively, never execute.
 - **Key file:** `.ai-team/decisions/inbox/dallas-remote-search-design.md` — full feature design with 8 numbered decisions for Larry to review.
+
+
+📌 Team update (2026-02-13): Status filter changed from bool to enum (failed|passed|all) — decided by Larry/Ripley
