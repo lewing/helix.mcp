@@ -93,3 +93,26 @@ After reading the full script, I can now quantify what hlx replaces more precise
 
 📌 Team update (2025-02-12): NuGet Trusted Publishing workflow added — publish via git tag v*
 
+### 2025-07-18: US-9 Script Removability Analysis Complete
+
+**Key findings:**
+- All 6 core Helix API functions in ci-analysis (Get-HelixJobDetails, Get-HelixWorkItems, Get-HelixWorkItemFiles, Get-HelixWorkItemDetails, Get-HelixConsoleLog, Find-WorkItemsWithBinlogs) are 100% replaceable by hlx today. ~152 lines of PowerShell can be deleted.
+- Extended Helix-adjacent code (log parsing, URL construction, categorization) is ~71% covered (~217/305 lines). The only meaningful gap is structured test failure extraction (US-22, P2).
+- Overall Helix-related coverage: ~85%. 10 of 11 functions fully replaced.
+- No user stories need promotion to unblock Phase 1 migration. hlx is migration-ready NOW.
+- Phase 1 migration (core API replacement) yields ~120 net line reduction with zero blockers.
+- Phase 2 migration (log parsing) yields additional ~73 line reduction using hlx_search_log as workaround for US-22.
+- Total potential reduction: ~195 lines from ci-analysis.
+
+**Coverage gaps identified:**
+- G1: Structured test failure extraction (US-22, P2) — `Format-TestFailure` parses xUnit/NUnit/MSTest output into structured JSON. hlx_search_log provides generic search but not structured parsing. ~88 lines partially covered (~40%).
+- G2: Job ID extraction from AzDO logs (US-26, P3) — cross-layer bridge, stays in ci-analysis. Not hlx's responsibility.
+- G3: Env var extraction (US-27, P3) — convenience feature, workaround exists via hlx_search_log.
+- G4: TRX parsing (US-14, P3) — separate concern, not a migration blocker.
+- G5: Flaky test correlation (US-16, P3) — hlx_batch_status provides adequate workaround.
+
+**Migration priorities:**
+1. Phase 1 (NOW): Replace 6 core Helix API functions → ~120 line net reduction, zero blockers
+2. Phase 2 (NEXT): Replace Format-TestFailure with hlx_search_log → ~73 additional line reduction
+3. Phase 3 (LATER): Promote US-22 to P1 only if ci-analysis agents consistently need structured failure JSON
+

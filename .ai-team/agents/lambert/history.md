@@ -60,3 +60,13 @@
 
 📌 Team update (2026-02-13): HTTP/SSE multi-client auth architecture decided — scoped DI with IHelixTokenAccessor, IHelixApiClientFactory, ICacheStoreFactory. Affects test infrastructure for auth-related tests. — decided by Dallas
 📌 Team update (2026-02-13): Multi-auth support deferred — single-token-per-process model retained. No additional multi-auth test coverage needed. — decided by Dallas
+
+- US-6 DownloadTests: 46 tests written in `DownloadTests.cs` across 4 test classes. Test count 252 → 298.
+- DownloadFilesTests (27 tests): happy path single/multi-file download, pattern matching (*.binlog, *.trx, *, specific name, case-insensitive), empty results (no match, no files), correct temp dir placement, path traversal protection (forward slash, backslash, `..`), empty file streams, binary content preservation, same-name file overwrite, URL-based job ID resolution, input validation (null/empty/whitespace jobId and workItem), error handling (404, 401, 403, server error, timeout, cancellation).
+- DownloadFromUrlParsingTests (5 tests): argument validation (null, empty, whitespace), invalid/relative URL format, URL-encoded character parsing. Cannot mock static HttpClient — tests verify argument validation and URI parsing only.
+- DownloadSanitizationTests (6 tests): normal filename preserved, forward slash sanitized, `..` sanitized, path traversal stays within outDir, spaces preserved, unicode preserved.
+- DownloadPatternTests (8 tests): Theory with 4 InlineData for extension/wildcard/substring patterns, default pattern downloads all, case-insensitive extension matching, case-insensitive substring matching.
+- Key pattern: Each test class that writes to disk uses a UNIQUE ValidJobId constant (different GUID) to avoid temp directory collisions during parallel xUnit execution. File contention was observed when all classes shared the same GUID — `helix-{idPrefix}` dir was shared.
+- DownloadFilesAsync flow: ListWorkItemFilesAsync → filter with MatchesPattern → create `helix-{id[..8]}` temp dir → foreach file: GetFileAsync → SanitizePathSegment(Path.GetFileName(name)) → ValidatePathWithinRoot → File.Create → CopyToAsync.
+- DownloadFromUrlAsync uses static `s_httpClient` — only testable for argument validation and URI parsing. HTTP errors (401/403/404/timeout) cannot be tested without an HTTP mock or test server.
+- NSubstitute lambda pattern for streams: `.Returns(_ => new MemoryStream(...))` — lambda needed so each call gets a fresh stream instance. Sequential `.Returns(first, second)` works for overwrite tests.
