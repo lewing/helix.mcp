@@ -1,4 +1,4 @@
-# hlx — Helix Test Infrastructure CLI & MCP Server
+# helix.mcp — Helix Test Infrastructure CLI & MCP Server
 
 A CLI tool and MCP server for investigating [.NET Helix](https://helix.dot.net) test results. Designed for diagnosing CI failures in dotnet repos (runtime, sdk, aspnetcore, etc.).
 
@@ -50,8 +50,8 @@ After installation, `hlx` is available globally.
 
 ```bash
 # Prerequisites: .NET 10 SDK
-git clone <repo-url>
-cd hlx
+git clone https://github.com/lewing/helix.mcp.git
+cd helix.mcp
 dotnet build
 ```
 

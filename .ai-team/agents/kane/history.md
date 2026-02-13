@@ -112,3 +112,11 @@
 - Verified OK (no changes needed): CLI command names (lines 67-100) all match `[Command("...")]` in Program.cs; MCP Tools table (lines 167-179) matches `[McpServerTool(Name = "...")]` in HelixMcpTools.cs; MCP config args `["lewing.helix.mcp", "--yes"]` have no stale `mcp` arg and include `--yes`; Auth example (lines 217-229) is correct.
 - No code changes — documentation only.
 
+📌 Session 2025-02-14-stale-hlx-refs: Fixed stale references in README.md after repo rename:
+1. **Title (line 1)** — Changed `# hlx — ...` to `# helix.mcp — ...`. The title should reflect the project identity (matching the GitHub repo `lewing/helix.mcp`), not just the CLI command name. Used `helix.mcp` (short repo name) rather than the full NuGet package ID `lewing.helix.mcp` for readability.
+2. **Build from Source (line 53)** — Changed `git clone <repo-url>` to `git clone https://github.com/lewing/helix.mcp.git`. Gives users a concrete clone URL.
+3. **Build from Source (line 54)** — Changed `cd hlx` to `cd helix.mcp`. After cloning `lewing/helix.mcp`, the directory is `helix.mcp`, not `hlx`.
+- All other `hlx` references in the README are correct — they refer to the CLI command name (`ToolCommandName`), JSON config keys, or MCP tool prefixes. Not changed.
+- Key distinction reinforced: **package name** = `lewing.helix.mcp`, **repo name** = `helix.mcp`, **CLI command** = `hlx`.
+- No code changes — documentation only.
+
