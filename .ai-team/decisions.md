@@ -1799,3 +1799,22 @@ Also, `FindBinlogs` MCP tool now delegates to `FindFiles`, so the test on line 2
 - `src/HelixTool.Tests/WorkItemDetailTests.cs` (already fixed for compilation)
 - `src/HelixTool.Tests/JsonOutputTests.cs` (already fixed for compilation)
 
+
+### 2025-07-23: STRIDE Threat Model — Completed and Approved
+
+**By:** Ash (analysis), Dallas (review)
+**Date:** 2025-07-23
+**Artifact:** `.ai-team/analysis/threat-model.md`
+
+**What:** Completed a STRIDE-based threat model for lewing.helix.mcp covering all 6 categories. Identified 16 specific threats grounded in actual source code. Two are High severity (both related to HTTP MCP server lacking authentication), two are Medium (arbitrary URL download SSRF, unbounded batch size). Path traversal protection and token handling are well-implemented.
+
+**Why:** Larry asked whether we should do a threat model. The answer is yes — the HTTP MCP server has no authentication middleware, which is a real deployment risk. The stdio mode (default) is secure by design. The `hlx_download_url` accepting arbitrary URLs is a secondary concern since the HttpClient is unauthenticated, but it still enables SSRF probing. These findings should inform prioritization before any HTTP deployment.
+
+**Review verdict:** ✅ APPROVED with minor amendments. Dallas verified 15+ line-number references against source — all correct. One amendment: S1 recommendation should be "Add auth middleware for non-localhost deployment" rather than "default to localhost" (already the ASP.NET Core default).
+
+**Action items for the team:**
+1. **S1/I4 (HTTP auth) is a pre-GA gate** — not a current blocker for stdio-only deployments. Track as a requirement for any HTTP mode production use.
+2. **E1 (URL scheme validation)** — Ripley should add a scheme check in `DownloadFromUrlAsync` as part of normal hardening. One-liner: reject non-`http`/`https` schemes.
+3. **D1 (batch size limit)** — Add `ArgumentException` guard in `GetBatchStatusAsync` if `idList.Count > 50`. Prevents agent-driven resource exhaustion.
+4. **T2 (domain allowlist for download-url)** — Defer. Too restrictive for a diagnostic tool where blob storage URLs vary. Document the risk instead.
+

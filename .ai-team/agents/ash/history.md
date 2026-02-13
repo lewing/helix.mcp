@@ -68,3 +68,23 @@
 - US-22: All 5 original criteria unchecked — the structured `hlx_test_failures` tool was not built. Instead, a generic `hlx_search_log` was implemented, which covers the use case differently.
 
 📌 Team update (2026-02-13): Requirements audit complete — 25/30 stories implemented, US-22 structured test failure parsing is only remaining P2 gap — audited by Ash
+
+### 2025-07-23: STRIDE Threat Model for lewing.helix.mcp
+
+**Key findings:**
+- HTTP MCP server (`HelixTool.Mcp`) has no authentication middleware — any network-reachable client can invoke MCP tools. High severity for network deployments, N/A for stdio mode.
+- `hlx_download_url` / `DownloadFromUrlAsync` accepts arbitrary URLs — potential SSRF vector. The static `HttpClient` is unauthenticated (good: won't leak Helix token), but could be used to probe internal networks.
+- Path traversal protection is thorough and consistently applied — `CacheSecurity.SanitizePathSegment` + `ValidatePathWithinRoot` at every filesystem write site. No gaps found.
+- No SQL injection risk — all SQLite queries use parameterized statements.
+- No regex in user-facing pattern matching — `MatchesPattern` uses simple string operations, eliminating ReDoS risk.
+- Token handling is sound — env var read once, never logged/serialized, only SHA256 hash used in cache paths.
+- Batch operations (`GetBatchStatusAsync`) have no upper bound on job count — could trigger resource exhaustion.
+
+**Security patterns observed (positive):**
+- Consistent path sanitization across all file write sites (5+ locations)
+- Auth context isolation in cache (separate SQLite databases per token hash)
+- Write-then-rename pattern for artifact caching (atomic writes)
+- WAL mode for SQLite concurrent access
+- Static unauthenticated HttpClient for URL downloads (prevents credential leakage via SSRF)
+
+**Output:** `.ai-team/analysis/threat-model.md` — full STRIDE analysis with 16 findings, priority recommendations

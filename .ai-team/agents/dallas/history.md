@@ -58,3 +58,15 @@
 - **Design principle established:** For cross-work-item file scanning, one generic tool + one common-case convenience is the right surface area. Do NOT add per-file-type convenience tools (`hlx_find_dumps`, etc.) — that's tool sprawl.
 - **Core pattern:** `FindBinlogsAsync` generalizes to `FindFilesAsync` using the existing `MatchesPattern` helper (already proven by `DownloadFilesAsync`). `BinlogResult` renames to `FileSearchResult`.
 - **Decision written to:** `.ai-team/decisions/inbox/dallas-find-files-api.md`
+
+### Threat Model Review (2025-07-23)
+- **Reviewed:** Ash's STRIDE threat model at `.ai-team/analysis/threat-model.md`
+- **Verdict:** Approved with minor amendments. High-quality work — accurate code references, correct severity ratings, well-calibrated recommendations.
+- **Code reference accuracy:** Spot-checked 15+ line numbers and method names against actual source. All correct or within ±2 lines (acceptable for a living codebase). `BatchStatus` parameter type correctly identified as `string[]` (was previously `string`, now fixed).
+- **Completeness assessment:** Ash covered all 10 MCP tools, both transports, cache layer, and filesystem operations. No significant threats missed.
+- **Minor gap noted:** `HelixIdResolver.TryResolveJobAndWorkItem` can't handle work item names containing `/` (URL-encoded as `%2F`) because of `Split('/')`. This is a correctness bug, not a security vulnerability — it would fail to resolve, not cause exploitation. Not a threat model gap.
+- **S1/I4 severity confirmed:** HTTP MCP server defaulting to localhost is already the ASP.NET Core default behavior — Ash's recommendation to "default `--urls` to `http://localhost:5000`" is already the case. The real risk is explicit non-localhost binding without auth, which Ash correctly identifies.
+- **I3 precision corrected:** Ash says "8 hex chars" and "32 bits of entropy" — mathematically correct (`Convert.ToHexString(hash)[..8]` = 8 hex chars = 32 bits). Sound analysis.
+- **P0/P1/P2 calibration:** All appropriate. No over-reactions or under-reactions.
+- **Architectural implication:** When HTTP mode moves toward production, auth middleware is the gate. This should be tracked as a pre-GA requirement, not a current blocker.
+- **Decision written to:** `.ai-team/decisions/inbox/dallas-threat-model-review.md`
