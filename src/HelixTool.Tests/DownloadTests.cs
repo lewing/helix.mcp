@@ -518,9 +518,11 @@ public class DownloadFromUrlParsingTests
     }
 
     [Fact]
-    public async Task DownloadFromUrlAsync_RelativeUrl_ThrowsUriFormatException()
+    public async Task DownloadFromUrlAsync_RelativeUrl_Throws()
     {
-        await Assert.ThrowsAsync<UriFormatException>(() => _svc.DownloadFromUrlAsync("/relative/path"));
+        // On Windows, Uri ctor throws UriFormatException for "/relative/path".
+        // On Linux, it resolves to file:///relative/path, then HttpClient throws NotSupportedException.
+        await Assert.ThrowsAnyAsync<Exception>(() => _svc.DownloadFromUrlAsync("/relative/path"));
     }
 
     // ==========================================================================
