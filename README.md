@@ -71,11 +71,11 @@ dotnet build
 After [installing](#installation) `lewing.helix.mcp` as a global or local tool, the `hlx` command is available:
 
 ```bash
-# Check a Helix job (shows failed work items)
+# Check a Helix job (shows failed work items by default)
 hlx status 02d8bd09-9400-4e86-8d2b-7a6ca21c5009
 
 # Show all work items including passed
-hlx status 02d8bd09 --all
+hlx status 02d8bd09 all
 
 # Download console log for a failed work item
 hlx logs 02d8bd09 "dotnet-watch.Tests.dll.1"
@@ -84,10 +84,13 @@ hlx logs 02d8bd09 "dotnet-watch.Tests.dll.1"
 hlx files 02d8bd09 "dotnet-watch.Tests.dll.1"
 
 # Download binlogs from a work item
-hlx download 02d8bd09 "dotnet-watch.Tests.dll.1" "*.binlog"
+hlx download 02d8bd09 "dotnet-watch.Tests.dll.1" --pattern "*.binlog"
 
 # Scan work items to find which ones have binlogs
 hlx find-binlogs 02d8bd09
+
+# Search work items for any file type
+hlx find-files 02d8bd09 --pattern "*.trx"
 
 # Download a file by direct URL (from hlx files output)
 hlx download-url "https://helix..."
@@ -100,6 +103,12 @@ hlx batch-status 02d8bd09 a1b2c3d4
 
 # Search console log for error patterns
 hlx search-log 02d8bd09 "dotnet-watch.Tests.dll.1" "error CS"
+
+# Search an uploaded file for a pattern
+hlx search-file 02d8bd09 "dotnet-watch.Tests.dll.1" "testhost.log" "error"
+
+# Parse TRX test results from a work item
+hlx test-results 02d8bd09 "dotnet-watch.Tests.dll.1"
 ```
 
 Accepts bare GUIDs or full Helix URLs:
@@ -173,15 +182,38 @@ Add the following to your MCP client config. The `--yes` flag ensures `dnx` does
 
 | Tool | Description |
 |------|-------------|
-| `hlx_status` | Get work item pass/fail summary for a Helix job. Returns structured JSON with job metadata, failed items (with exit codes), and passed count. |
-| `hlx_logs` | Get console log content for a work item. Returns the last N lines (default 500). |
-| `hlx_files` | List uploaded files for a work item. Returns file names, URIs, and tags (binlog, test-results). |
-| `hlx_download` | Download files from a work item to a temp directory. Supports glob patterns (e.g., `*.binlog`). |
-| `hlx_download_url` | Download a file by direct blob storage URL (from `hlx_files` output). |
-| `hlx_find_binlogs` | Scan work items in a job to find which ones contain binlog files. |
-| `hlx_work_item` | Get detailed info about a specific work item: exit code, state, machine, duration, console log URL, and uploaded files. |
-| `hlx_batch_status` | Query status for multiple Helix jobs in parallel. Returns per-job summary and overall totals. |
-| `hlx_search_log` | Search a work item's console log for error patterns. Supports context lines and max match limits. |
+| `hlx_status` | Get work item pass/fail summary for a Helix job. Accepts a `filter` parameter: `failed` (default), `passed`, or `all`. Returns structured JSON with job metadata, failed items (with exit codes, state, duration, machine, failure category), and passed count. |
+| `hlx_logs` | Get console log content for a work item. Returns the log text directly (last N lines if `tail` specified, default 500). |
+| `hlx_files` | List uploaded files for a work item, grouped by type. Returns binlogs, testResults, and other files with names and URIs. |
+| `hlx_download` | Download files from a work item to a temp directory. Supports glob patterns (e.g., `*.binlog`). Returns local file paths. |
+| `hlx_download_url` | Download a file by direct blob storage URL (e.g., from `hlx_files` output). Returns the local file path. |
+| `hlx_find_files` | Search work items in a job for files matching a glob pattern (`*.binlog`, `*.trx`, `*.dmp`, etc.). Returns work item names and matching file URIs. |
+| `hlx_find_binlogs` | Scan work items in a job to find which ones contain binlog files. Shortcut for `hlx_find_files` with `*.binlog` pattern. |
+| `hlx_work_item` | Get detailed info about a specific work item: exit code, state, machine, duration, failure category, console log URL, and uploaded files. |
+| `hlx_batch_status` | Get status for multiple Helix jobs at once (max 50). Accepts an array of job IDs/URLs. Returns per-job summaries, overall totals, and failure breakdown by category. |
+| `hlx_search_log` | Search a work item's console log for lines matching a pattern. Returns matching lines with context. Supports `contextLines` and `maxMatches` parameters. |
+| `hlx_search_file` | Search an uploaded file's content for lines matching a pattern — without downloading it. Supports context lines and max match limits. Disabled when `HLX_DISABLE_FILE_SEARCH=true`. |
+| `hlx_test_results` | Parse TRX test result files from a work item. Returns structured test results: names, outcomes, durations, and error messages/stack traces for failures. Auto-discovers `.trx` files or filter to a specific one. Disabled when `HLX_DISABLE_FILE_SEARCH=true`. |
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `hlx status <jobId> [failed\|passed\|all]` | Work item summary. Filter is a positional arg (default: `failed`). |
+| `hlx logs <jobId> <workItem>` | Download console log to a temp file and print the path. |
+| `hlx files <jobId> <workItem>` | List uploaded files for a work item. |
+| `hlx download <jobId> <workItem> [--pattern PAT]` | Download work item files. Glob pattern (default: `*`). |
+| `hlx download-url <url>` | Download a file by direct blob storage URL. |
+| `hlx find-files <jobId> [--pattern PAT] [--max-items N]` | Search work items for files matching a glob pattern. |
+| `hlx find-binlogs <jobId> [--max-items N]` | Shortcut for `find-files --pattern "*.binlog"`. |
+| `hlx work-item <jobId> <workItem>` | Detailed work item info (exit code, state, machine, files). |
+| `hlx batch-status <jobId1> <jobId2> ...` | Status for multiple jobs in parallel. |
+| `hlx search-log <jobId> <workItem> <pattern> [--context N] [--max-matches N]` | Search console log for a pattern. |
+| `hlx search-file <jobId> <workItem> <fileName> <pattern> [--context N] [--max-matches N]` | Search an uploaded file for a pattern. |
+| `hlx test-results <jobId> <workItem> [--file-name NAME] [--include-passed] [--max-results N]` | Parse TRX test results from a work item. |
+| `hlx cache status` | Show cache size, entry count, oldest/newest entries. |
+| `hlx cache clear` | Wipe all cached data (all auth contexts). |
+| `hlx mcp` | Start MCP server over stdio. Also the default when no command is given. |
 
 ## Failure Categorization
 
@@ -211,7 +243,7 @@ src/
 ├── HelixTool.Mcp/          # MCP HTTP server
 │   ├── Program.cs                         # ASP.NET Core + ModelContextProtocol
 │   └── HttpContextHelixTokenAccessor.cs   # Per-request token from Authorization header
-└── HelixTool.Tests/        # Unit tests (298 tests)
+└── HelixTool.Tests/        # Unit tests (340 tests)
 ```
 
 ## Authentication
@@ -254,6 +286,8 @@ Authorization: token <token>
 
 Each authenticated client gets isolated cache storage. If no header is present, the server falls back to the `HELIX_ACCESS_TOKEN` environment variable. This enables shared/remote MCP server deployments where multiple users connect with different credentials.
 
+**API key auth:** Set `HLX_API_KEY` to require an `X-Api-Key` header on every request. When set, requests without a valid key receive `401 Unauthorized`. This is independent of Helix token auth — it gates access to the server itself.
+
 If a job requires authentication and no token is set, hlx will show an actionable error message.
 
 ## Caching
@@ -277,6 +311,14 @@ Helix API responses are automatically cached to a local SQLite database — no c
 hlx cache status   # Show cache size, entry count, oldest/newest entries
 hlx cache clear    # Wipe all cached data (all auth contexts)
 ```
+
+## Security
+
+- **Safe XML parsing:** TRX files are parsed with `DtdProcessing.Prohibit`, `XmlResolver = null`, and a 50 MB character limit to prevent XXE and billion-laughs attacks.
+- **Path traversal protection:** All cache paths and download file names are sanitized via `CacheSecurity` — directory separators are replaced and `..` sequences are stripped. Resolved paths are validated to stay within their designated root.
+- **URL scheme validation:** `hlx_download_url` only accepts HTTP/HTTPS URLs; other schemes are rejected.
+- **File search toggle:** Set `HLX_DISABLE_FILE_SEARCH=true` to disable `hlx_search_file`, `hlx_search_log`, and `hlx_test_results`. Useful for locked-down deployments where file content inspection is not desired.
+- **Input validation:** Job IDs are resolved through `HelixIdResolver` (GUIDs and URLs). Batch operations are capped at 50 jobs per request. File search is limited to 50 MB files.
 
 ## Requirements
 
