@@ -98,3 +98,5 @@
 - `File.OpenRead()` uses `FileShare.Read` which blocks concurrent writers. For concurrent access scenarios, use `new FileStream(..., FileShare.ReadWrite | FileShare.Delete)` instead.
 - Temp files for write-then-rename must use unique names (e.g., `Guid.NewGuid()`) to avoid collisions between concurrent writers to the same cache key.
 
+📌 Team update (2026-02-13): R-HTTP-4 and R-HTTP-5 implemented — HttpContextHelixTokenAccessor created in HelixTool.Mcp, Program.cs fully rewired with scoped DI for multi-client HTTP/SSE auth. IHelixTokenAccessor (Scoped), IHelixApiClientFactory (Singleton), ICacheStoreFactory (Singleton), CacheOptions/ICacheStore/IHelixApiClient/HelixService (Scoped). Token extracted from Authorization header (Bearer/token schemes, case-insensitive), falls back to HELIX_ACCESS_TOKEN env var. ServerInfo version set to 0.1.2. Added missing `using HelixTool.Mcp` to test file. 252/252 tests pass. — decided by Ripley
+

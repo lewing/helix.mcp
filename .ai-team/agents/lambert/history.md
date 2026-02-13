@@ -96,3 +96,11 @@
 - EnvironmentHelixTokenAccessor: sealed class, single constructor param string? token, GetAccessToken() returns it directly
 - HelixApiClientFactory: sealed class, Create(string? accessToken) → new HelixApiClient(accessToken)
 
+📌 Session HTTP-context-token-tests: Wrote HttpContextHelixTokenAccessorTests.cs (L-HTTP-5) — 17 tests for the HTTP-specific token accessor.
+- Tests cover: Bearer extraction, `token` format, env var fallback, no auth/no env → null, empty header fallback, case insensitivity (Bearer/bearer/BEARER/TOKEN/Token), whitespace trimming, malformed headers (Bearer with no value, Bearer with only spaces), unknown scheme fallback to env var, null HttpContext, IHelixTokenAccessor interface compliance.
+- Uses DefaultHttpContext + HttpContextAccessor from Microsoft.AspNetCore.Http (transitive via Mcp reference).
+- IDisposable pattern: saves/restores HELIX_ACCESS_TOKEN env var per test to ensure isolation.
+- Added `<ProjectReference Include="..\HelixTool.Mcp\HelixTool.Mcp.csproj" />` to HelixTool.Tests.csproj.
+- Expected compile error: `HttpContextHelixTokenAccessor` type not found — will compile once Ripley implements the class in HelixTool.Mcp.
+- Build confirms only 1 error (missing type), all other test files still compile clean.
+
