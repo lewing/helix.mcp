@@ -86,3 +86,13 @@
 - Key patterns: CacheSecurity is `internal static` — testable via `InternalsVisibleTo`. CacheOptions.GetEffectiveCacheRoot() appends `public/` subdir when AuthTokenHash is null — integration tests must use effective root, not raw CacheRoot, for DB path and artifacts dir assertions. DB tampering test requires dispose→WAL checkpoint→reopen cycle (SQLite WAL mode doesn't expose writes to separate connections until checkpoint).
 - NSubstitute gotcha for CachingHelixApiClient security tests: `GetMetadataAsync` default return is empty string (not null), which triggers JSON deserialization errors. Must explicitly return `Task.FromResult<string?>(null)` for cache miss scenarios.
 
+📌 Session HTTP-auth-tests: Wrote 4 new test files (L-HTTP-1 through L-HTTP-4) for HTTP/SSE multi-client auth abstractions:
+- HelixTokenAccessorTests.cs: 5 unit tests — constructor token passthrough, null, empty, stability, interface compliance
+- HelixApiClientFactoryTests.cs: 5 unit tests — Create with token, null, different tokens → different instances, same token → different instances, interface check
+- CacheStoreFactoryTests.cs: 8 tests — GetOrCreate same hash → same instance, different hashes → different instances, null → "public" key, null vs explicit separation, thread safety (Parallel.For), different keys parallel, type check
+- SqliteCacheStoreConcurrencyTests.cs: 10 tests — concurrent reads (metadata, job state, nonexistent keys), concurrent writes (different keys, same key, job state), concurrent read+write (metadata, artifacts), concurrent status+eviction, two store instances on same DB
+- Total new tests: 28. All test files compile. Build blocked by Ripley's in-progress SqliteCacheStore connection-per-operation refactor (removed _connection field, methods not yet updated to use OpenConnection()).
+- CacheStoreFactory: implements IDisposable, uses ConcurrentDictionary<string, ICacheStore>, GetOrAdd with key = AuthTokenHash ?? "public"
+- EnvironmentHelixTokenAccessor: sealed class, single constructor param string? token, GetAccessToken() returns it directly
+- HelixApiClientFactory: sealed class, Create(string? accessToken) → new HelixApiClient(accessToken)
+

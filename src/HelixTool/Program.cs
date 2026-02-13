@@ -8,11 +8,15 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 
 var services = new ServiceCollection();
-services.AddSingleton<CacheOptions>(_ =>
+services.AddSingleton<IHelixTokenAccessor>(_ =>
+    new EnvironmentHelixTokenAccessor(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
+services.AddSingleton<IHelixApiClientFactory, HelixApiClientFactory>();
+services.AddSingleton<CacheOptions>(sp =>
 {
+    var token = sp.GetRequiredService<IHelixTokenAccessor>().GetAccessToken();
     var opts = new CacheOptions
     {
-        AuthTokenHash = CacheOptions.ComputeTokenHash(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN"))
+        AuthTokenHash = CacheOptions.ComputeTokenHash(token)
     };
     var maxStr = Environment.GetEnvironmentVariable("HLX_CACHE_MAX_SIZE_MB");
     if (int.TryParse(maxStr, out var mb))
@@ -20,7 +24,11 @@ services.AddSingleton<CacheOptions>(_ =>
     return opts;
 });
 services.AddSingleton<ICacheStore>(sp => new SqliteCacheStore(sp.GetRequiredService<CacheOptions>()));
-services.AddSingleton<HelixApiClient>(_ => new HelixApiClient(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
+services.AddSingleton<HelixApiClient>(sp =>
+{
+    var token = sp.GetRequiredService<IHelixTokenAccessor>().GetAccessToken();
+    return new HelixApiClient(token);
+});
 services.AddSingleton<IHelixApiClient>(sp =>
     new CachingHelixApiClient(
         sp.GetRequiredService<HelixApiClient>(),
@@ -421,11 +429,15 @@ Available as `failureCategory` in JSON and MCP output.
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
         builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
-        builder.Services.AddSingleton<CacheOptions>(_ =>
+        builder.Services.AddSingleton<IHelixTokenAccessor>(_ =>
+            new EnvironmentHelixTokenAccessor(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
+        builder.Services.AddSingleton<IHelixApiClientFactory, HelixApiClientFactory>();
+        builder.Services.AddSingleton<CacheOptions>(sp =>
         {
+            var token = sp.GetRequiredService<IHelixTokenAccessor>().GetAccessToken();
             var opts = new CacheOptions
             {
-                AuthTokenHash = CacheOptions.ComputeTokenHash(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN"))
+                AuthTokenHash = CacheOptions.ComputeTokenHash(token)
             };
             var maxStr = Environment.GetEnvironmentVariable("HLX_CACHE_MAX_SIZE_MB");
             if (int.TryParse(maxStr, out var mb))
@@ -433,7 +445,11 @@ Available as `failureCategory` in JSON and MCP output.
             return opts;
         });
         builder.Services.AddSingleton<ICacheStore>(sp => new SqliteCacheStore(sp.GetRequiredService<CacheOptions>()));
-        builder.Services.AddSingleton<HelixApiClient>(_ => new HelixApiClient(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
+        builder.Services.AddSingleton<HelixApiClient>(sp =>
+        {
+            var token = sp.GetRequiredService<IHelixTokenAccessor>().GetAccessToken();
+            return new HelixApiClient(token);
+        });
         builder.Services.AddSingleton<IHelixApiClient>(sp =>
             new CachingHelixApiClient(
                 sp.GetRequiredService<HelixApiClient>(),

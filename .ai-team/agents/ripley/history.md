@@ -90,3 +90,11 @@
 
 📌 Team update (2026-02-13): Security fix — path traversal hardening for cache and download paths. New CacheSecurity.cs with ValidatePathWithinRoot/SanitizePathSegment/SanitizeCacheKeySegment. Hardened SqliteCacheStore (Get/Set artifact), CachingHelixApiClient (all 6 cache key sites), HelixService (3 download methods). 182/182 tests pass. Decision doc at decisions/inbox/ripley-path-traversal-hardening.md — decided by Ripley
 
+📌 Team update (2026-02-13): HTTP/SSE multi-client auth architecture (R-HTTP-1 through R-HTTP-3, R-HTTP-6) implemented per Dallas's design (dallas-http-sse-auth.md). New files: IHelixTokenAccessor.cs (interface + EnvironmentHelixTokenAccessor), IHelixApiClientFactory.cs (interface + HelixApiClientFactory), Cache/ICacheStoreFactory.cs (interface + CacheStoreFactory with ConcurrentDictionary). SqliteCacheStore refactored to connection-per-operation with Cache=Shared for thread-safe concurrent access (replaces single SqliteConnection field). File I/O hardened with FileShare.ReadWrite for concurrent read/write safety. Program.cs rewired: both CLI and MCP containers use IHelixTokenAccessor for token resolution. 233/233 tests pass. — decided by Ripley
+
+## Learnings
+- SqliteCacheStore now uses connection-per-operation (`OpenConnection()` returns a new `SqliteConnection` each time with `Cache=Shared`). This enables thread-safe concurrent access needed for HTTP/SSE multi-client mode. WAL mode is set once during `InitializeSchema()`, `busy_timeout` is set per-connection in `OpenConnection()`.
+- `File.Move(overwrite: true)` on Windows throws `UnauthorizedAccessException` (not just `IOException`) when the target file is locked by a concurrent reader. Must catch both exception types.
+- `File.OpenRead()` uses `FileShare.Read` which blocks concurrent writers. For concurrent access scenarios, use `new FileStream(..., FileShare.ReadWrite | FileShare.Delete)` instead.
+- Temp files for write-then-rename must use unique names (e.g., `Guid.NewGuid()`) to avoid collisions between concurrent writers to the same cache key.
+
