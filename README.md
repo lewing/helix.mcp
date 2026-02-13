@@ -7,7 +7,7 @@ A CLI tool and MCP server for investigating [.NET Helix](https://helix.dot.net) 
 The project is split into three layers:
 
 - **HelixTool.Core** — Shared library containing `HelixService`, `IHelixApiClient`, and model types. All Helix API logic lives here.
-- **HelixTool** — CLI tool built with [ConsoleAppFramework](https://github.com/Cysharp/ConsoleAppFramework). Serves both human-readable terminal commands and a stdio MCP server (`hlx mcp`).
+- **HelixTool** — CLI tool built with [ConsoleAppFramework](https://github.com/Cysharp/ConsoleAppFramework). Serves both human-readable terminal commands and a stdio MCP server (`hlx mcp`). MCP is also the default mode when no subcommand is given.
 - **HelixTool.Mcp** — Standalone MCP HTTP server built with [ModelContextProtocol](https://github.com/modelcontextprotocol/csharp-sdk). Returns structured JSON for LLM agents over HTTP.
 
 Both the CLI and MCP server depend on Core but not on each other.
@@ -19,10 +19,10 @@ Both the CLI and MCP server depend on Core but not on each other.
 `dnx` (new in .NET 10) auto-downloads and runs NuGet tool packages — no install step required:
 
 ```bash
-dnx lewing.helix.mcp mcp
+dnx lewing.helix.mcp
 ```
 
-This is the recommended approach for MCP server configuration (see below).
+This is the recommended approach for MCP server configuration (see below). No explicit `mcp` subcommand is needed — MCP mode is the default when no command is specified.
 
 ### Install as Global Tool
 
@@ -186,15 +186,18 @@ Failed work items are automatically classified into one of: **Timeout**, **Crash
 
 ```
 src/
-├── HelixTool.Core/         # Shared library — Helix API logic
-│   ├── HelixService.cs     # Core operations (status, logs, files, download)
-│   └── HelixIdResolver.cs  # GUID and URL parsing
 ├── HelixTool/              # CLI tool + stdio MCP server
-│   ├── Program.cs           # Console commands via ConsoleAppFramework
-│   └── HelixMcpTools.cs     # MCP tool definitions (shared with stdio transport)
-└── HelixTool.Mcp/          # MCP HTTP server
-    ├── Program.cs           # ASP.NET Core + ModelContextProtocol
-    └── HelixMcpTools.cs     # MCP tool definitions (shared with HTTP transport)
+│   └── Program.cs           # Console commands via ConsoleAppFramework + MCP server
+├── HelixTool.Core/         # Shared library — Helix API logic + MCP tool definitions
+│   ├── HelixService.cs     # Core operations (status, logs, files, download)
+│   ├── HelixMcpTools.cs    # MCP tool definitions ([McpServerToolType])
+│   ├── HelixIdResolver.cs  # GUID and URL parsing
+│   ├── IHelixApiClient.cs  # Helix API abstraction
+│   ├── HelixApiClient.cs   # Helix API implementation
+│   └── HelixException.cs   # Typed exceptions
+├── HelixTool.Mcp/          # MCP HTTP server
+│   └── Program.cs           # ASP.NET Core + ModelContextProtocol
+└── HelixTool.Tests/        # Unit tests
 ```
 
 ## Authentication

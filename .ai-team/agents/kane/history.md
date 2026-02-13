@@ -105,3 +105,10 @@
 - Key pattern: When documenting configs that differ only by file path and top-level key name, use ONE example + a table of locations rather than duplicating the full JSON block.
 - No code changes — documentation only.
 
+📌 Session 2025-02-13-readme-audit: Full README.md audit against codebase — three fixes:
+1. **dnx example (line 22)** — Removed stale `mcp` subcommand from `dnx lewing.helix.mcp mcp` → `dnx lewing.helix.mcp`. MCP mode is the default when no command is given (Program.cs line 19: `app.Run(args.Length == 0 ? ["mcp"] : args)`), so the explicit `mcp` arg was unnecessary and misleading.
+2. **Architecture section (line 10)** — Added note that MCP is also the default mode when no subcommand is given, to match the dnx zero-arg behavior.
+3. **Project Structure (lines 187-201)** — Fixed to match actual file layout: `HelixMcpTools.cs` is in `HelixTool.Core/` (not in `HelixTool/` or `HelixTool.Mcp/`); added missing Core files (`IHelixApiClient.cs`, `HelixApiClient.cs`, `HelixException.cs`); added `HelixTool.Tests/` project; removed nonexistent `HelixMcpTools.cs` entries from CLI and MCP projects.
+- Verified OK (no changes needed): CLI command names (lines 67-100) all match `[Command("...")]` in Program.cs; MCP Tools table (lines 167-179) matches `[McpServerTool(Name = "...")]` in HelixMcpTools.cs; MCP config args `["lewing.helix.mcp", "--yes"]` have no stale `mcp` arg and include `--yes`; Auth example (lines 217-229) is correct.
+- No code changes — documentation only.
+
