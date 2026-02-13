@@ -1743,3 +1743,59 @@ public async Task FindBinlogs(string jobId, int maxItems = 30)
 **Tests:** Assigned to Lambert (update existing FindBinlogsAsync tests, add FindFilesAsync tests with various patterns)
 **Docs:** Assigned to Kane (update CLI help text, README)
 
+
+---
+
+### 2026-02-13: camelCase JSON assertion convention
+
+# Decision: camelCase JSON assertion convention
+
+**Author:** Lambert  
+**Date:** 2026-02-13  
+**Status:** Implemented
+
+## Context
+`HelixMcpTools.s_jsonOptions` now uses `PropertyNamingPolicy = JsonNamingPolicy.CamelCase`. All MCP JSON output properties are camelCase.
+
+## Decision
+All test assertions against MCP JSON output must use camelCase property names in `GetProperty()` calls (e.g., `GetProperty("name")` not `GetProperty("Name")`). This applies to all existing and future tests in HelixMcpToolsTests, StructuredJsonTests, McpInputFlexibilityTests, and any new MCP test files.
+
+## Impact
+- 8 tests fixed across 3 files
+- Convention must be followed for all future MCP tool tests
+
+---
+
+### 2026-02-15: MCP API Batch — Tests Need CamelCase Update
+
+# MCP API Batch: Tests Need CamelCase Update
+
+**Author:** Ripley
+**Date:** 2026-02-15
+**Status:** For Lambert
+
+## Context
+
+The MCP API batch implementation changed `s_jsonOptions` in `HelixMcpTools.cs` to use `PropertyNamingPolicy = JsonNamingPolicy.CamelCase`. This means all MCP JSON output now uses camelCase property names.
+
+## Test Impact
+
+Tests in `HelixMcpToolsTests.cs` that assert PascalCase JSON property names need updating:
+- `"Name"` → `"name"`
+- `"ExitCode"` → `"exitCode"`
+- `"State"` → `"state"`
+- `"MachineName"` → `"machineName"`
+- `"QueueId"` → `"queueId"`
+- `"Uri"` → `"uri"`
+
+Also, `FindBinlogs` MCP tool now delegates to `FindFiles`, so the test on line 259 referencing `"binlogs"` key should be `"files"` instead.
+
+`WorkItemDetailTests.cs` assertions about `IsBinlog`/`IsTestResults` have been replaced with simple name assertions (already compiles).
+
+`JsonOutputTests.cs` file grouping logic updated to use `HelixService.MatchesPattern` (already compiles).
+
+## Files Affected
+- `src/HelixTool.Tests/HelixMcpToolsTests.cs`
+- `src/HelixTool.Tests/WorkItemDetailTests.cs` (already fixed for compilation)
+- `src/HelixTool.Tests/JsonOutputTests.cs` (already fixed for compilation)
+

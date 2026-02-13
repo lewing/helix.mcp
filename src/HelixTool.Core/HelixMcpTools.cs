@@ -7,7 +7,11 @@ namespace HelixTool.Core;
 [McpServerToolType]
 public sealed class HelixMcpTools
 {
-    private static readonly JsonSerializerOptions s_jsonOptions = new() { WriteIndented = true };
+    private static readonly JsonSerializerOptions s_jsonOptions = new()
+    {
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
 
     private readonly HelixService _svc;
 
@@ -19,7 +23,7 @@ public sealed class HelixMcpTools
     [McpServerTool(Name = "hlx_status"), Description("Get work item pass/fail summary for a Helix job. Returns structured JSON with job metadata, failed items (with exit codes, state, duration, machine), and passed count.")]
     public async Task<string> Status(
         [Description("Helix job ID (GUID) or full Helix URL")] string jobId,
-        [Description("Include passed work items in output (default: false)")] bool all = false)
+        [Description("Include passed work items in output (default: false)")] bool includePassed = false)
     {
         var summary = await _svc.GetJobStatusAsync(jobId);
 
@@ -30,7 +34,7 @@ public sealed class HelixMcpTools
             failedCount = summary.Failed.Count,
             passedCount = summary.Passed.Count,
             failed = summary.Failed.Select(f => new { f.Name, f.ExitCode, f.State, f.MachineName, duration = FormatDuration(f.Duration), consoleLogUrl = f.ConsoleLogUrl, failureCategory = f.FailureCategory?.ToString() }),
-            passed = all ? summary.Passed.Select(p => new { p.Name, p.ExitCode, p.State, p.MachineName, duration = FormatDuration(p.Duration), consoleLogUrl = p.ConsoleLogUrl, failureCategory = (string?)null }) : null
+            passed = includePassed ? summary.Passed.Select(p => new { p.Name, p.ExitCode, p.State, p.MachineName, duration = FormatDuration(p.Duration), consoleLogUrl = p.ConsoleLogUrl, failureCategory = (string?)null }) : null
         };
 
         return JsonSerializer.Serialize(result, s_jsonOptions);
@@ -99,9 +103,9 @@ public sealed class HelixMcpTools
 
         var result = new
         {
-            binlogs = files.Where(f => f.IsBinlog).Select(f => new { f.Name, f.Uri }),
-            testResults = files.Where(f => f.IsTestResults).Select(f => new { f.Name, f.Uri }),
-            other = files.Where(f => !f.IsBinlog && !f.IsTestResults).Select(f => new { f.Name, f.Uri })
+            binlogs = files.Where(f => HelixService.MatchesPattern(f.Name, "*.binlog")).Select(f => new { f.Name, f.Uri }),
+            testResults = files.Where(f => HelixService.MatchesPattern(f.Name, "*.trx")).Select(f => new { f.Name, f.Uri }),
+            other = files.Where(f => !HelixService.MatchesPattern(f.Name, "*.binlog") && !HelixService.MatchesPattern(f.Name, "*.trx")).Select(f => new { f.Name, f.Uri })
         };
 
         return JsonSerializer.Serialize(result, s_jsonOptions);
@@ -134,22 +138,26 @@ public sealed class HelixMcpTools
         return JsonSerializer.Serialize(new { downloadedFiles = paths });
     }
 
+    [McpServerTool(Name = "hlx_find_files"), Description("Search work items in a Helix job for files matching a pattern. Returns work item names and matching file URIs. Use pattern like '*.binlog', '*.trx', '*.dmp', or '*' for all files.")]
+    public async Task<string> FindFiles(
+        [Description("Helix job ID (GUID) or URL")] string jobId,
+        [Description("File name or glob pattern (e.g., *.binlog, *.trx, *.dmp). Default: all files")] string pattern = "*",
+        [Description("Maximum work items to scan (default: 30)")] int maxItems = 30)
+    {
+        var results = await _svc.FindFilesAsync(jobId, pattern, maxItems);
+        var output = results.Select(r => new
+        {
+            workItem = r.WorkItem,
+            files = r.Files.Select(f => new { f.Name, f.Uri })
+        });
+        return JsonSerializer.Serialize(new { pattern, scannedItems = maxItems, found = results.Count, results = output }, s_jsonOptions);
+    }
+
     [McpServerTool(Name = "hlx_find_binlogs"), Description("Scan work items in a Helix job to find which ones contain binlog files. Returns work item names and binlog URIs.")]
     public async Task<string> FindBinlogs(
         [Description("Helix job ID (GUID) or URL")] string jobId,
         [Description("Maximum work items to scan (default: 30)")] int maxItems = 30)
-    {
-        var results = await _svc.FindBinlogsAsync(jobId, maxItems);
-
-        var output = results.Select(r => new
-        {
-            workItem = r.WorkItem,
-            binlogs = r.Binlogs.Select(b => new { b.Name, b.Uri })
-        });
-
-        return JsonSerializer.Serialize(new { scannedItems = maxItems, found = results.Count, results = output },
-            s_jsonOptions);
-    }
+        => await FindFiles(jobId, "*.binlog", maxItems);
 
     [McpServerTool(Name = "hlx_download_url"), Description("Download a file by direct URL (e.g., blob storage URI from hlx_files output). Returns the local file path.")]
     public async Task<string> DownloadUrl(
@@ -187,7 +195,7 @@ public sealed class HelixMcpTools
             duration = FormatDuration(detail.Duration),
             detail.ConsoleLogUrl,
             failureCategory = detail.FailureCategory?.ToString(),
-            files = detail.Files.Select(f => new { f.Name, f.Uri, f.IsBinlog, f.IsTestResults })
+            files = detail.Files.Select(f => new { f.Name, f.Uri })
         };
 
         return JsonSerializer.Serialize(result, s_jsonOptions);
@@ -234,10 +242,9 @@ public sealed class HelixMcpTools
 
     [McpServerTool(Name = "hlx_batch_status"), Description("Get status for multiple Helix jobs at once. Returns per-job summaries and overall totals.")]
     public async Task<string> BatchStatus(
-        [Description("Comma-separated list of Helix job IDs or URLs")] string jobIds)
+        [Description("Helix job IDs (GUIDs) or URLs")] string[] jobIds)
     {
-        var ids = jobIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var batch = await _svc.GetBatchStatusAsync(ids);
+        var batch = await _svc.GetBatchStatusAsync(jobIds);
 
         var allFailed = batch.Jobs.SelectMany(j => j.Failed).Where(f => f.FailureCategory.HasValue).ToList();
         var failureBreakdown = allFailed.Count > 0

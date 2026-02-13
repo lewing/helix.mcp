@@ -66,4 +66,20 @@
 
 📌 Team update (2026-02-13): Requirements audit complete — 25/30 stories implemented, US-22 structured test failure parsing is only remaining P2 gap — audited by Ash
 📌 Team update (2026-02-13): MCP API design review — 6 actionable improvements identified (P0: batch_status array fix, P1: add hlx_list_work_items, P2: naming, P3: response envelope) — reviewed by Dallas
+
+## Learnings (MCP API batch)
+
+- `MatchesPattern` promoted from `internal static` to `public static` so MCP tools and CLI can use it for file-type classification after removing `IsBinlog`/`IsTestResults` booleans from `FileEntry`.
+- `FileEntry` simplified to `(string Name, string Uri)` — file type classification is now done at the presentation layer via `MatchesPattern`, not stored on the record.
+- `BinlogResult` renamed to `FileSearchResult(string WorkItem, List<FileEntry> Files)` — generalized to support any file pattern search, not just binlogs.
+- `FindBinlogsAsync` is now a convenience wrapper around `FindFilesAsync(jobId, "*.binlog", ...)`.
+- `hlx_batch_status` MCP tool parameter changed from comma-separated `string` to `string[]` — MCP protocol handles array serialization natively.
+- `s_jsonOptions` in `HelixMcpTools.cs` uses `PropertyNamingPolicy = JsonNamingPolicy.CamelCase` — all MCP JSON output is now consistently camelCase. CLI `s_jsonOptions` in `Program.cs` is NOT changed (different UX).
+- `hlx_status` MCP tool parameter renamed from `all` to `includePassed` for clarity. CLI `--all` flag is NOT renamed.
+- Tests that assert PascalCase JSON property names (e.g., `"Name"`, `"ExitCode"`) in MCP output will need updating to camelCase — Lambert's responsibility.
 📌 Team update (2026-02-13): Generalize hlx_find_binlogs to hlx_find_files with pattern parameter — add generic FindFilesAsync in Core, keep hlx_find_binlogs as convenience alias, rename BinlogResult to FileSearchResult — decided by Dallas
+
+## 2026-02-15: Cross-agent note from Scribe
+
+- **Decision merged:** "camelCase JSON assertion convention" (Lambert, 2026-02-13) — convention established for camelCase in all MCP test assertions.
+- **Decision merged:** "MCP API Batch — Tests Need CamelCase Update" (Ripley, 2026-02-15) — your note to Lambert about test updates has been propagated.

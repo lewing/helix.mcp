@@ -108,8 +108,8 @@ public class HelixService
         }
     }
 
-    /// <summary>Represents an uploaded file from a Helix work item with type tags.</summary>
-    public record FileEntry(string Name, string Uri, bool IsBinlog, bool IsTestResults);
+    /// <summary>Represents an uploaded file from a Helix work item.</summary>
+    public record FileEntry(string Name, string Uri);
 
     /// <summary>
     /// List uploaded files for a work item using the <c>ListFiles</c> endpoint.
@@ -130,9 +130,7 @@ public class HelixService
         {
             var files = await _api.ListWorkItemFilesAsync(workItem, id, cancellationToken);
             return files.Select(f => new FileEntry(
-                f.Name, f.Link ?? "",
-                f.Name.EndsWith(".binlog", StringComparison.OrdinalIgnoreCase),
-                f.Name.EndsWith(".trx", StringComparison.OrdinalIgnoreCase)
+                f.Name, f.Link ?? ""
             )).ToList();
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
@@ -251,16 +249,17 @@ public class HelixService
         }
     }
 
-    /// <summary>A work item and the binlog files it contains.</summary>
-    public record BinlogResult(string WorkItem, List<FileEntry> Binlogs);
+    /// <summary>A work item and the matching files it contains.</summary>
+    public record FileSearchResult(string WorkItem, List<FileEntry> Files);
 
-    /// <summary>Scan work items in a job to find which ones contain binlog files.</summary>
+    /// <summary>Scan work items in a job to find files matching a pattern.</summary>
     /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
+    /// <param name="pattern">File name or glob pattern (e.g., <c>*.binlog</c>). Default: all files.</param>
     /// <param name="maxItems">Maximum number of work items to scan (default 30).</param>
     /// <param name="cancellationToken">Optional cancellation token.</param>
-    /// <returns>A list of <see cref="BinlogResult"/> for work items that contain binlogs.</returns>
+    /// <returns>A list of <see cref="FileSearchResult"/> for work items that contain matching files.</returns>
     /// <exception cref="HelixException">Thrown when the job is not found or the API is unreachable.</exception>
-    public async Task<List<BinlogResult>> FindBinlogsAsync(string jobId, int maxItems = 30, CancellationToken cancellationToken = default)
+    public async Task<List<FileSearchResult>> FindFilesAsync(string jobId, string pattern = "*", int maxItems = 30, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
         var id = HelixIdResolver.ResolveJobId(jobId);
@@ -269,17 +268,17 @@ public class HelixService
         {
             var workItems = await _api.ListWorkItemsAsync(id, cancellationToken);
             var toScan = workItems.Take(maxItems).ToList();
-            var results = new List<BinlogResult>();
+            var results = new List<FileSearchResult>();
 
             foreach (var wi in toScan)
             {
                 var files = await _api.ListWorkItemFilesAsync(wi.Name, id, cancellationToken);
-                var binlogs = files
-                    .Where(f => f.Name.EndsWith(".binlog", StringComparison.OrdinalIgnoreCase))
-                    .Select(f => new FileEntry(f.Name, f.Link ?? "", true, false))
+                var matching = files
+                    .Where(f => MatchesPattern(f.Name, pattern))
+                    .Select(f => new FileEntry(f.Name, f.Link ?? ""))
                     .ToList();
-                if (binlogs.Count > 0)
-                    results.Add(new BinlogResult(wi.Name, binlogs));
+                if (matching.Count > 0)
+                    results.Add(new FileSearchResult(wi.Name, matching));
             }
 
             return results;
@@ -305,6 +304,10 @@ public class HelixService
             throw new HelixException("Helix API request timed out.", ex);
         }
     }
+
+    /// <summary>Scan work items in a job to find which ones contain binlog files.</summary>
+    public Task<List<FileSearchResult>> FindBinlogsAsync(string jobId, int maxItems = 30, CancellationToken cancellationToken = default)
+        => FindFilesAsync(jobId, "*.binlog", maxItems, cancellationToken);
 
     /// <summary>Download files matching a pattern from a work item to a temp directory.</summary>
     /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
@@ -444,9 +447,7 @@ public class HelixService
                 : null;
             var consoleLogUrl = $"https://helix.dot.net/api/2019-06-17/jobs/{id}/workitems/{workItem}/console";
             var fileEntries = files.Select(f => new FileEntry(
-                f.Name, f.Link ?? "",
-                f.Name.EndsWith(".binlog", StringComparison.OrdinalIgnoreCase),
-                f.Name.EndsWith(".trx", StringComparison.OrdinalIgnoreCase)
+                f.Name, f.Link ?? ""
             )).ToList();
 
             var exitCode = details.ExitCode ?? -1;
@@ -602,7 +603,7 @@ public class HelixService
         }
     }
 
-    internal static bool MatchesPattern(string name, string pattern)
+    public static bool MatchesPattern(string name, string pattern)
     {
         if (pattern == "*") return true;
         if (pattern.StartsWith("*."))

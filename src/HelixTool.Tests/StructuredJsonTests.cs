@@ -47,17 +47,17 @@ public class StructuredJsonTests
         // binlogs array contains only the .binlog file
         var binlogs = root.GetProperty("binlogs");
         Assert.Equal(1, binlogs.GetArrayLength());
-        Assert.Equal("msbuild.binlog", binlogs[0].GetProperty("Name").GetString());
+        Assert.Equal("msbuild.binlog", binlogs[0].GetProperty("name").GetString());
 
         // testResults array contains only the .trx file
         var testResults = root.GetProperty("testResults");
         Assert.Equal(1, testResults.GetArrayLength());
-        Assert.Equal("results.trx", testResults[0].GetProperty("Name").GetString());
+        Assert.Equal("results.trx", testResults[0].GetProperty("name").GetString());
 
         // other array contains only the .txt file
         var other = root.GetProperty("other");
         Assert.Equal(1, other.GetArrayLength());
-        Assert.Equal("console.txt", other[0].GetProperty("Name").GetString());
+        Assert.Equal("console.txt", other[0].GetProperty("name").GetString());
     }
 
     // --- US-30: Status includes helixUrl ---

@@ -76,3 +76,15 @@
 📌 Team update (2026-02-13): Requirements audit complete — 25/30 stories implemented, US-22 structured test failure parsing is only remaining P2 gap — audited by Ash
 📌 Team update (2026-02-13): MCP API design review — 6 actionable improvements identified (P0: batch_status array fix, P1: add hlx_list_work_items, P2: naming, P3: response envelope) — reviewed by Dallas
 📌 Team update (2026-02-13): Generalize hlx_find_binlogs to hlx_find_files with pattern parameter — update existing FindBinlogsAsync tests, add FindFilesAsync tests with various patterns — decided by Dallas
+
+- MCP camelCase migration: `s_jsonOptions` now uses `PropertyNamingPolicy = JsonNamingPolicy.CamelCase` — all JSON property assertions in tests must use camelCase (`name`, `uri`, `exitCode`, `state`, `machineName`) not PascalCase
+- `FindBinlogs` MCP tool delegates to `FindFiles` — JSON output uses `"files"` key (not `"binlogs"`) and includes `"pattern"` field
+- `FileEntry` simplified to `(string Name, string Uri)` — no more `IsBinlog`/`IsTestResults` boolean tags; classification done at MCP layer via `MatchesPattern`
+- `BatchStatus` MCP tool accepts `string[]` not comma-separated string — test with `new[] { id1, id2 }`
+- `Status` parameter renamed from `all` to `includePassed` — update all test call sites accordingly
+- Test count 298 → 304: fixed 8 camelCase failures, added 6 new tests (FindFiles pattern/wildcard, FindBinlogs delegation, BatchStatus array, GetWorkItemFiles simple FileEntry, FindFilesAsync pattern filtering)
+
+## 2026-02-15: Cross-agent note from Scribe
+
+- **Decision merged:** "camelCase JSON assertion convention" (Lambert, 2026-02-13) — all MCP test assertions must use camelCase property names.
+- **Decision merged:** "MCP API Batch — Tests Need CamelCase Update" (Ripley, 2026-02-15) — tests referencing PascalCase JSON props or `binlogs` key need updating to camelCase and `files`.

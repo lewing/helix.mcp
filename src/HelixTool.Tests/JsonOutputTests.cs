@@ -117,9 +117,9 @@ public class JsonOutputTests
         // Replicate the CLI files --json serialization from Program.cs
         var result = new
         {
-            binlogs = files.Where(f => f.IsBinlog).Select(f => new { f.Name, f.Uri }),
-            testResults = files.Where(f => f.IsTestResults).Select(f => new { f.Name, f.Uri }),
-            other = files.Where(f => !f.IsBinlog && !f.IsTestResults).Select(f => new { f.Name, f.Uri })
+            binlogs = files.Where(f => HelixService.MatchesPattern(f.Name, "*.binlog")).Select(f => new { f.Name, f.Uri }),
+            testResults = files.Where(f => HelixService.MatchesPattern(f.Name, "*.trx")).Select(f => new { f.Name, f.Uri }),
+            other = files.Where(f => !HelixService.MatchesPattern(f.Name, "*.binlog") && !HelixService.MatchesPattern(f.Name, "*.trx")).Select(f => new { f.Name, f.Uri })
         };
         var json = JsonSerializer.Serialize(result, s_jsonOptions);
 

@@ -165,9 +165,9 @@ public class Commands
         {
             var result = new
             {
-                binlogs = files.Where(f => f.IsBinlog).Select(f => new { f.Name, f.Uri }),
-                testResults = files.Where(f => f.IsTestResults).Select(f => new { f.Name, f.Uri }),
-                other = files.Where(f => !f.IsBinlog && !f.IsTestResults).Select(f => new { f.Name, f.Uri })
+                binlogs = files.Where(f => HelixService.MatchesPattern(f.Name, "*.binlog")).Select(f => new { f.Name, f.Uri }),
+                testResults = files.Where(f => HelixService.MatchesPattern(f.Name, "*.trx")).Select(f => new { f.Name, f.Uri }),
+                other = files.Where(f => !HelixService.MatchesPattern(f.Name, "*.binlog") && !HelixService.MatchesPattern(f.Name, "*.trx")).Select(f => new { f.Name, f.Uri })
             };
             Console.WriteLine(JsonSerializer.Serialize(result, s_jsonOptions));
             return;
@@ -175,8 +175,8 @@ public class Commands
 
         foreach (var f in files)
         {
-            var marker = f.IsBinlog ? " [binlog]"
-                       : f.IsTestResults ? " [test-results]"
+            var marker = HelixService.MatchesPattern(f.Name, "*.binlog") ? " [binlog]"
+                       : HelixService.MatchesPattern(f.Name, "*.trx") ? " [test-results]"
                        : "";
             Console.WriteLine($"  {f.Name}{marker}");
         }
@@ -208,26 +208,32 @@ public class Commands
         Console.WriteLine(path);
     }
 
+    /// <summary>Scan work items in a job to find files matching a pattern.</summary>
+    /// <param name="jobId">Helix job ID or URL.</param>
+    /// <param name="pattern">File name or glob pattern (e.g., *.binlog, *.trx, *.dmp).</param>
+    /// <param name="maxItems">Max work items to scan (default 30).</param>
+    [Command("find-files")]
+    public async Task FindFiles([Argument] string jobId, string pattern = "*", int maxItems = 30)
+    {
+        Console.WriteLine($"Scanning up to {maxItems} work items for '{pattern}'...");
+        var results = await _svc.FindFilesAsync(jobId, pattern, maxItems);
+        foreach (var r in results)
+        {
+            Console.Write($"  {r.WorkItem}: ");
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine(string.Join(", ", r.Files.Select(f => f.Name)));
+            Console.ResetColor();
+        }
+        if (results.Count == 0)
+            Console.WriteLine($"  No files matching '{pattern}' found.");
+    }
+
     /// <summary>Scan work items in a job to find which ones contain binlog files.</summary>
     /// <param name="jobId">Helix job ID or URL.</param>
     /// <param name="maxItems">Max work items to scan (default 30).</param>
     [Command("find-binlogs")]
     public async Task FindBinlogs([Argument] string jobId, int maxItems = 30)
-    {
-        Console.WriteLine($"Scanning up to {maxItems} work items for binlogs...");
-        var results = await _svc.FindBinlogsAsync(jobId, maxItems);
-
-        foreach (var r in results)
-        {
-            Console.Write($"  {r.WorkItem}: ");
-            Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine(string.Join(", ", r.Binlogs.Select(b => b.Name)));
-            Console.ResetColor();
-        }
-
-        if (results.Count == 0)
-            Console.WriteLine("  No binlogs found.");
-    }
+        => await FindFiles(jobId, "*.binlog", maxItems);
 
     /// <summary>Show detailed info about a specific work item.</summary>
     /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
@@ -249,7 +255,7 @@ public class Commands
                 duration = detail.Duration?.ToString(),
                 detail.ConsoleLogUrl,
                 failureCategory = detail.FailureCategory?.ToString(),
-                files = detail.Files.Select(f => new { f.Name, f.Uri, f.IsBinlog, f.IsTestResults })
+                files = detail.Files.Select(f => new { f.Name, f.Uri })
             };
             Console.WriteLine(JsonSerializer.Serialize(result, s_jsonOptions));
             return;
@@ -272,8 +278,8 @@ public class Commands
             Console.WriteLine($"\nFiles ({detail.Files.Count}):");
             foreach (var f in detail.Files)
             {
-                var tag = f.IsBinlog ? " [binlog]"
-                    : f.IsTestResults ? " [test-results]"
+                var tag = HelixService.MatchesPattern(f.Name, "*.binlog") ? " [binlog]"
+                    : HelixService.MatchesPattern(f.Name, "*.trx") ? " [test-results]"
                     : "";
                 Console.WriteLine($"  {f.Name}{tag}");
             }
@@ -370,6 +376,7 @@ public class Commands
 - `hlx files <jobId> <workItem>` — List uploaded files for a work item
 - `hlx download <jobId> <workItem> [--pattern PATTERN]` — Download artifacts (e.g., *.binlog)
 - `hlx download-url <url>` — Download a file by direct blob storage URL
+- `hlx find-files <jobId> [--pattern PATTERN] [--max-items N]` — Search work items for files matching a pattern
 - `hlx find-binlogs <jobId> [--max-items N]` — Scan work items for binlog files
 - `hlx work-item <jobId> <workItem> [--json]` — Detailed work item info (exit code, state, machine, duration, files)
 - `hlx batch-status <jobId1> <jobId2> ...` — Status for multiple jobs in parallel
@@ -387,9 +394,10 @@ public class Commands
 - `hlx_files` — List uploaded files, grouped by type (binlogs, testResults, other)
 - `hlx_download` — Download files by glob pattern to temp dir
 - `hlx_download_url` — Download a file by direct blob storage URL
+- `hlx_find_files` — Search work items for files matching a glob pattern (*.binlog, *.trx, *.dmp, etc.)
 - `hlx_find_binlogs` — Scan work items for binlog files
 - `hlx_work_item` — Detailed work item info with exit code, state, machine, duration, files
-- `hlx_batch_status` — Status for multiple jobs in parallel with per-job and overall totals
+- `hlx_batch_status` — Status for multiple jobs in parallel (accepts an array of job IDs/URLs)
 - `hlx_search_log` — Search a work item's console log for error patterns
 
 ## Authentication

@@ -38,7 +38,7 @@ public class McpInputFlexibilityTests
         // Should have parsed successfully and returned file data (not an error)
         Assert.False(doc.RootElement.TryGetProperty("error", out _));
         Assert.Equal(1, doc.RootElement.GetProperty("other").GetArrayLength());
-        Assert.Equal("output.txt", doc.RootElement.GetProperty("other")[0].GetProperty("Name").GetString());
+        Assert.Equal("output.txt", doc.RootElement.GetProperty("other")[0].GetProperty("name").GetString());
 
         // Verify the mock was called with the extracted jobId and workItem
         await _mockApi.Received(1).ListWorkItemFilesAsync(WorkItemName, ValidJobId, Arg.Any<CancellationToken>());

@@ -91,16 +91,13 @@ public class WorkItemDetailTests
 
         // Assert
         var binlogEntry = result.Files.Single(f => f.Name == "build.binlog");
-        Assert.True(binlogEntry.IsBinlog);
-        Assert.False(binlogEntry.IsTestResults);
+        Assert.Equal("build.binlog", binlogEntry.Name);
 
         var trxEntry = result.Files.Single(f => f.Name == "TestResults.trx");
-        Assert.False(trxEntry.IsBinlog);
-        Assert.True(trxEntry.IsTestResults);
+        Assert.Equal("TestResults.trx", trxEntry.Name);
 
         var txtEntry = result.Files.Single(f => f.Name == "output.txt");
-        Assert.False(txtEntry.IsBinlog);
-        Assert.False(txtEntry.IsTestResults);
+        Assert.Equal("output.txt", txtEntry.Name);
     }
 
     [Theory]
@@ -151,5 +148,76 @@ public class WorkItemDetailTests
         Assert.NotNull(result.Duration);
         Assert.Equal(expectedDuration, result.Duration);
         Assert.Equal(TimeSpan.FromMinutes(12) + TimeSpan.FromSeconds(45), result.Duration);
+    }
+
+    [Fact]
+    public async Task GetWorkItemFiles_ReturnsSimpleFileEntry()
+    {
+        // Arrange: files with various types
+        var binlog = Substitute.For<IWorkItemFile>();
+        binlog.Name.Returns("build.binlog");
+        binlog.Link.Returns("https://example.com/build.binlog");
+
+        var trx = Substitute.For<IWorkItemFile>();
+        trx.Name.Returns("results.trx");
+        trx.Link.Returns("https://example.com/results.trx");
+
+        var txt = Substitute.For<IWorkItemFile>();
+        txt.Name.Returns("output.txt");
+        txt.Link.Returns("https://example.com/output.txt");
+
+        _mockApi.ListWorkItemFilesAsync(WorkItemName, ValidJobId, Arg.Any<CancellationToken>())
+            .Returns(new List<IWorkItemFile> { binlog, trx, txt });
+
+        // Act
+        var files = await _svc.GetWorkItemFilesAsync(ValidJobId, WorkItemName);
+
+        // Assert: FileEntry has only Name and Uri (no IsBinlog/IsTestResults)
+        Assert.Equal(3, files.Count);
+
+        var binlogEntry = files.Single(f => f.Name == "build.binlog");
+        Assert.Equal("https://example.com/build.binlog", binlogEntry.Uri);
+
+        var trxEntry = files.Single(f => f.Name == "results.trx");
+        Assert.Equal("https://example.com/results.trx", trxEntry.Uri);
+
+        var txtEntry = files.Single(f => f.Name == "output.txt");
+        Assert.Equal("https://example.com/output.txt", txtEntry.Uri);
+    }
+
+    [Fact]
+    public async Task FindFilesAsync_WithPattern_FiltersCorrectly()
+    {
+        // Arrange
+        var wi = Substitute.For<IWorkItemSummary>();
+        wi.Name.Returns("wi-mixed");
+
+        _mockApi.ListWorkItemsAsync(ValidJobId, Arg.Any<CancellationToken>())
+            .Returns(new List<IWorkItemSummary> { wi });
+
+        var trxFile = Substitute.For<IWorkItemFile>();
+        trxFile.Name.Returns("TestResults.trx");
+        trxFile.Link.Returns("https://example.com/TestResults.trx");
+
+        var binlogFile = Substitute.For<IWorkItemFile>();
+        binlogFile.Name.Returns("msbuild.binlog");
+        binlogFile.Link.Returns("https://example.com/msbuild.binlog");
+
+        var txtFile = Substitute.For<IWorkItemFile>();
+        txtFile.Name.Returns("output.txt");
+        txtFile.Link.Returns("https://example.com/output.txt");
+
+        _mockApi.ListWorkItemFilesAsync("wi-mixed", ValidJobId, Arg.Any<CancellationToken>())
+            .Returns(new List<IWorkItemFile> { trxFile, binlogFile, txtFile });
+
+        // Act: search for .trx files only
+        var results = await _svc.FindFilesAsync(ValidJobId, "*.trx");
+
+        // Assert
+        Assert.Single(results);
+        Assert.Equal("wi-mixed", results[0].WorkItem);
+        Assert.Single(results[0].Files);
+        Assert.Equal("TestResults.trx", results[0].Files[0].Name);
+        Assert.Equal("https://example.com/TestResults.trx", results[0].Files[0].Uri);
     }
 }
