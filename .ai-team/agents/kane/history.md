@@ -67,3 +67,5 @@
 
 
 📌 Team update (2026-02-13): Status filter changed from bool to enum (failed|passed|all) — decided by Larry/Ripley
+
+- **2026-02-15-team-md-public:** Rewrote `.ai-team/TEAM.md` as a public-facing "Meet the Team" page. Links to Squad framework, describes all 6 agents in a concise roster table (Dallas/Ripley/Lambert/Kane/Ash/Scribe). Replaced the internal roster format (project context table + charter paths + status badges) with a reader-friendly intro + role descriptions. ~17 lines of markdown.
