@@ -57,27 +57,88 @@ public class HelixMcpToolsTests
     }
 
     [Fact]
-    public async Task Status_AllFalse_PassedIsNull()
+    public async Task Status_FilterFailed_PassedIsNull()
     {
         ArrangeJobWithWorkItems();
 
-        var json = await _tools.Status(ValidJobId, includePassed: false);
+        var json = await _tools.Status(ValidJobId, filter: "failed");
         var doc = JsonDocument.Parse(json);
 
         Assert.Equal(JsonValueKind.Null, doc.RootElement.GetProperty("passed").ValueKind);
     }
 
     [Fact]
-    public async Task Status_AllTrue_PassedIncludesItems()
+    public async Task Status_FilterAll_PassedIncludesItems()
     {
         ArrangeJobWithWorkItems();
 
-        var json = await _tools.Status(ValidJobId, includePassed: true);
+        var json = await _tools.Status(ValidJobId, filter: "all");
         var doc = JsonDocument.Parse(json);
         var passed = doc.RootElement.GetProperty("passed");
 
         Assert.Equal(1, passed.GetArrayLength());
         Assert.Equal("workitem-ok", passed[0].GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task Status_DefaultFilter_ShowsOnlyFailed()
+    {
+        ArrangeJobWithWorkItems();
+
+        var json = await _tools.Status(ValidJobId);
+        var doc = JsonDocument.Parse(json);
+
+        Assert.Equal(JsonValueKind.Null, doc.RootElement.GetProperty("passed").ValueKind);
+        Assert.True(doc.RootElement.GetProperty("failed").GetArrayLength() > 0);
+    }
+
+    [Fact]
+    public async Task Status_FilterPassed_FailedIsNull()
+    {
+        ArrangeJobWithWorkItems();
+
+        var json = await _tools.Status(ValidJobId, filter: "passed");
+        var doc = JsonDocument.Parse(json);
+
+        Assert.Equal(JsonValueKind.Null, doc.RootElement.GetProperty("failed").ValueKind);
+        Assert.True(doc.RootElement.GetProperty("passed").GetArrayLength() > 0);
+    }
+
+    [Fact]
+    public async Task Status_FilterPassed_IncludesPassedItems()
+    {
+        ArrangeJobWithWorkItems();
+
+        var json = await _tools.Status(ValidJobId, filter: "passed");
+        var doc = JsonDocument.Parse(json);
+        var passed = doc.RootElement.GetProperty("passed");
+
+        Assert.Equal(1, passed.GetArrayLength());
+        var item = passed[0];
+        Assert.Equal("workitem-ok", item.GetProperty("name").GetString());
+        Assert.Equal(0, item.GetProperty("exitCode").GetInt32());
+        Assert.Equal("Finished", item.GetProperty("state").GetString());
+        Assert.Equal("helix-win-01", item.GetProperty("machineName").GetString());
+    }
+
+    [Fact]
+    public async Task Status_FilterCaseInsensitive()
+    {
+        ArrangeJobWithWorkItems();
+
+        var json = await _tools.Status(ValidJobId, filter: "ALL");
+        var doc = JsonDocument.Parse(json);
+
+        Assert.True(doc.RootElement.GetProperty("failed").GetArrayLength() > 0);
+        Assert.True(doc.RootElement.GetProperty("passed").GetArrayLength() > 0);
+    }
+
+    [Fact]
+    public async Task Status_InvalidFilter_ThrowsArgumentException()
+    {
+        ArrangeJobWithWorkItems();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => _tools.Status(ValidJobId, filter: "invalid"));
     }
 
     // --- FormatDuration tested through Status output ---

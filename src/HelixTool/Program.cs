@@ -59,11 +59,21 @@ public class Commands
 
     /// <summary>Show work item summary for a Helix job.</summary>
     /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
-    /// <param name="all">Show all work items, not just failed ones.</param>
+    /// <param name="filter">Filter: 'failed' (default), 'passed', or 'all'.</param>
     /// <param name="json">Output as structured JSON instead of human-readable text.</param>
     [Command("status")]
-    public async Task Status([Argument] string jobId, bool all = false, bool json = false)
+    public async Task Status([Argument] string jobId, [Argument] string filter = "failed", bool json = false)
     {
+        if (!filter.Equals("failed", StringComparison.OrdinalIgnoreCase) &&
+            !filter.Equals("passed", StringComparison.OrdinalIgnoreCase) &&
+            !filter.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"Invalid filter '{filter}'. Must be 'failed', 'passed', or 'all'.", nameof(filter));
+        }
+
+        var showFailed = filter.Equals("failed", StringComparison.OrdinalIgnoreCase) || filter.Equals("all", StringComparison.OrdinalIgnoreCase);
+        var showPassed = filter.Equals("passed", StringComparison.OrdinalIgnoreCase) || filter.Equals("all", StringComparison.OrdinalIgnoreCase);
+
         Console.Error.Write("Fetching job details...");
         var summary = await _svc.GetJobStatusAsync(jobId);
         Console.Error.WriteLine(" done.");
@@ -76,8 +86,8 @@ public class Commands
                 totalWorkItems = summary.TotalCount,
                 failedCount = summary.Failed.Count,
                 passedCount = summary.Passed.Count,
-                failed = summary.Failed.Select(f => new { f.Name, f.ExitCode, f.State, f.MachineName, duration = f.Duration?.ToString(), f.ConsoleLogUrl, failureCategory = f.FailureCategory?.ToString() }),
-                passed = all ? summary.Passed.Select(p => new { p.Name, p.ExitCode, p.State, p.MachineName, duration = p.Duration?.ToString(), p.ConsoleLogUrl, failureCategory = (string?)null }) : null
+                failed = showFailed ? summary.Failed.Select(f => new { f.Name, f.ExitCode, f.State, f.MachineName, duration = f.Duration?.ToString(), f.ConsoleLogUrl, failureCategory = f.FailureCategory?.ToString() }) : null,
+                passed = showPassed ? summary.Passed.Select(p => new { p.Name, p.ExitCode, p.State, p.MachineName, duration = p.Duration?.ToString(), p.ConsoleLogUrl, failureCategory = (string?)null }) : null
             };
             Console.WriteLine(JsonSerializer.Serialize(result, s_jsonOptions));
             return;
@@ -89,7 +99,7 @@ public class Commands
         Console.WriteLine($"Work items: {summary.TotalCount}");
         Console.WriteLine();
 
-        if (summary.Failed.Count > 0)
+        if (showFailed && summary.Failed.Count > 0)
         {
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine($"Failed: {summary.Failed.Count}");
@@ -111,14 +121,14 @@ public class Commands
                 Console.WriteLine($"         {item.ConsoleLogUrl}");
             }
         }
-        else
+        else if (showFailed)
         {
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine("All work items passed.");
             Console.ResetColor();
         }
 
-        if (all)
+        if (showPassed)
         {
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine($"\nPassed: {summary.Passed.Count}");
@@ -137,7 +147,7 @@ public class Commands
         else if (summary.Passed.Count > 0)
         {
             Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine($"Passed: {summary.Passed.Count} (use --all to show)");
+            Console.WriteLine($"Passed: {summary.Passed.Count} (use 'hlx status <jobId> all' to show)");
             Console.ResetColor();
         }
     }
@@ -486,7 +496,7 @@ public class Commands
 # hlx - Helix Test Infrastructure CLI
 
 ## CLI Commands
-- `hlx status <jobId> [--all]` — Work item summary (failed items with exit code, duration, machine)
+- `hlx status <jobId> [failed|passed|all]` — Work item summary (failed items with exit code, duration, machine)
 - `hlx logs <jobId> <workItem>` — Download console log to temp file
 - `hlx files <jobId> <workItem>` — List uploaded files for a work item
 - `hlx download <jobId> <workItem> [--pattern PATTERN]` — Download artifacts (e.g., *.binlog)

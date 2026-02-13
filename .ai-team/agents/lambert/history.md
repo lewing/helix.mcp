@@ -156,3 +156,22 @@
 - TRX outcome classification: "Passed" → passed++, "Failed" → failed++, everything else (including "NotExecuted") → skipped++. Tests for non-pass/non-fail outcomes always included in Results regardless of includePassed flag.
 - Error truncation in ParseTrxFile: only extracts ErrorInfo for outcome="Failed" (case-insensitive). Truncation adds "... (truncated)" suffix — total length is limit + 15 chars for suffix.
 - XmlReaderSettings includes `MaxCharactersInDocument = 50_000_000` and `Async = true` beyond the DTD/resolver settings. XmlException thrown by `XDocument.Load(reader)` when DTD encountered.
+
+## 2026-02-15: Status API Filter Migration Tests
+
+**HelixMcpToolsTests.cs** — Updated 2 existing tests and added 5 new tests for `filter: string` parameter migration:
+
+- **Renamed:** `Status_AllFalse_PassedIsNull` → `Status_FilterFailed_PassedIsNull` (uses `filter: "failed"`)
+- **Renamed:** `Status_AllTrue_PassedIncludesItems` → `Status_FilterAll_PassedIncludesItems` (uses `filter: "all"`)
+- **New:** `Status_DefaultFilter_ShowsOnlyFailed` — verifies default (no filter arg) shows only failed, passed is null
+- **New:** `Status_FilterPassed_FailedIsNull` — verifies `filter: "passed"` nulls out failed, populates passed
+- **New:** `Status_FilterPassed_IncludesPassedItems` — verifies passed items have expected structure (name, exitCode, state, machineName)
+- **New:** `Status_FilterCaseInsensitive` — verifies `filter: "ALL"` (uppercase) populates both failed and passed
+- **New:** `Status_InvalidFilter_ThrowsArgumentException` — verifies invalid filter value throws ArgumentException
+- **Total test count:** 364 → 369 (15 status tests total, all passing). 1 pre-existing failure in SearchConsoleLogAsync unrelated to changes.
+
+## Learnings
+
+- Status API `filter` parameter accepts "failed" (default), "passed", "all" — case-insensitive. Invalid values throw ArgumentException.
+- `filter: "passed"` nulls `failed` array (mirrors `filter: "failed"` nulling `passed` array). `filter: "all"` populates both.
+- Proactive test writing pattern continues to work: wrote tests against new `filter` API spec before Ripley's code landed, waited for build to succeed.

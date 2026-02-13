@@ -20,12 +20,22 @@ public sealed class HelixMcpTools
         _svc = svc;
     }
 
-    [McpServerTool(Name = "hlx_status"), Description("Get work item pass/fail summary for a Helix job. Returns structured JSON with job metadata, failed items (with exit codes, state, duration, machine), and passed count.")]
+    [McpServerTool(Name = "hlx_status"), Description("Get work item pass/fail summary for a Helix job. Returns structured JSON with job metadata, failed items (with exit codes, state, duration, machine), and passed count. Use the 'filter' parameter to control which work items are included: 'failed' (default), 'passed', or 'all'.")]
     public async Task<string> Status(
         [Description("Helix job ID (GUID) or full Helix URL")] string jobId,
-        [Description("Include passed work items in output (default: false)")] bool includePassed = false)
+        [Description("Filter: 'failed' (default) shows only failures, 'passed' shows only passed, 'all' shows everything")] string filter = "failed")
     {
+        if (!filter.Equals("failed", StringComparison.OrdinalIgnoreCase) &&
+            !filter.Equals("passed", StringComparison.OrdinalIgnoreCase) &&
+            !filter.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"Invalid filter '{filter}'. Must be 'failed', 'passed', or 'all'.", nameof(filter));
+        }
+
         var summary = await _svc.GetJobStatusAsync(jobId);
+
+        var showFailed = filter.Equals("failed", StringComparison.OrdinalIgnoreCase) || filter.Equals("all", StringComparison.OrdinalIgnoreCase);
+        var showPassed = filter.Equals("passed", StringComparison.OrdinalIgnoreCase) || filter.Equals("all", StringComparison.OrdinalIgnoreCase);
 
         var result = new
         {
@@ -33,8 +43,8 @@ public sealed class HelixMcpTools
             totalWorkItems = summary.TotalCount,
             failedCount = summary.Failed.Count,
             passedCount = summary.Passed.Count,
-            failed = summary.Failed.Select(f => new { f.Name, f.ExitCode, f.State, f.MachineName, duration = FormatDuration(f.Duration), consoleLogUrl = f.ConsoleLogUrl, failureCategory = f.FailureCategory?.ToString() }),
-            passed = includePassed ? summary.Passed.Select(p => new { p.Name, p.ExitCode, p.State, p.MachineName, duration = FormatDuration(p.Duration), consoleLogUrl = p.ConsoleLogUrl, failureCategory = (string?)null }) : null
+            failed = showFailed ? summary.Failed.Select(f => new { f.Name, f.ExitCode, f.State, f.MachineName, duration = FormatDuration(f.Duration), consoleLogUrl = f.ConsoleLogUrl, failureCategory = f.FailureCategory?.ToString() }) : null,
+            passed = showPassed ? summary.Passed.Select(p => new { p.Name, p.ExitCode, p.State, p.MachineName, duration = FormatDuration(p.Duration), consoleLogUrl = p.ConsoleLogUrl, failureCategory = (string?)null }) : null
         };
 
         return JsonSerializer.Serialize(result, s_jsonOptions);
