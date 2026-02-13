@@ -363,6 +363,62 @@ public class Commands
         Console.WriteLine($"{result.Matches.Count} matches found (showing up to {maxMatches}).");
     }
 
+    /// <summary>Search a work item's uploaded file for matching lines.</summary>
+    /// <param name="jobId">Helix job ID or URL.</param>
+    /// <param name="workItem">Work item name.</param>
+    /// <param name="fileName">File name to search (exact name from files output).</param>
+    /// <param name="pattern">Text pattern to search for (case-insensitive substring match).</param>
+    /// <param name="context">Number of context lines before and after each match.</param>
+    /// <param name="maxMatches">Maximum number of matches to return (default 50).</param>
+    [Command("search-file")]
+    public async Task SearchFile([Argument] string jobId, [Argument] string workItem,
+        [Argument] string fileName, [Argument] string pattern, int context = 2, int maxMatches = 50)
+    {
+        var result = await _svc.SearchFileAsync(jobId, workItem, fileName, pattern, context, maxMatches);
+
+        if (result.IsBinary)
+        {
+            Console.Error.WriteLine($"File '{fileName}' appears to be binary and cannot be searched.");
+            return;
+        }
+
+        Console.WriteLine($"Searching for \"{pattern}\" in {result.FileName} ({result.TotalLines} lines)...");
+        Console.WriteLine($"Found {result.Matches.Count} matches{(result.Truncated ? " (truncated)" : "")}:");
+        Console.WriteLine();
+
+        foreach (var match in result.Matches)
+        {
+            Console.WriteLine($"--- Line {match.LineNumber} ---");
+            if (match.Context != null && context > 0)
+            {
+                int startLine = Math.Max(1, match.LineNumber - context);
+                for (int i = 0; i < match.Context.Count; i++)
+                {
+                    int lineNum = startLine + i;
+                    if (lineNum == match.LineNumber)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Yellow;
+                        Console.WriteLine($"  {lineNum}: {match.Context[i]}");
+                        Console.ResetColor();
+                    }
+                    else
+                    {
+                        Console.WriteLine($"  {lineNum}: {match.Context[i]}");
+                    }
+                }
+            }
+            else
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"  {match.LineNumber}: {match.Line}");
+                Console.ResetColor();
+            }
+            Console.WriteLine();
+        }
+
+        Console.WriteLine($"{result.Matches.Count} matches found (showing up to {maxMatches}).");
+    }
+
     /// <summary>Print comprehensive tool documentation for LLM agents.</summary>
     [Command("llmstxt")]
     public void LlmsTxt()

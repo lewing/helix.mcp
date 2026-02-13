@@ -559,11 +559,50 @@ public class HelixService
         return FailureCategory.Unknown;
     }
 
+    /// <summary>Whether file content search is disabled by configuration.</summary>
+    internal static bool IsFileSearchDisabled =>
+        string.Equals(Environment.GetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH"), "true", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Maximum file size allowed for content search (50 MB).</summary>
+    internal const long MaxSearchFileSizeBytes = 50 * 1024 * 1024;
+
     /// <summary>Result of searching a console log.</summary>
     public record LogSearchResult(string WorkItem, List<LogMatch> Matches, int TotalLines);
 
     /// <summary>A single match in a console log.</summary>
     public record LogMatch(int LineNumber, string Line, List<string>? Context = null);
+
+    /// <summary>Result of searching an uploaded file's content.</summary>
+    public record FileContentSearchResult(string FileName, List<LogMatch> Matches, int TotalLines, bool Truncated, bool IsBinary);
+
+    /// <summary>Search lines for a pattern with optional context.</summary>
+    private static LogSearchResult SearchLines(string identifier, string[] lines, string pattern, int contextLines, int maxMatches)
+    {
+        var matchIndices = new List<int>();
+
+        for (int i = 0; i < lines.Length && matchIndices.Count < maxMatches; i++)
+        {
+            if (lines[i].Contains(pattern, StringComparison.OrdinalIgnoreCase))
+                matchIndices.Add(i);
+        }
+
+        var matches = new List<LogMatch>();
+        foreach (var idx in matchIndices)
+        {
+            List<string>? context = null;
+            if (contextLines > 0)
+            {
+                int start = Math.Max(0, idx - contextLines);
+                int end = Math.Min(lines.Length - 1, idx + contextLines);
+                context = new List<string>();
+                for (int j = start; j <= end; j++)
+                    context.Add(lines[j]);
+            }
+            matches.Add(new LogMatch(idx + 1, lines[idx], context));
+        }
+
+        return new LogSearchResult(identifier, matches, lines.Length);
+    }
 
     /// <summary>Search a work item's console log for lines matching a pattern.</summary>
     public async Task<LogSearchResult> SearchConsoleLogAsync(
@@ -571,6 +610,9 @@ public class HelixService
         int contextLines = 0, int maxMatches = 50,
         CancellationToken cancellationToken = default)
     {
+        if (IsFileSearchDisabled)
+            throw new InvalidOperationException("File content search is disabled by configuration.");
+
         ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
         ArgumentException.ThrowIfNullOrWhiteSpace(workItem);
         ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
@@ -579,34 +621,61 @@ public class HelixService
         try
         {
             var allLines = await File.ReadAllLinesAsync(path, cancellationToken);
-            var matchIndices = new List<int>();
-
-            for (int i = 0; i < allLines.Length && matchIndices.Count < maxMatches; i++)
-            {
-                if (allLines[i].Contains(pattern, StringComparison.OrdinalIgnoreCase))
-                    matchIndices.Add(i);
-            }
-
-            var matches = new List<LogMatch>();
-            foreach (var idx in matchIndices)
-            {
-                List<string>? context = null;
-                if (contextLines > 0)
-                {
-                    int start = Math.Max(0, idx - contextLines);
-                    int end = Math.Min(allLines.Length - 1, idx + contextLines);
-                    context = new List<string>();
-                    for (int j = start; j <= end; j++)
-                        context.Add(allLines[j]);
-                }
-                matches.Add(new LogMatch(idx + 1, allLines[idx], context));
-            }
-
-            return new LogSearchResult(workItem, matches, allLines.Length);
+            return SearchLines(workItem, allLines, pattern, contextLines, maxMatches);
         }
         finally
         {
             try { File.Delete(path); } catch { }
+        }
+    }
+
+    /// <summary>Search a work item's uploaded file for lines matching a pattern.</summary>
+    public async Task<FileContentSearchResult> SearchFileAsync(
+        string jobId, string workItem, string fileName, string pattern,
+        int contextLines = 0, int maxMatches = 50,
+        CancellationToken cancellationToken = default)
+    {
+        if (IsFileSearchDisabled)
+            throw new InvalidOperationException("File content search is disabled by configuration.");
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workItem);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
+
+        var downloadedPaths = await DownloadFilesAsync(jobId, workItem, fileName, cancellationToken);
+        if (downloadedPaths.Count == 0)
+            throw new HelixException($"File '{fileName}' not found in work item '{workItem}'.");
+
+        var filePath = downloadedPaths[0];
+        try
+        {
+            // Check file size
+            var fileInfo = new FileInfo(filePath);
+            if (fileInfo.Length > MaxSearchFileSizeBytes)
+                throw new HelixException($"File '{fileName}' is {fileInfo.Length / (1024 * 1024)}MB which exceeds the {MaxSearchFileSizeBytes / (1024 * 1024)}MB search limit.");
+
+            // Check for binary content (null byte in first 8KB)
+            var buffer = new byte[Math.Min(8192, fileInfo.Length)];
+            await using (var fs = File.OpenRead(filePath))
+            {
+                _ = await fs.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
+            }
+            if (Array.IndexOf(buffer, (byte)0) >= 0)
+                return new FileContentSearchResult(fileName, [], 0, false, true);
+
+            var allLines = await File.ReadAllLinesAsync(filePath, cancellationToken);
+            var searchResult = SearchLines(fileName, allLines, pattern, contextLines, maxMatches);
+            var truncated = searchResult.Matches.Count >= maxMatches;
+
+            return new FileContentSearchResult(fileName, searchResult.Matches, searchResult.TotalLines, truncated, false);
+        }
+        finally
+        {
+            foreach (var p in downloadedPaths)
+            {
+                try { File.Delete(p); } catch { }
+            }
         }
     }
 

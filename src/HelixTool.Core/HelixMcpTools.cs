@@ -209,6 +209,9 @@ public sealed class HelixMcpTools
         [Description("Lines of context before and after each match")] int contextLines = 2,
         [Description("Maximum number of matches to return")] int maxMatches = 50)
     {
+        if (HelixService.IsFileSearchDisabled)
+            return JsonSerializer.Serialize(new { error = "File content search is disabled by configuration." }, s_jsonOptions);
+
         if (string.IsNullOrEmpty(workItem) && HelixIdResolver.TryResolveJobAndWorkItem(jobId, out var resolvedJobId, out var resolvedWorkItem))
         {
             if (!string.IsNullOrEmpty(resolvedWorkItem))
@@ -229,6 +232,53 @@ public sealed class HelixMcpTools
             pattern,
             totalLines = result.TotalLines,
             matchCount = result.Matches.Count,
+            matches = result.Matches.Select(m => new
+            {
+                lineNumber = m.LineNumber,
+                line = m.Line,
+                context = m.Context
+            })
+        };
+
+        return JsonSerializer.Serialize(output, s_jsonOptions);
+    }
+
+    [McpServerTool(Name = "hlx_search_file"), Description("Search a work item's uploaded file for lines matching a pattern. Returns matching lines with optional context. Use this to find specific errors, stack traces, or patterns in Helix test output files without downloading them.")]
+    public async Task<string> SearchFile(
+        [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
+        [Description("File name to search (exact name from hlx_files output)")] string fileName,
+        [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
+        [Description("Text pattern to search for (case-insensitive)")] string pattern = "error",
+        [Description("Lines of context before and after each match")] int contextLines = 2,
+        [Description("Maximum number of matches to return")] int maxMatches = 50)
+    {
+        if (HelixService.IsFileSearchDisabled)
+            return JsonSerializer.Serialize(new { error = "File content search is disabled by configuration." }, s_jsonOptions);
+
+        if (string.IsNullOrEmpty(workItem) && HelixIdResolver.TryResolveJobAndWorkItem(jobId, out var resolvedJobId, out var resolvedWorkItem))
+        {
+            if (!string.IsNullOrEmpty(resolvedWorkItem))
+            {
+                jobId = resolvedJobId;
+                workItem = resolvedWorkItem;
+            }
+        }
+
+        if (string.IsNullOrEmpty(workItem))
+            return JsonSerializer.Serialize(new { error = "Work item name is required. Provide it as a separate parameter or include it in the Helix URL." }, s_jsonOptions);
+
+        var result = await _svc.SearchFileAsync(jobId, workItem, fileName, pattern, contextLines, maxMatches);
+
+        if (result.IsBinary)
+            return JsonSerializer.Serialize(new { error = $"File '{fileName}' appears to be binary and cannot be searched." }, s_jsonOptions);
+
+        var output = new
+        {
+            fileName = result.FileName,
+            pattern,
+            totalLines = result.TotalLines,
+            matchCount = result.Matches.Count,
+            truncated = result.Truncated,
             matches = result.Matches.Select(m => new
             {
                 lineNumber = m.LineNumber,
