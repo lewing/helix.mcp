@@ -32,7 +32,7 @@ public sealed class CachingHelixApiClient : IHelixApiClient
     {
         if (!_enabled) return await _inner.GetJobDetailsAsync(jobId, ct);
 
-        var cacheKey = $"job:{jobId}:details";
+        var cacheKey = $"job:{CacheSecurity.SanitizeCacheKeySegment(jobId)}:details";
         var cached = await _cache.GetMetadataAsync(cacheKey, ct);
         if (cached != null)
         {
@@ -58,7 +58,7 @@ public sealed class CachingHelixApiClient : IHelixApiClient
     {
         if (!_enabled) return await _inner.ListWorkItemsAsync(jobId, ct);
 
-        var cacheKey = $"job:{jobId}:workitems";
+        var cacheKey = $"job:{CacheSecurity.SanitizeCacheKeySegment(jobId)}:workitems";
         var cached = await _cache.GetMetadataAsync(cacheKey, ct);
         if (cached != null)
         {
@@ -78,7 +78,7 @@ public sealed class CachingHelixApiClient : IHelixApiClient
     {
         if (!_enabled) return await _inner.GetWorkItemDetailsAsync(workItemName, jobId, ct);
 
-        var cacheKey = $"job:{jobId}:wi:{workItemName}:details";
+        var cacheKey = $"job:{CacheSecurity.SanitizeCacheKeySegment(jobId)}:wi:{CacheSecurity.SanitizeCacheKeySegment(workItemName)}:details";
         var cached = await _cache.GetMetadataAsync(cacheKey, ct);
         if (cached != null)
         {
@@ -98,7 +98,7 @@ public sealed class CachingHelixApiClient : IHelixApiClient
     {
         if (!_enabled) return await _inner.ListWorkItemFilesAsync(workItemName, jobId, ct);
 
-        var cacheKey = $"job:{jobId}:wi:{workItemName}:files";
+        var cacheKey = $"job:{CacheSecurity.SanitizeCacheKeySegment(jobId)}:wi:{CacheSecurity.SanitizeCacheKeySegment(workItemName)}:files";
         var cached = await _cache.GetMetadataAsync(cacheKey, ct);
         if (cached != null)
         {
@@ -123,7 +123,7 @@ public sealed class CachingHelixApiClient : IHelixApiClient
         if (!isCompleted)
             return await _inner.GetConsoleLogAsync(workItemName, jobId, ct);
 
-        var cacheKey = $"job:{jobId}:wi:{workItemName}:console";
+        var cacheKey = $"job:{CacheSecurity.SanitizeCacheKeySegment(jobId)}:wi:{CacheSecurity.SanitizeCacheKeySegment(workItemName)}:console";
         var cachedStream = await _cache.GetArtifactAsync(cacheKey, ct);
         if (cachedStream != null)
             return cachedStream;
@@ -139,7 +139,7 @@ public sealed class CachingHelixApiClient : IHelixApiClient
     {
         if (!_enabled) return await _inner.GetFileAsync(fileName, workItemName, jobId, ct);
 
-        var cacheKey = $"job:{jobId}:wi:{workItemName}:file:{fileName}";
+        var cacheKey = $"job:{CacheSecurity.SanitizeCacheKeySegment(jobId)}:wi:{CacheSecurity.SanitizeCacheKeySegment(workItemName)}:file:{CacheSecurity.SanitizeCacheKeySegment(fileName)}";
         var cachedStream = await _cache.GetArtifactAsync(cacheKey, ct);
         if (cachedStream != null)
             return cachedStream;

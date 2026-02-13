@@ -10,7 +10,10 @@ using ModelContextProtocol.Server;
 var services = new ServiceCollection();
 services.AddSingleton<CacheOptions>(_ =>
 {
-    var opts = new CacheOptions();
+    var opts = new CacheOptions
+    {
+        AuthTokenHash = CacheOptions.ComputeTokenHash(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN"))
+    };
     var maxStr = Environment.GetEnvironmentVariable("HLX_CACHE_MAX_SIZE_MB");
     if (int.TryParse(maxStr, out var mb))
         opts = opts with { MaxSizeBytes = (long)mb * 1024 * 1024 };
@@ -401,10 +404,12 @@ Available as `failureCategory` in JSON and MCP output.
 
 ## Caching
 - SQLite-backed cross-process cache (shared across `hlx mcp` stdio instances)
-- Cache location: `%LOCALAPPDATA%/hlx/cache.db` (Windows) or `$XDG_CACHE_HOME/hlx/cache.db` (Linux/macOS)
+- Cache isolated per auth context: unauthenticated uses `{base}/public/`, token uses `{base}/cache-{hash}/` (first 8 chars of SHA256)
+- Cache location base: `%LOCALAPPDATA%/hlx/` (Windows) or `$XDG_CACHE_HOME/hlx/` (Linux/macOS)
 - Default max size: 1 GB. Configure via `HLX_CACHE_MAX_SIZE_MB` env var. Set to 0 to disable.
 - Running jobs: 15-30s TTL. Completed jobs: 1-4h TTL. Console logs never cached while running.
 - Eviction: TTL-based + LRU when over max size. Artifacts expire after 7 days without access.
+- `cache clear` wipes ALL auth contexts. `cache status` shows the current auth context.
 """;
         Console.Write(text);
     }
@@ -418,7 +423,10 @@ Available as `failureCategory` in JSON and MCP output.
         builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
         builder.Services.AddSingleton<CacheOptions>(_ =>
         {
-            var opts = new CacheOptions();
+            var opts = new CacheOptions
+            {
+                AuthTokenHash = CacheOptions.ComputeTokenHash(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN"))
+            };
             var maxStr = Environment.GetEnvironmentVariable("HLX_CACHE_MAX_SIZE_MB");
             if (int.TryParse(maxStr, out var mb))
                 opts = opts with { MaxSizeBytes = (long)mb * 1024 * 1024 };
@@ -442,23 +450,48 @@ Available as `failureCategory` in JSON and MCP output.
         await builder.Build().RunAsync();
     }
 
-    /// <summary>Clear all cached data (SQLite metadata + artifact files).</summary>
+    /// <summary>Clear all cached data across ALL auth contexts.</summary>
     [Command("cache clear")]
     public async Task CacheClear()
     {
+        // Clear current auth context's cache store
         var cache = ConsoleApp.ServiceProvider!.GetRequiredService<ICacheStore>();
         await cache.ClearAsync();
-        Console.WriteLine("Cache cleared.");
+
+        // Also wipe all sibling auth context directories under the base root
+        var options = ConsoleApp.ServiceProvider!.GetRequiredService<CacheOptions>();
+        var baseRoot = options.GetBaseCacheRoot();
+        if (Directory.Exists(baseRoot))
+        {
+            foreach (var dir in Directory.GetDirectories(baseRoot))
+            {
+                var name = Path.GetFileName(dir);
+                if (name == "public" || name.StartsWith("cache-", StringComparison.Ordinal))
+                {
+                    // Skip current context (already cleared via ICacheStore)
+                    var currentRoot = options.GetEffectiveCacheRoot();
+                    if (string.Equals(dir, currentRoot, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    try { Directory.Delete(dir, recursive: true); }
+                    catch (IOException) { /* best effort */ }
+                }
+            }
+        }
+
+        Console.WriteLine("Cache cleared (all auth contexts).");
     }
 
-    /// <summary>Show cache size, entry count, oldest/newest entries.</summary>
+    /// <summary>Show cache size, entry count, oldest/newest entries for the current auth context.</summary>
     [Command("cache status")]
     public async Task CacheStatusCmd()
     {
         var cache = ConsoleApp.ServiceProvider!.GetRequiredService<ICacheStore>();
+        var options = ConsoleApp.ServiceProvider!.GetRequiredService<CacheOptions>();
         var status = await cache.GetStatusAsync();
 
-        Console.WriteLine($"Cache status:");
+        var context = options.AuthTokenHash != null ? $"authenticated (cache-{options.AuthTokenHash})" : "public (unauthenticated)";
+        Console.WriteLine($"Cache status ({context}):");
+        Console.WriteLine($"  Cache dir:       {options.GetEffectiveCacheRoot()}");
         Console.WriteLine($"  Max size:        {FormatBytes(status.MaxSizeBytes)}");
         Console.WriteLine($"  Current size:    {FormatBytes(status.TotalSizeBytes)}");
         Console.WriteLine($"  Metadata entries: {status.MetadataEntryCount}");

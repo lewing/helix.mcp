@@ -145,6 +145,7 @@ public sealed class SqliteCacheStore : ICacheStore
         if (relPath == null) return Task.FromResult<Stream?>(null);
 
         var fullPath = Path.Combine(_artifactsDir, relPath);
+        CacheSecurity.ValidatePathWithinRoot(fullPath, _artifactsDir);
         if (!File.Exists(fullPath))
         {
             // Stale row — remove it
@@ -171,10 +172,11 @@ public sealed class SqliteCacheStore : ICacheStore
         var jobId = ExtractJobId(cacheKey);
 
         // Build relative path: {jobId[0:8]}/{rest-of-key-sanitized}
-        var prefix = jobId.Length >= 8 ? jobId[..8] : jobId;
-        var safeName = cacheKey.Replace(':', '_').Replace('/', '_');
+        var prefix = CacheSecurity.SanitizePathSegment(jobId.Length >= 8 ? jobId[..8] : jobId);
+        var safeName = CacheSecurity.SanitizePathSegment(cacheKey.Replace(':', '_'));
         var relPath = Path.Combine(prefix, safeName);
         var fullPath = Path.Combine(_artifactsDir, relPath);
+        CacheSecurity.ValidatePathWithinRoot(fullPath, _artifactsDir);
 
         Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
 
@@ -404,6 +406,7 @@ public sealed class SqliteCacheStore : ICacheStore
             try
             {
                 var fullPath = Path.Combine(_artifactsDir, relPath);
+                CacheSecurity.ValidatePathWithinRoot(fullPath, _artifactsDir);
                 if (File.Exists(fullPath)) File.Delete(fullPath);
             }
             catch (IOException) { /* file may have been deleted externally */ }

@@ -172,9 +172,10 @@ public class HelixService
         try
         {
             await using var stream = await _api.GetConsoleLogAsync(workItem, id, cancellationToken);
-            var safeName = workItem.Replace('/', '_').Replace('\\', '_');
+            var safeName = CacheSecurity.SanitizePathSegment(workItem);
             var idPrefix = id.Length >= 8 ? id[..8] : id;
             var path = Path.Combine(Path.GetTempPath(), $"helix-{idPrefix}-{safeName}.txt");
+            CacheSecurity.ValidatePathWithinRoot(path, Path.GetTempPath());
             await using var file = File.Create(path);
             await stream.CopyToAsync(file, cancellationToken);
             return path;
@@ -334,7 +335,9 @@ public class HelixService
             foreach (var f in matching)
             {
                 await using var stream = await _api.GetFileAsync(f.Name, workItem, id, cancellationToken);
-                var outPath = Path.Combine(outDir, f.Name.Replace('/', Path.DirectorySeparatorChar));
+                var safeName = CacheSecurity.SanitizePathSegment(Path.GetFileName(f.Name));
+                var outPath = Path.Combine(outDir, safeName);
+                CacheSecurity.ValidatePathWithinRoot(outPath, outDir);
                 Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
                 await using var file = File.Create(outPath);
                 await stream.CopyToAsync(file, cancellationToken);
@@ -380,8 +383,9 @@ public class HelixService
         {
             var uri = new Uri(url);
             var fileName = Uri.UnescapeDataString(uri.Segments[^1]);
-            var safeName = fileName.Replace('/', '_').Replace('\\', '_');
+            var safeName = CacheSecurity.SanitizePathSegment(Path.GetFileName(fileName));
             var path = Path.Combine(Path.GetTempPath(), $"helix-download-{safeName}");
+            CacheSecurity.ValidatePathWithinRoot(path, Path.GetTempPath());
 
             using var response = await s_httpClient.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             response.EnsureSuccessStatusCode();

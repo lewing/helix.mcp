@@ -79,3 +79,10 @@
 
 📌 Session 2026-02-12-cache-implementation: All 56 cache tests (L-CACHE-1 through L-CACHE-10) pass against Ripley's implementation. 182 total tests, build clean. Committed as d62d0d1, pushed to origin/main.
 
+- CacheSecurityTests: 24 security tests written in `CacheSecurityTests.cs` across 3 test classes. Test count 182 → 206.
+- CacheSecurityTests (15 unit tests): ValidatePathWithinRoot (7 tests — path inside root, `..` escape, deep `../../..` traversal, `..` in middle, path equal to root, forward slash traversal, URL-encoded %2e%2e handled as literal), SanitizePathSegment (6 tests — normal name unchanged, `..`→`_`, `/`→`_`, `\`→`_`, full attack sanitized, empty/null graceful), SanitizeCacheKeySegment (5 tests — GUID unchanged, path separators replaced, traversal stripped, empty/null).
+- SqliteCacheStoreSecurityTests (2 integration tests): SetArtifactAsync with `..` in job ID stays within cache dir (verified via file enumeration), GetArtifactAsync with tampered DB row (injected `../../outside-artifact.txt` via direct SQLite UPDATE) throws ArgumentException or returns null.
+- CachingHelixApiClientSecurityTests (3 integration tests): Job ID with path separators produces sanitized cache key, work item name with `..` produces sanitized key, file name with `/../../` produces sanitized artifact key.
+- Key patterns: CacheSecurity is `internal static` — testable via `InternalsVisibleTo`. CacheOptions.GetEffectiveCacheRoot() appends `public/` subdir when AuthTokenHash is null — integration tests must use effective root, not raw CacheRoot, for DB path and artifacts dir assertions. DB tampering test requires dispose→WAL checkpoint→reopen cycle (SQLite WAL mode doesn't expose writes to separate connections until checkpoint).
+- NSubstitute gotcha for CachingHelixApiClient security tests: `GetMetadataAsync` default return is empty string (not null), which triggers JSON deserialization errors. Must explicitly return `Task.FromResult<string?>(null)` for cache miss scenarios.
+

@@ -76,3 +76,17 @@
 
 📌 Session 2026-02-12-cache-implementation: Lambert wrote 56 tests (L-CACHE-1 through L-CACHE-10) against cache implementation — all pass. 182 total tests, build clean. Committed as d62d0d1, pushed to origin/main.
 
+- Security fix: Cache auth isolation. Separate SQLite DBs and artifact dirs per auth context. No token → `{base}/public/`, token → `{base}/cache-{SHA256[0:8]}/`. Prevents unauthenticated instances from reading cached private job data. `CacheOptions` gets `AuthTokenHash` property and `ComputeTokenHash()` static helper. `GetEffectiveCacheRoot()` subdivides by auth context; `GetBaseCacheRoot()` returns the old unsegmented root. Both DI containers in Program.cs pass the token hash. `cache clear` wipes all auth contexts. `cache status` shows current context. SqliteCacheStore unchanged — it already uses `GetEffectiveCacheRoot()`.
+
+📌 Team update (2026-02-13): Security fix — cache auth isolation implemented. Separate SQLite DB + artifacts per HELIX_ACCESS_TOKEN hash. 182/182 tests pass. Decision doc at decisions/inbox/ripley-cache-auth-isolation.md — decided by Ripley
+
+## Learnings
+
+- Path traversal hardening requires defense-in-depth: sanitize inputs (replace `..`, `/`, `\` with `_`) AND validate resolved paths stay within their root directory via `Path.GetFullPath` prefix check. Either alone is insufficient.
+- Cache key segments (jobId, workItemName, fileName) must be sanitized before embedding in `:` delimited cache keys, because those keys later become file path segments in `SqliteCacheStore.SetArtifactAsync`.
+- `Path.GetFileName()` is the first line of defense for API-returned file names — it strips any directory components, so `../../etc/passwd` becomes `passwd`.
+- `ValidatePathWithinRoot` must append `Path.DirectorySeparatorChar` to the root before `StartsWith` comparison, otherwise a root of `/foo/bar` would incorrectly match `/foo/bar-evil/`.
+- `CacheSecurity` is `internal static` — keeps the API surface clean and avoids exposing security helpers as public API.
+
+📌 Team update (2026-02-13): Security fix — path traversal hardening for cache and download paths. New CacheSecurity.cs with ValidatePathWithinRoot/SanitizePathSegment/SanitizeCacheKeySegment. Hardened SqliteCacheStore (Get/Set artifact), CachingHelixApiClient (all 6 cache key sites), HelixService (3 download methods). 182/182 tests pass. Decision doc at decisions/inbox/ripley-path-traversal-hardening.md — decided by Ripley
+

@@ -20,7 +20,8 @@ public class CacheOptionsTests
 
         var result = opts.GetEffectiveCacheRoot();
 
-        Assert.Equal("/tmp/my-custom-cache", result);
+        // Explicit root + "public" subdirectory for unauthenticated context
+        Assert.Equal(Path.Combine("/tmp/my-custom-cache", "public"), result);
     }
 
     [Fact]
@@ -30,7 +31,7 @@ public class CacheOptionsTests
 
         var result = opts.GetEffectiveCacheRoot();
 
-        Assert.Equal(@"C:\Users\test\AppData\Local\hlx-custom", result);
+        Assert.Equal(Path.Combine(@"C:\Users\test\AppData\Local\hlx-custom", "public"), result);
     }
 
     [Fact]
@@ -42,8 +43,9 @@ public class CacheOptionsTests
 
         Assert.NotNull(result);
         Assert.NotEmpty(result);
-        // The default path should end with "hlx"
-        Assert.EndsWith("hlx", result);
+        // The default path should contain "hlx" and end with "public" (unauthenticated)
+        Assert.Contains("hlx", result);
+        Assert.EndsWith("public", result);
     }
 
     [Fact]
@@ -54,7 +56,8 @@ public class CacheOptionsTests
         var result = opts.GetEffectiveCacheRoot();
 
         Assert.NotNull(result);
-        Assert.EndsWith("hlx", result);
+        Assert.Contains("hlx", result);
+        Assert.EndsWith("public", result);
     }
 
     [Fact]
@@ -78,7 +81,7 @@ public class CacheOptionsTests
         var result = opts.GetEffectiveCacheRoot();
 
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var expected = Path.Combine(localAppData, "hlx");
+        var expected = Path.Combine(localAppData, "hlx", "public");
         Assert.Equal(expected, result);
     }
 
@@ -98,7 +101,7 @@ public class CacheOptionsTests
 
             var result = opts.GetEffectiveCacheRoot();
 
-            Assert.Equal(Path.Combine("/tmp/xdg-test", "hlx"), result);
+            Assert.Equal(Path.Combine("/tmp/xdg-test", "hlx", "public"), result);
         }
         finally
         {
@@ -123,7 +126,7 @@ public class CacheOptionsTests
             var result = opts.GetEffectiveCacheRoot();
 
             var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            var expected = Path.Combine(home, ".cache", "hlx");
+            var expected = Path.Combine(home, ".cache", "hlx", "public");
             Assert.Equal(expected, result);
         }
         finally
