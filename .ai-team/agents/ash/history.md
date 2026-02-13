@@ -88,3 +88,5 @@
 - Static unauthenticated HttpClient for URL downloads (prevents credential leakage via SSRF)
 
 **Output:** `.ai-team/analysis/threat-model.md` — full STRIDE analysis with 16 findings, priority recommendations
+📌 Team update (2026-02-13): P1 security fixes E1+D1 implemented (URL scheme validation, batch size cap) — decided by Ripley
+📌 Team update (2026-02-13): Security validation test strategy (18 tests) — decided by Lambert

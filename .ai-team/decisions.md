@@ -1818,3 +1818,53 @@ Also, `FindBinlogs` MCP tool now delegates to `FindFiles`, so the test on line 2
 3. **D1 (batch size limit)** — Add `ArgumentException` guard in `GetBatchStatusAsync` if `idList.Count > 50`. Prevents agent-driven resource exhaustion.
 4. **T2 (domain allowlist for download-url)** — Defer. Too restrictive for a diagnostic tool where blob storage URLs vary. Document the risk instead.
 
+
+### 2025-07-23: P1 Security Fixes — E1 URL Scheme Validation + D1 Batch Size Limit
+
+**By:** Ripley
+**Date:** 2025-07-23
+**Requested by:** Larry Ewing (per Dallas-approved threat model action items)
+
+**E1 — URL scheme validation in `DownloadFromUrlAsync`:**
+- `HelixService.DownloadFromUrlAsync` now validates `uri.Scheme` is `"http"` or `"https"` before making any HTTP request.
+- Throws `ArgumentException` with message: `"Only HTTP and HTTPS URLs are supported. Got scheme '{scheme}'."` and `paramName: "url"`.
+- Blocks `file://`, `ftp://`, and any other non-HTTP scheme — prevents SSRF via scheme manipulation.
+- The `ArgumentException` is thrown before the `try` block's HTTP call, so it propagates directly (not wrapped in `HelixException`).
+
+**D1 — Max batch size limit in `GetBatchStatusAsync`:**
+- Added `internal const int MaxBatchSize = 50` on `HelixService`.
+- `GetBatchStatusAsync` throws `ArgumentException` if `idList.Count > MaxBatchSize`.
+- Message: `"Batch size {count} exceeds the maximum of {MaxBatchSize} jobs."` with `paramName: "jobIds"`.
+- Constant is `internal` so Lambert's tests can reference `HelixService.MaxBatchSize` directly.
+
+**MCP tool description:**
+- `hlx_batch_status` tool description updated to: `"...Maximum 50 jobs per request."` so MCP clients (AI agents) are aware of the limit before calling.
+
+**Test impact:**
+- Lambert should add tests for:
+  1. `DownloadFromUrlAsync` with `ftp://...` → `ArgumentException`
+  2. `DownloadFromUrlAsync` with `file:///etc/passwd` → `ArgumentException`
+  3. `DownloadFromUrlAsync` with `https://...` → no scheme error (existing behavior)
+  4. `GetBatchStatusAsync` with 51 job IDs → `ArgumentException`
+  5. `GetBatchStatusAsync` with 50 job IDs → no error (existing behavior)
+  6. `HelixService.MaxBatchSize == 50` (constant value assertion)
+
+### 2026-02-15: Security Validation Test Strategy
+
+**By:** Lambert
+**Date:** 2026-02-15
+**Requested by:** Larry Ewing
+
+**Context:** Threat model identified P1 security findings E1 (SSRF via DownloadFromUrlAsync) and D1 (unbounded batch size in GetBatchStatusAsync). Tests written concurrently with Ripley's production fixes.
+
+**Decisions:**
+
+1. **URL scheme tests use negative assertion pattern:** For HTTP/HTTPS acceptance, tests use `Record.ExceptionAsync` + `Assert.IsNotType<ArgumentException>` rather than asserting no exception at all. The method will fail with network-related exceptions (no real server), but that's expected — we only verify scheme validation doesn't reject valid schemes.
+
+2. **No-scheme URL test accepts both UriFormatException and ArgumentException:** The `new Uri(url)` constructor throws `UriFormatException` for schemeless strings *before* the scheme check runs. Both exception types are acceptable rejection behavior. Test uses `Assert.True(ex is A || ex is B)`.
+
+3. **Batch boundary tests at 50/51:** MaxBatchSize = 50 tested at exact boundary (50 accepted, 51 rejected). Bulk mock setup uses `Enumerable.Range` with formatted GUIDs.
+
+4. **MCP tool tests verify propagation:** `hlx_batch_status` tests confirm that the service-layer `ArgumentException` propagates through the MCP tool method. No separate MCP-layer validation needed — the service enforces the limit.
+
+**Files:** `src/HelixTool.Tests/SecurityValidationTests.cs` — 18 tests (all passing)

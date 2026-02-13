@@ -70,3 +70,5 @@
 - **P0/P1/P2 calibration:** All appropriate. No over-reactions or under-reactions.
 - **Architectural implication:** When HTTP mode moves toward production, auth middleware is the gate. This should be tracked as a pre-GA requirement, not a current blocker.
 - **Decision written to:** `.ai-team/decisions/inbox/dallas-threat-model-review.md`
+📌 Team update (2026-02-13): P1 security fixes E1+D1 implemented (URL scheme validation, batch size cap) — decided by Ripley
+📌 Team update (2026-02-13): Security validation test strategy (18 tests, negative assertion pattern) — decided by Lambert

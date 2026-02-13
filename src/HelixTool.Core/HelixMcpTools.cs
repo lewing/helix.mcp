@@ -240,7 +240,7 @@ public sealed class HelixMcpTools
         return JsonSerializer.Serialize(output, s_jsonOptions);
     }
 
-    [McpServerTool(Name = "hlx_batch_status"), Description("Get status for multiple Helix jobs at once. Returns per-job summaries and overall totals.")]
+    [McpServerTool(Name = "hlx_batch_status"), Description("Get status for multiple Helix jobs at once. Returns per-job summaries and overall totals. Maximum 50 jobs per request.")]
     public async Task<string> BatchStatus(
         [Description("Helix job IDs (GUIDs) or URLs")] string[] jobIds)
     {

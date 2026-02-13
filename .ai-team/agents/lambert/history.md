@@ -88,3 +88,21 @@
 
 - **Decision merged:** "camelCase JSON assertion convention" (Lambert, 2026-02-13) — all MCP test assertions must use camelCase property names.
 - **Decision merged:** "MCP API Batch — Tests Need CamelCase Update" (Ripley, 2026-02-15) — tests referencing PascalCase JSON props or `binlogs` key need updating to camelCase and `files`.
+
+## 2026-02-15: Security Validation Tests (P1 Threat Model)
+
+**SecurityValidationTests.cs** — 18 tests covering threat-model findings E1 and D1:
+
+- **URL scheme validation (E1):** 10 tests — HTTPS/HTTP accepted (no ArgumentException), file:///ftp://data:/javascript:/ssh:// all throw ArgumentException, null/empty throw, no-scheme throws (UriFormatException or ArgumentException both acceptable).
+- **Batch size limit (D1):** 5 tests — MaxBatchSize const = 50 verified, single job accepted, 50 boundary accepted, 51 throws ArgumentException, 200 throws, empty throws.
+- **MCP tool enforcement:** 2 tests — hlx_batch_status rejects 51 IDs, accepts 50 IDs with correct JSON output.
+- **Total test count:** 304 → 322 (all passing).
+
+## Learnings
+
+- URL scheme validation in `DownloadFromUrlAsync` runs after `new Uri(url)` — a schemeless string throws `UriFormatException` from the Uri constructor before scheme validation can run. Tests for "no scheme" should accept both `ArgumentException` and `UriFormatException`.
+- `HelixService.MaxBatchSize` is `internal const int` — accessible from tests via `InternalsVisibleTo`.
+- Security test pattern: for HTTP scheme acceptance tests, use `Record.ExceptionAsync` + `Assert.IsNotType<ArgumentException>` rather than asserting no exception (the method will still fail with network errors, which is fine — we only care that it wasn't rejected at the validation layer).
+- Batch boundary tests need mock setup for all N job IDs — use `Enumerable.Range` with formatted GUID strings (`$"{i:x8}-0000-0000-0000-000000000000"`) for bulk generation.
+
+📌 Team update (2026-02-13): P1 security fixes E1+D1 implemented (URL scheme validation, batch size cap, MCP description) — decided by Ripley

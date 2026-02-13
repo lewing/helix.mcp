@@ -385,6 +385,8 @@ public class HelixService
         try
         {
             var uri = new Uri(url);
+            if (uri.Scheme != "http" && uri.Scheme != "https")
+                throw new ArgumentException($"Only HTTP and HTTPS URLs are supported. Got scheme '{uri.Scheme}'.", nameof(url));
             var fileName = Uri.UnescapeDataString(uri.Segments[^1]);
             var safeName = CacheSecurity.SanitizePathSegment(Path.GetFileName(fileName));
             var path = Path.Combine(Path.GetTempPath(), $"helix-download-{safeName}");
@@ -482,12 +484,17 @@ public class HelixService
     /// <summary>Summary for multiple jobs.</summary>
     public record BatchJobSummary(List<JobSummary> Jobs, int TotalFailed, int TotalPassed);
 
+    /// <summary>Maximum number of jobs allowed in a single batch status request.</summary>
+    internal const int MaxBatchSize = 50;
+
     /// <summary>Get status for multiple jobs in parallel.</summary>
     public async Task<BatchJobSummary> GetBatchStatusAsync(IEnumerable<string> jobIds, CancellationToken cancellationToken = default)
     {
         var idList = jobIds.ToList();
         if (idList.Count == 0)
             throw new ArgumentException("At least one job ID is required.", nameof(jobIds));
+        if (idList.Count > MaxBatchSize)
+            throw new ArgumentException($"Batch size {idList.Count} exceeds the maximum of {MaxBatchSize} jobs.", nameof(jobIds));
 
         var semaphore = new SemaphoreSlim(5);
         var tasks = idList.Select(async jobId =>
