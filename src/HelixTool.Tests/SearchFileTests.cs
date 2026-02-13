@@ -5,6 +5,7 @@ using Xunit;
 
 namespace HelixTool.Tests;
 
+[Collection("FileSearchConfig")]
 public class SearchFileTests
 {
     private const string ValidJobId = "a3b4c5d6-1234-5678-9abc-def012345678";

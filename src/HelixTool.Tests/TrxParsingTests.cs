@@ -10,6 +10,7 @@ namespace HelixTool.Tests;
 /// Tests for ParseTrxResultsAsync — TRX file parsing (US-32).
 /// Written proactively against the spec; may need small adjustments once Ripley's code lands.
 /// </summary>
+[Collection("FileSearchConfig")]
 public class TrxParsingTests
 {
     private const string ValidJobId = "b2c3d4e5-6789-abcd-ef01-234567890abc";
