@@ -1603,3 +1603,8 @@ Re-evaluate if: (a) Helix deploys multiple independent instances that users need
 **By:** Lambert
 **What:** Created 46 comprehensive tests for DownloadFilesAsync and DownloadFromUrlAsync in `DownloadTests.cs`, organized into 4 test classes: DownloadFilesTests (27), DownloadFromUrlParsingTests (5), DownloadSanitizationTests (6), DownloadPatternTests (8). All 298 tests pass.
 **Why:** Download commands had zero test coverage. Tests verify happy paths (single/multi-file, pattern matching, binary content), security (path traversal via `..`, `/`, `\` — all sanitized by CacheSecurity), error handling (401/403/404/timeout/cancellation), input validation, and edge cases (empty streams, unicode filenames, same-name files, URL-encoded characters). Each test class uses a distinct ValidJobId GUID to prevent temp directory collisions during parallel xUnit execution — a pattern discovered when shared GUIDs caused file contention failures.
+
+### 2026-02-15: README update for caching, HTTP multi-auth, and project structure
+**By:** Kane
+**What:** Added Caching section with settings table and policy docs; added HTTP per-request auth subsection under Authentication; expanded Project Structure to include Cache/, IHelixTokenAccessor, IHelixApiClientFactory, HttpContextHelixTokenAccessor, and 298 test count; added ci-analysis replacement note in Architecture.
+**Why:** README was stale — caching, HTTP multi-auth, and new source files were undocumented. These are user-facing features (caching affects performance; HTTP auth matters for shared deployments). Kept documentation concise with tables and bold-label bullets to match existing README tone.

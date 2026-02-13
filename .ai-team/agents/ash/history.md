@@ -118,3 +118,5 @@ After reading the full script, I can now quantify what hlx replaces more precise
 
 
 📌 Team update (2026-02-13): US-6 download E2E verification complete — 46 tests covering DownloadFilesAsync/DownloadFromUrlAsync, all 298 tests pass — decided by Lambert
+
+📌 Team update (2026-02-15): README now documents ci-analysis replacement coverage in Architecture section — caching, HTTP multi-auth, project structure all documented — decided by Kane
