@@ -243,7 +243,7 @@ src/
 ├── HelixTool.Mcp/          # MCP HTTP server
 │   ├── Program.cs                         # ASP.NET Core + ModelContextProtocol
 │   └── HttpContextHelixTokenAccessor.cs   # Per-request token from Authorization header
-└── HelixTool.Tests/        # Unit tests (340 tests)
+└── HelixTool.Tests/        # Unit tests (369 tests)
 ```
 
 ## Authentication
