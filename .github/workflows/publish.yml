@@ -27,8 +27,31 @@ jobs:
           dotnet-version: '10.0.x'
           dotnet-quality: 'preview'
 
+      - name: Validate version consistency
+        run: |
+          TAG_VERSION="${{ steps.tag_name.outputs.current_version }}"
+          CSPROJ_VERSION=$(grep -oP '(?<=<Version>)[^<]+' src/HelixTool/HelixTool.csproj)
+          SERVER_VERSION=$(jq -r '.version' src/HelixTool/.mcp/server.json)
+          PACKAGE_VERSION=$(jq -r '.packages[0].version' src/HelixTool/.mcp/server.json)
+          ERRORS=""
+          if [ "$CSPROJ_VERSION" != "$TAG_VERSION" ]; then
+            ERRORS="${ERRORS}HelixTool.csproj Version: expected '${TAG_VERSION}', got '${CSPROJ_VERSION}'\n"
+          fi
+          if [ "$SERVER_VERSION" != "$TAG_VERSION" ]; then
+            ERRORS="${ERRORS}server.json top-level version: expected '${TAG_VERSION}', got '${SERVER_VERSION}'\n"
+          fi
+          if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
+            ERRORS="${ERRORS}server.json packages[0].version: expected '${TAG_VERSION}', got '${PACKAGE_VERSION}'\n"
+          fi
+          if [ -n "$ERRORS" ]; then
+            echo "::error::Version mismatch detected!"
+            printf "$ERRORS"
+            exit 1
+          fi
+          echo "All versions match tag: ${TAG_VERSION}"
+
       - name: Pack
-        run: dotnet pack src/HelixTool -c Release -o src/HelixTool/nupkg
+        run: dotnet pack src/HelixTool -c Release -o src/HelixTool/nupkg /p:Version=${{ steps.tag_name.outputs.current_version }}
 
       - name: Create Release
         uses: ncipollo/release-action@v1
