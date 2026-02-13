@@ -290,6 +290,57 @@ public sealed class HelixMcpTools
         return JsonSerializer.Serialize(output, s_jsonOptions);
     }
 
+    [McpServerTool(Name = "hlx_test_results"), Description("Parse TRX test result files from a Helix work item. Returns structured test results including test names, outcomes, durations, and error messages for failed tests. Auto-discovers all .trx files or filter to a specific one.")]
+    public async Task<string> TestResults(
+        [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
+        [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
+        [Description("Specific TRX file name (optional - auto-discovers all .trx files if not set)")] string? fileName = null,
+        [Description("Include passed tests in output (default: false)")] bool includePassed = false,
+        [Description("Maximum number of test results to return (default: 200)")] int maxResults = 200)
+    {
+        if (HelixService.IsFileSearchDisabled)
+            return JsonSerializer.Serialize(new { error = "File content search is disabled by configuration." }, s_jsonOptions);
+
+        if (string.IsNullOrEmpty(workItem) && HelixIdResolver.TryResolveJobAndWorkItem(jobId, out var resolvedJobId, out var resolvedWorkItem))
+        {
+            if (!string.IsNullOrEmpty(resolvedWorkItem))
+            {
+                jobId = resolvedJobId;
+                workItem = resolvedWorkItem;
+            }
+        }
+
+        if (string.IsNullOrEmpty(workItem))
+            return JsonSerializer.Serialize(new { error = "Work item name is required. Provide it as a separate parameter or include it in the Helix URL." }, s_jsonOptions);
+
+        var trxResults = await _svc.ParseTrxResultsAsync(jobId, workItem, fileName, includePassed, maxResults);
+
+        var output = new
+        {
+            workItem,
+            fileCount = trxResults.Count,
+            files = trxResults.Select(r => new
+            {
+                fileName = r.FileName,
+                totalTests = r.TotalTests,
+                passed = r.Passed,
+                failed = r.Failed,
+                skipped = r.Skipped,
+                results = r.Results.Select(t => new
+                {
+                    testName = t.TestName,
+                    outcome = t.Outcome,
+                    duration = t.Duration,
+                    computerName = t.ComputerName,
+                    errorMessage = t.ErrorMessage,
+                    stackTrace = t.StackTrace
+                })
+            })
+        };
+
+        return JsonSerializer.Serialize(output, s_jsonOptions);
+    }
+
     [McpServerTool(Name = "hlx_batch_status"), Description("Get status for multiple Helix jobs at once. Returns per-job summaries and overall totals. Maximum 50 jobs per request.")]
     public async Task<string> BatchStatus(
         [Description("Helix job IDs (GUIDs) or URLs")] string[] jobIds)

@@ -419,6 +419,65 @@ public class Commands
         Console.WriteLine($"{result.Matches.Count} matches found (showing up to {maxMatches}).");
     }
 
+    /// <summary>Parse TRX test results from a work item.</summary>
+    /// <param name="jobId">Helix job ID or URL.</param>
+    /// <param name="workItem">Work item name.</param>
+    /// <param name="fileName">Specific TRX file name (optional - auto-discovers all .trx files if not set).</param>
+    /// <param name="includePassed">Include passed tests in output (default: false).</param>
+    /// <param name="maxResults">Maximum number of test results to return (default: 200).</param>
+    [Command("test-results")]
+    public async Task TestResults([Argument] string jobId, [Argument] string workItem,
+        string? fileName = null, bool includePassed = false, int maxResults = 200)
+    {
+        var trxResults = await _svc.ParseTrxResultsAsync(jobId, workItem, fileName, includePassed, maxResults);
+
+        foreach (var file in trxResults)
+        {
+            Console.WriteLine($"File: {file.FileName}");
+            Console.WriteLine($"  Total: {file.TotalTests}  Passed: {file.Passed}  Failed: {file.Failed}  Skipped: {file.Skipped}");
+            Console.WriteLine();
+
+            foreach (var test in file.Results)
+            {
+                if (test.Outcome.Equals("Failed", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.Write("  [FAIL] ");
+                }
+                else if (test.Outcome.Equals("Passed", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.Write("  [PASS] ");
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.Write($"  [{test.Outcome.ToUpperInvariant()}] ");
+                }
+                Console.ResetColor();
+
+                Console.Write(test.TestName);
+                if (test.Duration != null)
+                    Console.Write($" ({test.Duration})");
+                Console.WriteLine();
+
+                if (test.ErrorMessage != null)
+                {
+                    Console.ForegroundColor = ConsoleColor.DarkRed;
+                    Console.WriteLine($"         {test.ErrorMessage}");
+                    Console.ResetColor();
+                }
+                if (test.StackTrace != null)
+                {
+                    Console.ForegroundColor = ConsoleColor.DarkGray;
+                    Console.WriteLine($"         {test.StackTrace}");
+                    Console.ResetColor();
+                }
+            }
+            Console.WriteLine();
+        }
+    }
+
     /// <summary>Print comprehensive tool documentation for LLM agents.</summary>
     [Command("llmstxt")]
     public void LlmsTxt()

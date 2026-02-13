@@ -1,4 +1,6 @@
 using System.Net;
+using System.Xml;
+using System.Xml.Linq;
 
 namespace HelixTool.Core;
 
@@ -575,6 +577,21 @@ public class HelixService
     /// <summary>Result of searching an uploaded file's content.</summary>
     public record FileContentSearchResult(string FileName, List<LogMatch> Matches, int TotalLines, bool Truncated, bool IsBinary);
 
+    /// <summary>Parsed test result from a TRX file.</summary>
+    public record TrxTestResult(string TestName, string Outcome, string? Duration, string? ComputerName, string? ErrorMessage, string? StackTrace);
+
+    /// <summary>Summary of parsed TRX test results.</summary>
+    public record TrxParseResult(string FileName, int TotalTests, int Passed, int Failed, int Skipped, List<TrxTestResult> Results);
+
+    private static readonly XmlReaderSettings s_trxReaderSettings = new()
+    {
+        DtdProcessing = DtdProcessing.Prohibit,
+        XmlResolver = null,
+        MaxCharactersFromEntities = 0,
+        MaxCharactersInDocument = 50_000_000,
+        Async = true
+    };
+
     /// <summary>Search lines for a pattern with optional context.</summary>
     private static LogSearchResult SearchLines(string identifier, string[] lines, string pattern, int contextLines, int maxMatches)
     {
@@ -677,6 +694,101 @@ public class HelixService
                 try { File.Delete(p); } catch { }
             }
         }
+    }
+
+    private static TrxParseResult ParseTrxFile(string filePath, string fileName, bool includePassed, int maxResults)
+    {
+        using var fileStream = File.OpenRead(filePath);
+        using var reader = XmlReader.Create(fileStream, s_trxReaderSettings);
+
+        var doc = XDocument.Load(reader);
+        XNamespace ns = "http://microsoft.com/schemas/VisualStudio/TeamTest/2010";
+
+        var unitTestResults = doc.Descendants(ns + "UnitTestResult").ToList();
+
+        int passed = 0, failed = 0, skipped = 0;
+        var results = new List<TrxTestResult>();
+
+        foreach (var utr in unitTestResults)
+        {
+            var testName = utr.Attribute("testName")?.Value ?? "Unknown";
+            var outcome = utr.Attribute("outcome")?.Value ?? "Unknown";
+            var duration = utr.Attribute("duration")?.Value;
+            var computerName = utr.Attribute("computerName")?.Value;
+
+            switch (outcome.ToLowerInvariant())
+            {
+                case "passed": passed++; break;
+                case "failed": failed++; break;
+                default: skipped++; break;
+            }
+
+            // Extract error info for failed tests
+            string? errorMessage = null;
+            string? stackTrace = null;
+            if (outcome.Equals("Failed", StringComparison.OrdinalIgnoreCase))
+            {
+                var errorInfo = utr.Element(ns + "Output")?.Element(ns + "ErrorInfo");
+                errorMessage = errorInfo?.Element(ns + "Message")?.Value;
+                stackTrace = errorInfo?.Element(ns + "StackTrace")?.Value;
+
+                // Truncate error message at 500 chars
+                if (errorMessage?.Length > 500)
+                    errorMessage = errorMessage[..500] + "... (truncated)";
+                if (stackTrace?.Length > 1000)
+                    stackTrace = stackTrace[..1000] + "... (truncated)";
+            }
+
+            // Include test based on filter and limit
+            bool shouldInclude = outcome.Equals("Failed", StringComparison.OrdinalIgnoreCase) ||
+                                (!outcome.Equals("Passed", StringComparison.OrdinalIgnoreCase)) || // always include non-pass/non-fail
+                                includePassed;
+
+            if (shouldInclude && results.Count < maxResults)
+                results.Add(new TrxTestResult(testName, outcome, duration, computerName, errorMessage, stackTrace));
+        }
+
+        return new TrxParseResult(fileName, unitTestResults.Count, passed, failed, skipped, results);
+    }
+
+    /// <summary>Parse TRX test result files from a Helix work item.</summary>
+    public async Task<List<TrxParseResult>> ParseTrxResultsAsync(
+        string jobId, string workItem, string? fileName = null,
+        bool includePassed = false, int maxResults = 200,
+        CancellationToken cancellationToken = default)
+    {
+        if (IsFileSearchDisabled)
+            throw new InvalidOperationException("File content search is disabled by configuration.");
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workItem);
+
+        var pattern = fileName ?? "*.trx";
+        var downloadedPaths = await DownloadFilesAsync(jobId, workItem, pattern, cancellationToken);
+
+        if (downloadedPaths.Count == 0)
+            throw new HelixException($"No TRX files found in work item '{workItem}'.");
+
+        var results = new List<TrxParseResult>();
+        try
+        {
+            foreach (var path in downloadedPaths)
+            {
+                var fileInfo = new FileInfo(path);
+                if (fileInfo.Length > MaxSearchFileSizeBytes)
+                    throw new HelixException($"TRX file '{Path.GetFileName(path)}' exceeds the {MaxSearchFileSizeBytes / (1024 * 1024)}MB size limit.");
+
+                var trxFileName = fileName ?? Path.GetFileName(path);
+                results.Add(ParseTrxFile(path, trxFileName, includePassed, maxResults));
+            }
+        }
+        finally
+        {
+            foreach (var p in downloadedPaths)
+                try { File.Delete(p); } catch { }
+        }
+
+        return results;
     }
 
     public static bool MatchesPattern(string name, string pattern)

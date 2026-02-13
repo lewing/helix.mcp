@@ -134,3 +134,25 @@
 📌 Team update (2026-02-13): HLX_DISABLE_FILE_SEARCH config toggle added as security safeguard for disabling file content search operations — decided by Larry Ewing (via Copilot)
 
 📌 Team update (2026-02-13): US-31 hlx_search_file Phase 1 implemented (SearchFileAsync, MCP tool, CLI command, config toggle) — decided by Ripley
+
+## 2026-02-15: US-32 TRX Parsing Tests
+
+**TrxParsingTests.cs** — 15 tests covering ParseTrxResultsAsync (TRX file parsing):
+
+- **Input validation (2 tests, Theory with 3 InlineData each):** null/empty/whitespace jobId and workItem both throw ArgumentException
+- **Config toggle (1 test):** ParseTrxResultsAsync throws InvalidOperationException when HLX_DISABLE_FILE_SEARCH=true
+- **Basic TRX parsing (3 tests):** mixed results with correct Passed/Failed/Skipped counts, failed tests include ErrorMessage+StackTrace, default (includePassed=false) excludes passed tests from Results list
+- **Include passed (1 test):** includePassed=true returns all 3 results (Passed, Failed, NotExecuted)
+- **Max results (1 test):** maxResults=1 limits output to single result
+- **Error truncation (1 test):** ErrorMessage >500 chars truncated with "... (truncated)" suffix, StackTrace >1000 chars truncated similarly
+- **No TRX files (1 test):** when no .trx files found, throws HelixException
+- **XXE prevention (1 test):** DTD declaration in TRX XML causes XmlException (DtdProcessing.Prohibit)
+- **Total test count:** 349 → 364 (all passing)
+
+## Learnings
+
+- ParseTrxResultsAsync uses DownloadFilesAsync internally — mock setup same as SearchFileTests: ListWorkItemFilesAsync (return IWorkItemFile list with .trx name) + GetFileAsync (return MemoryStream with TRX XML). The DownloadFilesAsync flow writes to disk, ParseTrxFile reads from disk files.
+- Ripley's TRX implementation landed before tests — proactive test writing pattern still works, just needed minor confirmation that signatures matched spec.
+- TRX outcome classification: "Passed" → passed++, "Failed" → failed++, everything else (including "NotExecuted") → skipped++. Tests for non-pass/non-fail outcomes always included in Results regardless of includePassed flag.
+- Error truncation in ParseTrxFile: only extracts ErrorInfo for outcome="Failed" (case-insensitive). Truncation adds "... (truncated)" suffix — total length is limit + 15 chars for suffix.
+- XmlReaderSettings includes `MaxCharactersInDocument = 50_000_000` and `Async = true` beyond the DTD/resolver settings. XmlException thrown by `XDocument.Load(reader)` when DTD encountered.
