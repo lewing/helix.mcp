@@ -34,69 +34,27 @@
 **Team updates received:**
 - Architecture review, caching strategy, cache TTL policy, requirements backlog (30 US), docs fixes (Kane), auth design (US-4), MCP test strategy — all in decisions.md
 
-📌 Team update (2026-02-11): US-10 (GetWorkItemDetailAsync) and US-23 (GetBatchStatusAsync) implemented — new CLI commands work-item and batch-status, MCP tools hlx_work_item and hlx_batch_status added. — decided by Ripley
+## Sessions (2026-02-12)
 
-📌 Team update (2026-02-11): US-21 failure categorization implemented — FailureCategory enum + ClassifyFailure heuristic classifier added to HelixService. WorkItemResult/WorkItemDetail records expanded. — decided by Ripley
+**Cache implementation (R-CACHE-1 through R-CACHE-11):** SQLite-backed caching layer — ICacheStore, SqliteCacheStore (WAL mode, PRAGMA user_version=1), CachingHelixApiClient (decorator with TTL matrix), CacheOptions (XDG paths). Cache key format: `job:{jobId}:details`. Artifacts stored at `{cache_root}/artifacts/{jobId[0:8]}/{sanitized_key}`. HLX_CACHE_MAX_SIZE_MB=0 disables caching. Private DTO records for JSON round-tripping. `cache clear` and `cache status` CLI commands.
 
-📌 Team update (2026-02-12): US-22 console log search implemented — SearchConsoleLogAsync in HelixService with case-insensitive pattern matching, context lines, and maxMatches cap. CLI `search-log` command with colored output. MCP `hlx_search_log` tool in both HelixMcpTools.cs files with URL resolution and JSON output (context array per match). — decided by Ripley
+**Cache security (2026-02-12):** Auth isolation (separate SQLite DB + artifacts per token SHA256 hash). Path traversal hardening (CacheSecurity.cs: ValidatePathWithinRoot, SanitizePathSegment, SanitizeCacheKeySegment). Applied to SqliteCacheStore, CachingHelixApiClient, HelixService download methods.
 
-## Learnings
-- SearchConsoleLogAsync downloads the log via DownloadConsoleLogAsync to a temp file, reads all lines, searches, then deletes the temp file. This reuses the existing download infrastructure rather than streaming.
-- LogMatch record uses optional `Context` property (`List<string>?`) to carry the full context window (before + match + after lines) when contextLines > 0. This lets the CLI and MCP tools render context without re-reading the file.
-- HelixMcpTools consolidated into HelixTool.Core — single copy, no more dual-update requirement. Both HelixTool (stdio) and HelixTool.Mcp (HTTP) reference Core for MCP tool discovery via `WithToolsFromAssembly(typeof(HelixMcpTools).Assembly)`.
-- `WithToolsFromAssembly()` (no args) only scans the calling assembly. When tools live in a referenced library, you must pass `typeof(SomeToolClass).Assembly` explicitly.
-- ModelContextProtocol package added to HelixTool.Core for `[McpServerToolType]` and `[McpServerTool]` attributes. This is the base package (not AspNetCore variant).
-
-
-📌 Team update (2026-02-11): Consolidated HelixMcpTools.cs from 2 copies (HelixTool + HelixTool.Mcp) into 1 in HelixTool.Core. Updated tool discovery to typeof(HelixMcpTools).Assembly. Removed Mcp ProjectReference from tests. Build clean, 126/126 tests passed. — decided by Ripley
-- Added `<PackageType>McpServer</PackageType>` to HelixTool.csproj and created `.mcp/server.json` for dnx zero-install MCP server support. The server.json describes the package as `hlx` on nuget with `mcp` positional argument. The json file is packed into the nupkg at `/.mcp/` via a `<None>` item with `Pack=true`.
-- Created `.github/workflows/ci.yml` — GitHub Actions CI workflow. Triggers on push/PR to main/master. Matrix builds on ubuntu-latest and windows-latest. Uses .NET 10 preview SDK via `actions/setup-dotnet@v4`. Steps: checkout → restore → build → test. The repo-root `nuget.config` (with dotnet-eng feed) is picked up automatically by `dotnet restore`.
-- Renamed NuGet PackageId from `hlx` to `lewing.helix.mcp` following baronfel's `baronfel.binlog.mcp` naming convention. Added PackageTags, PackageReadmeFile, PublishRepositoryUrl. Added Content item to pack README.md into nupkg. ToolCommandName stays `hlx` — the CLI command is unchanged.
-- Updated `.mcp/server.json` to Chet's 2025-10-17 schema format: new schema URL, `registryType`/`identifier` fields replacing `registry_name`/`name`, added `title`, `version`, and `websiteUrl` top-level fields. Dropped `version_detail` block.
-
-📌 Team update (2025-02-12): PackageId renamed to lewing.helix.mcp — decided by Ripley/Larry
-
-- Created `.github/workflows/publish.yml` — NuGet Trusted Publishing workflow. Triggers on `v*` tag push. Uses OIDC via `NuGet/login@v1` (no API key secret needed — just `NUGET_USER`). Packs with `dotnet pack src/HelixTool -c Release -o src/HelixTool/nupkg`, pushes with glob `*.nupkg`. Creates GitHub Release via `ncipollo/release-action@v1` with nupkg attached. Uses `$GITHUB_OUTPUT` (not deprecated `set-output`). Matched CI's .NET 10 preview SDK config. Pattern adapted from baronfel/mcp-binlog-tool release.yml.
-
-📌 Team update (2025-02-12): Publish workflow created at .github/workflows/publish.yml — NuGet Trusted Publishing via OIDC — decided by Ripley
-
-
-📌 Team update (2025-02-12): NuGet Trusted Publishing workflow added — publish via git tag v*
-
-- Implemented SQLite-backed caching layer (R-CACHE-1 through R-CACHE-11). New files: `Cache/ICacheStore.cs` (interface), `Cache/CacheOptions.cs` (XDG path resolution), `Cache/CacheStatus.cs` (status record), `Cache/SqliteCacheStore.cs` (SQLite + disk implementation with WAL mode, PRAGMA user_version=1, eviction), `Cache/CachingHelixApiClient.cs` (decorator with TTL matrix: 15s/30s running, 1h/4h completed, console log bypass for running jobs, stream caching via disk).
-- DI updated in both CLI container and `hlx mcp` container in Program.cs. `HelixApiClient` registered as concrete type, `IHelixApiClient` resolved as `CachingHelixApiClient` wrapping it.
-- Added `cache clear` and `cache status` CLI commands using ConsoleAppFramework's `[Command("cache clear")]` pattern for subcommand routing.
-- Cache key format: `job:{jobId}:details`, `job:{jobId}:workitems`, `job:{jobId}:wi:{workItem}:details`, etc.
-- Artifact files stored at `{cache_root}/artifacts/{jobId[0:8]}/{sanitized_key}` with write-then-rename pattern.
-- `CachingHelixApiClient` uses private DTO records (`JobDetailsDto`, `WorkItemSummaryDto`, etc.) that implement the projection interfaces for JSON round-tripping.
-- `HLX_CACHE_MAX_SIZE_MB=0` disables caching entirely (pass-through mode).
-- llmstxt updated with cache commands and caching section.
-
-📌 Team update (2026-02-12): SQLite-backed caching layer implemented — ICacheStore, SqliteCacheStore, CachingHelixApiClient, cache clear/status commands, DI wiring for CLI and MCP containers — decided by Ripley
-
-📌 Session 2026-02-12-cache-implementation: Lambert wrote 56 tests (L-CACHE-1 through L-CACHE-10) against cache implementation — all pass. 182 total tests, build clean. Committed as d62d0d1, pushed to origin/main.
-
-- Security fix: Cache auth isolation. Separate SQLite DBs and artifact dirs per auth context. No token → `{base}/public/`, token → `{base}/cache-{SHA256[0:8]}/`. Prevents unauthenticated instances from reading cached private job data. `CacheOptions` gets `AuthTokenHash` property and `ComputeTokenHash()` static helper. `GetEffectiveCacheRoot()` subdivides by auth context; `GetBaseCacheRoot()` returns the old unsegmented root. Both DI containers in Program.cs pass the token hash. `cache clear` wipes all auth contexts. `cache status` shows current context. SqliteCacheStore unchanged — it already uses `GetEffectiveCacheRoot()`.
-
-📌 Team update (2026-02-13): Security fix — cache auth isolation implemented. Separate SQLite DB + artifacts per HELIX_ACCESS_TOKEN hash. 182/182 tests pass. Decision doc at decisions/inbox/ripley-cache-auth-isolation.md — decided by Ripley
+**HTTP/SSE multi-auth (R-HTTP-1 through R-HTTP-5, 2026-02-13):** IHelixTokenAccessor + EnvironmentHelixTokenAccessor, IHelixApiClientFactory, ICacheStoreFactory (ConcurrentDictionary). SqliteCacheStore refactored to connection-per-operation with Cache=Shared. HttpContextHelixTokenAccessor in HelixTool.Mcp. Program.cs scoped DI wiring for HTTP transport. 252/252 tests pass.
 
 ## Learnings
 
-- Path traversal hardening requires defense-in-depth: sanitize inputs (replace `..`, `/`, `\` with `_`) AND validate resolved paths stay within their root directory via `Path.GetFullPath` prefix check. Either alone is insufficient.
-- Cache key segments (jobId, workItemName, fileName) must be sanitized before embedding in `:` delimited cache keys, because those keys later become file path segments in `SqliteCacheStore.SetArtifactAsync`.
-- `Path.GetFileName()` is the first line of defense for API-returned file names — it strips any directory components, so `../../etc/passwd` becomes `passwd`.
-- `ValidatePathWithinRoot` must append `Path.DirectorySeparatorChar` to the root before `StartsWith` comparison, otherwise a root of `/foo/bar` would incorrectly match `/foo/bar-evil/`.
-- `CacheSecurity` is `internal static` — keeps the API surface clean and avoids exposing security helpers as public API.
+- SqliteCacheStore uses connection-per-operation (`OpenConnection()` returns new `SqliteConnection` with `Cache=Shared`). WAL mode set once in `InitializeSchema()`, `busy_timeout` set per-connection.
+- `File.Move(overwrite: true)` on Windows throws `UnauthorizedAccessException` (not just `IOException`) when target is locked by concurrent reader. Catch both.
+- `File.OpenRead()` uses `FileShare.Read` which blocks concurrent writers. Use `new FileStream(..., FileShare.ReadWrite | FileShare.Delete)` instead.
+- Temp files for write-then-rename must use unique names (`Guid.NewGuid()`) to avoid concurrent writer collisions.
+- Path traversal defense-in-depth: sanitize inputs (replace `..`, `/`, `\` with `_`) AND validate resolved paths via `Path.GetFullPath` prefix check.
+- `ValidatePathWithinRoot` must append `Path.DirectorySeparatorChar` to root before `StartsWith` — prevents `/foo/bar` matching `/foo/bar-evil/`.
+- `WithToolsFromAssembly()` (no args) only scans calling assembly. Pass `typeof(SomeToolClass).Assembly` for referenced libraries.
+- ModelContextProtocol base package added to Core for `[McpServerToolType]` and `[McpServerTool]` attributes.
 
-📌 Team update (2026-02-13): Security fix — path traversal hardening for cache and download paths. New CacheSecurity.cs with ValidatePathWithinRoot/SanitizePathSegment/SanitizeCacheKeySegment. Hardened SqliteCacheStore (Get/Set artifact), CachingHelixApiClient (all 6 cache key sites), HelixService (3 download methods). 182/182 tests pass. Decision doc at decisions/inbox/ripley-path-traversal-hardening.md — decided by Ripley
+📌 Team update (2026-02-13): R-HTTP-4 and R-HTTP-5 implemented — HttpContextHelixTokenAccessor + scoped DI for multi-client HTTP/SSE auth. 252/252 tests pass. — decided by Ripley
 
-📌 Team update (2026-02-13): HTTP/SSE multi-client auth architecture (R-HTTP-1 through R-HTTP-3, R-HTTP-6) implemented per Dallas's design (dallas-http-sse-auth.md). New files: IHelixTokenAccessor.cs (interface + EnvironmentHelixTokenAccessor), IHelixApiClientFactory.cs (interface + HelixApiClientFactory), Cache/ICacheStoreFactory.cs (interface + CacheStoreFactory with ConcurrentDictionary). SqliteCacheStore refactored to connection-per-operation with Cache=Shared for thread-safe concurrent access (replaces single SqliteConnection field). File I/O hardened with FileShare.ReadWrite for concurrent read/write safety. Program.cs rewired: both CLI and MCP containers use IHelixTokenAccessor for token resolution. 233/233 tests pass. — decided by Ripley
 
-## Learnings
-- SqliteCacheStore now uses connection-per-operation (`OpenConnection()` returns a new `SqliteConnection` each time with `Cache=Shared`). This enables thread-safe concurrent access needed for HTTP/SSE multi-client mode. WAL mode is set once during `InitializeSchema()`, `busy_timeout` is set per-connection in `OpenConnection()`.
-- `File.Move(overwrite: true)` on Windows throws `UnauthorizedAccessException` (not just `IOException`) when the target file is locked by a concurrent reader. Must catch both exception types.
-- `File.OpenRead()` uses `FileShare.Read` which blocks concurrent writers. For concurrent access scenarios, use `new FileStream(..., FileShare.ReadWrite | FileShare.Delete)` instead.
-- Temp files for write-then-rename must use unique names (e.g., `Guid.NewGuid()`) to avoid collisions between concurrent writers to the same cache key.
-
-📌 Team update (2026-02-13): R-HTTP-4 and R-HTTP-5 implemented — HttpContextHelixTokenAccessor created in HelixTool.Mcp, Program.cs fully rewired with scoped DI for multi-client HTTP/SSE auth. IHelixTokenAccessor (Scoped), IHelixApiClientFactory (Singleton), ICacheStoreFactory (Singleton), CacheOptions/ICacheStore/IHelixApiClient/HelixService (Scoped). Token extracted from Authorization header (Bearer/token schemes, case-insensitive), falls back to HELIX_ACCESS_TOKEN env var. ServerInfo version set to 0.1.2. Added missing `using HelixTool.Mcp` to test file. 252/252 tests pass. — decided by Ripley
-
+📌 Team update (2026-02-13): HTTP/SSE multi-client auth architecture decided — IHttpContextAccessor + scoped IHelixApiClient factory pattern. ICacheStoreFactory for concurrent cache store management. SqliteCacheStore connection-per-operation refactor for HTTP concurrency safety. — decided by Dallas
+📌 Team update (2026-02-13): Multi-auth support deferred — current single-token-per-process model is sufficient for both stdio and HTTP transports. — decided by Dallas
