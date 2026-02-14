@@ -320,6 +320,14 @@ hlx cache clear    # Wipe all cached data (all auth contexts)
 - **File search toggle:** Set `HLX_DISABLE_FILE_SEARCH=true` to disable `hlx_search_file`, `hlx_search_log`, and `hlx_test_results`. Useful for locked-down deployments where file content inspection is not desired.
 - **Input validation:** Job IDs are resolved through `HelixIdResolver` (GUIDs and URLs). Batch operations are capped at 50 jobs per request. File search is limited to 50 MB files.
 
+### Cached data
+
+The SQLite cache (`%LOCALAPPDATA%\hlx\` on Windows, `$XDG_CACHE_HOME/hlx/` on Linux/macOS) stores Helix API responses and downloaded artifacts on disk. Cached data includes job metadata, work item details, console logs, and uploaded files like binlogs and TRX results. Console logs and test output from CI runs may inadvertently contain secrets such as connection strings or tokens — treat the cache directory as potentially sensitive.
+
+**What is NOT cached:** Authentication tokens are never written to the cache. The `HELIX_ACCESS_TOKEN` is used only for API requests and to derive an 8-character SHA256 hash for cache directory isolation (`cache-{hash}/`). The hash is not reversible to the original token.
+
+**Access control:** The cache lives in the current user's profile directory, protected by OS-level file permissions. Each unique Helix token gets its own isolated cache directory; unauthenticated requests use a separate `public/` directory. No cross-token data leakage is possible. On shared machines or when switching between security contexts, run `hlx cache clear` to wipe all cached data. Cached metadata expires via TTL (15s–4h depending on job state), and artifact files expire after 7 days without access.
+
 ## Requirements
 
 - .NET 10 SDK
