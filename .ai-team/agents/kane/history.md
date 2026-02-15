@@ -41,6 +41,8 @@
 - CLI command names in Program.cs match `[Command("...")]` attributes; MCP tool names match `[McpServerTool(Name = "...")]`
 - Tool is packaged as dotnet tool: `<PackAsTool>true</PackAsTool>`, `<ToolCommandName>hlx</ToolCommandName>`
 - README references MIT license but no LICENSE file exists in the repo root
+- **2026-02-15-cache-mermaid-diagram:** Added Mermaid flowchart diagram to README Caching section (after opening paragraph, before settings table). Diagram shows: IDE agents → hlx stdio processes → CachingHelixApiClient → cache hit/miss decision → SQLite+disk store or Helix API, plus auth isolation subdirectories. Added "Concurrency guarantees" bullet list below diagram covering WAL mode, atomic writes, FileShare flags, and per-invocation temp dirs.
+- Mermaid diagrams render natively on GitHub — use ```mermaid code blocks. Keep diagrams focused on one story (e.g., multi-process sharing) rather than cramming all details.
 
 📌 Team update (2025-02-12): PackageId renamed to lewing.helix.mcp — decided by Ripley/Larry
 📌 Team update (2025-02-12): NuGet Trusted Publishing workflow added — publish via git tag v*
@@ -78,3 +80,8 @@
 - Cached data types: job details (JSON in SQLite `cache_metadata`), work item summaries, work item details, file listings (all as JSON metadata), console logs and uploaded files (as files in `artifacts/` directory tracked in `cache_artifacts` table). Auth tokens are NOT cached — only a SHA256 hash prefix is used for directory naming.
 - CacheSecurity.cs has three methods: `ValidatePathWithinRoot` (path traversal guard), `SanitizePathSegment` (filename sanitization), `SanitizeCacheKeySegment` (cache key sanitization). All three are `internal static`.
 - TTL values in CachingHelixApiClient: running jobs 15s (details/work items) or 30s (file listings), completed jobs 4h, console logs 1h (completed only, never cached for running jobs), job state 15s running / 4h completed.
+- **2026-02-15-readme-intro-rewrite:** Rewrote README intro (lines 1-19). Changed title from "Helix Test Infrastructure CLI & MCP Server" to "MCP server and CLI for investigating .NET Helix CI failures". Expanded one-line description to mention 13 MCP tools, cross-process caching, and AI agent focus. Added "Why hlx?" section with problem statement paragraph + 4-bullet value prop list (structured output, cross-process caching, context-efficiency, zero config). Moved ci-analysis replacement note from after Architecture into the new Why section. No changes below Architecture section.
+- README intro pattern: lead with what-it-is subtitle, follow with a "Why?" section that states the problem (1 paragraph) then value props (bullet list with bold labels + concrete tool examples). Avoids marketing tone — states facts with tool names.
+
+📌 Team update (2026-02-15): DownloadFilesAsync temp dirs now per-invocation (helix-{id}-{Guid}) to prevent cross-process races — decided by Ripley
+📌 Team update (2026-02-15): CI version validation added to publish workflow — tag is source of truth for package version — decided by Ripley

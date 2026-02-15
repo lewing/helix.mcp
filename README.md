@@ -1,8 +1,21 @@
-# helix.mcp — Helix Test Infrastructure CLI & MCP Server
+# helix.mcp — MCP server and CLI for investigating .NET Helix CI failures
 
-A CLI tool and MCP server for investigating [.NET Helix](https://helix.dot.net) test results. Designed for diagnosing CI failures in dotnet repos (runtime, sdk, aspnetcore, etc.).
+An MCP server that exposes the [.NET Helix](https://helix.dot.net) API as 13 structured tools with cross-process local caching — purpose-built for AI agents diagnosing CI failures in dotnet repos (runtime, sdk, aspnetcore, etc.). Also works as a standalone CLI for humans.
 
 Built with [Squad](https://github.com/bradygaster/squad) — [meet the squad](.ai-team/SQUAD.md).
+
+## Why hlx?
+
+When an AI agent investigates a CI failure in a dotnet repo, it needs to inspect Helix test artifacts — console logs, TRX test results, binlogs, crash dumps. The raw Helix API returns unstructured blobs that agents must download and parse, burning context window on boilerplate extraction. If multiple agents (or the same agent across tool calls) look at the same job, each one repeats the same API calls and downloads.
+
+hlx solves this by wrapping the Helix API as MCP tools that return structured, pre-parsed data:
+
+- **Structured output** — `hlx_status` returns categorized failure summaries as JSON; `hlx_test_results` parses TRX files and returns test names, outcomes, and error messages directly. No raw text parsing needed.
+- **Cross-process caching** — API responses and downloaded artifacts are cached in a local SQLite database. Different MCP server instances (one per IDE/agent) share the same cache, so the second agent to inspect a job gets instant results. TTLs are smart — running jobs cache briefly (15–30s), completed jobs cache for hours.
+- **Context-efficient** — `hlx_search_log` and `hlx_search_file` search in place and return matching lines with context, so agents never need to download a full log. `hlx_find_files` locates artifacts across work items without listing every file.
+- **Zero config** — public dotnet CI jobs work out of the box. Install and go.
+
+> **ci-analysis replacement:** hlx provides 100% coverage of the Helix API surface used by the `ci-analysis` skill's ~150 lines of PowerShell, with structured caching, failure categorization, and MCP tool support on top.
 
 ## Architecture
 
@@ -13,8 +26,6 @@ The project is split into three layers:
 - **HelixTool.Mcp** — Standalone MCP HTTP server built with [ModelContextProtocol](https://github.com/modelcontextprotocol/csharp-sdk). Returns structured JSON for LLM agents over HTTP.
 
 Both the CLI and MCP server depend on Core but not on each other.
-
-> **ci-analysis replacement:** hlx provides 100% coverage of the Helix API surface used by the `ci-analysis` skill's ~150 lines of PowerShell, with structured caching, failure categorization, and MCP tool support on top.
 
 ## Installation
 
@@ -293,6 +304,64 @@ If a job requires authentication and no token is set, hlx will show an actionabl
 ## Caching
 
 Helix API responses are automatically cached to a local SQLite database — no configuration needed.
+
+Multiple MCP server instances share a single cache safely:
+
+```mermaid
+flowchart LR
+    subgraph IDEs["IDE / Agent processes"]
+        A1["VS Code"]
+        A2["Copilot CLI"]
+        A3["Other agent"]
+    end
+
+    subgraph Stdio["hlx stdio MCP servers"]
+        P1["hlx (pid 1)"]
+        P2["hlx (pid 2)"]
+        P3["hlx (pid 3)"]
+    end
+
+    A1 --> P1
+    A2 --> P2
+    A3 --> P3
+
+    P1 --> Cache
+    P2 --> Cache
+    P3 --> Cache
+
+    subgraph Cache["CachingHelixApiClient"]
+        direction TB
+        Check{"Cache\nhit?"}
+    end
+
+    Check -- miss --> API["Helix API"]
+    API -- response --> Check
+
+    Check -- hit --> Result["Cached response"]
+
+    subgraph Store["SQLite + Disk (shared)"]
+        direction TB
+        DB["SQLite DB\n(WAL mode)"]
+        Artifacts["Artifact files\n(logs, TRX, binlogs)"]
+    end
+
+    Cache <--> Store
+
+    subgraph Isolation["Auth isolation"]
+        direction LR
+        T1["cache-a1b2c3/"]
+        T2["cache-d4e5f6/"]
+        T3["public/"]
+    end
+
+    Store --- Isolation
+```
+
+**Concurrency guarantees:**
+- **SQLite WAL mode** with busy timeout — multiple processes read/write the same DB safely
+- **Atomic artifact writes** — files are written to a temp path, then renamed into place
+- **Safe concurrent reads** — `FileShare.ReadWrite|Delete` prevents conflicts during eviction
+- **Isolated temp dirs** — each `DownloadFilesAsync` call uses its own temp directory
 
 | Setting | Default | Env var |
 |---------|---------|---------|

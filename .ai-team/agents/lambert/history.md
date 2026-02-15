@@ -175,3 +175,46 @@
 - Status API `filter` parameter accepts "failed" (default), "passed", "all" — case-insensitive. Invalid values throw ArgumentException.
 - `filter: "passed"` nulls `failed` array (mirrors `filter: "failed"` nulling `passed` array). `filter: "all"` populates both.
 - Proactive test writing pattern continues to work: wrote tests against new `filter` API spec before Ripley's code landed, waited for build to succeed.
+
+## Cache Concurrency Audit (2026-02-15)
+
+### Production Code Concurrency Patterns (SqliteCacheStore.cs)
+- **Connection-per-operation:** Each method opens and closes its own `SqliteConnection` via `OpenConnection()`. No shared connection → inherently thread-safe at the .NET level.
+- **WAL mode:** `PRAGMA journal_mode=WAL;` set during `InitializeSchema()` (line 73). Enables concurrent reads across processes, single writer at a time.
+- **busy_timeout:** `PRAGMA busy_timeout=5000;` set per-connection in `OpenConnection()` (line 44). SQLite retries for 5 seconds when encountering a write lock.
+- **Cache=Shared:** Connection string includes `Cache=Shared` (line 31). Multiple in-process connections share a single SQLite page cache.
+- **Atomic artifact writes:** `SetArtifactAsync` uses write-to-temp-then-rename pattern (lines 195-207). Temp file has GUID suffix to avoid collisions. `File.Move(temp, target, overwrite: true)` is atomic on most filesystems. Fallback on Windows `IOException`/`UnauthorizedAccessException` deletes temp and tolerates failure.
+- **Artifact read sharing:** `GetArtifactAsync` opens `FileStream` with `FileShare.ReadWrite | FileShare.Delete` (line 177). Allows concurrent readers and allows eviction (deletion) while readers hold the file open.
+- **LRU eviction:** `EvictLruIfOverCapAsync` is called at the end of `SetArtifactAsync` (line 227). It reads the full artifact list, selects LRU candidates, then deletes files and rows one by one in `DeleteArtifactRows`. File deletion uses `File.Delete` with `IOException` catch.
+- **No transaction wrapping on eviction:** `DeleteArtifactRows` deletes file, then deletes SQLite row, with no transaction. A crash between these two steps leaves an orphan row (stale row cleanup exists in `GetArtifactAsync` via `File.Exists` check).
+- **No lock between size-check and eviction:** `EvictLruIfOverCapAsync` reads total size, then evicts. A concurrent writer can insert between these two steps, meaning the cache can temporarily exceed `MaxSizeBytes`.
+
+### Key File Paths
+- `src/HelixTool.Core/Cache/SqliteCacheStore.cs` — Main cache store, all concurrency patterns
+- `src/HelixTool.Core/Cache/CachingHelixApiClient.cs` — Decorator calling SetArtifactAsync/GetArtifactAsync, drives the download-then-cache flow
+- `src/HelixTool.Core/Cache/ICacheStoreFactory.cs` — ConcurrentDictionary-based factory, one SqliteCacheStore per auth token hash
+- `src/HelixTool.Core/HelixService.cs:321-374` — DownloadFilesAsync: downloads to temp dir (not cache), uses File.Create (not atomic)
+- `src/HelixTool.Tests/SqliteCacheStoreConcurrencyTests.cs` — 14 tests: 10 original multi-thread concurrency + 4 new gap tests (stale row cleanup, eviction-during-read, concurrent eviction+write integrity, same-key race)
+- `src/HelixTool.Tests/SqliteCacheStoreTests.cs` — 18 CRUD/eviction tests, single-threaded
+- `src/HelixTool.Tests/CacheStoreFactoryTests.cs` — 8 tests: factory thread safety, instance identity
+
+## Cache Concurrency Gap Tests (2026-02-15)
+
+**SqliteCacheStoreConcurrencyTests.cs** — 4 new tests added (10 → 14 total):
+
+- **StaleRowCleanup_FileDeletedFromDisk_ReturnsNullAndCleansUp:** Verifies orphan SQLite row cleanup when artifact file is deleted externally. First `GetArtifactAsync` detects missing file, deletes orphan row, returns null. Second call confirms row is gone (fast null).
+- **EvictionDuringRead_OpenStreamRemainsReadable:** Verifies `FileShare.Delete` behavior — opens a read stream, triggers LRU eviction via small `MaxSizeBytes`, confirms the already-opened stream reads complete, uncorrupted 1KB data.
+- **ConcurrentEvictionAndWrite_ArtifactIntegrity:** Stress test with 2048-byte cap, 20 concurrent 256-byte writes triggering frequent LRU eviction plus 20 concurrent reads. Tolerates `FileNotFoundException` (known race between `File.Exists` and `FileStream` open in `GetArtifactAsync`). All successful reads verified for fill-byte integrity.
+- **ConcurrentCachingClientSimulation_SameKey:** Two concurrent `SetArtifactAsync` on same key with different fill bytes ('A' vs 'B'). Verifies result is exactly 128 bytes of one consistent fill byte — no partial/mixed writes.
+
+## Learnings
+
+- `CacheOptions.GetEffectiveCacheRoot()` appends `/public` (no auth) or `/cache-{hash}` (auth) under `CacheRoot`. Tests that reference the artifacts directory must use `_opts.GetEffectiveCacheRoot()` not `_tempDir` directly.
+- Known production race in `GetArtifactAsync`: `File.Exists` check (line 160) and `FileStream` open (line 177) are not atomic. Under concurrent eviction, the file can be deleted between these two calls, causing `FileNotFoundException`. Concurrency tests must tolerate this as a known gap (catch `FileNotFoundException`).
+- `DeleteArtifactRows` catches `IOException` on `File.Delete` but not `UnauthorizedAccessException`. Under concurrent eviction + read on Windows, `File.Delete` can throw `UnauthorizedAccessException` when another thread holds the file open. Concurrency stress tests must tolerate both `IOException` and `UnauthorizedAccessException`.
+- Tests using small `MaxSizeBytes` to trigger LRU eviction must create their own `CacheOptions`/`SqliteCacheStore` instances (not modify shared `_opts`/`_store`) to avoid interfering with other tests running in parallel.
+- Write-to-temp-then-rename pattern in `SetArtifactAsync` ensures same-key concurrent writes produce complete, uncorrupted artifacts — the atomic `File.Move(overwrite: true)` guarantees one writer wins cleanly.
+
+
+📌 Team update (2026-02-15): DownloadFilesAsync temp dirs now per-invocation (helix-{id}-{Guid}) to prevent cross-process races — decided by Ripley
+📌 Team update (2026-02-15): CI version validation added to publish workflow — tag is source of truth for package version — decided by Ripley

@@ -333,7 +333,7 @@ public class HelixService
                 return [];
 
             var idPrefix = id.Length >= 8 ? id[..8] : id;
-            var outDir = Path.Combine(Path.GetTempPath(), $"helix-{idPrefix}");
+            var outDir = Path.Combine(Path.GetTempPath(), $"helix-{idPrefix}-{Guid.NewGuid():N}");
             Directory.CreateDirectory(outDir);
             var paths = new List<string>();
 
