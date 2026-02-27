@@ -85,3 +85,14 @@
 
 📌 Team update (2026-02-15): DownloadFilesAsync temp dirs now per-invocation (helix-{id}-{Guid}) to prevent cross-process races — decided by Ripley
 📌 Team update (2026-02-15): CI version validation added to publish workflow — tag is source of truth for package version — decided by Ripley
+
+- **2025-07-18-value-add-audit:** Audited all three doc surfaces (README, MCP descriptions, llmstxt) for coverage of hlx's local enhancement layer. Key findings:
+  - README "Why hlx?" section covers the high-level value prop well (B+ grade) but lacks per-tool breakdown of what hlx adds vs. raw API.
+  - MCP `[Description]` attributes (C grade) almost never explain that features like failure categorization, TRX parsing, and file-type grouping are local enhancements — agents may assume these come from the Helix API.
+  - `hlx_search_file` description says "without downloading" which is misleading — hlx downloads the file, searches locally, then deletes it.
+  - llmstxt (C+ grade) is missing `hlx_search_file` and `hlx_test_results` from the MCP Tools list — documentation bug.
+  - 12 specific enhancement capabilities cataloged; only 3 (URL resolution, caching, auth isolation) are well-documented across all surfaces.
+  - Recommendations written to `.ai-team/decisions/inbox/kane-docs-audit.md` with 4 prioritized actions (P1: fix llmstxt + enhance MCP descriptions, P2: README enhancement table, P3: expand failure categorization docs).
+- **2025-07-18-enhancements-section:** Added "## How hlx Enhances the Helix API" section to README.md (between Failure Categorization and Project Structure). Two tables: 5 major enhancements (failure classification, TRX parsing, remote search, cross-process cache, smart TTL) with 3-column format (enhancement/what you get/why it matters), and 7 convenience enhancements (URL parsing, file discovery, batch status, file classification, computed duration, log URL construction, auth-isolated cache) with 2-column format. ~26 lines of markdown tables. Source: Dallas's 12-enhancement audit. Completes the P2 action from the docs audit.
+
+📌 Team update (2026-02-27): Enhancement layer documentation consolidated — Dallas cataloged 12 value-adds, Kane audited doc surfaces and wrote README section. Remaining P1: llmstxt missing hlx_search_file/hlx_test_results, MCP descriptions need local-enhancement flags — decided by Dallas, Kane

@@ -88,3 +88,21 @@
 
 📌 Team update (2026-02-15): DownloadFilesAsync temp dirs now per-invocation (helix-{id}-{Guid}) to prevent cross-process races — decided by Ripley
 📌 Team update (2026-02-15): CI version validation added to publish workflow — tag is source of truth for package version — decided by Ripley
+
+### Value-Add Layer Analysis (2025-07-23)
+- **Triggered by:** Larry's question — "do we/should we document how hlx enhances the raw Helix APIs with local functionality?"
+- **Finding:** hlx has 12 distinct enhancements beyond raw API wrapping, categorized into 5 MAJOR, 3 SIGNIFICANT, 3 MODERATE, and 1 MINOR.
+- **MAJOR value-adds:** (1) Cross-process SQLite cache with WAL mode and LRU eviction, (2) State-aware TTL policy (running vs. completed jobs), (3) Failure classification heuristic (exit code + state + name → FailureCategory enum), (4) TRX XML parsing with XXE protection, (5) Remote content search (grep-in-place without downloading full files).
+- **SIGNIFICANT value-adds:** (6) URL parsing accepting full Helix URLs not just GUIDs + work item extraction from URLs, (7) Cross-work-item file discovery (N+1 API call pattern → single tool call), (8) Batch job status aggregation with failure breakdown by category.
+- **MODERATE value-adds:** (9) File type classification (binlogs/testResults/other), (10) Computed duration with human-readable formatting, (12) Auth-isolated cache storage per token.
+- **MINOR:** (11) Console log URL construction.
+- **Documentation recommendation:** The README already covers most features, but a dedicated "How hlx enhances the Helix API" section would help. Delegated to Kane. Decision written to `.ai-team/decisions/inbox/dallas-value-add-analysis.md`.
+- **Key insight:** The biggest value proposition for LLM consumers specifically is the combination of TRX parsing + remote search + failure classification. These three features together mean an LLM agent gets structured, pre-categorized, context-efficient data instead of raw blobs — which is the entire thesis of the project.
+
+### MCP Description Surface Area Decision (2025-07-23)
+- **Question:** Should MCP tool `[Description]` attributes mention implementation details like local processing, caching, or remote search mechanics?
+- **Answer:** No. Tool descriptions are API contracts for consuming agents. They should describe *what the agent gets* (purpose, parameters, return shape), not *how the tool achieves it* (caching, local parsing, download-search-delete).
+- **Rationale:** An LLM agent's tool selection and invocation behavior is not changed by knowing "this parses TRX locally" vs "this returns structured test results." The behavioral contract (what inputs, what outputs) is what matters. Implementation details belong in the README for human evaluators.
+- **One exception:** If an implementation detail creates an agent-facing behavioral contract (e.g., a `noCache` parameter), that behavior belongs in the description. But transparent optimizations do not.
+- **Minor gap found:** `hlx_status` description lists "exit codes, state, duration, machine" but omits `failureCategory` which is actually in the response. This is a completeness fix, not an implementation disclosure.
+- **Decision written to:** `.ai-team/decisions/inbox/dallas-mcp-description-surface.md`

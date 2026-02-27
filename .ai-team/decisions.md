@@ -2879,3 +2879,25 @@ The publish workflow triggers on `v*` tags and extracts the version from the tag
 - All team members must update csproj and server.json version fields before tagging a release.
 - The workflow will fail fast with actionable error messages if versions are out of sync.
 - No CI workflow exists yet (`ci.yml`), so validation is only in the publish workflow.
+
+
+### 2026-02-27: Enhancement layer documentation (consolidated)
+
+**By:** Dallas, Kane
+**Requested by:** Larry Ewing
+
+**What:**
+
+1. **Value-add inventory (Dallas, 2025-07-23):** Cataloged 12 local enhancements hlx provides over raw Helix REST APIs — 5 MAJOR (cross-process SQLite cache, smart TTL policy, failure classification, TRX parsing, remote content search), 3 SIGNIFICANT (URL parsing, cross-work-item file discovery, batch aggregation), 3 MODERATE (file type classification, computed duration, auth-isolated cache), 1 MINOR (log URL construction).
+
+2. **Docs gap analysis (Kane, 2025-07-18):** Audited README (B+), MCP [Description] attributes (C), and llmstxt (C+). Key gaps: MCP descriptions don't convey that features like failure categorization and TRX parsing are local enhancements; hlx_search_file description misleadingly says "without downloading"; llmstxt missing hlx_search_file and hlx_test_results.
+
+3. **README section added (Kane, 2025-07-18):** Wrote "How hlx Enhances the Helix API" section with two tables — 5 major enhancements (3-column: enhancement/what you get/why it matters) and 7 convenience enhancements (2-column). Placed between Failure Categorization and Project Structure.
+
+**Why:** Users (human and LLM) need to understand what hlx adds beyond raw API access. The README covered features but didn't frame them as enhancements over the raw API. MCP tool descriptions are the primary documentation surface for AI agents and lacked this context.
+
+**Remaining gaps (prioritized):**
+- **P1:** llmstxt missing hlx_search_file and hlx_test_results — needs Ripley to update Program.cs raw string literal
+- **P1:** MCP [Description] attributes should flag local enhancements (e.g., hlx_test_results should say hlx parses TRX XML locally, not that the API returns structured results)
+- **P3:** Failure categorization heuristic details (exit code → category mapping) not yet documented
+
