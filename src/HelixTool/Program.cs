@@ -514,7 +514,7 @@ public class Commands
 - `hlx-mcp` or `dotnet run --project src/HelixTool.Mcp` — HTTP MCP server
 
 ### MCP Tools
-- `hlx_status` — Job pass/fail summary with consoleLogUrl per work item
+- `hlx_status` — Job pass/fail summary with consoleLogUrl and failureCategory per work item
 - `hlx_logs` — Console log content (last N lines)
 - `hlx_files` — List uploaded files, grouped by type (binlogs, testResults, other)
 - `hlx_download` — Download files by glob pattern to temp dir
@@ -524,6 +524,8 @@ public class Commands
 - `hlx_work_item` — Detailed work item info with exit code, state, machine, duration, files
 - `hlx_batch_status` — Status for multiple jobs in parallel (accepts an array of job IDs/URLs)
 - `hlx_search_log` — Search a work item's console log for error patterns
+- `hlx_search_file` — Search a work item's uploaded file for lines matching a pattern
+- `hlx_test_results` — Parse TRX test result files from a work item
 
 ## Authentication
 Set HELIX_ACCESS_TOKEN env var for internal jobs. Public jobs need no auth.

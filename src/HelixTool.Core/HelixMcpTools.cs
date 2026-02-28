@@ -20,7 +20,7 @@ public sealed class HelixMcpTools
         _svc = svc;
     }
 
-    [McpServerTool(Name = "hlx_status"), Description("Get work item pass/fail summary for a Helix job. Returns structured JSON with job metadata, failed items (with exit codes, state, duration, machine), and passed count. Use the 'filter' parameter to control which work items are included: 'failed' (default), 'passed', or 'all'.")]
+    [McpServerTool(Name = "hlx_status"), Description("Get work item pass/fail summary for a Helix job. Returns structured JSON with job metadata, failed items (with exit codes, state, duration, machine, failureCategory), and passed count. Use the 'filter' parameter to control which work items are included: 'failed' (default), 'passed', or 'all'.")]
     public async Task<string> Status(
         [Description("Helix job ID (GUID) or full Helix URL")] string jobId,
         [Description("Filter: 'failed' (default) shows only failures, 'passed' shows only passed, 'all' shows everything")] string filter = "failed")

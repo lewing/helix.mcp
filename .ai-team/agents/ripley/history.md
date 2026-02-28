@@ -99,3 +99,10 @@
 📌 Team update (2026-02-15): CI version validation added to publish workflow — tag is source of truth, csproj+server.json must match — decided by Ripley
 
 📌 Team update (2026-02-27): Enhancement layer documentation consolidated — Dallas cataloged 12 value-adds, Kane audited doc surfaces and wrote README section. Remaining P1: llmstxt missing hlx_search_file/hlx_test_results, MCP descriptions need local-enhancement flags — decided by Dallas, Kane
+
+
+📌 Team update (2026-02-27): MCP descriptions should expose behavioral contracts, not implementation mechanics. P1: llmstxt still missing hlx_search_file and hlx_test_results. P1: hlx_status description should list failureCategory field — decided by Dallas
+
+## Learnings
+
+- Added `failureCategory` to the `hlx_status` MCP tool `[Description]` parenthetical field list (line 23 of HelixMcpTools.cs). The field was already returned in JSON output (line 46) but omitted from the description. This is a documentation-completeness fix per Dallas's decision that MCP descriptions should accurately list returned fields.

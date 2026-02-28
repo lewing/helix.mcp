@@ -230,6 +230,32 @@ Add the following to your MCP client config. The `--yes` flag ensures `dnx` does
 
 Failed work items are automatically classified into one of: **Timeout**, **Crash**, **BuildFailure**, **TestFailure**, **InfrastructureError**, **AssertionFailure**, or **Unknown**. The category appears in `status`, `work-item`, and `batch-status` output, and is available as `failureCategory` in JSON and MCP tool responses.
 
+## How hlx Enhances the Helix API
+
+hlx isn't a thin API wrapper — it adds a local intelligence layer between agents and the raw Helix REST API. The biggest win for LLM agents is that TRX parsing, remote search, and failure classification work together to return structured, pre-categorized, context-efficient data instead of raw blobs.
+
+### Major enhancements
+
+| Enhancement | What you get | Why it matters |
+|-------------|-------------|----------------|
+| **Failure classification** | Every failed work item is categorized (Timeout, Crash, BuildFailure, TestFailure, InfrastructureError, etc.) from exit code + state + work item name | Agents can triage without parsing logs. The Helix API only gives you an exit code. |
+| **TRX test result parsing** | `hlx_test_results` returns test names, outcomes, durations, and error messages as structured JSON | The raw API gives you a `.trx` file URL. hlx downloads it, parses the VS Test XML (XXE-safe), and extracts what matters. |
+| **Remote content search** | `hlx_search_file` and `hlx_search_log` return matching lines with context — no full download needed | Agents search multi-MB logs without blowing their context window. Includes binary detection and a 50 MB cap. |
+| **Cross-process SQLite cache** | WAL-mode SQLite with LRU eviction and a 1 GB cap. Multiple hlx instances share one cache. | The second agent to inspect a job gets instant results. Auth-isolated directories prevent cross-token leakage. |
+| **Smart TTL policy** | Running jobs: 15–30s. Completed jobs: 1–4h. Console logs for running jobs: never cached. | Helix jobs transition from mutable (running) to immutable (completed). The TTL strategy tracks this lifecycle so agents always see fresh data for active jobs and avoid redundant calls for finished ones. |
+
+### Convenience enhancements
+
+| Enhancement | What you get |
+|-------------|-------------|
+| **URL parsing** | Pass full Helix URLs instead of extracting job IDs and work item names yourself. hlx parses both from a single URL. |
+| **Cross-work-item file discovery** | `hlx_find_files` scans N work items for files matching a glob and aggregates results — one tool call instead of N+1 API calls. |
+| **Batch status aggregation** | `hlx_batch_status` queries up to 50 jobs in parallel with overall totals and failure breakdown by category. |
+| **File type classification** | `hlx_files` groups uploaded files into binlogs, test results, and other — no manual filename matching. |
+| **Computed duration** | Work item durations are calculated and formatted as human-readable strings (e.g., `2m 34s`). |
+| **Console log URL construction** | Log download URLs are built from job/work-item IDs — agents don't need to know the Helix URL format. |
+| **Auth-isolated cache storage** | Each unique token gets its own cache directory (`cache-{hash}/`). Unauthenticated requests use `public/`. |
+
 ## Project Structure
 
 ```
