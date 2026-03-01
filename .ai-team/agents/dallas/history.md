@@ -6,115 +6,50 @@
 - **Stack:** C# .NET 10, ConsoleAppFramework, Spectre.Console, ModelContextProtocol, Microsoft.DotNet.Helix.Client
 - **Structure:** Three projects — HelixTool.Core (shared library), HelixTool (CLI), HelixTool.Mcp (HTTP MCP server)
 - **Key files:** HelixService.cs (core ops), HelixIdResolver.cs (GUID/URL parsing), HelixMcpTools.cs (MCP tool definitions), Program.cs (CLI commands)
-- **No tests exist yet** — test project needs to be created
 
-## Summarized History (through 2026-02-12)
+## Core Context (summarized through 2026-02-15)
 
-**Architecture reviews produced:** Initial code review (namespace collision, god class, no DI/tests), P0 foundation design (IHelixApiClient, DI, HelixException, CancellationToken), stdio MCP transport (Option B — `hlx mcp` subcommand), US-4 auth design (HELIX_ACCESS_TOKEN env var), multi-auth analysis (deferred — OS/MCP client handles it), cache design (SQLite-backed, decorator pattern, ICacheStore interface, WAL mode), HTTP/SSE multi-client auth architecture (IHttpContextAccessor + scoped DI).
+**Architecture reviews produced:** Initial code review (namespace collision, god class, no DI/tests), P0 foundation design (IHelixApiClient, DI, HelixException, CancellationToken), stdio MCP transport (Option B — `hlx mcp` subcommand), US-4 auth design (HELIX_ACCESS_TOKEN env var), multi-auth analysis (deferred), cache design (SQLite-backed, decorator pattern, WAL mode), HTTP/SSE multi-client auth (IHttpContextAccessor + scoped DI).
 
 **Key design patterns established:**
 - Decorator pattern for caching (CachingHelixApiClient wrapping IHelixApiClient)
 - Console logs for running jobs must never be cached
 - Cache TTL matrix: 15s/30s running, 1h/4h completed
 - Cache isolation by auth token hash (SHA256) → separate SQLite DBs
-- MCP protocol is session-scoped auth, not per-tool-call
 - `IHelixTokenAccessor` abstraction: env var for stdio, HttpContext for HTTP
-- MCP SDK: `ScopeRequests=true` (default), `IHttpContextAccessor` works with `PerSessionExecutionContext=false`
+- MCP tools are thin wrappers over HelixService — business logic stays in HelixService
+- MCP tool naming: `hlx_{verb}` or `hlx_{noun}` pattern with `_` separators
+- MCP descriptions: expose behavioral contracts (what/inputs/outputs), NOT implementation mechanics
+- For file scanning: one generic tool + one convenience alias (not per-type tool sprawl)
 
-**Sessions facilitated:** P0 foundation (2026-02-11), P1 features (2026-02-11), cache implementation (2026-02-12), cache security (2026-02-12)
+**MCP API review findings (2026-02-13):**
+- No `hlx_list_work_items` — consumers must use hlx_status for navigation (N+1 problem)
+- URL resolution boilerplate shared across 5 of 9 tools — tolerable at current scale
+- `hlx_status` description should mention `failureCategory` as completeness fix
 
-📌 Team update (2026-02-11): MatchesPattern changed to internal static — decided by Lambert
+**Threat model review (2025-07-23):** Approved Ash's STRIDE analysis. All 10 MCP tools, both transports, cache, filesystem covered. Minor gap: TryResolveJobAndWorkItem can't handle `%2F` in work item names (correctness bug, not security).
+
+**Remote search design (2026-02-13):** download-search-delete pattern. No regex (ReDoS risk). TRX parsing requires XXE protection. US-31 (search file), US-32 (TRX parsing) created. Structured console log parsing (US-22 partial) deferred.
+
+**Value-add analysis (2025-07-23):** 12 enhancements cataloged — 5 major (cache, TTL, failure classification, TRX parsing, remote search), 3 significant (URL parsing, file discovery, batch status), 3 moderate, 1 minor.
+
+**UseStructuredContent review (2025-07-24):** APPROVED. Clean migration from Task<string> to typed returns. Wire-compatible (all [JsonPropertyName] camelCase preserved). FileInfo_ trailing underscore acceptable but HelixFileInfo cleaner. hlx_logs correctly excluded. Error handling: McpException for tool errors, ArgumentException for param validation. Skill extracted to `.ai-team/skills/mcp-structured-content/SKILL.md`.
+
+📌 Team update (2026-02-11): MatchesPattern internal static — decided by Lambert
 📌 Team update (2026-02-11): Documentation audit — decided by Kane
 📌 Team update (2026-02-11): P0 Foundation design review — decided by Dallas
 📌 Team update (2026-02-11): Requirements backlog (30 US) — decided by Ash
 📌 Team update (2026-02-11): US-17/US-24/US-30/US-29/US-10/US-23/US-21/US-18/US-11 implemented — decided by Ripley
 📌 Team update (2025-02-12): PackageId renamed to lewing.helix.mcp — decided by Ripley/Larry
-📌 Team update (2025-02-12): NuGet Trusted Publishing workflow added — decided by Ripley
-
-
-📌 Team update (2026-02-13): HTTP/SSE auth test suites written by Lambert (L-HTTP-1 through L-HTTP-5) — 45 tests covering token accessors, factories, concurrent cache, and HTTP context token extraction. All 252 tests passing. — decided by Lambert
-
-📌 Team update (2026-02-13): US-9 script removability analysis complete — 100% core API coverage, 3-phase migration plan, Phase 1 can proceed immediately — decided by Ash
-📌 Team update (2026-02-13): US-6 download E2E verification complete — 46 tests, all 298 tests pass, all P1s done — decided by Lambert
-
-📌 Team update (2026-02-13): Requirements audit complete — 25/30 stories implemented, US-22 structured test failure parsing is only remaining P2 gap — audited by Ash
-
-## Learnings
-
-### MCP API Design Review (2026-02-13)
-- **Key files reviewed:** `src/HelixTool.Core/HelixMcpTools.cs` (9 MCP tools), `src/HelixTool.Core/HelixService.cs` (core service layer), `src/HelixTool/Program.cs` (CLI commands), `src/HelixTool.Core/IHelixApiClient.cs` (API abstraction)
-- **Architecture pattern:** MCP tools are thin wrappers over HelixService — they handle URL resolution, JSON serialization, and parameter adaptation. Business logic stays in HelixService. This is correct.
-- **Convention established:** MCP tool naming follows `hlx_{verb}` or `hlx_{noun}` pattern with `_` separators. All tools return JSON strings.
-- **Design observation:** The MCP surface maps to Helix domain primitives (jobs, work items, files, logs), NOT to ci-analysis-specific workflows. This is the right abstraction level.
-- **Gap identified:** No `hlx_list_work_items` tool exists — consumers must call `hlx_status` (which fetches details for every work item) just to get work item names. This is an N+1 problem for navigation.
-- **Anti-pattern found:** `hlx_batch_status` takes `string jobIds` (comma-separated) instead of `string[] jobIds`. MCP SDK supports array parameters; this should use them.
-- **Inconsistency found:** `hlx_status` uses `bool all` parameter — should be `bool includePassed` for self-documentation.
-- **URL resolution pattern:** 5 of 9 tools share identical URL-resolution boilerplate (`TryResolveJobAndWorkItem`). Could be extracted to a helper, but current duplication is tolerable at this scale.
-
-### find-binlogs → find-files Generalization Decision (2026-02-14)
-- **Question:** Should `hlx_find_binlogs` become generic `hlx_find_files` with a pattern parameter?
-- **Answer:** Yes — add generic `FindFilesAsync` in Core with pattern parameter, add `hlx_find_files` MCP tool, but **keep `hlx_find_binlogs` as a convenience alias** that delegates with `pattern="*.binlog"`.
-- **Key rationale:** MCP tool names are a public API contract for LLM consumers (ci-analysis skill references `hlx_find_binlogs`). Removing it would break existing tool-use patterns. Specific named tools are also easier for LLMs to select. The generic tool serves the long tail (crash dumps, coverage files, ETW traces, test results).
-- **Design principle established:** For cross-work-item file scanning, one generic tool + one common-case convenience is the right surface area. Do NOT add per-file-type convenience tools (`hlx_find_dumps`, etc.) — that's tool sprawl.
-- **Core pattern:** `FindBinlogsAsync` generalizes to `FindFilesAsync` using the existing `MatchesPattern` helper (already proven by `DownloadFilesAsync`). `BinlogResult` renames to `FileSearchResult`.
-- **Decision written to:** `.ai-team/decisions/inbox/dallas-find-files-api.md`
-
-### Threat Model Review (2025-07-23)
-- **Reviewed:** Ash's STRIDE threat model at `.ai-team/analysis/threat-model.md`
-- **Verdict:** Approved with minor amendments. High-quality work — accurate code references, correct severity ratings, well-calibrated recommendations.
-- **Code reference accuracy:** Spot-checked 15+ line numbers and method names against actual source. All correct or within ±2 lines (acceptable for a living codebase). `BatchStatus` parameter type correctly identified as `string[]` (was previously `string`, now fixed).
-- **Completeness assessment:** Ash covered all 10 MCP tools, both transports, cache layer, and filesystem operations. No significant threats missed.
-- **Minor gap noted:** `HelixIdResolver.TryResolveJobAndWorkItem` can't handle work item names containing `/` (URL-encoded as `%2F`) because of `Split('/')`. This is a correctness bug, not a security vulnerability — it would fail to resolve, not cause exploitation. Not a threat model gap.
-- **S1/I4 severity confirmed:** HTTP MCP server defaulting to localhost is already the ASP.NET Core default behavior — Ash's recommendation to "default `--urls` to `http://localhost:5000`" is already the case. The real risk is explicit non-localhost binding without auth, which Ash correctly identifies.
-- **I3 precision corrected:** Ash says "8 hex chars" and "32 bits of entropy" — mathematically correct (`Convert.ToHexString(hash)[..8]` = 8 hex chars = 32 bits). Sound analysis.
-- **P0/P1/P2 calibration:** All appropriate. No over-reactions or under-reactions.
-- **Architectural implication:** When HTTP mode moves toward production, auth middleware is the gate. This should be tracked as a pre-GA requirement, not a current blocker.
-- **Decision written to:** `.ai-team/decisions/inbox/dallas-threat-model-review.md`
-📌 Team update (2026-02-13): P1 security fixes E1+D1 implemented (URL scheme validation, batch size cap) — decided by Ripley
-📌 Team update (2026-02-13): Security validation test strategy (18 tests, negative assertion pattern) — decided by Lambert
-
-### Remote Search Feature Design (2026-02-13)
-- **Design principle established:** hlx's role is Helix-specific discovery/retrieval/search. Structured analysis of non-Helix formats (binlogs) stays with external tools. TRX is in-scope because it's a test-result format with no dedicated external MCP tool.
-- **Pattern: download-search-delete** — `SearchConsoleLogAsync` downloads a file to temp, searches in-memory, deletes the temp file. This pattern generalizes to `SearchFileAsync` for arbitrary text files. The search logic (line matching with context) should be extracted into a shared private helper.
-- **Security invariant maintained:** No regex in user-facing pattern matching. `string.Contains` with `OrdinalIgnoreCase` covers CI investigation use cases without ReDoS risk.
-- **XML parsing security requirements:** TRX parsing MUST use `XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null }` to prevent XXE. File size check before parsing (reject >50MB). Error message truncation to prevent context window exhaustion.
-- **Tool naming convention:** `hlx_search_file` (general text), `hlx_test_results` (structured TRX). Follows established `hlx_{verb}` / `hlx_{noun}` naming.
-- **Backlog mapping:** US-31 (new — remote file text search), US-32 (new — TRX parsing, supersedes US-14 and the structured portion of US-22). Structured console log failure parsing (US-22 partial) recommended for closure — TRX parsing is more reliable than format-dependent `[FAIL]` line parsing.
-- **Trust boundary for file content:** All file content from Helix blob storage is semi-trusted (uploaded by CI jobs, which are authored by PR contributors in open-source repos). Parse defensively, never execute.
-- **Key file:** `.ai-team/decisions/inbox/dallas-remote-search-design.md` — full feature design with 8 numbered decisions for Larry to review.
-
-
-📌 Team update (2026-02-13): Status filter changed from bool to enum (failed|passed|all) — decided by Larry/Ripley
-
-📌 Team update (2026-02-15): DownloadFilesAsync temp dirs now per-invocation (helix-{id}-{Guid}) to prevent cross-process races — decided by Ripley
-📌 Team update (2026-02-15): CI version validation added to publish workflow — tag is source of truth for package version — decided by Ripley
-
-### Value-Add Layer Analysis (2025-07-23)
-- **Triggered by:** Larry's question — "do we/should we document how hlx enhances the raw Helix APIs with local functionality?"
-- **Finding:** hlx has 12 distinct enhancements beyond raw API wrapping, categorized into 5 MAJOR, 3 SIGNIFICANT, 3 MODERATE, and 1 MINOR.
-- **MAJOR value-adds:** (1) Cross-process SQLite cache with WAL mode and LRU eviction, (2) State-aware TTL policy (running vs. completed jobs), (3) Failure classification heuristic (exit code + state + name → FailureCategory enum), (4) TRX XML parsing with XXE protection, (5) Remote content search (grep-in-place without downloading full files).
-- **SIGNIFICANT value-adds:** (6) URL parsing accepting full Helix URLs not just GUIDs + work item extraction from URLs, (7) Cross-work-item file discovery (N+1 API call pattern → single tool call), (8) Batch job status aggregation with failure breakdown by category.
-- **MODERATE value-adds:** (9) File type classification (binlogs/testResults/other), (10) Computed duration with human-readable formatting, (12) Auth-isolated cache storage per token.
-- **MINOR:** (11) Console log URL construction.
-- **Documentation recommendation:** The README already covers most features, but a dedicated "How hlx enhances the Helix API" section would help. Delegated to Kane. Decision written to `.ai-team/decisions/inbox/dallas-value-add-analysis.md`.
-- **Key insight:** The biggest value proposition for LLM consumers specifically is the combination of TRX parsing + remote search + failure classification. These three features together mean an LLM agent gets structured, pre-categorized, context-efficient data instead of raw blobs — which is the entire thesis of the project.
-
-### MCP Description Surface Area Decision (2025-07-23)
-- **Question:** Should MCP tool `[Description]` attributes mention implementation details like local processing, caching, or remote search mechanics?
-- **Answer:** No. Tool descriptions are API contracts for consuming agents. They should describe *what the agent gets* (purpose, parameters, return shape), not *how the tool achieves it* (caching, local parsing, download-search-delete).
-- **Rationale:** An LLM agent's tool selection and invocation behavior is not changed by knowing "this parses TRX locally" vs "this returns structured test results." The behavioral contract (what inputs, what outputs) is what matters. Implementation details belong in the README for human evaluators.
-- **One exception:** If an implementation detail creates an agent-facing behavioral contract (e.g., a `noCache` parameter), that behavior belongs in the description. But transparent optimizations do not.
-- **Minor gap found:** `hlx_status` description lists "exit codes, state, duration, machine" but omits `failureCategory` which is actually in the response. This is a completeness fix, not an implementation disclosure.
-- **Decision written to:** `.ai-team/decisions/inbox/dallas-mcp-description-surface.md`
-
-### UseStructuredContent Refactor Review (2025-07-24)
-- **Key files reviewed:** `src/HelixTool.Core/McpToolResults.cs` (17 result type records), `src/HelixTool.Core/HelixMcpTools.cs` (12 tools refactored), test files (HelixMcpToolsTests, StructuredJsonTests, McpInputFlexibilityTests, SecurityValidationTests)
-- **Verdict:** APPROVED. Clean migration from `Task<string>` + manual `JsonSerializer.Serialize` to typed returns with `UseStructuredContent = true`.
-- **Architecture pattern confirmed:** MCP result types (McpToolResults.cs) are a presentation layer, separate from domain models (HelixService records). Tools map domain → presentation with computed fields (FormatDuration, HelixUrl construction, FailureCategory?.ToString()). This is correct separation.
-- **Wire compatibility verified:** All `[JsonPropertyName]` attributes use camelCase matching previous manual serialization. No field renames or drops detected. BatchStatusResult adds `failureBreakdown` which was computed inline before — not a breaking change, it's additive.
-- **Naming observation:** `FileInfo_` (trailing underscore) avoids collision with `System.IO.FileInfo`. Functional but unconventional. `HelixFileInfo` would be cleaner. Not blocking since the C# type name doesn't appear in the MCP wire format.
-- **hlx_logs correctly excluded:** Raw text tools should not use UseStructuredContent. All other 11 tools (plus hlx_find_binlogs which delegates) correctly use it.
-- **Error handling verified:** McpException used for tool-level errors (missing work item, no files, binary file, search disabled). ArgumentException used for parameter validation (invalid filter). This matches MCP SDK 1.0.0 conventions.
-- **Test quality:** Tests correctly assert on typed properties instead of JSON parsing. Same behavioral coverage, cleaner assertions. One pre-existing test failure in SearchLogTests.SearchLog_ThrowsOnNullPattern — unrelated to this refactor (IsFileSearchDisabled env var interference).
-- **Decision written to:** `.ai-team/decisions/inbox/dallas-structured-content-review.md`
-- **Skill extracted to:** `.ai-team/skills/mcp-structured-content/SKILL.md`
+📌 Team update (2025-02-12): NuGet Trusted Publishing workflow — decided by Ripley
+📌 Team update (2026-02-13): HTTP/SSE auth tests (L-HTTP-1–5) — decided by Lambert
+📌 Team update (2026-02-13): US-9 script removability — decided by Ash
+📌 Team update (2026-02-13): US-6 download E2E — decided by Lambert
+📌 Team update (2026-02-13): Requirements audit — audited by Ash
+📌 Team update (2026-02-13): P1 security fixes E1+D1 — decided by Ripley
+📌 Team update (2026-02-13): Security validation tests — decided by Lambert
+📌 Team update (2026-02-13): Remote search design — decided by Dallas
+📌 Team update (2026-02-13): Status filter changed — decided by Larry/Ripley
+📌 Team update (2026-02-15): Per-invocation temp dirs — decided by Ripley
+📌 Team update (2026-02-15): CI version validation — decided by Ripley
+📌 Team update (2026-03-01): UseStructuredContent refactor approved — typed return objects with UseStructuredContent=true for all 12 MCP tools (hlx_logs excepted). FileInfo_ naming noted as non-blocking. No breaking wire-format changes. — decided by Dallas
