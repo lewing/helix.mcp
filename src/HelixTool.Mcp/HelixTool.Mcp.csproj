@@ -9,7 +9,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\HelixTool.Core\HelixTool.Core.csproj" />
-    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="0.8.0-preview.1" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="1.0.0" />
   </ItemGroup>
 
 </Project>
