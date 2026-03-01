@@ -1,5 +1,5 @@
-using System.Text.Json;
 using HelixTool.Core;
+using ModelContextProtocol;
 using NSubstitute;
 using Xunit;
 
@@ -27,16 +27,13 @@ public class HelixMcpToolsTests
     {
         ArrangeJobWithWorkItems();
 
-        var json = await _tools.Status(ValidJobId);
+        var result = await _tools.Status(ValidJobId);
 
-        var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
-
-        Assert.Equal("test-job", root.GetProperty("job").GetProperty("name").GetString());
-        Assert.Equal("windows.10.amd64", root.GetProperty("job").GetProperty("queueId").GetString());
-        Assert.Equal(2, root.GetProperty("totalWorkItems").GetInt32());
-        Assert.Equal(1, root.GetProperty("failedCount").GetInt32());
-        Assert.Equal(1, root.GetProperty("passedCount").GetInt32());
+        Assert.Equal("test-job", result.Job.Name);
+        Assert.Equal("windows.10.amd64", result.Job.QueueId);
+        Assert.Equal(2, result.TotalWorkItems);
+        Assert.Equal(1, result.FailedCount);
+        Assert.Equal(1, result.PassedCount);
     }
 
     [Fact]
@@ -44,16 +41,15 @@ public class HelixMcpToolsTests
     {
         ArrangeJobWithWorkItems();
 
-        var json = await _tools.Status(ValidJobId);
-        var doc = JsonDocument.Parse(json);
-        var failed = doc.RootElement.GetProperty("failed");
+        var result = await _tools.Status(ValidJobId);
 
-        Assert.Equal(1, failed.GetArrayLength());
-        var item = failed[0];
-        Assert.Equal("workitem-bad", item.GetProperty("name").GetString());
-        Assert.Equal(1, item.GetProperty("exitCode").GetInt32());
-        Assert.Equal("Finished", item.GetProperty("state").GetString());
-        Assert.Equal("helix-linux-03", item.GetProperty("machineName").GetString());
+        Assert.NotNull(result.Failed);
+        Assert.Single(result.Failed);
+        var item = result.Failed[0];
+        Assert.Equal("workitem-bad", item.Name);
+        Assert.Equal(1, item.ExitCode);
+        Assert.Equal("Finished", item.State);
+        Assert.Equal("helix-linux-03", item.MachineName);
     }
 
     [Fact]
@@ -61,10 +57,9 @@ public class HelixMcpToolsTests
     {
         ArrangeJobWithWorkItems();
 
-        var json = await _tools.Status(ValidJobId, filter: "failed");
-        var doc = JsonDocument.Parse(json);
+        var result = await _tools.Status(ValidJobId, filter: "failed");
 
-        Assert.Equal(JsonValueKind.Null, doc.RootElement.GetProperty("passed").ValueKind);
+        Assert.Null(result.Passed);
     }
 
     [Fact]
@@ -72,12 +67,11 @@ public class HelixMcpToolsTests
     {
         ArrangeJobWithWorkItems();
 
-        var json = await _tools.Status(ValidJobId, filter: "all");
-        var doc = JsonDocument.Parse(json);
-        var passed = doc.RootElement.GetProperty("passed");
+        var result = await _tools.Status(ValidJobId, filter: "all");
 
-        Assert.Equal(1, passed.GetArrayLength());
-        Assert.Equal("workitem-ok", passed[0].GetProperty("name").GetString());
+        Assert.NotNull(result.Passed);
+        Assert.Single(result.Passed);
+        Assert.Equal("workitem-ok", result.Passed[0].Name);
     }
 
     [Fact]
@@ -85,11 +79,11 @@ public class HelixMcpToolsTests
     {
         ArrangeJobWithWorkItems();
 
-        var json = await _tools.Status(ValidJobId);
-        var doc = JsonDocument.Parse(json);
+        var result = await _tools.Status(ValidJobId);
 
-        Assert.Equal(JsonValueKind.Null, doc.RootElement.GetProperty("passed").ValueKind);
-        Assert.True(doc.RootElement.GetProperty("failed").GetArrayLength() > 0);
+        Assert.Null(result.Passed);
+        Assert.NotNull(result.Failed);
+        Assert.True(result.Failed.Count > 0);
     }
 
     [Fact]
@@ -97,11 +91,11 @@ public class HelixMcpToolsTests
     {
         ArrangeJobWithWorkItems();
 
-        var json = await _tools.Status(ValidJobId, filter: "passed");
-        var doc = JsonDocument.Parse(json);
+        var result = await _tools.Status(ValidJobId, filter: "passed");
 
-        Assert.Equal(JsonValueKind.Null, doc.RootElement.GetProperty("failed").ValueKind);
-        Assert.True(doc.RootElement.GetProperty("passed").GetArrayLength() > 0);
+        Assert.Null(result.Failed);
+        Assert.NotNull(result.Passed);
+        Assert.True(result.Passed.Count > 0);
     }
 
     [Fact]
@@ -109,16 +103,15 @@ public class HelixMcpToolsTests
     {
         ArrangeJobWithWorkItems();
 
-        var json = await _tools.Status(ValidJobId, filter: "passed");
-        var doc = JsonDocument.Parse(json);
-        var passed = doc.RootElement.GetProperty("passed");
+        var result = await _tools.Status(ValidJobId, filter: "passed");
 
-        Assert.Equal(1, passed.GetArrayLength());
-        var item = passed[0];
-        Assert.Equal("workitem-ok", item.GetProperty("name").GetString());
-        Assert.Equal(0, item.GetProperty("exitCode").GetInt32());
-        Assert.Equal("Finished", item.GetProperty("state").GetString());
-        Assert.Equal("helix-win-01", item.GetProperty("machineName").GetString());
+        Assert.NotNull(result.Passed);
+        Assert.Single(result.Passed);
+        var item = result.Passed[0];
+        Assert.Equal("workitem-ok", item.Name);
+        Assert.Equal(0, item.ExitCode);
+        Assert.Equal("Finished", item.State);
+        Assert.Equal("helix-win-01", item.MachineName);
     }
 
     [Fact]
@@ -126,11 +119,12 @@ public class HelixMcpToolsTests
     {
         ArrangeJobWithWorkItems();
 
-        var json = await _tools.Status(ValidJobId, filter: "ALL");
-        var doc = JsonDocument.Parse(json);
+        var result = await _tools.Status(ValidJobId, filter: "ALL");
 
-        Assert.True(doc.RootElement.GetProperty("failed").GetArrayLength() > 0);
-        Assert.True(doc.RootElement.GetProperty("passed").GetArrayLength() > 0);
+        Assert.NotNull(result.Failed);
+        Assert.True(result.Failed.Count > 0);
+        Assert.NotNull(result.Passed);
+        Assert.True(result.Passed.Count > 0);
     }
 
     [Fact]
@@ -150,11 +144,9 @@ public class HelixMcpToolsTests
             started: new DateTimeOffset(2025, 7, 18, 10, 0, 0, TimeSpan.Zero),
             finished: new DateTimeOffset(2025, 7, 18, 10, 0, 45, TimeSpan.Zero));
 
-        var json = await _tools.Status(ValidJobId);
-        var duration = JsonDocument.Parse(json).RootElement
-            .GetProperty("failed")[0].GetProperty("duration").GetString();
+        var result = await _tools.Status(ValidJobId);
 
-        Assert.Equal("45s", duration);
+        Assert.Equal("45s", result.Failed![0].Duration);
     }
 
     [Fact]
@@ -164,11 +156,9 @@ public class HelixMcpToolsTests
             started: new DateTimeOffset(2025, 7, 18, 10, 0, 0, TimeSpan.Zero),
             finished: new DateTimeOffset(2025, 7, 18, 10, 2, 34, TimeSpan.Zero));
 
-        var json = await _tools.Status(ValidJobId);
-        var duration = JsonDocument.Parse(json).RootElement
-            .GetProperty("failed")[0].GetProperty("duration").GetString();
+        var result = await _tools.Status(ValidJobId);
 
-        Assert.Equal("2m 34s", duration);
+        Assert.Equal("2m 34s", result.Failed![0].Duration);
     }
 
     [Fact]
@@ -178,11 +168,9 @@ public class HelixMcpToolsTests
             started: new DateTimeOffset(2025, 7, 18, 10, 0, 0, TimeSpan.Zero),
             finished: new DateTimeOffset(2025, 7, 18, 10, 5, 0, TimeSpan.Zero));
 
-        var json = await _tools.Status(ValidJobId);
-        var duration = JsonDocument.Parse(json).RootElement
-            .GetProperty("failed")[0].GetProperty("duration").GetString();
+        var result = await _tools.Status(ValidJobId);
 
-        Assert.Equal("5m", duration);
+        Assert.Equal("5m", result.Failed![0].Duration);
     }
 
     [Fact]
@@ -192,11 +180,9 @@ public class HelixMcpToolsTests
             started: new DateTimeOffset(2025, 7, 18, 10, 0, 0, TimeSpan.Zero),
             finished: new DateTimeOffset(2025, 7, 18, 11, 15, 0, TimeSpan.Zero));
 
-        var json = await _tools.Status(ValidJobId);
-        var duration = JsonDocument.Parse(json).RootElement
-            .GetProperty("failed")[0].GetProperty("duration").GetString();
+        var result = await _tools.Status(ValidJobId);
 
-        Assert.Equal("1h 15m", duration);
+        Assert.Equal("1h 15m", result.Failed![0].Duration);
     }
 
     [Fact]
@@ -206,11 +192,9 @@ public class HelixMcpToolsTests
             started: new DateTimeOffset(2025, 7, 18, 10, 0, 0, TimeSpan.Zero),
             finished: new DateTimeOffset(2025, 7, 18, 12, 0, 0, TimeSpan.Zero));
 
-        var json = await _tools.Status(ValidJobId);
-        var duration = JsonDocument.Parse(json).RootElement
-            .GetProperty("failed")[0].GetProperty("duration").GetString();
+        var result = await _tools.Status(ValidJobId);
 
-        Assert.Equal("2h", duration);
+        Assert.Equal("2h", result.Failed![0].Duration);
     }
 
     [Fact]
@@ -218,11 +202,9 @@ public class HelixMcpToolsTests
     {
         ArrangeJobWithSingleWorkItem(exitCode: 1, started: null, finished: null);
 
-        var json = await _tools.Status(ValidJobId);
-        var duration = JsonDocument.Parse(json).RootElement
-            .GetProperty("failed")[0].GetProperty("duration");
+        var result = await _tools.Status(ValidJobId);
 
-        Assert.Equal(JsonValueKind.Null, duration.ValueKind);
+        Assert.Null(result.Failed![0].Duration);
     }
 
     // --- Files tests ---
@@ -243,24 +225,16 @@ public class HelixMcpToolsTests
         _mockApi.ListWorkItemFilesAsync("wi1", ValidJobId, Arg.Any<CancellationToken>())
             .Returns(new List<IWorkItemFile> { f1, f2, f3 });
 
-        var json = await _tools.Files(ValidJobId, "wi1");
-        var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
+        var result = await _tools.Files(ValidJobId, "wi1");
 
-        // binlog file in binlogs group
-        var binlogs = root.GetProperty("binlogs");
-        Assert.Equal(1, binlogs.GetArrayLength());
-        Assert.Equal("build.binlog", binlogs[0].GetProperty("name").GetString());
+        Assert.Single(result.Binlogs);
+        Assert.Equal("build.binlog", result.Binlogs[0].Name);
 
-        // trx file in testResults group
-        var testResults = root.GetProperty("testResults");
-        Assert.Equal(1, testResults.GetArrayLength());
-        Assert.Equal("results.trx", testResults[0].GetProperty("name").GetString());
+        Assert.Single(result.TestResults);
+        Assert.Equal("results.trx", result.TestResults[0].Name);
 
-        // plain file in other group
-        var other = root.GetProperty("other");
-        Assert.Equal(1, other.GetArrayLength());
-        Assert.Equal("output.txt", other[0].GetProperty("name").GetString());
+        Assert.Single(result.Other);
+        Assert.Equal("output.txt", result.Other[0].Name);
     }
 
     [Fact]
@@ -273,11 +247,11 @@ public class HelixMcpToolsTests
         _mockApi.ListWorkItemFilesAsync("wi1", ValidJobId, Arg.Any<CancellationToken>())
             .Returns(new List<IWorkItemFile> { f });
 
-        var json = await _tools.Files(ValidJobId, "wi1");
-        var item = JsonDocument.Parse(json).RootElement.GetProperty("other")[0];
+        var result = await _tools.Files(ValidJobId, "wi1");
+        var item = result.Other[0];
 
-        Assert.Equal("artifact.zip", item.GetProperty("name").GetString());
-        Assert.Equal("https://helix.dot.net/files/artifact.zip", item.GetProperty("uri").GetString());
+        Assert.Equal("artifact.zip", item.Name);
+        Assert.Equal("https://helix.dot.net/files/artifact.zip", item.Uri);
     }
 
     // --- FindBinlogs tests ---
@@ -306,20 +280,16 @@ public class HelixMcpToolsTests
         _mockApi.ListWorkItemFilesAsync("wi-no-binlog", ValidJobId, Arg.Any<CancellationToken>())
             .Returns(new List<IWorkItemFile> { txtFile });
 
-        var json = await _tools.FindBinlogs(ValidJobId);
-        var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
+        var result = await _tools.FindBinlogs(ValidJobId);
 
-        Assert.Equal(30, root.GetProperty("scannedItems").GetInt32());
-        Assert.Equal(1, root.GetProperty("found").GetInt32());
+        Assert.Equal(30, result.ScannedItems);
+        Assert.Equal(1, result.Found);
 
-        var results = root.GetProperty("results");
-        Assert.Equal(1, results.GetArrayLength());
-        Assert.Equal("wi-with-binlog", results[0].GetProperty("workItem").GetString());
+        Assert.Single(result.Results);
+        Assert.Equal("wi-with-binlog", result.Results[0].WorkItem);
 
-        var files = results[0].GetProperty("files");
-        Assert.Equal(1, files.GetArrayLength());
-        Assert.Equal("msbuild.binlog", files[0].GetProperty("name").GetString());
+        Assert.Single(result.Results[0].Files);
+        Assert.Equal("msbuild.binlog", result.Results[0].Files[0].Name);
     }
 
     [Fact]
@@ -338,17 +308,16 @@ public class HelixMcpToolsTests
         _mockApi.ListWorkItemFilesAsync("wi-plain", ValidJobId, Arg.Any<CancellationToken>())
             .Returns(new List<IWorkItemFile> { txtFile });
 
-        var json = await _tools.FindBinlogs(ValidJobId);
-        var doc = JsonDocument.Parse(json);
+        var result = await _tools.FindBinlogs(ValidJobId);
 
-        Assert.Equal(0, doc.RootElement.GetProperty("found").GetInt32());
-        Assert.Equal(0, doc.RootElement.GetProperty("results").GetArrayLength());
+        Assert.Equal(0, result.Found);
+        Assert.Empty(result.Results);
     }
 
     // --- Download tests ---
 
     [Fact]
-    public async Task Download_NoMatchingFiles_ReturnsErrorJson()
+    public async Task Download_NoMatchingFiles_ThrowsMcpException()
     {
         var f = Substitute.For<IWorkItemFile>();
         f.Name.Returns("output.txt");
@@ -357,23 +326,17 @@ public class HelixMcpToolsTests
         _mockApi.ListWorkItemFilesAsync("wi1", ValidJobId, Arg.Any<CancellationToken>())
             .Returns(new List<IWorkItemFile> { f });
 
-        var json = await _tools.Download(ValidJobId, "wi1", "*.binlog");
-        var doc = JsonDocument.Parse(json);
-
-        Assert.True(doc.RootElement.TryGetProperty("error", out var errorProp));
-        Assert.Contains("*.binlog", errorProp.GetString());
+        var ex = await Assert.ThrowsAsync<McpException>(() => _tools.Download(ValidJobId, "wi1", "*.binlog"));
+        Assert.Contains("*.binlog", ex.Message);
     }
 
     [Fact]
-    public async Task Download_NoFiles_ReturnsErrorJson()
+    public async Task Download_NoFiles_ThrowsMcpException()
     {
         _mockApi.ListWorkItemFilesAsync("wi1", ValidJobId, Arg.Any<CancellationToken>())
             .Returns(new List<IWorkItemFile>());
 
-        var json = await _tools.Download(ValidJobId, "wi1", "*");
-        var doc = JsonDocument.Parse(json);
-
-        Assert.True(doc.RootElement.TryGetProperty("error", out _));
+        await Assert.ThrowsAsync<McpException>(() => _tools.Download(ValidJobId, "wi1", "*"));
     }
 
     // --- Constructor tests ---
@@ -407,22 +370,18 @@ public class HelixMcpToolsTests
         _mockApi.ListWorkItemFilesAsync("wi-with-trx", ValidJobId, Arg.Any<CancellationToken>())
             .Returns(new List<IWorkItemFile> { trxFile, txtFile });
 
-        var json = await _tools.FindFiles(ValidJobId, "*.trx");
-        var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
+        var result = await _tools.FindFiles(ValidJobId, "*.trx");
 
-        Assert.Equal("*.trx", root.GetProperty("pattern").GetString());
-        Assert.Equal(30, root.GetProperty("scannedItems").GetInt32());
-        Assert.Equal(1, root.GetProperty("found").GetInt32());
+        Assert.Equal("*.trx", result.Pattern);
+        Assert.Equal(30, result.ScannedItems);
+        Assert.Equal(1, result.Found);
 
-        var results = root.GetProperty("results");
-        Assert.Equal(1, results.GetArrayLength());
-        Assert.Equal("wi-with-trx", results[0].GetProperty("workItem").GetString());
+        Assert.Single(result.Results);
+        Assert.Equal("wi-with-trx", result.Results[0].WorkItem);
 
-        var files = results[0].GetProperty("files");
-        Assert.Equal(1, files.GetArrayLength());
-        Assert.Equal("results.trx", files[0].GetProperty("name").GetString());
-        Assert.Equal("https://helix.dot.net/files/results.trx", files[0].GetProperty("uri").GetString());
+        Assert.Single(result.Results[0].Files);
+        Assert.Equal("results.trx", result.Results[0].Files[0].Name);
+        Assert.Equal("https://helix.dot.net/files/results.trx", result.Results[0].Files[0].Uri);
     }
 
     [Fact]
@@ -447,15 +406,11 @@ public class HelixMcpToolsTests
         _mockApi.ListWorkItemFilesAsync("wi-all", ValidJobId, Arg.Any<CancellationToken>())
             .Returns(new List<IWorkItemFile> { f1, f2, f3 });
 
-        var json = await _tools.FindFiles(ValidJobId, "*");
-        var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
+        var result = await _tools.FindFiles(ValidJobId, "*");
 
-        Assert.Equal("*", root.GetProperty("pattern").GetString());
-        Assert.Equal(1, root.GetProperty("found").GetInt32());
-
-        var files = root.GetProperty("results")[0].GetProperty("files");
-        Assert.Equal(3, files.GetArrayLength());
+        Assert.Equal("*", result.Pattern);
+        Assert.Equal(1, result.Found);
+        Assert.Equal(3, result.Results[0].Files.Count);
     }
 
     [Fact]
@@ -479,21 +434,14 @@ public class HelixMcpToolsTests
             .Returns(new List<IWorkItemFile> { binlogFile, txtFile });
 
         // FindBinlogs delegates to FindFiles with *.binlog pattern
-        var binlogJson = await _tools.FindBinlogs(ValidJobId);
-        var findFilesJson = await _tools.FindFiles(ValidJobId, "*.binlog");
-
-        var binlogDoc = JsonDocument.Parse(binlogJson);
-        var findFilesDoc = JsonDocument.Parse(findFilesJson);
+        var binlogResult = await _tools.FindBinlogs(ValidJobId);
+        var findFilesResult = await _tools.FindFiles(ValidJobId, "*.binlog");
 
         // Both should have same structure: pattern, scannedItems, found, results with files
-        Assert.Equal("*.binlog", binlogDoc.RootElement.GetProperty("pattern").GetString());
-        Assert.Equal("*.binlog", findFilesDoc.RootElement.GetProperty("pattern").GetString());
-        Assert.Equal(
-            binlogDoc.RootElement.GetProperty("found").GetInt32(),
-            findFilesDoc.RootElement.GetProperty("found").GetInt32());
-        Assert.Equal(
-            binlogDoc.RootElement.GetProperty("results").GetArrayLength(),
-            findFilesDoc.RootElement.GetProperty("results").GetArrayLength());
+        Assert.Equal("*.binlog", binlogResult.Pattern);
+        Assert.Equal("*.binlog", findFilesResult.Pattern);
+        Assert.Equal(binlogResult.Found, findFilesResult.Found);
+        Assert.Equal(binlogResult.Results.Count, findFilesResult.Results.Count);
     }
 
     // --- BatchStatus tests ---
@@ -506,12 +454,10 @@ public class HelixMcpToolsTests
         ArrangeJobForBatch("bbbbbbbb-5555-6666-7777-888888888888", "job-two");
 
         // BatchStatus now accepts string[] directly
-        var json = await _tools.BatchStatus(new[] { "aaaaaaaa-1111-2222-3333-444444444444", "bbbbbbbb-5555-6666-7777-888888888888" });
-        var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
+        var result = await _tools.BatchStatus(new[] { "aaaaaaaa-1111-2222-3333-444444444444", "bbbbbbbb-5555-6666-7777-888888888888" });
 
-        Assert.Equal(2, root.GetProperty("jobCount").GetInt32());
-        Assert.Equal(2, root.GetProperty("jobs").GetArrayLength());
+        Assert.Equal(2, result.JobCount);
+        Assert.Equal(2, result.Jobs.Count);
     }
 
     private void ArrangeJobForBatch(string jobId, string jobName)

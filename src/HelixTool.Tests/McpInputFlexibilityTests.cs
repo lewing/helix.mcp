@@ -1,5 +1,5 @@
-using System.Text.Json;
 using HelixTool.Core;
+using ModelContextProtocol;
 using NSubstitute;
 using Xunit;
 
@@ -32,13 +32,11 @@ public class McpInputFlexibilityTests
         _mockApi.ListWorkItemFilesAsync(WorkItemName, ValidJobId, Arg.Any<CancellationToken>())
             .Returns(new List<IWorkItemFile> { file });
 
-        var json = await _tools.Files(FullWorkItemUrl, workItem: null);
-        var doc = JsonDocument.Parse(json);
+        var result = await _tools.Files(FullWorkItemUrl, workItem: null);
 
-        // Should have parsed successfully and returned file data (not an error)
-        Assert.False(doc.RootElement.TryGetProperty("error", out _));
-        Assert.Equal(1, doc.RootElement.GetProperty("other").GetArrayLength());
-        Assert.Equal("output.txt", doc.RootElement.GetProperty("other")[0].GetProperty("name").GetString());
+        // Should have parsed successfully and returned file data
+        Assert.Single(result.Other);
+        Assert.Equal("output.txt", result.Other[0].Name);
 
         // Verify the mock was called with the extracted jobId and workItem
         await _mockApi.Received(1).ListWorkItemFilesAsync(WorkItemName, ValidJobId, Arg.Any<CancellationToken>());
@@ -62,14 +60,11 @@ public class McpInputFlexibilityTests
     }
 
     [Fact]
-    public async Task Files_WithMissingWorkItem_ReturnsError()
+    public async Task Files_WithMissingWorkItem_ThrowsMcpException()
     {
         // Plain GUID with no workItem — can't extract workItem from a bare GUID
-        var json = await _tools.Files(ValidJobId, workItem: null);
-        var doc = JsonDocument.Parse(json);
-
-        Assert.True(doc.RootElement.TryGetProperty("error", out var errorProp));
-        Assert.Contains("Work item name is required", errorProp.GetString());
+        var ex = await Assert.ThrowsAsync<McpException>(() => _tools.Files(ValidJobId, workItem: null));
+        Assert.Contains("Work item name is required", ex.Message);
     }
 
     [Fact]
@@ -84,12 +79,10 @@ public class McpInputFlexibilityTests
         _mockApi.ListWorkItemFilesAsync(explicitWorkItem, ValidJobId, Arg.Any<CancellationToken>())
             .Returns(new List<IWorkItemFile> { file });
 
-        var json = await _tools.Files(ValidJobId, workItem: explicitWorkItem);
-        var doc = JsonDocument.Parse(json);
+        var result = await _tools.Files(ValidJobId, workItem: explicitWorkItem);
 
         // Should succeed with file data
-        Assert.False(doc.RootElement.TryGetProperty("error", out _));
-        Assert.Equal(1, doc.RootElement.GetProperty("other").GetArrayLength());
+        Assert.Single(result.Other);
 
         // Verify the explicit workItem was used, not extracted from URL
         await _mockApi.Received(1).ListWorkItemFilesAsync(explicitWorkItem, ValidJobId, Arg.Any<CancellationToken>());

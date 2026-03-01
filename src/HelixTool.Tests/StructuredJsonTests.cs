@@ -1,4 +1,3 @@
-using System.Text.Json;
 using HelixTool.Core;
 using NSubstitute;
 using Xunit;
@@ -40,24 +39,19 @@ public class StructuredJsonTests
         _mockApi.ListWorkItemFilesAsync("wi1", ValidJobId, Arg.Any<CancellationToken>())
             .Returns(new List<IWorkItemFile> { binlog, trx, txt });
 
-        var json = await _tools.Files(ValidJobId, "wi1");
-        var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
+        var result = await _tools.Files(ValidJobId, "wi1");
 
         // binlogs array contains only the .binlog file
-        var binlogs = root.GetProperty("binlogs");
-        Assert.Equal(1, binlogs.GetArrayLength());
-        Assert.Equal("msbuild.binlog", binlogs[0].GetProperty("name").GetString());
+        Assert.Single(result.Binlogs);
+        Assert.Equal("msbuild.binlog", result.Binlogs[0].Name);
 
         // testResults array contains only the .trx file
-        var testResults = root.GetProperty("testResults");
-        Assert.Equal(1, testResults.GetArrayLength());
-        Assert.Equal("results.trx", testResults[0].GetProperty("name").GetString());
+        Assert.Single(result.TestResults);
+        Assert.Equal("results.trx", result.TestResults[0].Name);
 
         // other array contains only the .txt file
-        var other = root.GetProperty("other");
-        Assert.Equal(1, other.GetArrayLength());
-        Assert.Equal("console.txt", other[0].GetProperty("name").GetString());
+        Assert.Single(result.Other);
+        Assert.Equal("console.txt", result.Other[0].Name);
     }
 
     // --- US-30: Status includes helixUrl ---
@@ -67,11 +61,9 @@ public class StructuredJsonTests
     {
         ArrangeJob();
 
-        var json = await _tools.Status(ValidJobId);
-        var doc = JsonDocument.Parse(json);
-        var helixUrl = doc.RootElement.GetProperty("job").GetProperty("helixUrl").GetString();
+        var result = await _tools.Status(ValidJobId);
 
-        Assert.Equal($"https://helix.dot.net/api/jobs/{ValidJobId}/details", helixUrl);
+        Assert.Equal($"https://helix.dot.net/api/jobs/{ValidJobId}/details", result.Job.HelixUrl);
     }
 
     // --- US-30: Status includes resolved jobId ---
@@ -81,11 +73,9 @@ public class StructuredJsonTests
     {
         ArrangeJob();
 
-        var json = await _tools.Status(ValidJobId);
-        var doc = JsonDocument.Parse(json);
-        var jobId = doc.RootElement.GetProperty("job").GetProperty("jobId").GetString();
+        var result = await _tools.Status(ValidJobId);
 
-        Assert.Equal(ValidJobId, jobId);
+        Assert.Equal(ValidJobId, result.Job.JobId);
     }
 
     // --- Helpers ---

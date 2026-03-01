@@ -106,3 +106,15 @@
 - **One exception:** If an implementation detail creates an agent-facing behavioral contract (e.g., a `noCache` parameter), that behavior belongs in the description. But transparent optimizations do not.
 - **Minor gap found:** `hlx_status` description lists "exit codes, state, duration, machine" but omits `failureCategory` which is actually in the response. This is a completeness fix, not an implementation disclosure.
 - **Decision written to:** `.ai-team/decisions/inbox/dallas-mcp-description-surface.md`
+
+### UseStructuredContent Refactor Review (2025-07-24)
+- **Key files reviewed:** `src/HelixTool.Core/McpToolResults.cs` (17 result type records), `src/HelixTool.Core/HelixMcpTools.cs` (12 tools refactored), test files (HelixMcpToolsTests, StructuredJsonTests, McpInputFlexibilityTests, SecurityValidationTests)
+- **Verdict:** APPROVED. Clean migration from `Task<string>` + manual `JsonSerializer.Serialize` to typed returns with `UseStructuredContent = true`.
+- **Architecture pattern confirmed:** MCP result types (McpToolResults.cs) are a presentation layer, separate from domain models (HelixService records). Tools map domain → presentation with computed fields (FormatDuration, HelixUrl construction, FailureCategory?.ToString()). This is correct separation.
+- **Wire compatibility verified:** All `[JsonPropertyName]` attributes use camelCase matching previous manual serialization. No field renames or drops detected. BatchStatusResult adds `failureBreakdown` which was computed inline before — not a breaking change, it's additive.
+- **Naming observation:** `FileInfo_` (trailing underscore) avoids collision with `System.IO.FileInfo`. Functional but unconventional. `HelixFileInfo` would be cleaner. Not blocking since the C# type name doesn't appear in the MCP wire format.
+- **hlx_logs correctly excluded:** Raw text tools should not use UseStructuredContent. All other 11 tools (plus hlx_find_binlogs which delegates) correctly use it.
+- **Error handling verified:** McpException used for tool-level errors (missing work item, no files, binary file, search disabled). ArgumentException used for parameter validation (invalid filter). This matches MCP SDK 1.0.0 conventions.
+- **Test quality:** Tests correctly assert on typed properties instead of JSON parsing. Same behavioral coverage, cleaner assertions. One pre-existing test failure in SearchLogTests.SearchLog_ThrowsOnNullPattern — unrelated to this refactor (IsFileSearchDisabled env var interference).
+- **Decision written to:** `.ai-team/decisions/inbox/dallas-structured-content-review.md`
+- **Skill extracted to:** `.ai-team/skills/mcp-structured-content/SKILL.md`

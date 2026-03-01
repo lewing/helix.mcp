@@ -2945,3 +2945,16 @@ They do NOT answer:
 - The README's "How hlx Enhances the Helix API" section is the correct home for implementation detail documentation
 - This principle applies to all future MCP tools added to the project
 
+### 2025-07-24: UseStructuredContent refactor — APPROVED with one naming issue noted
+
+**By:** Dallas
+**What:** Approved the refactor of all 12 MCP tools from `Task<string>` with manual JSON serialization to typed return objects with `UseStructuredContent = true`. `hlx_logs` correctly remains `Task<string>` (raw text). New result types live in `McpToolResults.cs`. Error paths throw `McpException` instead of returning `{ error: "..." }` JSON.
+
+**Why:**
+1. The MCP SDK 1.0.0 `UseStructuredContent` feature generates JSON output schemas automatically, which improves tool discovery for LLM consumers. Typed returns are also more maintainable — no more manual `JsonSerializer.Serialize` calls with shared `JsonSerializerOptions`.
+2. `hlx_logs` is the correct exception — it returns raw text content (console logs), not structured data. Forcing it through structured content would add unnecessary wrapping.
+3. The `FileInfo_` type name (trailing underscore to avoid collision with `System.IO.FileInfo`) is an acceptable pragmatic choice — it's not part of the public MCP wire format (only the `[JsonPropertyName]` matters for serialization), and consumers never see the C# type name. A rename to `HelixFileInfo` would be cleaner but is not blocking.
+4. All `[JsonPropertyName]` attributes use camelCase, matching the previous manual serialization output. No breaking wire-format changes.
+5. Error handling correctly uses `McpException` for tool-level errors (missing work item, no matching files, binary file) and `ArgumentException` for invalid parameters (bad filter value). This matches MCP SDK conventions.
+
+

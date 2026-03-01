@@ -6,7 +6,6 @@
 //
 // If Ripley's code hasn't landed yet, some tests will fail to compile — expected.
 
-using System.Text.Json;
 using HelixTool.Core;
 using NSubstitute;
 using Xunit;
@@ -208,9 +207,8 @@ public class SecurityValidationTests
             SetupMinimalJobMock(id);
 
         // Should not throw
-        var json = await tools.BatchStatus(jobIds);
-        var doc = JsonDocument.Parse(json);
-        Assert.Equal(50, doc.RootElement.GetProperty("jobCount").GetInt32());
+        var result = await tools.BatchStatus(jobIds);
+        Assert.Equal(50, result.JobCount);
     }
 
     // ─────────────────────────────────────────────────────────────────

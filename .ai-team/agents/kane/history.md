@@ -103,3 +103,5 @@
 
 
 📌 Team update (2026-02-27): MCP descriptions should expose behavioral contracts, not implementation mechanics. Do NOT add 'parses locally' or 'cached' to [Description] attributes. DO ensure response field lists are complete (e.g., add failureCategory to hlx_status). README is the correct home for enhancement-layer docs — decided by Dallas
+
+📌 Team update (2026-03-01): UseStructuredContent refactor approved — typed return objects with UseStructuredContent=true for all 12 MCP tools (hlx_logs excepted). FileInfo_ naming noted as non-blocking. No breaking wire-format changes. — decided by Dallas

@@ -1,5 +1,5 @@
 using System.ComponentModel;
-using System.Text.Json;
+using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
 namespace HelixTool.Core;
@@ -7,12 +7,6 @@ namespace HelixTool.Core;
 [McpServerToolType]
 public sealed class HelixMcpTools
 {
-    private static readonly JsonSerializerOptions s_jsonOptions = new()
-    {
-        WriteIndented = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-    };
-
     private readonly HelixService _svc;
 
     public HelixMcpTools(HelixService svc)
@@ -20,8 +14,8 @@ public sealed class HelixMcpTools
         _svc = svc;
     }
 
-    [McpServerTool(Name = "hlx_status", Title = "Helix Job Status", ReadOnly = true), Description("Get work item pass/fail summary for a Helix job. Returns structured JSON with job metadata, failed items (with exit codes, state, duration, machine, failureCategory), and passed count. Use the 'filter' parameter to control which work items are included: 'failed' (default), 'passed', or 'all'.")]
-    public async Task<string> Status(
+    [McpServerTool(Name = "hlx_status", Title = "Helix Job Status", ReadOnly = true, UseStructuredContent = true), Description("Get work item pass/fail summary for a Helix job. Returns structured JSON with job metadata, failed items (with exit codes, state, duration, machine, failureCategory), and passed count. Use the 'filter' parameter to control which work items are included: 'failed' (default), 'passed', or 'all'.")]
+    public async Task<StatusResult> Status(
         [Description("Helix job ID (GUID) or full Helix URL")] string jobId,
         [Description("Filter: 'failed' (default) shows only failures, 'passed' shows only passed, 'all' shows everything")] string filter = "failed")
     {
@@ -37,20 +31,38 @@ public sealed class HelixMcpTools
         var showFailed = filter.Equals("failed", StringComparison.OrdinalIgnoreCase) || filter.Equals("all", StringComparison.OrdinalIgnoreCase);
         var showPassed = filter.Equals("passed", StringComparison.OrdinalIgnoreCase) || filter.Equals("all", StringComparison.OrdinalIgnoreCase);
 
-        var result = new
+        return new StatusResult
         {
-            job = new { jobId = summary.JobId, summary.Name, summary.QueueId, summary.Creator, summary.Source, summary.Created, summary.Finished, helixUrl = $"https://helix.dot.net/api/jobs/{summary.JobId}/details" },
-            totalWorkItems = summary.TotalCount,
-            failedCount = summary.Failed.Count,
-            passedCount = summary.Passed.Count,
-            failed = showFailed ? summary.Failed.Select(f => new { f.Name, f.ExitCode, f.State, f.MachineName, duration = FormatDuration(f.Duration), consoleLogUrl = f.ConsoleLogUrl, failureCategory = f.FailureCategory?.ToString() }) : null,
-            passed = showPassed ? summary.Passed.Select(p => new { p.Name, p.ExitCode, p.State, p.MachineName, duration = FormatDuration(p.Duration), consoleLogUrl = p.ConsoleLogUrl, failureCategory = (string?)null }) : null
+            Job = new StatusJobInfo
+            {
+                JobId = summary.JobId,
+                Name = summary.Name,
+                QueueId = summary.QueueId,
+                Creator = summary.Creator,
+                Source = summary.Source,
+                Created = summary.Created,
+                Finished = summary.Finished,
+                HelixUrl = $"https://helix.dot.net/api/jobs/{summary.JobId}/details"
+            },
+            TotalWorkItems = summary.TotalCount,
+            FailedCount = summary.Failed.Count,
+            PassedCount = summary.Passed.Count,
+            Failed = showFailed ? summary.Failed.Select(f => new StatusWorkItem
+            {
+                Name = f.Name, ExitCode = f.ExitCode, State = f.State, MachineName = f.MachineName,
+                Duration = FormatDuration(f.Duration), ConsoleLogUrl = f.ConsoleLogUrl,
+                FailureCategory = f.FailureCategory?.ToString()
+            }).ToList() : null,
+            Passed = showPassed ? summary.Passed.Select(p => new StatusWorkItem
+            {
+                Name = p.Name, ExitCode = p.ExitCode, State = p.State, MachineName = p.MachineName,
+                Duration = FormatDuration(p.Duration), ConsoleLogUrl = p.ConsoleLogUrl,
+                FailureCategory = null
+            }).ToList() : null
         };
-
-        return JsonSerializer.Serialize(result, s_jsonOptions);
     }
 
-    private static string? FormatDuration(TimeSpan? duration)
+    internal static string? FormatDuration(TimeSpan? duration)
     {
         if (!duration.HasValue) return null;
         var d = duration.Value;
@@ -86,13 +98,13 @@ public sealed class HelixMcpTools
         }
 
         if (string.IsNullOrEmpty(workItem))
-            return JsonSerializer.Serialize(new { error = "Work item name is required. Provide it as a separate parameter or include it in the Helix URL." }, s_jsonOptions);
+            throw new McpException("Work item name is required. Provide it as a separate parameter or include it in the Helix URL.");
 
         return await _svc.GetConsoleLogContentAsync(jobId, workItem, tail);
     }
 
-    [McpServerTool(Name = "hlx_files", Title = "Helix Work Item Files", ReadOnly = true), Description("List uploaded files for a Helix work item, grouped by type. Returns binlogs, testResults, and other files with names and URIs.")]
-    public async Task<string> Files(
+    [McpServerTool(Name = "hlx_files", Title = "Helix Work Item Files", ReadOnly = true, UseStructuredContent = true), Description("List uploaded files for a Helix work item, grouped by type. Returns binlogs, testResults, and other files with names and URIs.")]
+    public async Task<FilesResult> Files(
         [Description("Helix job ID (GUID), Helix job URL, or full work item URL (which includes both job ID and work item name)")] string jobId,
         [Description("Work item name (optional if included in the jobId URL)")] string? workItem = null)
     {
@@ -107,22 +119,20 @@ public sealed class HelixMcpTools
         }
 
         if (string.IsNullOrEmpty(workItem))
-            return JsonSerializer.Serialize(new { error = "Work item name is required. Provide it as a separate parameter or include it in the Helix URL." }, s_jsonOptions);
+            throw new McpException("Work item name is required. Provide it as a separate parameter or include it in the Helix URL.");
 
         var files = await _svc.GetWorkItemFilesAsync(jobId, workItem);
 
-        var result = new
+        return new FilesResult
         {
-            binlogs = files.Where(f => HelixService.MatchesPattern(f.Name, "*.binlog")).Select(f => new { f.Name, f.Uri }),
-            testResults = files.Where(f => HelixService.MatchesPattern(f.Name, "*.trx")).Select(f => new { f.Name, f.Uri }),
-            other = files.Where(f => !HelixService.MatchesPattern(f.Name, "*.binlog") && !HelixService.MatchesPattern(f.Name, "*.trx")).Select(f => new { f.Name, f.Uri })
+            Binlogs = files.Where(f => HelixService.MatchesPattern(f.Name, "*.binlog")).Select(f => new FileInfo_ { Name = f.Name, Uri = f.Uri }).ToList(),
+            TestResults = files.Where(f => HelixService.MatchesPattern(f.Name, "*.trx")).Select(f => new FileInfo_ { Name = f.Name, Uri = f.Uri }).ToList(),
+            Other = files.Where(f => !HelixService.MatchesPattern(f.Name, "*.binlog") && !HelixService.MatchesPattern(f.Name, "*.trx")).Select(f => new FileInfo_ { Name = f.Name, Uri = f.Uri }).ToList()
         };
-
-        return JsonSerializer.Serialize(result, s_jsonOptions);
     }
 
-    [McpServerTool(Name = "hlx_download", Title = "Download Helix Files", Idempotent = true), Description("Download files from a Helix work item to temp directory. Returns local file paths. Use pattern to filter (e.g., '*.binlog').")]
-    public async Task<string> Download(
+    [McpServerTool(Name = "hlx_download", Title = "Download Helix Files", Idempotent = true, UseStructuredContent = true), Description("Download files from a Helix work item to temp directory. Returns local file paths. Use pattern to filter (e.g., '*.binlog').")]
+    public async Task<DownloadResult> Download(
         [Description("Helix job ID (GUID), Helix job URL, or full work item URL (which includes both job ID and work item name)")] string jobId,
         [Description("Work item name (optional if included in the jobId URL)")] string? workItem = null,
         [Description("File name or glob pattern (e.g., *.binlog). Default: all files")] string pattern = "*")
@@ -138,47 +148,53 @@ public sealed class HelixMcpTools
         }
 
         if (string.IsNullOrEmpty(workItem))
-            return JsonSerializer.Serialize(new { error = "Work item name is required. Provide it as a separate parameter or include it in the Helix URL." }, s_jsonOptions);
+            throw new McpException("Work item name is required. Provide it as a separate parameter or include it in the Helix URL.");
 
         var paths = await _svc.DownloadFilesAsync(jobId, workItem, pattern);
 
         if (paths.Count == 0)
-            return JsonSerializer.Serialize(new { error = $"No files matching '{pattern}' found." });
+            throw new McpException($"No files matching '{pattern}' found.");
 
-        return JsonSerializer.Serialize(new { downloadedFiles = paths });
+        return new DownloadResult { DownloadedFiles = paths };
     }
 
-    [McpServerTool(Name = "hlx_find_files", Title = "Find Files in Helix Job", ReadOnly = true), Description("Search work items in a Helix job for files matching a pattern. Returns work item names and matching file URIs. Use pattern like '*.binlog', '*.trx', '*.dmp', or '*' for all files.")]
-    public async Task<string> FindFiles(
+    [McpServerTool(Name = "hlx_find_files", Title = "Find Files in Helix Job", ReadOnly = true, UseStructuredContent = true), Description("Search work items in a Helix job for files matching a pattern. Returns work item names and matching file URIs. Use pattern like '*.binlog', '*.trx', '*.dmp', or '*' for all files.")]
+    public async Task<FindFilesResult> FindFiles(
         [Description("Helix job ID (GUID) or URL")] string jobId,
         [Description("File name or glob pattern (e.g., *.binlog, *.trx, *.dmp). Default: all files")] string pattern = "*",
         [Description("Maximum work items to scan (default: 30)")] int maxItems = 30)
     {
         var results = await _svc.FindFilesAsync(jobId, pattern, maxItems);
-        var output = results.Select(r => new
+
+        return new FindFilesResult
         {
-            workItem = r.WorkItem,
-            files = r.Files.Select(f => new { f.Name, f.Uri })
-        });
-        return JsonSerializer.Serialize(new { pattern, scannedItems = maxItems, found = results.Count, results = output }, s_jsonOptions);
+            Pattern = pattern,
+            ScannedItems = maxItems,
+            Found = results.Count,
+            Results = results.Select(r => new FindFilesWorkItem
+            {
+                WorkItem = r.WorkItem,
+                Files = r.Files.Select(f => new FileInfo_ { Name = f.Name, Uri = f.Uri }).ToList()
+            }).ToList()
+        };
     }
 
-    [McpServerTool(Name = "hlx_find_binlogs", Title = "Find Binlogs in Helix Job", ReadOnly = true), Description("Scan work items in a Helix job to find which ones contain binlog files. Returns work item names and binlog URIs.")]
-    public async Task<string> FindBinlogs(
+    [McpServerTool(Name = "hlx_find_binlogs", Title = "Find Binlogs in Helix Job", ReadOnly = true, UseStructuredContent = true), Description("Scan work items in a Helix job to find which ones contain binlog files. Returns work item names and binlog URIs.")]
+    public async Task<FindFilesResult> FindBinlogs(
         [Description("Helix job ID (GUID) or URL")] string jobId,
         [Description("Maximum work items to scan (default: 30)")] int maxItems = 30)
         => await FindFiles(jobId, "*.binlog", maxItems);
 
-    [McpServerTool(Name = "hlx_download_url", Title = "Download File by URL", Idempotent = true), Description("Download a file by direct URL (e.g., blob storage URI from hlx_files output). Returns the local file path.")]
-    public async Task<string> DownloadUrl(
+    [McpServerTool(Name = "hlx_download_url", Title = "Download File by URL", Idempotent = true, UseStructuredContent = true), Description("Download a file by direct URL (e.g., blob storage URI from hlx_files output). Returns the local file path.")]
+    public async Task<DownloadUrlResult> DownloadUrl(
         [Description("Direct file URL to download")] string url)
     {
         var path = await _svc.DownloadFromUrlAsync(url);
-        return JsonSerializer.Serialize(new { downloadedFile = path }, s_jsonOptions);
+        return new DownloadUrlResult { DownloadedFile = path };
     }
 
-    [McpServerTool(Name = "hlx_work_item", Title = "Helix Work Item Details", ReadOnly = true), Description("Get detailed info about a specific work item including exit code, state, machine, duration, files, and console log URL.")]
-    public async Task<string> WorkItem(
+    [McpServerTool(Name = "hlx_work_item", Title = "Helix Work Item Details", ReadOnly = true, UseStructuredContent = true), Description("Get detailed info about a specific work item including exit code, state, machine, duration, files, and console log URL.")]
+    public async Task<WorkItemToolResult> WorkItem(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null)
     {
@@ -192,27 +208,25 @@ public sealed class HelixMcpTools
         }
 
         if (string.IsNullOrEmpty(workItem))
-            return JsonSerializer.Serialize(new { error = "Work item name is required. Provide it as a separate parameter or include it in the Helix URL." }, s_jsonOptions);
+            throw new McpException("Work item name is required. Provide it as a separate parameter or include it in the Helix URL.");
 
         var detail = await _svc.GetWorkItemDetailAsync(jobId, workItem);
 
-        var result = new
+        return new WorkItemToolResult
         {
-            detail.Name,
-            detail.ExitCode,
-            detail.State,
-            detail.MachineName,
-            duration = FormatDuration(detail.Duration),
-            detail.ConsoleLogUrl,
-            failureCategory = detail.FailureCategory?.ToString(),
-            files = detail.Files.Select(f => new { f.Name, f.Uri })
+            Name = detail.Name,
+            ExitCode = detail.ExitCode,
+            State = detail.State,
+            MachineName = detail.MachineName,
+            Duration = FormatDuration(detail.Duration),
+            ConsoleLogUrl = detail.ConsoleLogUrl,
+            FailureCategory = detail.FailureCategory?.ToString(),
+            Files = detail.Files.Select(f => new FileInfo_ { Name = f.Name, Uri = f.Uri }).ToList()
         };
-
-        return JsonSerializer.Serialize(result, s_jsonOptions);
     }
 
-    [McpServerTool(Name = "hlx_search_log", Title = "Search Helix Console Log", ReadOnly = true), Description("Search a work item's console log for lines matching a pattern. Returns matching lines with optional context. Use this to find specific errors, stack traces, or patterns in Helix test output.")]
-    public async Task<string> SearchLog(
+    [McpServerTool(Name = "hlx_search_log", Title = "Search Helix Console Log", ReadOnly = true, UseStructuredContent = true), Description("Search a work item's console log for lines matching a pattern. Returns matching lines with optional context. Use this to find specific errors, stack traces, or patterns in Helix test output.")]
+    public async Task<SearchLogResult> SearchLog(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
         [Description("Text pattern to search for (case-insensitive)")] string pattern = "error",
@@ -220,7 +234,7 @@ public sealed class HelixMcpTools
         [Description("Maximum number of matches to return")] int maxMatches = 50)
     {
         if (HelixService.IsFileSearchDisabled)
-            return JsonSerializer.Serialize(new { error = "File content search is disabled by configuration." }, s_jsonOptions);
+            throw new McpException("File content search is disabled by configuration.");
 
         if (string.IsNullOrEmpty(workItem) && HelixIdResolver.TryResolveJobAndWorkItem(jobId, out var resolvedJobId, out var resolvedWorkItem))
         {
@@ -232,29 +246,27 @@ public sealed class HelixMcpTools
         }
 
         if (string.IsNullOrEmpty(workItem))
-            return JsonSerializer.Serialize(new { error = "Work item name is required. Provide it as a separate parameter or include it in the Helix URL." }, s_jsonOptions);
+            throw new McpException("Work item name is required. Provide it as a separate parameter or include it in the Helix URL.");
 
         var result = await _svc.SearchConsoleLogAsync(jobId, workItem, pattern, contextLines, maxMatches);
 
-        var output = new
+        return new SearchLogResult
         {
-            workItem = result.WorkItem,
-            pattern,
-            totalLines = result.TotalLines,
-            matchCount = result.Matches.Count,
-            matches = result.Matches.Select(m => new
+            WorkItem = result.WorkItem,
+            Pattern = pattern,
+            TotalLines = result.TotalLines,
+            MatchCount = result.Matches.Count,
+            Matches = result.Matches.Select(m => new SearchMatch
             {
-                lineNumber = m.LineNumber,
-                line = m.Line,
-                context = m.Context
-            })
+                LineNumber = m.LineNumber,
+                Line = m.Line,
+                Context = m.Context
+            }).ToList()
         };
-
-        return JsonSerializer.Serialize(output, s_jsonOptions);
     }
 
-    [McpServerTool(Name = "hlx_search_file", Title = "Search Helix File", ReadOnly = true), Description("Search a work item's uploaded file for lines matching a pattern. Returns matching lines with optional context. Use this to find specific errors, stack traces, or patterns in Helix test output files without downloading them.")]
-    public async Task<string> SearchFile(
+    [McpServerTool(Name = "hlx_search_file", Title = "Search Helix File", ReadOnly = true, UseStructuredContent = true), Description("Search a work item's uploaded file for lines matching a pattern. Returns matching lines with optional context. Use this to find specific errors, stack traces, or patterns in Helix test output files without downloading them.")]
+    public async Task<SearchFileResult> SearchFile(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("File name to search (exact name from hlx_files output)")] string fileName,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
@@ -263,7 +275,7 @@ public sealed class HelixMcpTools
         [Description("Maximum number of matches to return")] int maxMatches = 50)
     {
         if (HelixService.IsFileSearchDisabled)
-            return JsonSerializer.Serialize(new { error = "File content search is disabled by configuration." }, s_jsonOptions);
+            throw new McpException("File content search is disabled by configuration.");
 
         if (string.IsNullOrEmpty(workItem) && HelixIdResolver.TryResolveJobAndWorkItem(jobId, out var resolvedJobId, out var resolvedWorkItem))
         {
@@ -275,33 +287,31 @@ public sealed class HelixMcpTools
         }
 
         if (string.IsNullOrEmpty(workItem))
-            return JsonSerializer.Serialize(new { error = "Work item name is required. Provide it as a separate parameter or include it in the Helix URL." }, s_jsonOptions);
+            throw new McpException("Work item name is required. Provide it as a separate parameter or include it in the Helix URL.");
 
         var result = await _svc.SearchFileAsync(jobId, workItem, fileName, pattern, contextLines, maxMatches);
 
         if (result.IsBinary)
-            return JsonSerializer.Serialize(new { error = $"File '{fileName}' appears to be binary and cannot be searched." }, s_jsonOptions);
+            throw new McpException($"File '{fileName}' appears to be binary and cannot be searched.");
 
-        var output = new
+        return new SearchFileResult
         {
-            fileName = result.FileName,
-            pattern,
-            totalLines = result.TotalLines,
-            matchCount = result.Matches.Count,
-            truncated = result.Truncated,
-            matches = result.Matches.Select(m => new
+            FileName = result.FileName,
+            Pattern = pattern,
+            TotalLines = result.TotalLines,
+            MatchCount = result.Matches.Count,
+            Truncated = result.Truncated,
+            Matches = result.Matches.Select(m => new SearchMatch
             {
-                lineNumber = m.LineNumber,
-                line = m.Line,
-                context = m.Context
-            })
+                LineNumber = m.LineNumber,
+                Line = m.Line,
+                Context = m.Context
+            }).ToList()
         };
-
-        return JsonSerializer.Serialize(output, s_jsonOptions);
     }
 
-    [McpServerTool(Name = "hlx_test_results", Title = "Parse TRX Test Results", ReadOnly = true), Description("Parse TRX test result files from a Helix work item. Returns structured test results including test names, outcomes, durations, and error messages for failed tests. Auto-discovers all .trx files or filter to a specific one.")]
-    public async Task<string> TestResults(
+    [McpServerTool(Name = "hlx_test_results", Title = "Parse TRX Test Results", ReadOnly = true, UseStructuredContent = true), Description("Parse TRX test result files from a Helix work item. Returns structured test results including test names, outcomes, durations, and error messages for failed tests. Auto-discovers all .trx files or filter to a specific one.")]
+    public async Task<TestResultsToolResult> TestResults(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
         [Description("Specific TRX file name (optional - auto-discovers all .trx files if not set)")] string? fileName = null,
@@ -309,7 +319,7 @@ public sealed class HelixMcpTools
         [Description("Maximum number of test results to return (default: 200)")] int maxResults = 200)
     {
         if (HelixService.IsFileSearchDisabled)
-            return JsonSerializer.Serialize(new { error = "File content search is disabled by configuration." }, s_jsonOptions);
+            throw new McpException("File content search is disabled by configuration.");
 
         if (string.IsNullOrEmpty(workItem) && HelixIdResolver.TryResolveJobAndWorkItem(jobId, out var resolvedJobId, out var resolvedWorkItem))
         {
@@ -321,38 +331,36 @@ public sealed class HelixMcpTools
         }
 
         if (string.IsNullOrEmpty(workItem))
-            return JsonSerializer.Serialize(new { error = "Work item name is required. Provide it as a separate parameter or include it in the Helix URL." }, s_jsonOptions);
+            throw new McpException("Work item name is required. Provide it as a separate parameter or include it in the Helix URL.");
 
         var trxResults = await _svc.ParseTrxResultsAsync(jobId, workItem, fileName, includePassed, maxResults);
 
-        var output = new
+        return new TestResultsToolResult
         {
-            workItem,
-            fileCount = trxResults.Count,
-            files = trxResults.Select(r => new
+            WorkItem = workItem,
+            FileCount = trxResults.Count,
+            Files = trxResults.Select(r => new TestResultFile
             {
-                fileName = r.FileName,
-                totalTests = r.TotalTests,
-                passed = r.Passed,
-                failed = r.Failed,
-                skipped = r.Skipped,
-                results = r.Results.Select(t => new
+                FileName = r.FileName,
+                TotalTests = r.TotalTests,
+                Passed = r.Passed,
+                Failed = r.Failed,
+                Skipped = r.Skipped,
+                Results = r.Results.Select(t => new TestResultEntry
                 {
-                    testName = t.TestName,
-                    outcome = t.Outcome,
-                    duration = t.Duration,
-                    computerName = t.ComputerName,
-                    errorMessage = t.ErrorMessage,
-                    stackTrace = t.StackTrace
-                })
-            })
+                    TestName = t.TestName,
+                    Outcome = t.Outcome,
+                    Duration = t.Duration,
+                    ComputerName = t.ComputerName,
+                    ErrorMessage = t.ErrorMessage,
+                    StackTrace = t.StackTrace
+                }).ToList()
+            }).ToList()
         };
-
-        return JsonSerializer.Serialize(output, s_jsonOptions);
     }
 
-    [McpServerTool(Name = "hlx_batch_status", Title = "Batch Helix Job Status", ReadOnly = true), Description("Get status for multiple Helix jobs at once. Returns per-job summaries and overall totals. Maximum 50 jobs per request.")]
-    public async Task<string> BatchStatus(
+    [McpServerTool(Name = "hlx_batch_status", Title = "Batch Helix Job Status", ReadOnly = true, UseStructuredContent = true), Description("Get status for multiple Helix jobs at once. Returns per-job summaries and overall totals. Maximum 50 jobs per request.")]
+    public async Task<BatchStatusResult> BatchStatus(
         [Description("Helix job IDs (GUIDs) or URLs")] string[] jobIds)
     {
         var batch = await _svc.GetBatchStatusAsync(jobIds);
@@ -363,22 +371,20 @@ public sealed class HelixMcpTools
                 .ToDictionary(g => g.Key, g => g.Count())
             : null;
 
-        var result = new
+        return new BatchStatusResult
         {
-            jobs = batch.Jobs.Select(j => new
+            Jobs = batch.Jobs.Select(j => new BatchJobEntry
             {
-                jobId = j.JobId,
-                j.Name,
-                failedCount = j.Failed.Count,
-                passedCount = j.Passed.Count,
-                totalCount = j.TotalCount
-            }),
-            batch.TotalFailed,
-            batch.TotalPassed,
-            jobCount = batch.Jobs.Count,
-            failureBreakdown
+                JobId = j.JobId,
+                Name = j.Name,
+                FailedCount = j.Failed.Count,
+                PassedCount = j.Passed.Count,
+                TotalCount = j.TotalCount
+            }).ToList(),
+            TotalFailed = batch.TotalFailed,
+            TotalPassed = batch.TotalPassed,
+            JobCount = batch.Jobs.Count,
+            FailureBreakdown = failureBreakdown
         };
-
-        return JsonSerializer.Serialize(result, s_jsonOptions);
     }
 }
