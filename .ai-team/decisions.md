@@ -2958,3 +2958,12 @@ They do NOT answer:
 5. Error handling correctly uses `McpException` for tool-level errors (missing work item, no matching files, binary file) and `ArgumentException` for invalid parameters (bad filter value). This matches MCP SDK conventions.
 
 
+### 2026-03-01: Release version checklist
+**By:** Larry Ewing (via Copilot — learned the hard way)
+**What:** When bumping versions for a release, ALL three version sources must be updated together:
+1. `src/HelixTool/HelixTool.csproj` → `<Version>`
+2. `src/HelixTool/.mcp/server.json` → top-level `"version"`
+3. `src/HelixTool/.mcp/server.json` → `packages[0].version`
+
+The publish workflow (`publish.yml`) validates all three match the git tag. Missing any one will fail the release.
+**Why:** v0.2.0 release required a force-push to fix because `server.json` wasn't updated alongside the csproj. The workflow caught it, but we should get it right the first time.
