@@ -34,15 +34,6 @@ public class HelixService
         _api = api ?? throw new ArgumentNullException(nameof(api));
     }
 
-    /// <summary>Represents a single work item's name and exit code.</summary>
-    public record WorkItemResult(string Name, int ExitCode, string? State, string? MachineName, TimeSpan? Duration, string ConsoleLogUrl, FailureCategory? FailureCategory);
-
-    /// <summary>Aggregated pass/fail summary for all work items in a Helix job.</summary>
-    public record JobSummary(
-        string JobId, string Name, string QueueId, string Creator, string Source,
-        string? Created, string? Finished,
-        int TotalCount, List<WorkItemResult> Failed, List<WorkItemResult> Passed);
-
     /// <summary>Get a pass/fail summary of all work items in a Helix job.</summary>
     /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
     /// <param name="cancellationToken">Optional cancellation token.</param>
@@ -109,9 +100,6 @@ public class HelixService
             throw new HelixException("Helix API request timed out.", ex);
         }
     }
-
-    /// <summary>Represents an uploaded file from a Helix work item.</summary>
-    public record FileEntry(string Name, string Uri);
 
     /// <summary>
     /// List uploaded files for a work item using the <c>ListFiles</c> endpoint.
@@ -250,9 +238,6 @@ public class HelixService
             throw new HelixException("Helix API request timed out.", ex);
         }
     }
-
-    /// <summary>A work item and the matching files it contains.</summary>
-    public record FileSearchResult(string WorkItem, List<FileEntry> Files);
 
     /// <summary>Scan work items in a job to find files matching a pattern.</summary>
     /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
@@ -425,11 +410,6 @@ public class HelixService
         }
     }
 
-    /// <summary>Detailed information about a single work item.</summary>
-    public record WorkItemDetail(
-        string Name, int ExitCode, string? State, string? MachineName,
-        TimeSpan? Duration, string ConsoleLogUrl, List<FileEntry> Files, FailureCategory? FailureCategory);
-
     /// <summary>Get detailed info about a single work item including its files.</summary>
     public async Task<WorkItemDetail> GetWorkItemDetailAsync(string jobId, string workItem, CancellationToken cancellationToken = default)
     {
@@ -482,9 +462,6 @@ public class HelixService
             throw new HelixException("Helix API request timed out.", ex);
         }
     }
-
-    /// <summary>Summary for multiple jobs.</summary>
-    public record BatchJobSummary(List<JobSummary> Jobs, int TotalFailed, int TotalPassed);
 
     /// <summary>Maximum number of jobs allowed in a single batch status request.</summary>
     internal const int MaxBatchSize = 50;
@@ -562,26 +539,11 @@ public class HelixService
     }
 
     /// <summary>Whether file content search is disabled by configuration.</summary>
-    internal static bool IsFileSearchDisabled =>
+    public static bool IsFileSearchDisabled =>
         string.Equals(Environment.GetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH"), "true", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Maximum file size allowed for content search (50 MB).</summary>
     internal const long MaxSearchFileSizeBytes = 50 * 1024 * 1024;
-
-    /// <summary>Result of searching a console log.</summary>
-    public record LogSearchResult(string WorkItem, List<LogMatch> Matches, int TotalLines);
-
-    /// <summary>A single match in a console log.</summary>
-    public record LogMatch(int LineNumber, string Line, List<string>? Context = null);
-
-    /// <summary>Result of searching an uploaded file's content.</summary>
-    public record FileContentSearchResult(string FileName, List<LogMatch> Matches, int TotalLines, bool Truncated, bool IsBinary);
-
-    /// <summary>Parsed test result from a TRX file.</summary>
-    public record TrxTestResult(string TestName, string Outcome, string? Duration, string? ComputerName, string? ErrorMessage, string? StackTrace);
-
-    /// <summary>Summary of parsed TRX test results.</summary>
-    public record TrxParseResult(string FileName, int TotalTests, int Passed, int Failed, int Skipped, List<TrxTestResult> Results);
 
     private static readonly XmlReaderSettings s_trxReaderSettings = new()
     {

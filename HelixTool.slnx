@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/HelixTool.Core/HelixTool.Core.csproj" />
     <Project Path="src/HelixTool.Mcp/HelixTool.Mcp.csproj" />
+    <Project Path="src/HelixTool.Mcp.Tools/HelixTool.Mcp.Tools.csproj" />
     <Project Path="src/HelixTool/HelixTool.csproj" />
   </Folder>
   <Folder Name="/test/">
