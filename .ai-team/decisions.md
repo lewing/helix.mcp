@@ -3828,3 +3828,63 @@ Ordered by dependency. Each item is independently testable.
 **Pending for others:**
 - **Lambert (W7):** Run full test suite — all tests should pass without modification
 - **Kane (W8):** Add "Using as a library" section to README
+
+
+### 2026-03-03: HelixTool.Core API surface review
+**By:** Dallas
+**What:** Pre-publish API surface review of `lewing.helix.core` covering all public types, naming, type design, method signatures, dependencies, abstractions, breaking change risk, and XML documentation.
+**Why:** Pre-publish API review to ensure clean public surface before the NuGet package goes live. Once published, the public API becomes a contract — fixing mistakes requires breaking changes or awkward v2 types.
+
+**🔴 Fix before publishing (3 items):**
+1. **Seal `HelixService` and `HelixException`** — unsealed public types not designed for inheritance create a breaking change trap
+2. **Change `List<T>` to `IReadOnlyList<T>`** in all record types — mutable collections in "immutable" records violates the design contract
+3. **Make `MatchesPattern` internal** — implementation detail leaking into public API
+
+**⚠️ Non-blocking improvements (6 items):**
+1. Rename `Failed`/`Passed` to `FailedItems`/`PassedItems` in `JobSummary` *(also flagged by Ash — README already uses the new names)*
+2. Parse `IJobDetails.Created`/`Finished` to `DateTimeOffset?` in the adapter
+3. Fill missing XML doc comments on `HelixIdResolver`, `HelixApiClient` ctor, and under-documented `HelixService` methods
+4. Plan `IHelixService` interface for v1.1
+5. Document that new `FailureCategory` values may be added in minor releases
+6. Track cache-package-split for consumers who want API-only without SQLite
+
+**✅ Good as-is:** Overall naming conventions, interface abstractions (IHelixApiClient, IHelixTokenAccessor, ICacheStore), CancellationToken on all async methods, guard clauses, record types for DTOs, `sealed` on all concrete classes (except the two flagged), `GenerateDocumentationFile` enabled, `CacheSecurity` correctly internal, projection interfaces decoupling from Helix SDK types.
+
+
+### 2026-03-03: HelixTool.Core consumer experience review
+**By:** Ash
+**What:** Pre-publish consumer experience review of `lewing.helix.core` — evaluating from the perspective of a .NET developer who finds it on NuGet, reads the README, and integrates it.
+**Why:** A bad first-run experience kills adoption. Review before the library gains external consumers.
+
+**🔴 Blocker (1 item):**
+1. **README example uses wrong property names** — `summary.FailedItems` / `summary.PassedItems` in the README but actual properties are `summary.Failed` / `summary.Passed`. Code won't compile. *(Overlaps with Dallas's naming recommendation — see consolidated note below.)*
+
+**⚠️ Friction (7 items):**
+1. Auth error message says "Run 'hlx login'" — CLI-specific hint doesn't belong in library exceptions
+2. `nuget.config` requirement for `dotnet-eng` feed not mentioned in "Using as a Library" section
+3. `FailureCategory` enum defined in `HelixService.cs` instead of `Models/`
+4. `IHelixTokenAccessor` mentioned in README but relationship to `HelixService` unclear
+5. `DownloadFilesAsync` / `DownloadFromUrlAsync` temp file cleanup not documented
+6. `HelixApiClient` constructor takes raw `string?` — no options pattern for future extensibility
+7. File search disabled throws `InvalidOperationException` instead of `HelixException`
+
+**💡 Opportunities (7 items):**
+1. No `services.AddHelixClient()` DI extension method
+2. No `GetJobInfoAsync` (metadata only, avoids fetching all work items)
+3. `HelixException` doesn't expose `HttpStatusCode?` for programmatic handling
+4. No error handling example in README
+5. No link to model types or API reference in README
+6. Records are well-designed — surface them more in docs
+7. Consider `IAsyncDisposable` wrapper for download results to prevent temp file leaks
+
+
+### 2026-03-03: Consolidated — `Failed`/`FailedItems` naming (Dallas + Ash)
+**By:** Dallas (API review), Ash (consumer review)
+**What:** Both reviewers independently flagged the `JobSummary.Failed` / `JobSummary.Passed` naming.
+- **Dallas:** Properties named as adjectives (`Failed`, `Passed`) read like booleans, not collections. Recommend renaming to `FailedItems` / `PassedItems`.
+- **Ash:** README already uses `summary.FailedItems` / `summary.PassedItems` but the actual record uses `Failed` / `Passed`. The README code example won't compile.
+
+**Resolution options (pick one):**
+- **Option A:** Rename properties to `FailedItems`/`PassedItems` (Dallas's recommendation) — README becomes correct as-is
+- **Option B:** Fix README to use `Failed`/`Passed` (quickest fix) — accept the less-descriptive names
+- **Recommendation:** Option A is preferred — it fixes both the naming concern and the README bug simultaneously

@@ -49,3 +49,5 @@
 📌 Team update (2026-03-03): Core NuGet packaging complete — HelixTool.Core publishes as lewing.helix.core, MCP tools extracted to HelixTool.Mcp.Tools, version centralized in Directory.Build.props, CI packs both packages. Lambert: run full test suite (W7). Kane: add library consumption docs to README (W8). — decided by Ripley
 📌 Team update (2026-03-03): Phase 1 auth UX approved by Dallas — `hlx login`/`logout`/`auth status`, `git credential` storage (Option A), `ChainedHelixTokenAccessor`. 7 work items: WI-1 ICredentialStore+GitCredentialStore, WI-2 ChainedHelixTokenAccessor, WI-3 DI wiring, WI-4 hlx login, WI-5 hlx logout, WI-6 hlx auth status, WI-7 error message update. — decided by Dallas
 📌 Team update (2026-03-03): Helix auth UX analysis by Ash — Helix API uses opaque tokens only, no Entra. `git credential` recommended for storage. Env var must take precedence over stored credential. — decided by Ash
+
+📌 Team update (2026-03-03): API review findings — decided by Dallas, Ash

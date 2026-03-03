@@ -64,3 +64,5 @@
 
 📌 Team update (2026-03-03): HelixTool.Core published as standalone NuGet (lewing.helix.core) — MCP tools extracted to HelixTool.Mcp.Tools, version centralized in Directory.Build.props. — decided by Dallas, executed by Ripley
 📌 Team update (2026-03-03): Phase 1 auth UX approved — `hlx login`/`logout`/`auth status` commands coming. Docs update will be needed once implemented. — decided by Dallas
+
+📌 Team update (2026-03-03): API review findings — decided by Dallas, Ash

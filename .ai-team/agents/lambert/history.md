@@ -69,3 +69,5 @@
 
 📌 Team update (2026-03-03): HelixTool.Core published as standalone NuGet (lewing.helix.core) — 373 tests verified passing post-refactor. — decided by Dallas, executed by Ripley
 📌 Team update (2026-03-03): Phase 1 auth UX approved — `hlx login`/`logout`/`auth status`, `git credential` storage. 7 work items with test requirements for each. — decided by Dallas
+
+📌 Team update (2026-03-03): API review findings — decided by Dallas, Ash
