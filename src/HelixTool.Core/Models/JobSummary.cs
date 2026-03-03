@@ -4,4 +4,4 @@ namespace HelixTool.Core;
 public record JobSummary(
     string JobId, string Name, string QueueId, string Creator, string Source,
     string? Created, string? Finished,
-    int TotalCount, List<WorkItemResult> Failed, List<WorkItemResult> Passed);
+    int TotalCount, IReadOnlyList<WorkItemResult> FailedItems, IReadOnlyList<WorkItemResult> PassedItems);

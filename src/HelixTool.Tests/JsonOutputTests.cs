@@ -36,9 +36,9 @@ public class JsonOutputTests
         {
             job = new { jobId = summary.JobId, summary.Name, summary.QueueId, summary.Creator, summary.Source, summary.Created, summary.Finished },
             totalWorkItems = summary.TotalCount,
-            failedCount = summary.Failed.Count,
-            passedCount = summary.Passed.Count,
-            failed = summary.Failed.Select(f => new { f.Name, f.ExitCode, f.State, f.MachineName, duration = f.Duration?.ToString(), f.ConsoleLogUrl }),
+            failedCount = summary.FailedItems.Count,
+            passedCount = summary.PassedItems.Count,
+            failed = summary.FailedItems.Select(f => new { f.Name, f.ExitCode, f.State, f.MachineName, duration = f.Duration?.ToString(), f.ConsoleLogUrl }),
             passed = (object?)null
         };
         var json = JsonSerializer.Serialize(result, s_jsonOptions);
@@ -74,9 +74,9 @@ public class JsonOutputTests
         {
             job = new { jobId = summary.JobId, summary.Name, summary.QueueId, summary.Creator, summary.Source, summary.Created, summary.Finished },
             totalWorkItems = summary.TotalCount,
-            failedCount = summary.Failed.Count,
-            passedCount = summary.Passed.Count,
-            failed = summary.Failed.Select(f => new { f.Name, f.ExitCode, f.State, f.MachineName, duration = f.Duration?.ToString(), f.ConsoleLogUrl }),
+            failedCount = summary.FailedItems.Count,
+            passedCount = summary.PassedItems.Count,
+            failed = summary.FailedItems.Select(f => new { f.Name, f.ExitCode, f.State, f.MachineName, duration = f.Duration?.ToString(), f.ConsoleLogUrl }),
             passed = (object?)null
         };
         var json = JsonSerializer.Serialize(result, s_jsonOptions);

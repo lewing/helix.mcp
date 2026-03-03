@@ -1,7 +1,17 @@
 namespace HelixTool.Core;
 
+/// <summary>
+/// Resolves Helix job IDs and work item names from various input formats.
+/// Accepts bare GUIDs, full Helix URLs, and URLs containing both job ID and work item segments.
+/// </summary>
 public static class HelixIdResolver
 {
+    /// <summary>
+    /// Resolves a Helix job ID from a bare GUID or a full Helix URL.
+    /// </summary>
+    /// <param name="input">A GUID string or Helix URL containing a job GUID in the path.</param>
+    /// <returns>The resolved job ID (GUID string).</returns>
+    /// <exception cref="ArgumentException">Thrown when <paramref name="input"/> is null, empty, or not a valid GUID or Helix URL.</exception>
     public static string ResolveJobId(string input)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(input);
@@ -28,8 +38,12 @@ public static class HelixIdResolver
 
     /// <summary>
     /// Try to extract both job ID and work item name from a Helix URL.
-    /// Returns true if both were found, false if only jobId or neither.
+    /// Returns true if a job ID was found, with <paramref name="workItem"/> set if the URL also contains a work item segment.
     /// </summary>
+    /// <param name="input">A GUID string or Helix URL.</param>
+    /// <param name="jobId">The extracted job ID, or <see cref="string.Empty"/> if not found.</param>
+    /// <param name="workItem">The extracted work item name, or <c>null</c> if not found.</param>
+    /// <returns><c>true</c> if a job ID was successfully extracted; otherwise, <c>false</c>.</returns>
     public static bool TryResolveJobAndWorkItem(string input, out string jobId, out string? workItem)
     {
         jobId = string.Empty;

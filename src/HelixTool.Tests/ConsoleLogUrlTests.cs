@@ -54,7 +54,7 @@ public class ConsoleLogUrlTests
         var result = await _svc.GetJobStatusAsync(ValidJobId);
 
         // Assert
-        var item = Assert.Single(result.Passed);
+        var item = Assert.Single(result.PassedItems);
         Assert.Equal(
             $"https://helix.dot.net/api/2019-06-17/jobs/{ValidJobId}/workitems/MyWorkItem/console",
             item.ConsoleLogUrl);
@@ -97,7 +97,7 @@ public class ConsoleLogUrlTests
         var result = await _svc.GetJobStatusAsync(helixUrl);
 
         // Assert: the ConsoleLogUrl should use the extracted GUID, not the full URL
-        var item = Assert.Single(result.Passed);
+        var item = Assert.Single(result.PassedItems);
         Assert.Equal(
             $"https://helix.dot.net/api/2019-06-17/jobs/{ValidJobId}/workitems/SomeTest/console",
             item.ConsoleLogUrl);
@@ -141,7 +141,7 @@ public class ConsoleLogUrlTests
         var result = await _svc.GetJobStatusAsync(ValidJobId);
 
         // Assert: the URL includes the exact work item name with dots and dashes
-        var item = Assert.Single(result.Passed);
+        var item = Assert.Single(result.PassedItems);
         Assert.Equal(
             $"https://helix.dot.net/api/2019-06-17/jobs/{ValidJobId}/workitems/{workItemName}/console",
             item.ConsoleLogUrl);

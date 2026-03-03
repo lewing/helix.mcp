@@ -1,4 +1,4 @@
 namespace HelixTool.Core;
 
 /// <summary>Result of searching a console log.</summary>
-public record LogSearchResult(string WorkItem, List<LogMatch> Matches, int TotalLines);
+public record LogSearchResult(string WorkItem, IReadOnlyList<LogMatch> Matches, int TotalLines);

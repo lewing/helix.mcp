@@ -6,7 +6,7 @@ namespace HelixTool.Core;
 /// <see cref="TaskCanceledException"/> (timeouts) with human-readable messages.
 /// Hosts (CLI and MCP) catch this type to present user-friendly error output.
 /// </summary>
-public class HelixException : Exception
+public sealed class HelixException : Exception
 {
     /// <summary>
     /// Initializes a new <see cref="HelixException"/> with a human-readable message

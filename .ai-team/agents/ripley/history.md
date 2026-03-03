@@ -51,3 +51,15 @@
 📌 Team update (2026-03-03): Helix auth UX analysis by Ash — Helix API uses opaque tokens only, no Entra. `git credential` recommended for storage. Env var must take precedence over stored credential. — decided by Ash
 
 📌 Team update (2026-03-03): API review findings — decided by Dallas, Ash
+
+## API Surface Review Implementation (2026-03-03)
+
+Implemented 7 items from Dallas's API surface review:
+
+1. **Sealed `HelixService` and `HelixException`** — added `sealed` keyword to prevent unintended inheritance.
+2. **`List<T>` → `IReadOnlyList<T>` in all record types** — `JobSummary`, `BatchJobSummary`, `FileSearchResult`, `TrxParseResult`, `WorkItemDetail`, `LogSearchResult`, `FileContentSearchResult`, `LogMatch`. Internal code creates `List<T>` which implicitly converts. MCP tool `SearchMatch.Context` needed explicit `.ToList()` since the DTO keeps `List<string>?`.
+3. **`MatchesPattern` made `internal`** — added `InternalsVisibleTo` for `HelixTool` and `HelixTool.Mcp.Tools` so CLI/MCP can still use it. Tests already had access.
+4. **Renamed `JobSummary.Failed` → `FailedItems` and `.Passed` → `PassedItems`** — updated all consumers: `HelixService.cs`, `HelixMcpTools.cs`, `Program.cs`, and 5 test files.
+5. **Fixed auth error message** — changed from CLI-specific "Run 'hlx login'" to library-appropriate "Provide a valid Helix access token via the HelixApiClient constructor or HELIX_ACCESS_TOKEN environment variable." across all 7 occurrences.
+6. **Added XML doc comments** — `HelixIdResolver` class + `ResolveJobId` + `TryResolveJobAndWorkItem`, `HelixApiClient` constructor, `HelixService.MatchesPattern`, `FindBinlogsAsync`, `GetWorkItemDetailAsync`, `GetBatchStatusAsync`.
+7. **Moved `FailureCategory` enum** to `Models/FailureCategory.cs` — extracted from `HelixService.cs`.

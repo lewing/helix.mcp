@@ -107,9 +107,9 @@ public class BatchStatusTests
 
         Assert.Equal(directResult.JobId, batchJob.JobId);
         Assert.Equal(directResult.Name, batchJob.Name);
-        Assert.Equal(directResult.Failed.Count, batchJob.Failed.Count);
-        Assert.Equal(directResult.Passed.Count, batchJob.Passed.Count);
-        Assert.Equal(batchResult.TotalFailed, batchJob.Failed.Count);
-        Assert.Equal(batchResult.TotalPassed, batchJob.Passed.Count);
+        Assert.Equal(directResult.FailedItems.Count, batchJob.FailedItems.Count);
+        Assert.Equal(directResult.PassedItems.Count, batchJob.PassedItems.Count);
+        Assert.Equal(batchResult.TotalFailed, batchJob.FailedItems.Count);
+        Assert.Equal(batchResult.TotalPassed, batchJob.PassedItems.Count);
     }
 }

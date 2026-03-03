@@ -66,3 +66,4 @@
 📌 Team update (2026-03-03): Phase 1 auth UX approved — `hlx login`/`logout`/`auth status` commands coming. Docs update will be needed once implemented. — decided by Dallas
 
 📌 Team update (2026-03-03): API review findings — decided by Dallas, Ash
+📌 Team update (2026-03-03): Library docs extracted to docs/library.md — "Using as a Library" section moved out of README into dedicated doc, expanded with nuget.config requirement, error handling, auth clarification, key types reference, temp file cleanup notes. README retains a brief pointer. — executed by Kane

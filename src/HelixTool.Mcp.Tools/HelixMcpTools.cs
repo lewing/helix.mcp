@@ -45,15 +45,15 @@ public sealed class HelixMcpTools
                 HelixUrl = $"https://helix.dot.net/api/jobs/{summary.JobId}/details"
             },
             TotalWorkItems = summary.TotalCount,
-            FailedCount = summary.Failed.Count,
-            PassedCount = summary.Passed.Count,
-            Failed = showFailed ? summary.Failed.Select(f => new StatusWorkItem
+            FailedCount = summary.FailedItems.Count,
+            PassedCount = summary.PassedItems.Count,
+            Failed = showFailed ? summary.FailedItems.Select(f => new StatusWorkItem
             {
                 Name = f.Name, ExitCode = f.ExitCode, State = f.State, MachineName = f.MachineName,
                 Duration = FormatDuration(f.Duration), ConsoleLogUrl = f.ConsoleLogUrl,
                 FailureCategory = f.FailureCategory?.ToString()
             }).ToList() : null,
-            Passed = showPassed ? summary.Passed.Select(p => new StatusWorkItem
+            Passed = showPassed ? summary.PassedItems.Select(p => new StatusWorkItem
             {
                 Name = p.Name, ExitCode = p.ExitCode, State = p.State, MachineName = p.MachineName,
                 Duration = FormatDuration(p.Duration), ConsoleLogUrl = p.ConsoleLogUrl,
@@ -260,7 +260,7 @@ public sealed class HelixMcpTools
             {
                 LineNumber = m.LineNumber,
                 Line = m.Line,
-                Context = m.Context
+                Context = m.Context?.ToList()
             }).ToList()
         };
     }
@@ -305,7 +305,7 @@ public sealed class HelixMcpTools
             {
                 LineNumber = m.LineNumber,
                 Line = m.Line,
-                Context = m.Context
+                Context = m.Context?.ToList()
             }).ToList()
         };
     }
@@ -365,7 +365,7 @@ public sealed class HelixMcpTools
     {
         var batch = await _svc.GetBatchStatusAsync(jobIds);
 
-        var allFailed = batch.Jobs.SelectMany(j => j.Failed).Where(f => f.FailureCategory.HasValue).ToList();
+        var allFailed = batch.Jobs.SelectMany(j => j.FailedItems).Where(f => f.FailureCategory.HasValue).ToList();
         var failureBreakdown = allFailed.Count > 0
             ? allFailed.GroupBy(f => f.FailureCategory!.Value.ToString())
                 .ToDictionary(g => g.Key, g => g.Count())
@@ -377,8 +377,8 @@ public sealed class HelixMcpTools
             {
                 JobId = j.JobId,
                 Name = j.Name,
-                FailedCount = j.Failed.Count,
-                PassedCount = j.Passed.Count,
+                FailedCount = j.FailedItems.Count,
+                PassedCount = j.PassedItems.Count,
                 TotalCount = j.TotalCount
             }).ToList(),
             TotalFailed = batch.TotalFailed,
