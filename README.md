@@ -82,6 +82,9 @@ dotnet build
 After [installing](#installation) `lewing.helix.mcp` as a global or local tool, the `hlx` command is available:
 
 ```bash
+# Authenticate (one-time setup)
+hlx login
+
 # Check a Helix job (shows failed work items by default)
 hlx status 02d8bd09-9400-4e86-8d2b-7a6ca21c5009
 
@@ -222,6 +225,9 @@ Add the following to your MCP client config. The `--yes` flag ensures `dnx` does
 | `hlx search-log <jobId> <workItem> <pattern> [--context N] [--max-matches N]` | Search console log for a pattern. |
 | `hlx search-file <jobId> <workItem> <fileName> <pattern> [--context N] [--max-matches N]` | Search an uploaded file for a pattern. |
 | `hlx test-results <jobId> <workItem> [--file-name NAME] [--include-passed] [--max-results N]` | Parse TRX test results from a work item. |
+| `hlx login [--no-browser]` | Authenticate with helix.dot.net (opens browser, prompts for token, stores via git credential). |
+| `hlx logout` | Remove stored authentication token. |
+| `hlx auth-status` | Show current authentication status and test connectivity. |
 | `hlx cache status` | Show cache size, entry count, oldest/newest entries. |
 | `hlx cache clear` | Wipe all cached data (all auth contexts). |
 | `hlx mcp` | Start MCP server over stdio. Also the default when no command is given. |
@@ -270,6 +276,9 @@ src/
 │   ├── HelixApiClient.cs   # Helix API implementation
 │   ├── IHelixApiClientFactory.cs  # Per-request client creation (HTTP multi-auth)
 │   ├── IHelixTokenAccessor.cs     # Token resolution abstraction
+│   ├── ChainedHelixTokenAccessor.cs # Token resolution chain (env var → stored credential)
+│   ├── ICredentialStore.cs  # Credential storage abstraction
+│   ├── GitCredentialStore.cs # git credential CLI implementation
 │   ├── HelixException.cs   # Typed exceptions
 │   └── Cache/              # SQLite-backed response caching
 │       ├── SqliteCacheStore.cs       # Cache storage implementation
@@ -280,19 +289,41 @@ src/
 ├── HelixTool.Mcp/          # MCP HTTP server
 │   ├── Program.cs                         # ASP.NET Core + ModelContextProtocol
 │   └── HttpContextHelixTokenAccessor.cs   # Per-request token from Authorization header
-└── HelixTool.Tests/        # Unit tests (369 tests)
+└── HelixTool.Tests/        # Unit tests (373 tests)
 ```
 
 ## Authentication
 
-No authentication is needed for public Helix jobs (dotnet open-source CI). For internal/private jobs, set the `HELIX_ACCESS_TOKEN` environment variable:
+No authentication is needed for public Helix jobs (dotnet open-source CI). For internal/private jobs, use `hlx login`:
 
 ```bash
-# Get your token from https://helix.dot.net → Profile → Access Tokens
-export HELIX_ACCESS_TOKEN=your-token-here
+# Interactive login — opens browser to token page, prompts for token
+hlx login
 
-# Or for a single command
-HELIX_ACCESS_TOKEN=your-token hlx status <jobId>
+# Skip browser launch (e.g., SSH sessions)
+hlx login --no-browser
+
+# Check current auth status
+hlx auth-status
+
+# Remove stored token
+hlx logout
+```
+
+`hlx login` opens `https://helix.dot.net/Account/Tokens` in your browser, prompts for a masked token input, validates it against the API, and stores it securely via `git credential` (OS keychain — macOS Keychain, Windows Credential Manager, or libsecret on Linux).
+
+**Token resolution order** (backward compatible):
+
+1. `HELIX_ACCESS_TOKEN` environment variable (highest priority — CI/CD override)
+2. Stored credential via `git credential` (OS keychain, set by `hlx login`)
+3. No token → fails with a helpful message suggesting `hlx login`
+
+### Environment variable (CI/CD)
+
+For CI pipelines or scripts, set the `HELIX_ACCESS_TOKEN` environment variable instead:
+
+```bash
+export HELIX_ACCESS_TOKEN=your-token-here
 ```
 
 For MCP clients, pass the token in the server config:
@@ -414,6 +445,7 @@ hlx cache clear    # Wipe all cached data (all auth contexts)
 - **URL scheme validation:** `hlx_download_url` only accepts HTTP/HTTPS URLs; other schemes are rejected.
 - **File search toggle:** Set `HLX_DISABLE_FILE_SEARCH=true` to disable `hlx_search_file`, `hlx_search_log`, and `hlx_test_results`. Useful for locked-down deployments where file content inspection is not desired.
 - **Input validation:** Job IDs are resolved through `HelixIdResolver` (GUIDs and URLs). Batch operations are capped at 50 jobs per request. File search is limited to 50 MB files.
+- **Credential storage:** Tokens stored via `hlx login` are managed by the OS keychain through `git credential` (macOS Keychain, Windows Credential Manager, or libsecret on Linux). hlx never stores tokens in plaintext files.
 
 ### Cached data
 

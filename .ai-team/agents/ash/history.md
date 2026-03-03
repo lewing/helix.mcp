@@ -121,3 +121,14 @@
 📌 Team update (2026-02-15): DownloadFilesAsync temp dirs now per-invocation (helix-{id}-{Guid}) to prevent cross-process races — decided by Ripley
 📌 Team update (2026-02-15): CI version validation added to publish workflow — tag is source of truth for package version — decided by Ripley
 📌 Team update (2026-03-01): UseStructuredContent refactor approved — typed return objects with UseStructuredContent=true for all 12 MCP tools (hlx_logs excepted). FileInfo_ naming noted as non-blocking. No breaking wire-format changes. — decided by Dallas
+
+### 2026-03-03: Helix authentication UX feasibility analysis
+
+- Helix API uses custom `Authorization: token <TOKEN>` scheme, not Bearer
+- Helix tokens are opaque strings generated manually from helix.dot.net/Profile
+- Maestro/PCS supports Entra JWT auth but Helix does not
+- IHelixTokenAccessor is the extensibility point for new auth methods
+- Wrote feasibility analysis → `.ai-team/decisions/inbox/ash-helix-auth-ux.md`
+- Recommended Phase 1: `hlx login` + `git credential` storage — high value, low effort
+- Entra API auth is blocked on Helix server-side changes — not a client-side fix
+- Key architecture question raised: where should `StoredHelixTokenAccessor` live (Core vs CLI-only)

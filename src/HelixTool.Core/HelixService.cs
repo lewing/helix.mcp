@@ -90,7 +90,7 @@ public class HelixService
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
         {
-            throw new HelixException("Access denied. Set the HELIX_ACCESS_TOKEN environment variable with a token from your helix.dot.net profile page.", ex);
+            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -137,7 +137,7 @@ public class HelixService
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
         {
-            throw new HelixException("Access denied. Set the HELIX_ACCESS_TOKEN environment variable with a token from your helix.dot.net profile page.", ex);
+            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -182,7 +182,7 @@ public class HelixService
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
         {
-            throw new HelixException("Access denied. Set the HELIX_ACCESS_TOKEN environment variable with a token from your helix.dot.net profile page.", ex);
+            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -231,7 +231,7 @@ public class HelixService
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
         {
-            throw new HelixException("Access denied. Set the HELIX_ACCESS_TOKEN environment variable with a token from your helix.dot.net profile page.", ex);
+            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -287,7 +287,7 @@ public class HelixService
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
         {
-            throw new HelixException("Access denied. Set the HELIX_ACCESS_TOKEN environment variable with a token from your helix.dot.net profile page.", ex);
+            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -353,7 +353,7 @@ public class HelixService
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
         {
-            throw new HelixException("Access denied. Set the HELIX_ACCESS_TOKEN environment variable with a token from your helix.dot.net profile page.", ex);
+            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -463,7 +463,7 @@ public class HelixService
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
         {
-            throw new HelixException("Access denied. Set the HELIX_ACCESS_TOKEN environment variable with a token from your helix.dot.net profile page.", ex);
+            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
