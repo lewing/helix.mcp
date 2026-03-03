@@ -302,8 +302,8 @@ For MCP clients, pass the token in the server config:
   "servers": {
     "hlx": {
       "type": "stdio",
-      "command": "dnx",
-      "args": ["lewing.helix.mcp", "--yes"],
+      "command": "dotnet",
+      "args": ["dnx", "--yes", "lewing.helix.mcp"],
       "env": {
         "HELIX_ACCESS_TOKEN": "your-token-here"
       }
