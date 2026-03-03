@@ -156,8 +156,8 @@ Add the following to your MCP client config. The `--yes` flag ensures `dnx` does
   "servers": {
     "hlx": {
       "type": "stdio",
-      "command": "dnx",
-      "args": ["lewing.helix.mcp", "--yes"]
+      "command": "dotnet",
+      "args": ["dnx", "--yes", "lewing.helix.mcp"]
     }
   }
 }
