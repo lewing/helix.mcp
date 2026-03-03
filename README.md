@@ -232,6 +232,70 @@ Add the following to your MCP client config. The `--yes` flag ensures `dnx` does
 | `hlx cache clear` | Wipe all cached data (all auth contexts). |
 | `hlx mcp` | Start MCP server over stdio. Also the default when no command is given. |
 
+## Using as a Library
+
+The core Helix API logic is available as a standalone NuGet package for use in your own applications:
+
+```bash
+dotnet add package lewing.helix.core
+```
+
+### Basic Setup
+
+Register the Helix client and service in your DI container:
+
+```csharp
+using HelixTool.Core;
+
+// Create an API client (optional token for private jobs)
+var token = Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN");
+var apiClient = new HelixApiClient(token);
+
+// Create the service
+var helix = new HelixService(apiClient);
+```
+
+### Quick Example
+
+```csharp
+// Get job status with failure categorization
+var summary = await helix.GetJobStatusAsync("02d8bd09-9400-4e86-8d2b-7a6ca21c5009");
+
+Console.WriteLine($"Job: {summary.JobName} — {summary.FailedItems.Count} failed, {summary.PassedItems.Count} passed");
+
+foreach (var item in summary.FailedItems)
+    Console.WriteLine($"  ✗ {item.Name} ({item.FailureCategory}) exit={item.ExitCode}");
+
+// Search a work item's console log
+var results = await helix.SearchConsoleLogAsync("02d8bd09", "MyTest.dll.1", "error CS");
+foreach (var match in results.Matches)
+    Console.WriteLine($"  Line {match.LineNumber}: {match.Text}");
+
+// Parse TRX test results
+var trx = await helix.ParseTrxResultsAsync("02d8bd09", "MyTest.dll.1");
+foreach (var result in trx)
+    Console.WriteLine($"  {result.TestName}: {result.Outcome}");
+```
+
+### Authentication
+
+For public dotnet CI jobs, no token is needed. For private jobs, provide a token via:
+
+- **`HELIX_ACCESS_TOKEN` env var** — read at client construction time
+- **`IHelixTokenAccessor`** — implement this interface for custom token resolution (e.g., per-request auth in web apps)
+
+### DI Registration
+
+For applications using `Microsoft.Extensions.DependencyInjection`:
+
+```csharp
+services.AddSingleton<IHelixApiClient>(sp =>
+    new HelixApiClient(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
+services.AddSingleton<HelixService>();
+```
+
+> **Want the full MCP server instead?** See [Installation](#installation) and [MCP Configuration](#mcp-configuration) above.
+
 ## Failure Categorization
 
 Failed work items are automatically classified into one of: **Timeout**, **Crash**, **BuildFailure**, **TestFailure**, **InfrastructureError**, **AssertionFailure**, or **Unknown**. The category appears in `status`, `work-item`, and `batch-status` output, and is available as `failureCategory` in JSON and MCP tool responses.

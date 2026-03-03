@@ -56,3 +56,13 @@
 📌 Team update (2026-02-15): DownloadFilesAsync per-invocation temp dirs — decided by Ripley
 📌 Team update (2026-02-15): CI version validation — decided by Ripley
 📌 Team update (2026-03-01): UseStructuredContent refactor approved — typed return objects with UseStructuredContent=true for all 12 MCP tools (hlx_logs excepted). FileInfo_ naming noted as non-blocking. No breaking wire-format changes. — decided by Dallas
+
+## Learnings
+
+### W7 Post-Refactoring Test Verification (2026-07-18)
+- **Result:** 373 tests passed, 0 failed, 0 skipped. Duration ~8s. Clean run.
+- Ripley's Core NuGet packaging refactor (W1-W6, W9) — model extraction to `src/HelixTool.Core/Models/`, new `HelixTool.Mcp.Tools` project, centralized versioning — caused zero test breakage.
+- Test project references and namespaces remained intact after the restructuring. `InternalsVisibleTo` still works correctly for `MatchesPattern` and `MaxBatchSize` access.
+- Test count grew from 369 (last recorded) to 373 — 4 new tests added since last baseline.
+- Project structure post-refactor: `src/HelixTool.Core/`, `src/HelixTool.Mcp/`, `src/HelixTool.Mcp.Tools/`, `src/HelixTool/`, `src/HelixTool.Tests/`
+- CS1591 warnings (missing XML doc comments) are pervasive in Core — not test-blocking but noted for future cleanup.
