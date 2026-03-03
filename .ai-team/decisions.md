@@ -483,7 +483,6 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 **Impact:** Non-breaking. All 81 tests pass. No new dependencies added. One dependency removed.
 
 
-
 ### 2026-02-12: US-10 (Work Item Detail) and US-23 (Batch Status) Implementation
 
 
@@ -500,7 +499,6 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 - `src/HelixTool/Program.cs` — `work-item` and `batch-status` commands
 - `src/HelixTool/HelixMcpTools.cs` — `hlx_work_item` and `hlx_batch_status` tools
 - `src/HelixTool.Mcp/HelixMcpTools.cs` — same tools for HTTP MCP server
-
 
 
 ### 2026-02-12: US-21 Failure Categorization
@@ -596,8 +594,6 @@ Both copies contained identical logic and had to be kept in sync manually. Conso
 **Verification:** `dotnet build` — 0 errors, 0 warnings. `dotnet test` — 126/126 passed.
 
 
-
-
 ### 2025-07-21: CI workflow added at .github/workflows/ci.yml
 **By:** Ripley
 **What:** Created a GitHub Actions CI workflow that runs on push/PR to main/master. Matrix: ubuntu-latest + windows-latest. Uses .NET 10 preview SDK. Steps: checkout, restore, build, test. NuGet restore uses the repo-root nuget.config which already includes the dotnet-eng Azure Artifacts feed.
@@ -616,12 +612,10 @@ Both copies contained identical logic and had to be kept in sync manually. Conso
 **Why:** Follows the established `{owner}.{tool}.mcp` naming convention (same as `baronfel.binlog.mcp`). The old bare `hlx` name was too generic for a public NuGet package and didn't convey ownership or purpose. The server.json update aligns with the latest MCP server registry schema that tools like VS Code and Copilot CLI consume for zero-install discovery.
 
 
-
 ### 2025-02-12: NuGet Trusted Publishing workflow
 **By:** Ripley
 **What:** Created `.github/workflows/publish.yml` that publishes `lewing.helix.mcp` to nuget.org on `v*` tag push using NuGet Trusted Publishing (OIDC) via `NuGet/login@v1`. Creates a GitHub Release with the nupkg attached. No API key secrets — only `NUGET_USER` is needed. Pattern adapted from baronfel/mcp-binlog-tool.
 **Why:** Trusted Publishing is the modern NuGet approach — OIDC tokens are short-lived and scoped to the workflow, eliminating long-lived API key secrets. The workflow mirrors CI's .NET 10 preview SDK setup for consistency. Using `-o src/HelixTool/nupkg` gives a predictable output path for both the push glob and the release artifact attachment. Changelog support intentionally deferred — simple `Release ${{ github.ref_name }}` body for now.
-
 
 
 ### 2026-02-12: Refined Cache Requirements — SQLite-backed, Cross-Process Shared Cache
@@ -1930,7 +1924,6 @@ Also, `FindBinlogs` MCP tool now delegates to `FindFiles`, so the test on line 2
 - `src/HelixTool.Tests/JsonOutputTests.cs` (already fixed for compilation)
 
 
-
 ### 2025-07-23: STRIDE Threat Model — Completed and Approved
 
 **By:** Ash (analysis), Dallas (review)
@@ -1948,7 +1941,6 @@ Also, `FindBinlogs` MCP tool now delegates to `FindFiles`, so the test on line 2
 2. **E1 (URL scheme validation)** — Ripley should add a scheme check in `DownloadFromUrlAsync` as part of normal hardening. One-liner: reject non-`http`/`https` schemes.
 3. **D1 (batch size limit)** — Add `ArgumentException` guard in `GetBatchStatusAsync` if `idList.Count > 50`. Prevents agent-driven resource exhaustion.
 4. **T2 (domain allowlist for download-url)** — Defer. Too restrictive for a diagnostic tool where blob storage URLs vary. Document the risk instead.
-
 
 
 ### 2025-07-23: P1 Security Fixes — E1 URL Scheme Validation + D1 Batch Size Limit
@@ -2437,7 +2429,6 @@ From the `find-binlogs → find-files` generalization decision:
 `hlx_test_results` is justified as a convenience tool because TRX parsing requires structured XML analysis that cannot be done with text search alone. It's not "another file-type convenience" — it's a fundamentally different operation (structured extraction vs. text matching).
 
 
-
 ### 2026-02-13: Security analysis — structured file parsing
 
 **By:** Ash
@@ -2707,7 +2698,6 @@ internal const int MaxSearchFileSizeBytes = 50 * 1024 * 1024; // 50 MB
 | Cache poisoning of parsed results | Low | Existing cache isolation patterns apply |
 
 
-
 ---
 
 
@@ -2903,7 +2893,6 @@ The publish workflow triggers on `v*` tags and extracts the version from the tag
 - **P3:** Failure categorization heuristic details (exit code→ category mapping) not yet documented
 
 
-
 ### 2025-07-23: MCP tool descriptions should expose behavioral contracts, not implementation mechanics
 
 **By:** Dallas
@@ -2973,3 +2962,869 @@ The publish workflow (`publish.yml`) validates all three match the git tag. Miss
 **By:** Ripley (Backend Dev)
 **What:** Use `Console.IsInputRedirected` to auto-detect context: interactive terminal defaults to `["--help"]`, redirected stdin defaults to `["mcp"]`. Previously, running `hlx` with no arguments in a terminal would hang waiting for JSON-RPC input.
 **Why:** `Console.IsInputRedirected` is a reliable .NET API — standard idiom for CLI tools that need different behavior in interactive vs. non-interactive contexts. No additional dependencies or platform-specific code required.
+
+### 2026-03-03: Helix authentication UX analysis
+**By:** Ash
+**What:** Feasibility analysis for improving hlx authentication experience
+**Why:** Larry asked about Entra auth — the answer is "not directly" but there are UX improvements we can make
+
+---
+
+## 1. Current State
+
+### How auth works today
+
+hlx uses a two-transport auth model via `IHelixTokenAccessor`:
+
+| Transport | Implementation | How token is provided |
+|-----------|---------------|----------------------|
+| CLI (stdio) | `EnvironmentHelixTokenAccessor` | `HELIX_ACCESS_TOKEN` env var, set by user before invoking `hlx` |
+| HTTP MCP | `HttpContextHelixTokenAccessor` | `Authorization: Bearer <token>` or `Authorization: token <token>` header per request; falls back to env var |
+
+The token is passed to `HelixApiClient` → `HelixApiTokenCredential` → `HelixApiTokenAuthenticationPolicy`, which sends it to the Helix API as `Authorization: token <TOKEN>`.
+
+### UX pain points
+
+1. **Manual token generation:** Users must navigate to helix.dot.net → log in with Microsoft SSO → go to Profile → generate an API access token → copy it.
+2. **Manual env var setup:** CLI users must `export HELIX_ACCESS_TOKEN=<token>` in every new shell session. No persistence.
+3. **No `hlx login` flow:** Unlike `az login`, `gh auth login`, or `darc authenticate`, there is no interactive auth command.
+4. **Token management is invisible:** No way to check if a token is configured, valid, or expired. Users only discover auth problems when API calls fail with "Access denied."
+5. **Repeated error messages:** All 7 catch blocks in `HelixService.cs` repeat the same guidance string: _"Set the HELIX_ACCESS_TOKEN environment variable with a token from your helix.dot.net profile page."_
+
+---
+
+## 2. What's NOT Possible: Direct Entra Auth to Helix API
+
+**The Helix API does not accept Entra (Azure AD) JWT tokens.** This is a server-side limitation, not a client-side one.
+
+**Evidence:**
+- The Helix SDK's auth model uses `HelixApiTokenCredential`, which wraps a plain opaque string — not a JWT.
+- `HelixApiTokenAuthenticationPolicy` sends `Authorization: token <TOKEN>`, a custom scheme. The Helix API server validates these opaque tokens against its own token store, not against Entra/AAD.
+- While helix.dot.net's _web UI_ uses Microsoft SSO for login, the API access tokens generated from the Profile page are opaque strings decoupled from the user's Entra session. They are not JWTs, cannot be refreshed via Entra, and have no OAuth scopes.
+- Contrast with Maestro/PCS, which explicitly uses `AddMicrosoftIdentityWebApi` and accepts Entra JWT Bearer tokens. Helix has no equivalent.
+
+**Bottom line:** Until the Helix service team adds Entra API auth support server-side, hlx cannot use Entra tokens to call the Helix API. This is not something we can solve on the client side.
+
+---
+
+## 3. What IS Possible: Practical UX Improvements
+
+### 3a. `hlx login` — Interactive Token Setup
+
+**Concept:** A new CLI command that guides users through token acquisition:
+
+```
+$ hlx login
+No Helix token found.
+
+To authenticate, you need an API token from helix.dot.net:
+
+  1. Opening https://helix.dot.net/Account/Tokens in your browser...
+  2. Log in with your Microsoft account if prompted
+  3. Generate a new API access token
+  4. Paste it here
+
+Token: ••••••••••••••••••••
+
+✓ Token stored successfully.
+  Stored in: system keychain (helix.dot.net)
+  Test: Attempting API call... ✓ Authenticated as lewing@microsoft.com
+```
+
+**Implementation sketch:**
+- Open browser via `Process.Start` (cross-platform: `xdg-open` on Linux, `open` on macOS, `start` on Windows)
+- Read token from stdin with echo disabled (`Console.ReadLine` after clearing echo, or use Spectre.Console `TextPrompt` with `IsSecret = true`)
+- Validate token by making a lightweight API call (e.g., list a known public job)
+- Store token securely (see 3b)
+
+**New `IHelixTokenAccessor` implementation:** `StoredHelixTokenAccessor` that reads from secure storage, falling back to env var.
+
+### 3b. Secure Token Storage
+
+**Option A: `git credential` (recommended)**
+Leverage the user's existing git credential manager, which already handles cross-platform secure storage:
+```
+$ echo "protocol=https\nhost=helix.dot.net\nusername=helix-api\n" | git credential fill
+```
+- **Pro:** Works everywhere git works. Users already have credential managers configured (macOS Keychain, Windows Credential Manager, libsecret on Linux). Zero new dependencies.
+- **Pro:** Precedent in the .NET ecosystem — `darc` uses a similar pattern.
+- **Con:** Requires git to be installed (safe assumption for this user base).
+
+**Option B: Platform keychain directly**
+Use `System.Security.Cryptography.ProtectedData` (Windows), macOS Keychain via P/Invoke, or libsecret on Linux.
+- **Pro:** No git dependency.
+- **Con:** Three platform-specific implementations to maintain. Significant effort.
+
+**Option C: Encrypted file in `~/.hlx/`**
+Store token in an encrypted file with user-only permissions (`chmod 600`).
+- **Pro:** Simple, portable.
+- **Con:** Less secure than keychain. Encryption key management is its own problem.
+
+**Recommendation:** Option A (`git credential`). It's battle-tested, cross-platform, zero new dependencies for our user base, and follows the pattern that `darc` and `gh` already use.
+
+### 3c. Token Resolution Order
+
+New resolution order for `IHelixTokenAccessor` in CLI mode:
+
+1. `--token` CLI flag (explicit, one-time use)
+2. `HELIX_ACCESS_TOKEN` env var (backward compatible)
+3. Secure storage via `git credential` (new — the `hlx login` destination)
+4. Prompt user: _"No token found. Run `hlx login` to authenticate."_
+
+For HTTP MCP transport, keep the current `HttpContextHelixTokenAccessor` behavior (Authorization header → env var fallback). Add secure storage as a third fallback.
+
+### 3d. `hlx auth status` — Token Health Check
+
+```
+$ hlx auth status
+Token source: system keychain (helix.dot.net)
+API test: ✓ Connected
+```
+
+Or when unconfigured:
+```
+$ hlx auth status
+⚠ No Helix token configured.
+Run `hlx login` to authenticate, or set HELIX_ACCESS_TOKEN.
+```
+
+### 3e. `hlx logout` — Token Removal
+
+```
+$ hlx logout
+✓ Token removed from system keychain.
+```
+
+Clears the stored credential. Does not revoke the token on the server (Helix API doesn't have a revocation endpoint).
+
+---
+
+## 4. Future Possibility: If Helix Adopts Entra API Auth
+
+If the Helix service team ever adds Entra JWT Bearer token support (as Maestro/PCS did), the client-side implementation would look like:
+
+### What Helix would need to change (server-side)
+- Add `Microsoft.Identity.Web` or equivalent middleware
+- Accept `Authorization: Bearer <JWT>` alongside existing `Authorization: token <opaque>`
+- Register an app in Entra with appropriate API scopes
+
+### What hlx would change (client-side)
+1. **New `IHelixTokenAccessor` implementation:** `EntraHelixTokenAccessor` using `Azure.Identity`
+2. **Token acquisition strategies** (mirroring Darc's `AppCredentialResolver`):
+   - `InteractiveBrowserCredential` — `hlx login --entra` opens browser for SSO
+   - `AzureCliCredential` — use existing `az login` session
+   - `ManagedIdentityCredential` — for CI/CD environments
+   - `DefaultAzureCredential` — automatic chain of all the above
+3. **Token refresh:** Entra JWTs expire (typically 1 hour). `Azure.Identity` handles refresh automatically via `TokenCredential.GetTokenAsync`.
+4. **Updated `HelixApiClient`:** Accept either `TokenCredential` (Entra) or `string` (opaque token) in constructor, using the appropriate auth policy.
+
+### Architecture compatibility
+The existing `IHelixTokenAccessor` interface returns `string?`, which works for both opaque tokens and JWTs (a JWT is just a longer string). No interface change needed — the Entra accessor would return the JWT string, and `HelixApiTokenCredential` would pass it through. The Helix server would need to accept it in the `token` scheme or hlx would need a new auth policy for `Bearer` scheme.
+
+Alternatively, if Helix adopted standard Bearer auth, `HelixApiClient` could accept `Azure.Identity.TokenCredential` directly, bypassing the custom auth policy entirely. This is the cleaner path and what Maestro does.
+
+---
+
+## 5. Recommended Next Steps
+
+### Phase 1: `hlx login` + `git credential` storage (HIGH VALUE, LOW EFFORT)
+
+| Item | Effort | Impact |
+|------|--------|--------|
+| `hlx login` command with browser open + token paste | Small | Eliminates biggest UX pain point |
+| `git credential`-based secure storage | Small | Eliminates env var requirement |
+| `StoredHelixTokenAccessor` with resolution chain | Small | Clean architecture extension |
+| `hlx auth status` | Trivial | Confidence builder for users |
+| `hlx logout` | Trivial | Cleanup story |
+
+**Estimated total effort:** 1-2 days for a focused implementation.
+
+### Phase 2: Polish (MEDIUM VALUE)
+
+- Token validation on `hlx login` (test API call before storing)
+- Better error messages when token is expired or invalid
+- `--token` CLI flag for one-off use without storage
+
+### Phase 3: Entra auth (FUTURE — blocked on Helix server)
+
+- Only pursue if/when Helix service announces Entra API auth support
+- Monitor Helix service roadmap or ask the Helix team directly
+- Implementation would be ~1 week using `Azure.Identity` SDK
+
+### Decision needed from Dallas
+
+This analysis identifies a clear UX improvement path that doesn't require any server-side changes. Recommend Dallas approve Phase 1 scope so Ripley can implement.
+
+**Key architecture question:** Should `StoredHelixTokenAccessor` live in `HelixTool.Core` (available to both CLI and MCP) or in `HelixTool` (CLI only)? The `git credential` dependency suggests CLI-only, but the resolution chain pattern is useful for MCP too.
+
+
+### 2026-03-03: HelixTool.Core as separate NuGet package
+**By:** Dallas
+**What:** Architecture analysis and recommendation for publishing HelixTool.Core as a standalone NuGet library
+**Why:** Users want to consume the Helix API client/service directly in their own .NET tools
+
+---
+
+## 1. Current State Assessment
+
+### Public Types in HelixTool.Core Today
+
+**Service layer:**
+- `HelixService` — Core business logic (14 public methods). Constructor takes `IHelixApiClient`.
+- `HelixIdResolver` — Static utility for parsing Helix URLs/GUIDs. Pure functions, no dependencies.
+- `HelixException` — Domain exception type.
+- `FailureCategory` — Enum for work item failure classification.
+
+**API client abstraction:**
+- `IHelixApiClient` — 6-method interface wrapping the Helix SDK surface.
+- `HelixApiClient` — Default implementation wrapping `Microsoft.DotNet.Helix.Client.HelixApi`.
+- `IHelixApiClientFactory` / `HelixApiClientFactory` — Factory for per-token client creation (HTTP mode).
+- Projection interfaces: `IJobDetails`, `IWorkItemSummary`, `IWorkItemDetails`, `IWorkItemFile`.
+
+**Auth abstractions:**
+- `IHelixTokenAccessor` / `EnvironmentHelixTokenAccessor` — Token resolution.
+- `ChainedHelixTokenAccessor` — Env var → stored credential chain. Exposes `TokenSource`.
+- `ICredentialStore` / `GitCredentialStore` — `git credential` backed storage.
+- `TokenSource` enum.
+
+**Cache layer (7 files):**
+- `ICacheStore` / `SqliteCacheStore` — SQLite + disk artifact cache.
+- `ICacheStoreFactory` / `CacheStoreFactory` — Per-auth-context cache creation.
+- `CachingHelixApiClient` — Decorator over `IHelixApiClient`.
+- `CacheOptions` — Configuration record.
+- `CacheStatus` — Status summary record.
+- `CacheSecurity` — Internal path traversal prevention.
+
+**MCP integration (should NOT be here):**
+- `HelixMcpTools` — 12 MCP tool definitions. Depends on `ModelContextProtocol` SDK.
+- `McpToolResults.cs` — 18 MCP-specific DTO types (`StatusResult`, `FilesResult`, `FileInfo_`, etc.).
+
+**Nested record types in HelixService:**
+- `WorkItemResult`, `JobSummary`, `FileEntry`, `FileSearchResult`, `WorkItemDetail`, `BatchJobSummary`, `LogSearchResult`, `LogMatch`, `FileContentSearchResult`, `TrxTestResult`, `TrxParseResult` — 11 types total.
+
+### Dependencies
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `Microsoft.DotNet.Helix.Client` | 11.0.0-beta.26110.116 | Helix SDK |
+| `Microsoft.Data.Sqlite` | 9.0.7 | Cache storage |
+| `ModelContextProtocol` | 1.0.0 | **MCP tools** |
+
+### How It's Consumed Today
+
+- **HelixTool (CLI):** References Core. Uses `HelixService` directly for CLI commands. Brings its own DI, hosting, ConsoleAppFramework.
+- **HelixTool.Mcp (HTTP server):** References Core. Uses `HelixMcpTools` for MCP tool exposure. Uses `ModelContextProtocol.AspNetCore`.
+
+---
+
+## 2. Feasibility Analysis
+
+### Can it be published as-is?
+
+**No.** Several issues must be addressed:
+
+#### Issue A: ModelContextProtocol dependency in Core (BLOCKER)
+
+`HelixMcpTools` and `McpToolResults.cs` live in Core but are purely MCP presentation concerns. They depend on `ModelContextProtocol` (1.0.0), which:
+- Pulls in `Microsoft.Extensions.AI.Abstractions`, `Microsoft.Extensions.Hosting.Abstractions`, and other packages a library consumer doesn't need.
+- Is semantically wrong — a "core library" should not know about its MCP presentation layer.
+- Forces library consumers to take a transitive dependency on the MCP SDK.
+
+**Verdict:** Must move. This is the single blocking issue.
+
+#### Issue B: Nested record types in HelixService (SHOULD FIX)
+
+11 record types defined as nested types inside `HelixService`:
+```csharp
+public class HelixService {
+    public record WorkItemResult(...);
+    public record JobSummary(...);
+    // ... 9 more
+}
+```
+
+These are return types consumed by external code. Nested types are:
+- Harder to discover (`HelixService.JobSummary` vs `JobSummary`)
+- Impossible to reference without the containing type
+- A code smell when they're not implementation details
+
+Previous decision (2025-07-18) already recommended extracting to `Models/`. Not yet done.
+
+**Verdict:** Should extract to top-level types before publishing. Low risk, no behavioral change.
+
+#### Issue C: IHelixApiClient abstraction quality (GOOD)
+
+The interface is clean — 6 methods, all async, all take `CancellationToken`. Projection interfaces (`IJobDetails`, etc.) properly decouple from Helix SDK concrete types. External consumers can:
+- Use `HelixApiClient` directly with an access token
+- Implement `IHelixApiClient` for testing or custom scenarios
+- Stack `CachingHelixApiClient` as a decorator
+
+**Verdict:** Ready for external use. No changes needed.
+
+#### Issue D: Cache layer (GOOD — already optional)
+
+Caching is implemented as a decorator (`CachingHelixApiClient`) that wraps `IHelixApiClient`. It's opt-in — consumers who don't register it get uncached behavior. The `MaxSizeBytes = 0` path disables caching entirely.
+
+The `Microsoft.Data.Sqlite` dependency (9.0.7) is lightweight and reasonable for a caching library. However, consumers who don't want caching would still pull this transitive dependency.
+
+**Verdict:** Acceptable as-is. The decorator pattern means caching is already pluggable. If dependency weight becomes a concern, we could split caching into a separate `HelixTool.Core.Caching` package later — but that's premature optimization today.
+
+#### Issue E: Auth abstractions (GOOD — clean interfaces)
+
+`IHelixTokenAccessor` and `ICredentialStore` are clean single-purpose interfaces. `ChainedHelixTokenAccessor` and `GitCredentialStore` are concrete implementations that work standalone. Library consumers can:
+- Use `EnvironmentHelixTokenAccessor` for simple env-var auth
+- Use `ChainedHelixTokenAccessor` for the full resolution chain
+- Implement their own `IHelixTokenAccessor` (e.g., Azure Identity, service principal)
+
+**Verdict:** Ready for external use. No changes needed.
+
+#### Issue F: FileInfo_ naming (COSMETIC)
+
+`FileInfo_` has a trailing underscore to avoid collision with `System.IO.FileInfo`. Previous review noted `HelixFileInfo` would be cleaner. This is in `McpToolResults.cs` which is moving out anyway — so this only matters if we keep a similar type in Core.
+
+**Verdict:** Non-blocking. `FileEntry` in `HelixService` is the Core-level type and is fine.
+
+---
+
+## 3. Recommended Approach
+
+### 3.1 Move MCP code out of Core
+
+Move `HelixMcpTools.cs` and `McpToolResults.cs` from `HelixTool.Core` to a new or existing project. Two options:
+
+**Option A (RECOMMENDED): Move to HelixTool (CLI project)**
+The CLI project already references both `HelixTool.Core` and `ModelContextProtocol`. It hosts the MCP server via `hlx mcp` subcommand. Moving the MCP tool definitions there keeps them co-located with their host. The HelixTool.Mcp project (HTTP server) also references Core — it would need to reference the CLI project or we duplicate. This is messy.
+
+**Option B (RECOMMENDED): Move to HelixTool.Mcp.Shared or leave in both hosts**
+Both CLI and HTTP hosts need `HelixMcpTools`. Creating a `HelixTool.Mcp.Shared` project just for tool definitions is over-engineering.
+
+**Option C (BEST): Keep a HelixTool.Mcp.Core project**
+Create `HelixTool.Mcp.Core` containing `HelixMcpTools.cs` and `McpToolResults.cs`. Both the CLI (`HelixTool`) and HTTP (`HelixTool.Mcp`) projects reference it. This respects the existing split pattern.
+
+Actually, on reflection: **both HelixTool and HelixTool.Mcp already reference ModelContextProtocol** (directly or via AspNetCore). The simplest correct move is:
+
+**DECISION: Move HelixMcpTools.cs and McpToolResults.cs into the HelixTool project (CLI).** The HelixTool.Mcp (HTTP) project already references HelixTool (it must, to get the tool definitions for MCP hosting). If it doesn't currently, add that reference. This is zero new projects, one file move, and removes the `ModelContextProtocol` PackageReference from Core.
+
+Wait — checking: HelixTool.Mcp does NOT reference HelixTool. It only references Core. And the CLI project is an Exe, not a library. So we can't reference it from Mcp.
+
+**REVISED DECISION: Create a new project HelixTool.Mcp.Core** (class library) containing:
+- `HelixMcpTools.cs`
+- `McpToolResults.cs`
+
+Dependencies: `HelixTool.Core` + `ModelContextProtocol`. Both CLI and HTTP projects reference this instead of owning MCP tools.
+
+Alternatively, since both hosts already depend on `ModelContextProtocol`, we could just **move the files to HelixTool.Core's parent directory** and have both projects include them as linked files. But linked files are fragile.
+
+**FINAL DECISION: Move to a new `HelixTool.Mcp.Tools` project.**
+
+```
+src/
+  HelixTool.Core/          ← Pure library (no MCP dependency)
+  HelixTool.Mcp.Tools/     ← HelixMcpTools + McpToolResults (depends on Core + MCP SDK)
+  HelixTool/               ← CLI (depends on Core + Mcp.Tools)
+  HelixTool.Mcp/           ← HTTP server (depends on Core + Mcp.Tools)
+```
+
+This is the cleanest split: Core has no MCP knowledge, MCP tool definitions are shared, both hosts consume them.
+
+### 3.2 Extract nested record types from HelixService
+
+Move the 11 nested record types to `Models/` folder as top-level types:
+- `Models/WorkItemResult.cs`
+- `Models/JobSummary.cs`
+- `Models/FileEntry.cs`
+- `Models/FileSearchResult.cs`
+- `Models/WorkItemDetail.cs`
+- `Models/BatchJobSummary.cs`
+- `Models/LogSearchResult.cs`
+- `Models/LogMatch.cs`
+- `Models/FileContentSearchResult.cs`
+- `Models/TrxTestResult.cs`
+- `Models/TrxParseResult.cs`
+
+All stay in `namespace HelixTool.Core`. This is a source-breaking change for callers using `HelixService.JobSummary` syntax, but binary-compatible since the CLR doesn't distinguish nested vs. top-level types in IL.
+
+### 3.3 NuGet packaging
+
+Add to `HelixTool.Core.csproj`:
+```xml
+<PropertyGroup Label="Package Metadata">
+  <PackageId>lewing.helix.core</PackageId>
+  <Description>.NET client library for the Helix test infrastructure API — job status, work item details, file downloads, TRX parsing, and caching</Description>
+  <Authors>Larry Ewing</Authors>
+  <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  <PackageTags>helix;dotnet;ci;testing;api-client</PackageTags>
+  <PackageReadmeFile>README.md</PackageReadmeFile>
+  <PublishRepositoryUrl>true</PublishRepositoryUrl>
+  <GenerateDocumentationFile>true</GenerateDocumentationFile>
+</PropertyGroup>
+```
+
+Key decisions:
+- **PackageId:** `lewing.helix.core` (consistent with `lewing.helix.mcp` for the CLI tool)
+- **GenerateDocumentationFile:** Enables XML doc comments in IntelliSense for consumers
+- **No `PackAsTool`:** This is a library, not a tool
+
+### 3.4 Versioning strategy
+
+**RECOMMENDED: Same version as CLI tool, from a single source.**
+
+Rationale:
+- Core and CLI are in the same repo, built together, released together.
+- Independent versioning adds cognitive load and release process complexity.
+- If a Core change doesn't affect CLI, bump patch. If a CLI change doesn't affect Core, Core still gets bumped — no harm.
+- SemVer still applies: breaking Core API changes = major bump for both.
+
+Implementation: Move `<Version>` to `Directory.Build.props` so all projects share it.
+
+### 3.5 API surface cleanup
+
+Beyond extracting nested types:
+1. **`MatchesPattern` is `internal static` but called from `HelixMcpTools`** — after moving MCP tools out of Core, this needs to become `public` or the pattern matching logic moves to Mcp.Tools. It's a general-purpose utility, so `public static` in `HelixService` (or better, in `HelixIdResolver` or a new `HelixUtilities` class) is fine.
+2. **`IsFileSearchDisabled` is `internal static`** — same issue. This is config, should be exposed or injected.
+3. **`FormatDuration` in HelixMcpTools is `internal static`** — presentation logic, stays in Mcp.Tools.
+
+### 3.6 Breaking change analysis
+
+| Change | CLI impact | MCP impact | External consumer impact |
+|--------|-----------|------------|--------------------------|
+| Move HelixMcpTools to Mcp.Tools | Update project reference | Update project reference | N/A (new consumers) |
+| Extract nested records | Update `HelixService.X` → `X` references | Same | N/A (new consumers) |
+| Remove MCP PackageReference from Core | None | None | Smaller dependency tree |
+| Add NuGet metadata | None | None | Enables consumption |
+
+All changes are internal restructuring. No wire-format changes. No behavioral changes. Risk: **LOW**.
+
+---
+
+## 4. Work Items
+
+| ID | Title | Size | Assignee | Depends On | Description |
+|----|-------|------|----------|------------|-------------|
+| W1 | Create HelixTool.Mcp.Tools project | S | Ripley | — | New class library project with `ModelContextProtocol` + `HelixTool.Core` references. Move `HelixMcpTools.cs` and `McpToolResults.cs` from Core. Update namespace if needed. |
+| W2 | Update CLI and HTTP projects | S | Ripley | W1 | Add `HelixTool.Mcp.Tools` project reference to both `HelixTool` and `HelixTool.Mcp`. Remove `ModelContextProtocol` PackageReference from `HelixTool.Core.csproj`. Verify build. |
+| W3 | Extract nested record types | M | Ripley | — | Move 11 nested records from `HelixService` to `Models/` folder as top-level types. Update all call sites in Core, CLI, MCP, and tests. |
+| W4 | Fix internal→public visibility | S | Ripley | W1 | Make `MatchesPattern` and `IsFileSearchDisabled` public (or refactor to injected config). These are needed by Mcp.Tools after the split. |
+| W5 | Add NuGet packaging metadata | S | Ripley | W2 | Add PackageId, Description, License, Tags, etc. to `HelixTool.Core.csproj`. Add `GenerateDocumentationFile`. Create or link a library-specific README. |
+| W6 | Centralize version in Directory.Build.props | S | Ripley | — | Move `<Version>` from `HelixTool.csproj` to `Directory.Build.props`. Ensure all projects share it. |
+| W7 | Verify existing tests pass | S | Lambert | W1, W2, W3, W4 | Run full test suite after restructuring. No new tests needed for mechanical refactors. |
+| W8 | Update README for library consumption | M | Kane | W5 | Add a "Using as a library" section to README showing how to reference the NuGet package, register services, and call HelixService directly. |
+| W9 | CI: Add pack step for Core NuGet | S | Ripley | W5, W6 | Update CI pipeline to produce `lewing.helix.core` .nupkg alongside the existing tool package. |
+
+**Execution order:** W6 → W1 → W2 + W4 → W3 → W5 → W7 → W8 + W9
+
+**Total effort estimate:** ~2-3 days of focused work.
+
+---
+
+## 5. Open Questions for Larry
+
+1. **PackageId:** `lewing.helix.core` or `lewing.helixtool.core`? The CLI is `lewing.helix.mcp` — do we want `helix` as the common prefix?
+2. **Separate publish workflow?** Or same pipeline publishes both packages?
+3. **Minimum supported TFM:** Currently `net10.0`. Should the library target `net8.0` or `net9.0` for broader adoption? The `Microsoft.DotNet.Helix.Client` package may constrain this.
+4. **Should caching be a separate package?** (`lewing.helix.core.caching`) — I recommend no for now, but flagging for awareness.
+
+
+### 2026-03-03: hlx login architecture
+**By:** Dallas
+**What:** Architecture for Phase 1 auth UX (hlx login + credential storage)
+**Why:** Eliminate manual HELIX_ACCESS_TOKEN env var setup — biggest UX friction point
+
+---
+
+## Decision Summary
+
+Phase 1 approved. This document defines the architecture for `hlx login`, `hlx auth status`, `hlx logout`, credential storage, and the token resolution chain. Ash's analysis was thorough; I'm making a few architectural calls where options were left open.
+
+---
+
+## 1. New Commands — UX Design
+
+### `hlx login`
+
+```
+$ hlx login
+To authenticate, you need an API token from helix.dot.net:
+
+  1. Opening https://helix.dot.net/Account/Tokens in your browser...
+  2. Log in with your Microsoft account if prompted
+  3. Generate a new API access token
+  4. Paste it below
+
+Token: ••••••••••••••••••••
+
+Validating... ✓ Token is valid.
+✓ Token stored successfully.
+```
+
+**Behavior:**
+- Attempt to open `https://helix.dot.net/Account/Tokens` in the default browser via `Process.Start` (cross-platform: `xdg-open` / `open` / `start`). If the browser open fails, print the URL and tell the user to open it manually. This is non-blocking — don't fail the command if the browser can't open.
+- Prompt for token input using Spectre.Console `TextPrompt<string>` with `IsSecret = true` (mask with `•`). We already depend on Spectre.Console transitively via ConsoleAppFramework, but verify — if not, this is an acceptable new dependency for a CLI tool.
+- **Validate the token** before storing: make a lightweight API call (e.g., `GET /api/2019-06-17/jobs?count=1`). If it fails with 401, tell the user the token is invalid and do NOT store it. If it fails with a network error, warn but still offer to store (the token might be valid on a different network).
+- Store via `git credential approve` (see §2).
+- If a token is already stored, warn and ask for confirmation before overwriting: `"A token is already stored. Replace it? [y/N]"`
+
+**Flag:** `--no-browser` — skip the browser open step (useful for SSH sessions, headless environments).
+
+### `hlx auth status`
+
+```
+$ hlx auth status
+Token source: stored credential (git credential)
+API test:     ✓ Connected
+```
+
+```
+$ hlx auth status
+Token source: HELIX_ACCESS_TOKEN environment variable
+API test:     ✓ Connected
+```
+
+```
+$ hlx auth status
+⚠ No Helix token configured.
+Run `hlx login` to authenticate, or set HELIX_ACCESS_TOKEN.
+```
+
+**Behavior:**
+- Report which source the token came from (env var vs stored credential vs none).
+- Make a test API call to validate the token is still working.
+- Exit code: 0 if authenticated, 1 if not. This makes it scriptable.
+- **Do NOT print the token itself.** Security 101.
+
+### `hlx logout`
+
+```
+$ hlx logout
+✓ Token removed from credential store.
+```
+
+**Behavior:**
+- Remove the stored credential via `git credential reject`.
+- If no stored credential exists, print "No stored token found." and exit 0 (idempotent).
+- Does NOT clear the `HELIX_ACCESS_TOKEN` env var (we can't modify the parent process's environment; print a hint if the env var is set).
+- Does NOT revoke the token server-side (Helix API has no revocation endpoint).
+
+### Command grouping
+
+These are flat commands, not subcommands of an `auth` group:
+- `hlx login`
+- `hlx logout`
+- `hlx auth status` (or `hlx auth-status` — ConsoleAppFramework maps kebab-case to methods)
+
+Rationale: `login`/`logout` are top-level for ergonomics (matching `gh auth login` being commonly shortened to just the common flow). `auth status` is naturally grouped since it's a diagnostic, not a primary action.
+
+Actually — let me reconsider. ConsoleAppFramework supports command grouping via nested classes. Let's use:
+- `hlx login` → top-level (most common)
+- `hlx logout` → top-level (most common)
+- `hlx auth status` → subcommand under `auth` group
+
+This matches `gh` CLI conventions where `login`/`logout` are top-level shortcuts.
+
+**UPDATE:** After reviewing ConsoleAppFramework docs — it doesn't easily support aliased top-level commands that also exist in a group. Keep it simple:
+- `hlx login` — top-level command
+- `hlx logout` — top-level command  
+- `hlx auth status` — top-level command (single command, not a group)
+
+All three are methods on the existing `Commands` class. No subcommand grouping needed for three commands.
+
+---
+
+## 2. Credential Storage — Decision: `git credential` (Option A)
+
+**Chosen: Option A — `git credential` store.**
+
+Rationale:
+1. **Zero new dependencies.** Our users are .NET developers who have git installed. This is a safe assumption.
+2. **Cross-platform by default.** git credential helpers handle macOS Keychain, Windows Credential Manager, and libsecret/gnome-keyring on Linux — all transparently.
+3. **Proven pattern.** `darc authenticate` uses the same approach. `gh` CLI uses a similar credential-helper model.
+4. **No crypto key management.** Options B/C/D all require us to manage encryption keys or platform-specific APIs. git credential delegates this entirely.
+5. **Minimal surface area.** Two shell-outs: `git credential approve` (store) and `git credential reject` (delete). That's it.
+
+**Why not the others:**
+- **Option B** (`ProtectedData`): Windows-only. Non-starter for a cross-platform tool.
+- **Option C** (Platform keychain NuGet): Adds a dependency, and we'd need to vet the package. git credential already does this.
+- **Option D** (Encrypted file): We'd have to solve key management. `chmod 600` isn't encryption. Weakest option.
+
+### Implementation Details
+
+**Credential protocol format:**
+```
+protocol=https
+host=helix.dot.net
+username=helix-api-token
+password=<the-actual-token>
+```
+
+- `username` is a fixed sentinel value (`helix-api-token`), not the user's actual username. Helix tokens are not scoped per-user in a way we can introspect.
+- `protocol=https` + `host=helix.dot.net` uniquely identifies this credential so it doesn't collide with other git credentials.
+
+**Store (git credential approve):**
+```csharp
+var psi = new ProcessStartInfo("git", "credential approve")
+{
+    RedirectStandardInput = true,
+    RedirectStandardOutput = true,
+    RedirectStandardError = true,
+    UseShellExecute = false,
+    CreateNoWindow = true
+};
+var process = Process.Start(psi);
+await process.StandardInput.WriteLineAsync("protocol=https");
+await process.StandardInput.WriteLineAsync("host=helix.dot.net");
+await process.StandardInput.WriteLineAsync("username=helix-api-token");
+await process.StandardInput.WriteLineAsync($"password={token}");
+await process.StandardInput.WriteLineAsync();  // blank line terminates
+await process.WaitForExitAsync();
+```
+
+**Retrieve (git credential fill):**
+```csharp
+// Write protocol + host + username, read back password field
+var psi = new ProcessStartInfo("git", "credential fill") { ... };
+// Parse output for "password=..." line
+```
+
+**Delete (git credential reject):**
+```csharp
+// Same format as approve, but with "reject" subcommand
+```
+
+**Error handling:**
+- If `git` is not on PATH, throw a clear error: `"git is not installed or not on PATH. Install git or set HELIX_ACCESS_TOKEN manually."`
+- If `git credential` fails (no credential helper configured), warn the user: `"No git credential helper configured. Token will not persist. See https://git-scm.com/docs/gitcredentials"`
+
+### New class: `GitCredentialStore`
+
+This is a **pure infrastructure class** — it knows how to talk to `git credential` but knows nothing about Helix. Lives in `HelixTool.Core` (see §4).
+
+```csharp
+namespace HelixTool.Core;
+
+public interface ICredentialStore
+{
+    Task<string?> GetTokenAsync(string host, string username, CancellationToken ct = default);
+    Task StoreTokenAsync(string host, string username, string token, CancellationToken ct = default);
+    Task DeleteTokenAsync(string host, string username, CancellationToken ct = default);
+}
+
+public sealed class GitCredentialStore : ICredentialStore { ... }
+```
+
+Interface allows testing with a mock store. The `host` and `username` parameters make it reusable if we ever need to store other credentials.
+
+---
+
+## 3. Token Resolution Chain
+
+### CLI mode (stdio + direct commands)
+
+Replace the current `EnvironmentHelixTokenAccessor` singleton with a new `ChainedHelixTokenAccessor`:
+
+```
+Priority 1: HELIX_ACCESS_TOKEN environment variable  (backward compat — highest wins)
+Priority 2: Stored credential via git credential
+Priority 3: null (no token — let the API call fail with a helpful message)
+```
+
+**Why env var wins over stored credential:** Backward compatibility. Users who have `HELIX_ACCESS_TOKEN` set today must not see behavior changes. Also, env vars are the standard mechanism for CI/CD overrides — a CI system should be able to `export HELIX_ACCESS_TOKEN=...` and have it take effect regardless of what's in the credential store.
+
+**No interactive prompt in the chain.** The token accessor runs during DI container setup (before any command executes). Prompting for a token during DI would be terrible UX. If no token is found, the accessor returns `null`, and the API call fails with the existing `HelixException` message — which we should update to say: `"Access denied. Run 'hlx login' to authenticate, or set HELIX_ACCESS_TOKEN."` (update all 7 catch blocks in HelixService.cs).
+
+### MCP stdio mode (`hlx mcp`)
+
+Same `ChainedHelixTokenAccessor` as CLI mode. The MCP server launched via `hlx mcp` is a child process — it inherits env vars and has access to the same git credential store.
+
+### HTTP MCP mode (`HelixTool.Mcp`)
+
+Keep `HttpContextHelixTokenAccessor` as-is. The HTTP transport gets its token from the per-request Authorization header, with env var fallback. Adding git credential as a third fallback is reasonable:
+
+```
+Priority 1: Authorization header (Bearer or token scheme)
+Priority 2: HELIX_ACCESS_TOKEN environment variable
+Priority 3: Stored credential via git credential
+```
+
+This means the HTTP MCP server can function without any explicit token configuration if the user has run `hlx login`.
+
+### New class: `ChainedHelixTokenAccessor`
+
+```csharp
+namespace HelixTool.Core;
+
+public sealed class ChainedHelixTokenAccessor : IHelixTokenAccessor
+{
+    private readonly string? _envToken;
+    private readonly ICredentialStore _store;
+    private string? _cachedToken;
+    private bool _resolved;
+
+    public ChainedHelixTokenAccessor(ICredentialStore store)
+    {
+        _envToken = Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN");
+        _store = store;
+    }
+
+    public string? GetAccessToken()
+    {
+        if (!string.IsNullOrEmpty(_envToken))
+            return _envToken;
+
+        if (!_resolved)
+        {
+            // Synchronous wrapper — git credential is fast (<100ms)
+            _cachedToken = _store.GetTokenAsync("helix.dot.net", "helix-api-token")
+                .GetAwaiter().GetResult();
+            _resolved = true;
+        }
+        return _cachedToken;
+    }
+}
+```
+
+**Note on sync-over-async:** `IHelixTokenAccessor.GetAccessToken()` is synchronous (returns `string?`). The git credential shell-out is async. We use `.GetAwaiter().GetResult()` here, which is acceptable because: (a) it runs once during startup, (b) `git credential fill` completes in <100ms, and (c) changing the interface to async would be a large cross-cutting change that's not justified for Phase 1.
+
+The `_resolved` flag ensures we shell out to git at most once per process lifetime. This is important for MCP stdio mode where the process is long-lived.
+
+### `auth status` token source reporting
+
+`ChainedHelixTokenAccessor` should expose which source provided the token:
+
+```csharp
+public enum TokenSource { None, EnvironmentVariable, StoredCredential }
+public TokenSource Source { get; private set; }
+```
+
+This is used by `hlx auth status` to report where the token came from.
+
+---
+
+## 4. Code Location
+
+### New files in `HelixTool.Core`
+
+| File | What |
+|------|------|
+| `ICredentialStore.cs` | Interface: `GetTokenAsync`, `StoreTokenAsync`, `DeleteTokenAsync` |
+| `GitCredentialStore.cs` | Implementation using `git credential` CLI |
+| `ChainedHelixTokenAccessor.cs` | New `IHelixTokenAccessor` impl with env var → stored credential chain |
+
+**Why Core, not CLI?** The credential store and chained accessor are needed by both `HelixTool` (CLI) and `HelixTool.Mcp` (HTTP MCP server fallback). Keeping them in Core avoids duplicating the git credential logic.
+
+### New code in `HelixTool` (CLI-specific)
+
+| Location | What |
+|----------|------|
+| `Program.cs` — `Commands` class | Three new command methods: `Login()`, `Logout()`, `AuthStatus()` |
+| `Program.cs` — DI setup | Replace `EnvironmentHelixTokenAccessor` with `ChainedHelixTokenAccessor` |
+
+The login/logout/auth-status commands are CLI-only — they don't make sense in MCP context. They go in the existing `Commands` class.
+
+### Modified files
+
+| File | Change |
+|------|--------|
+| `IHelixTokenAccessor.cs` | No interface change. Add `ChainedHelixTokenAccessor` class (or separate file). |
+| `Program.cs` (CLI) | DI: swap `EnvironmentHelixTokenAccessor` → `ChainedHelixTokenAccessor`. Add commands. |
+| `Program.cs` (MCP HTTP) | DI: add `ICredentialStore` registration. Update `HttpContextHelixTokenAccessor` to accept it as third fallback. |
+| `HttpContextHelixTokenAccessor.cs` | Add `ICredentialStore` parameter for third-level fallback. |
+| `HelixService.cs` | Update all 7 error messages from `"Set the HELIX_ACCESS_TOKEN..."` to `"Run 'hlx login' to authenticate, or set HELIX_ACCESS_TOKEN."` |
+
+### No new NuGet packages required
+
+- `Process.Start` for git — already available in `System.Diagnostics`
+- `Spectre.Console` for secret prompt — check if already a dependency. If not, it's a reasonable add for a CLI tool (small, well-maintained). **Alternative:** Use `Console.ReadLine()` with manual echo suppression if we want zero new deps.
+
+---
+
+## 5. Work Items for Ripley
+
+Ordered by dependency. Each item is independently testable.
+
+### WI-1: `ICredentialStore` + `GitCredentialStore`
+**Files:** `src/HelixTool.Core/ICredentialStore.cs`, `src/HelixTool.Core/GitCredentialStore.cs`
+**What:** Interface and git credential implementation. Three operations: get, store, delete. Input validation (non-empty host/username). Proper process lifecycle management (dispose, timeout).
+**Tests (Lambert):** Mock process execution. Verify protocol format. Error handling for missing git. Timeout handling.
+**Estimate:** Small
+
+### WI-2: `ChainedHelixTokenAccessor`
+**Files:** `src/HelixTool.Core/ChainedHelixTokenAccessor.cs`
+**What:** New `IHelixTokenAccessor` implementation. Env var → stored credential → null. Expose `TokenSource` enum for `auth status`. Cache the resolved token (resolve once per process).
+**Depends on:** WI-1
+**Tests (Lambert):** Env var wins over stored. Stored returned when no env var. Null when neither. TokenSource set correctly.
+**Estimate:** Small
+
+### WI-3: DI wiring update
+**Files:** `src/HelixTool/Program.cs` (both CLI and MCP DI blocks)
+**What:** Register `ICredentialStore` → `GitCredentialStore`. Replace `EnvironmentHelixTokenAccessor` with `ChainedHelixTokenAccessor` in CLI and MCP stdio paths. Add `ICredentialStore` fallback to HTTP MCP accessor.
+**Depends on:** WI-2
+**Tests (Lambert):** Integration test verifying DI resolves correctly. Token from env var still works (regression guard).
+**Estimate:** Small
+
+### WI-4: `hlx login` command
+**Files:** `src/HelixTool/Program.cs` (Commands class)
+**What:** Browser open (best-effort, cross-platform). Token prompt (secret input). Token validation via test API call. Store via `ICredentialStore`. Overwrite confirmation if existing token. `--no-browser` flag.
+**Depends on:** WI-1, WI-3
+**Tests (Lambert):** Mock `ICredentialStore` to verify store is called. Verify browser open attempt. Verify validation call.
+**Estimate:** Medium
+
+### WI-5: `hlx logout` command
+**Files:** `src/HelixTool/Program.cs` (Commands class)
+**What:** Delete stored credential. Warn if env var is also set. Idempotent (no error if nothing stored).
+**Depends on:** WI-1, WI-3
+**Tests (Lambert):** Verify delete is called. Idempotent behavior.
+**Estimate:** Trivial
+
+### WI-6: `hlx auth status` command
+**Files:** `src/HelixTool/Program.cs` (Commands class)
+**What:** Report token source (env var / stored / none). Test API call. Exit code 0/1.
+**Depends on:** WI-2, WI-3
+**Tests (Lambert):** All three source states. Exit code behavior.
+**Estimate:** Small
+
+### WI-7: Error message update
+**Files:** `src/HelixTool.Core/HelixService.cs`
+**What:** Update all 7 catch blocks from `"Set the HELIX_ACCESS_TOKEN environment variable..."` to `"Access denied. Run 'hlx login' to authenticate, or set HELIX_ACCESS_TOKEN."`. Extract the message to a constant to avoid repetition.
+**Depends on:** None (can be done in parallel)
+**Tests (Lambert):** Update existing `HelixAuthTests.cs` assertions to match new message.
+**Estimate:** Trivial
+
+---
+
+## 6. What This Does NOT Include (Phase 2+)
+
+- `--token` CLI flag for one-off use — Phase 2
+- Token expiration detection/proactive warning — Phase 2
+- Entra/Azure AD auth — blocked on Helix server, Phase 3
+- MCP tool for token management — not needed, CLI is the right UX
+- Automatic token refresh — not possible with opaque tokens
+
+---
+
+## 7. Open Questions (Non-blocking)
+
+1. **Spectre.Console dependency:** Is it already pulled in transitively? If not, is `Console.ReadLine()` with manual echo disable acceptable? → Ripley should check during WI-4 and decide. Either approach is fine architecturally.
+
+2. **Token validation endpoint:** Which Helix API call is cheapest for validation? Ash suggested listing jobs with `count=1`. Ripley should verify this works without any specific job context.
+
+3. **HttpContextHelixTokenAccessor fallback:** Adding git credential as a third fallback for the HTTP MCP server is nice-to-have. If it complicates things (the HTTP server might run in a container without git), Ripley can defer this to Phase 2. The critical path is CLI only.
+
+
+### 2026-03-03: Core NuGet packaging — project structure and CI changes
+**By:** Ripley
+**What:** Executed W1-W6 and W9 from Dallas's architecture decision for publishing HelixTool.Core as a standalone NuGet package.
+
+**Key structural changes:**
+- `Directory.Build.props` (repo root) — centralizes `<Version>0.2.1</Version>` for all projects
+- `src/HelixTool.Mcp.Tools/` — new class library containing `HelixMcpTools.cs` + `McpToolResults.cs` (moved from Core)
+- `src/HelixTool.Core/Models/` — 11 record types extracted from nested definitions in `HelixService`
+- `HelixTool.Core.csproj` — NuGet metadata added (PackageId: `lewing.helix.core`, MIT, doc gen)
+- `publish.yml` — packs both `lewing.helix.mcp` and `lewing.helix.core`, version validation reads `Directory.Build.props`
+
+**Namespace decision:** `HelixMcpTools.cs` and `McpToolResults.cs` kept `namespace HelixTool.Core` despite living in `HelixTool.Mcp.Tools` project. This avoids any call-site `using` changes. The project name conveys the architectural boundary; the namespace conveys the API surface.
+
+**Visibility change:** `IsFileSearchDisabled` promoted from `internal static` to `public static` on `HelixService`.
+
+**Pending for others:**
+- **Lambert (W7):** Run full test suite — all tests should pass without modification
+- **Kane (W8):** Add "Using as a library" section to README

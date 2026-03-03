@@ -66,3 +66,6 @@
 - Test count grew from 369 (last recorded) to 373 — 4 new tests added since last baseline.
 - Project structure post-refactor: `src/HelixTool.Core/`, `src/HelixTool.Mcp/`, `src/HelixTool.Mcp.Tools/`, `src/HelixTool/`, `src/HelixTool.Tests/`
 - CS1591 warnings (missing XML doc comments) are pervasive in Core — not test-blocking but noted for future cleanup.
+
+📌 Team update (2026-03-03): HelixTool.Core published as standalone NuGet (lewing.helix.core) — 373 tests verified passing post-refactor. — decided by Dallas, executed by Ripley
+📌 Team update (2026-03-03): Phase 1 auth UX approved — `hlx login`/`logout`/`auth status`, `git credential` storage. 7 work items with test requirements for each. — decided by Dallas

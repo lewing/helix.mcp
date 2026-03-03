@@ -132,3 +132,6 @@
 - Recommended Phase 1: `hlx login` + `git credential` storage — high value, low effort
 - Entra API auth is blocked on Helix server-side changes — not a client-side fix
 - Key architecture question raised: where should `StoredHelixTokenAccessor` live (Core vs CLI-only)
+
+📌 Team update (2026-03-03): HelixTool.Core published as standalone NuGet (lewing.helix.core) — MCP tools extracted to HelixTool.Mcp.Tools, 11 models extracted, version centralized. All 9 work items complete, 373 tests pass. — decided by Dallas, executed by Ripley
+📌 Team update (2026-03-03): Phase 1 auth UX approved by Dallas — `hlx login`/`logout`/`auth status`, `git credential` storage, `ChainedHelixTokenAccessor`. 7 work items created for Ripley. Your feasibility analysis was the foundation. — decided by Dallas

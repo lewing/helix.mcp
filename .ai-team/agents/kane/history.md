@@ -61,3 +61,6 @@
 - **HelixService public API surface:** Constructor takes `IHelixApiClient`. Key methods: `GetJobStatusAsync`, `SearchConsoleLogAsync`, `ParseTrxResultsAsync`, `GetWorkItemFilesAsync`, `DownloadFilesAsync`, `FindFilesAsync`, `GetBatchStatusAsync`
 - **HelixApiClient construction:** Takes optional `string? accessToken` — null means unauthenticated (public jobs)
 - **Library section code examples use the same job ID** (`02d8bd09`) as the CLI examples for consistency
+
+📌 Team update (2026-03-03): HelixTool.Core published as standalone NuGet (lewing.helix.core) — MCP tools extracted to HelixTool.Mcp.Tools, version centralized in Directory.Build.props. — decided by Dallas, executed by Ripley
+📌 Team update (2026-03-03): Phase 1 auth UX approved — `hlx login`/`logout`/`auth status` commands coming. Docs update will be needed once implemented. — decided by Dallas
