@@ -46,20 +46,21 @@ var helix = new HelixService(apiClient);
 // Get job status with failure categorization
 var summary = await helix.GetJobStatusAsync("02d8bd09-9400-4e86-8d2b-7a6ca21c5009");
 
-Console.WriteLine($"Job: {summary.JobName} — {summary.FailedItems.Count} failed, {summary.PassedItems.Count} passed");
+Console.WriteLine($"Job: {summary.Name} — {summary.FailedItems.Count} failed, {summary.PassedItems.Count} passed");
 
 foreach (var item in summary.FailedItems)
     Console.WriteLine($"  ✗ {item.Name} ({item.FailureCategory}) exit={item.ExitCode}");
 
 // Search a work item's console log
-var results = await helix.SearchConsoleLogAsync("02d8bd09", "MyTest.dll.1", "error CS");
+var results = await helix.SearchConsoleLogAsync("02d8bd09-9400-4e86-8d2b-7a6ca21c5009", "MyTest.dll.1", "error CS");
 foreach (var match in results.Matches)
-    Console.WriteLine($"  Line {match.LineNumber}: {match.Text}");
+    Console.WriteLine($"  Line {match.LineNumber}: {match.Line}");
 
 // Parse TRX test results
-var trx = await helix.ParseTrxResultsAsync("02d8bd09", "MyTest.dll.1");
-foreach (var result in trx)
-    Console.WriteLine($"  {result.TestName}: {result.Outcome}");
+var trx = await helix.ParseTrxResultsAsync("02d8bd09-9400-4e86-8d2b-7a6ca21c5009", "MyTest.dll.1");
+foreach (var file in trx)
+    foreach (var test in file.Results)
+        Console.WriteLine($"  {test.TestName}: {test.Outcome}");
 ```
 
 ## Authentication
@@ -80,11 +81,11 @@ var token = Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN");
 var apiClient = new HelixApiClient(token);
 ```
 
-**`IHelixTokenAccessor`** — for advanced scenarios like web apps that need per-request auth (e.g., different tokens per user). Most consumers won't need this.
+**`IHelixTokenAccessor`** — an abstraction for resolving the current Helix access token. Used in hosting scenarios (e.g., HTTP-based MCP servers) where a factory constructs per-request `HelixApiClient` instances with different tokens. Most consumers won't need this.
 
 ## Error Handling
 
-All Helix API errors are thrown as `HelixException`:
+All Helix API errors are thrown as `HelixException`. Additionally, methods that download and search file content (`SearchConsoleLogAsync`, `SearchFileAsync`, `ParseTrxResultsAsync`) throw `InvalidOperationException` when file search is disabled via the `HLX_DISABLE_FILE_SEARCH=true` environment variable.
 
 ```csharp
 try
@@ -94,6 +95,10 @@ try
 catch (HelixException ex)
 {
     Console.WriteLine($"Helix API error: {ex.Message}");
+}
+catch (InvalidOperationException ex)
+{
+    Console.WriteLine($"Feature disabled: {ex.Message}");
 }
 ```
 
