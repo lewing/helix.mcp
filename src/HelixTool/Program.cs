@@ -39,9 +39,9 @@ ConsoleApp.ServiceProvider = services.BuildServiceProvider();
 
 var app = ConsoleApp.Create();
 app.Add<Commands>();
-// Default to MCP server mode when no command is specified.
-// This ensures `dnx lewing.helix.mcp --yes` works without an explicit "mcp" arg.
-app.Run(args.Length == 0 ? ["mcp"] : args);
+// When no command is specified: default to MCP server mode if stdin is redirected
+// (e.g. piped or launched by an MCP host), otherwise show help text for interactive use.
+app.Run(args.Length == 0 ? (Console.IsInputRedirected ? ["mcp"] : ["--help"]) : args);
 
 /// <summary>
 /// CLI commands for interacting with .NET Helix test infrastructure.
