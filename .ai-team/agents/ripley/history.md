@@ -108,3 +108,17 @@
 - Added `failureCategory` to the `hlx_status` MCP tool `[Description]` parenthetical field list (line 23 of HelixMcpTools.cs). The field was already returned in JSON output (line 46) but omitted from the description. This is a documentation-completeness fix per Dallas's decision that MCP descriptions should accurately list returned fields.
 
 📌 Team update (2026-03-01): UseStructuredContent refactor approved — typed return objects with UseStructuredContent=true for all 12 MCP tools (hlx_logs excepted). FileInfo_ naming noted as non-blocking. No breaking wire-format changes. — decided by Dallas
+
+## Learnings (Core NuGet packaging, 2026-03-03)
+
+- `Directory.Build.props` at repo root centralizes `<Version>` for all projects. Individual csproj files no longer carry `<Version>`.
+- `src/HelixTool/.mcp/server.json` still has hardcoded version fields — the CI publish workflow validates these match the git tag. No automated sync exists.
+- `HelixTool.Mcp.Tools` is a new class library (`src/HelixTool.Mcp.Tools/`) containing `HelixMcpTools.cs` and `McpToolResults.cs`. Both CLI and HTTP server reference it.
+- MCP tools kept `namespace HelixTool.Core` after the move to avoid call-site changes. The project name (`Mcp.Tools`) differs from the namespace — this is intentional to minimize churn.
+- `IsFileSearchDisabled` was promoted from `internal static` to `public static` on `HelixService` because `HelixMcpTools` (now in a separate assembly) needs it.
+- `MatchesPattern` was already `public static` — no change needed. `MaxBatchSize` and `MaxSearchFileSizeBytes` remain `internal const` since only tests (via `InternalsVisibleTo`) use them from outside Core.
+- 11 nested record types extracted from `HelixService` to `src/HelixTool.Core/Models/` as top-level types in `namespace HelixTool.Core`. Zero call-site changes needed because no callers used the `HelixService.RecordName` qualified form — all used `var` or type inference.
+- `HelixTool.Core.csproj` now has `GenerateDocumentationFile=true`, which produces CS1591 warnings for all public members without XML doc comments. These are preexisting gaps, not new issues.
+- CI publish workflow (`publish.yml`) packs both `lewing.helix.mcp` (tool) and `lewing.helix.core` (library) into a shared `nupkg/` output directory. Both are pushed to NuGet in a single step.
+
+📌 Team update (2026-03-03): Core NuGet packaging complete — HelixTool.Core publishes as lewing.helix.core, MCP tools extracted to HelixTool.Mcp.Tools, version centralized in Directory.Build.props, CI packs both packages. Lambert: run full test suite (W7). Kane: add library consumption docs to README (W8). — decided by Ripley
