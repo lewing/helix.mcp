@@ -72,7 +72,7 @@ public sealed class FindFilesResult
 
 public sealed class DownloadResult
 {
-    [JsonPropertyName("downloadedFiles")] public List<string> DownloadedFiles { get; init; } = [];
+    [JsonPropertyName("downloadedFiles")] public IReadOnlyList<string> DownloadedFiles { get; init; } = [];
 }
 
 // --- DownloadUrl tool ---

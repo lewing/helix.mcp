@@ -12,6 +12,13 @@ public sealed class HelixApiClient : IHelixApiClient
 {
     private readonly HelixApi _api;
 
+    /// <summary>
+    /// Initializes a new instance of <see cref="HelixApiClient"/>.
+    /// </summary>
+    /// <param name="accessToken">
+    /// Optional Helix API access token. When provided, all requests are authenticated.
+    /// When <c>null</c> or empty, anonymous access is used (limited to public data).
+    /// </param>
     public HelixApiClient(string? accessToken = null)
     {
         _api = !string.IsNullOrEmpty(accessToken)

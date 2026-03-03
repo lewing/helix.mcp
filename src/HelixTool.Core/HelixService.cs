@@ -4,23 +4,11 @@ using System.Xml.Linq;
 
 namespace HelixTool.Core;
 
-/// <summary>Category of work item failure.</summary>
-public enum FailureCategory
-{
-    Unknown,
-    Timeout,
-    Crash,
-    AssertionFailure,
-    InfrastructureError,
-    BuildFailure,
-    TestFailure
-}
-
 /// <summary>
 /// Core Helix API operations, shared between CLI and MCP server modes.
 /// Requires an <see cref="IHelixApiClient"/> injected via constructor (decision D3).
 /// </summary>
-public class HelixService
+public sealed class HelixService
 {
     private readonly IHelixApiClient _api;
 
@@ -33,15 +21,6 @@ public class HelixService
     {
         _api = api ?? throw new ArgumentNullException(nameof(api));
     }
-
-    /// <summary>Represents a single work item's name and exit code.</summary>
-    public record WorkItemResult(string Name, int ExitCode, string? State, string? MachineName, TimeSpan? Duration, string ConsoleLogUrl, FailureCategory? FailureCategory);
-
-    /// <summary>Aggregated pass/fail summary for all work items in a Helix job.</summary>
-    public record JobSummary(
-        string JobId, string Name, string QueueId, string Creator, string Source,
-        string? Created, string? Finished,
-        int TotalCount, List<WorkItemResult> Failed, List<WorkItemResult> Passed);
 
     /// <summary>Get a pass/fail summary of all work items in a Helix job.</summary>
     /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
@@ -90,7 +69,7 @@ public class HelixService
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
         {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
+            throw new HelixException("Access denied. Provide a valid Helix access token via the HelixApiClient constructor or HELIX_ACCESS_TOKEN environment variable.", ex);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -110,9 +89,6 @@ public class HelixService
         }
     }
 
-    /// <summary>Represents an uploaded file from a Helix work item.</summary>
-    public record FileEntry(string Name, string Uri);
-
     /// <summary>
     /// List uploaded files for a work item using the <c>ListFiles</c> endpoint.
     /// This avoids the broken URIs from the <c>Details</c> endpoint (dnceng#6072).
@@ -122,7 +98,7 @@ public class HelixService
     /// <param name="cancellationToken">Optional cancellation token.</param>
     /// <returns>A list of <see cref="FileEntry"/> with name, URI, and type tags.</returns>
     /// <exception cref="HelixException">Thrown when the work item is not found or the API is unreachable.</exception>
-    public async Task<List<FileEntry>> GetWorkItemFilesAsync(string jobId, string workItem, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<FileEntry>> GetWorkItemFilesAsync(string jobId, string workItem, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
         ArgumentException.ThrowIfNullOrWhiteSpace(workItem);
@@ -137,7 +113,7 @@ public class HelixService
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
         {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
+            throw new HelixException("Access denied. Provide a valid Helix access token via the HelixApiClient constructor or HELIX_ACCESS_TOKEN environment variable.", ex);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -182,7 +158,7 @@ public class HelixService
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
         {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
+            throw new HelixException("Access denied. Provide a valid Helix access token via the HelixApiClient constructor or HELIX_ACCESS_TOKEN environment variable.", ex);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -231,7 +207,7 @@ public class HelixService
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
         {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
+            throw new HelixException("Access denied. Provide a valid Helix access token via the HelixApiClient constructor or HELIX_ACCESS_TOKEN environment variable.", ex);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -251,9 +227,6 @@ public class HelixService
         }
     }
 
-    /// <summary>A work item and the matching files it contains.</summary>
-    public record FileSearchResult(string WorkItem, List<FileEntry> Files);
-
     /// <summary>Scan work items in a job to find files matching a pattern.</summary>
     /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
     /// <param name="pattern">File name or glob pattern (e.g., <c>*.binlog</c>). Default: all files.</param>
@@ -261,7 +234,7 @@ public class HelixService
     /// <param name="cancellationToken">Optional cancellation token.</param>
     /// <returns>A list of <see cref="FileSearchResult"/> for work items that contain matching files.</returns>
     /// <exception cref="HelixException">Thrown when the job is not found or the API is unreachable.</exception>
-    public async Task<List<FileSearchResult>> FindFilesAsync(string jobId, string pattern = "*", int maxItems = 30, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<FileSearchResult>> FindFilesAsync(string jobId, string pattern = "*", int maxItems = 30, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
         var id = HelixIdResolver.ResolveJobId(jobId);
@@ -287,7 +260,7 @@ public class HelixService
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
         {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
+            throw new HelixException("Access denied. Provide a valid Helix access token via the HelixApiClient constructor or HELIX_ACCESS_TOKEN environment variable.", ex);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -308,7 +281,11 @@ public class HelixService
     }
 
     /// <summary>Scan work items in a job to find which ones contain binlog files.</summary>
-    public Task<List<FileSearchResult>> FindBinlogsAsync(string jobId, int maxItems = 30, CancellationToken cancellationToken = default)
+    /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
+    /// <param name="maxItems">Maximum number of work items to scan (default 30).</param>
+    /// <param name="cancellationToken">Optional cancellation token.</param>
+    /// <returns>A list of <see cref="FileSearchResult"/> for work items containing <c>.binlog</c> files.</returns>
+    public Task<IReadOnlyList<FileSearchResult>> FindBinlogsAsync(string jobId, int maxItems = 30, CancellationToken cancellationToken = default)
         => FindFilesAsync(jobId, "*.binlog", maxItems, cancellationToken);
 
     /// <summary>Download files matching a pattern from a work item to a temp directory.</summary>
@@ -318,7 +295,7 @@ public class HelixService
     /// <param name="cancellationToken">Optional cancellation token.</param>
     /// <returns>List of absolute paths of downloaded files, or empty if no matches.</returns>
     /// <exception cref="HelixException">Thrown when the work item is not found or the API is unreachable.</exception>
-    public async Task<List<string>> DownloadFilesAsync(string jobId, string workItem, string pattern = "*", CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<string>> DownloadFilesAsync(string jobId, string workItem, string pattern = "*", CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
         ArgumentException.ThrowIfNullOrWhiteSpace(workItem);
@@ -353,7 +330,7 @@ public class HelixService
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
         {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
+            throw new HelixException("Access denied. Provide a valid Helix access token via the HelixApiClient constructor or HELIX_ACCESS_TOKEN environment variable.", ex);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -425,12 +402,12 @@ public class HelixService
         }
     }
 
-    /// <summary>Detailed information about a single work item.</summary>
-    public record WorkItemDetail(
-        string Name, int ExitCode, string? State, string? MachineName,
-        TimeSpan? Duration, string ConsoleLogUrl, List<FileEntry> Files, FailureCategory? FailureCategory);
-
     /// <summary>Get detailed info about a single work item including its files.</summary>
+    /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
+    /// <param name="workItem">Work item name.</param>
+    /// <param name="cancellationToken">Optional cancellation token.</param>
+    /// <returns>A <see cref="WorkItemDetail"/> with exit code, state, machine, duration, files, and failure category.</returns>
+    /// <exception cref="HelixException">Thrown when the work item is not found or the API is unreachable.</exception>
     public async Task<WorkItemDetail> GetWorkItemDetailAsync(string jobId, string workItem, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
@@ -463,7 +440,7 @@ public class HelixService
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
         {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
+            throw new HelixException("Access denied. Provide a valid Helix access token via the HelixApiClient constructor or HELIX_ACCESS_TOKEN environment variable.", ex);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -483,13 +460,14 @@ public class HelixService
         }
     }
 
-    /// <summary>Summary for multiple jobs.</summary>
-    public record BatchJobSummary(List<JobSummary> Jobs, int TotalFailed, int TotalPassed);
-
     /// <summary>Maximum number of jobs allowed in a single batch status request.</summary>
     internal const int MaxBatchSize = 50;
 
     /// <summary>Get status for multiple jobs in parallel.</summary>
+    /// <param name="jobIds">One or more Helix job IDs (GUIDs) or full Helix URLs.</param>
+    /// <param name="cancellationToken">Optional cancellation token.</param>
+    /// <returns>A <see cref="BatchJobSummary"/> with per-job summaries and overall totals.</returns>
+    /// <exception cref="ArgumentException">Thrown when no job IDs are provided or batch size exceeds <see cref="MaxBatchSize"/>.</exception>
     public async Task<BatchJobSummary> GetBatchStatusAsync(IEnumerable<string> jobIds, CancellationToken cancellationToken = default)
     {
         var idList = jobIds.ToList();
@@ -511,8 +489,8 @@ public class HelixService
 
         var results = await Task.WhenAll(tasks);
         var jobs = results.ToList();
-        var totalFailed = jobs.Sum(j => j.Failed.Count);
-        var totalPassed = jobs.Sum(j => j.Passed.Count);
+        var totalFailed = jobs.Sum(j => j.FailedItems.Count);
+        var totalPassed = jobs.Sum(j => j.PassedItems.Count);
 
         return new BatchJobSummary(jobs, totalFailed, totalPassed);
     }
@@ -562,26 +540,11 @@ public class HelixService
     }
 
     /// <summary>Whether file content search is disabled by configuration.</summary>
-    internal static bool IsFileSearchDisabled =>
+    public static bool IsFileSearchDisabled =>
         string.Equals(Environment.GetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH"), "true", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Maximum file size allowed for content search (50 MB).</summary>
     internal const long MaxSearchFileSizeBytes = 50 * 1024 * 1024;
-
-    /// <summary>Result of searching a console log.</summary>
-    public record LogSearchResult(string WorkItem, List<LogMatch> Matches, int TotalLines);
-
-    /// <summary>A single match in a console log.</summary>
-    public record LogMatch(int LineNumber, string Line, List<string>? Context = null);
-
-    /// <summary>Result of searching an uploaded file's content.</summary>
-    public record FileContentSearchResult(string FileName, List<LogMatch> Matches, int TotalLines, bool Truncated, bool IsBinary);
-
-    /// <summary>Parsed test result from a TRX file.</summary>
-    public record TrxTestResult(string TestName, string Outcome, string? Duration, string? ComputerName, string? ErrorMessage, string? StackTrace);
-
-    /// <summary>Summary of parsed TRX test results.</summary>
-    public record TrxParseResult(string FileName, int TotalTests, int Passed, int Failed, int Skipped, List<TrxTestResult> Results);
 
     private static readonly XmlReaderSettings s_trxReaderSettings = new()
     {
@@ -752,7 +715,7 @@ public class HelixService
     }
 
     /// <summary>Parse TRX test result files from a Helix work item.</summary>
-    public async Task<List<TrxParseResult>> ParseTrxResultsAsync(
+    public async Task<IReadOnlyList<TrxParseResult>> ParseTrxResultsAsync(
         string jobId, string workItem, string? fileName = null,
         bool includePassed = false, int maxResults = 200,
         CancellationToken cancellationToken = default)
@@ -791,7 +754,14 @@ public class HelixService
         return results;
     }
 
-    public static bool MatchesPattern(string name, string pattern)
+    /// <summary>
+    /// Checks whether a file name matches a simple glob pattern.
+    /// Supports <c>*</c> (matches everything), <c>*.ext</c> (suffix match), and substring matching.
+    /// </summary>
+    /// <param name="name">The file name to test.</param>
+    /// <param name="pattern">The glob pattern (e.g., <c>*</c>, <c>*.binlog</c>, <c>test</c>).</param>
+    /// <returns><c>true</c> if the name matches the pattern; otherwise, <c>false</c>.</returns>
+    internal static bool MatchesPattern(string name, string pattern)
     {
         if (pattern == "*") return true;
         if (pattern.StartsWith("*."))

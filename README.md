@@ -232,6 +232,21 @@ Add the following to your MCP client config. The `--yes` flag ensures `dnx` does
 | `hlx cache clear` | Wipe all cached data (all auth contexts). |
 | `hlx mcp` | Start MCP server over stdio. Also the default when no command is given. |
 
+## Using as a Library
+
+`HelixTool.Core` is available as a standalone NuGet package (`lewing.helix.core`) for programmatic Helix API access.
+
+📖 **[Library Documentation](docs/library.md)** — Setup, examples, auth, error handling, and API reference.
+
+Quick start:
+
+```csharp
+var client = new HelixApiClient();
+var helix = new HelixService(client);
+var summary = await helix.GetJobStatusAsync("your-job-id");
+Console.WriteLine($"Failed: {summary.FailedItems.Count}, Passed: {summary.PassedItems.Count}");
+```
+
 ## Failure Categorization
 
 Failed work items are automatically classified into one of: **Timeout**, **Crash**, **BuildFailure**, **TestFailure**, **InfrastructureError**, **AssertionFailure**, or **Unknown**. The category appears in `status`, `work-item`, and `batch-status` output, and is available as `failureCategory` in JSON and MCP tool responses.

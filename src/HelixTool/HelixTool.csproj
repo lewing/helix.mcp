@@ -8,7 +8,6 @@
     <PackAsTool>true</PackAsTool>
     <PackageType>McpServer</PackageType>
     <ToolCommandName>hlx</ToolCommandName>
-    <Version>0.2.1</Version>
   </PropertyGroup>
 
   <PropertyGroup Label="Package Metadata">
@@ -31,6 +30,7 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
     <PackageReference Include="ModelContextProtocol" Version="1.0.0" />
     <ProjectReference Include="..\HelixTool.Core\HelixTool.Core.csproj" />
+    <ProjectReference Include="..\HelixTool.Mcp.Tools\HelixTool.Mcp.Tools.csproj" />
     <PackageReference Include="ConsoleAppFramework" Version="5.7.13" />
   </ItemGroup>
 

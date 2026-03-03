@@ -53,3 +53,17 @@
 📌 Team update (2026-02-27): Enhancement layer documentation consolidated — decided by Dallas, Kane
 📌 Team update (2026-02-27): MCP descriptions: behavioral contracts only, not implementation details — decided by Dallas
 📌 Team update (2026-03-01): UseStructuredContent refactor approved — typed return objects with UseStructuredContent=true for all 12 MCP tools (hlx_logs excepted). FileInfo_ naming noted as non-blocking. No breaking wire-format changes. — decided by Dallas
+
+## Learnings
+
+- **Library docs section pattern:** "Using as a Library" placed after CLI/MCP usage sections, before reference sections. Structure: NuGet install → basic setup (no DI) → quick example → auth note → DI registration → cross-link to MCP.
+- **HelixTool.Core NuGet metadata:** PackageId is `lewing.helix.core`, TFM is `net10.0`, defined in `src/HelixTool.Core/HelixTool.Core.csproj`
+- **HelixService public API surface:** Constructor takes `IHelixApiClient`. Key methods: `GetJobStatusAsync`, `SearchConsoleLogAsync`, `ParseTrxResultsAsync`, `GetWorkItemFilesAsync`, `DownloadFilesAsync`, `FindFilesAsync`, `GetBatchStatusAsync`
+- **HelixApiClient construction:** Takes optional `string? accessToken` — null means unauthenticated (public jobs)
+- **Library section code examples use the same job ID** (`02d8bd09`) as the CLI examples for consistency
+
+📌 Team update (2026-03-03): HelixTool.Core published as standalone NuGet (lewing.helix.core) — MCP tools extracted to HelixTool.Mcp.Tools, version centralized in Directory.Build.props. — decided by Dallas, executed by Ripley
+📌 Team update (2026-03-03): Phase 1 auth UX approved — `hlx login`/`logout`/`auth status` commands coming. Docs update will be needed once implemented. — decided by Dallas
+
+📌 Team update (2026-03-03): API review findings — decided by Dallas, Ash
+📌 Team update (2026-03-03): Library docs extracted to docs/library.md — "Using as a Library" section moved out of README into dedicated doc, expanded with nuget.config requirement, error handling, auth clarification, key types reference, temp file cleanup notes. README retains a brief pointer. — executed by Kane

@@ -21,27 +21,11 @@
 
 ### 2025-07-18: US-9 Script Removability Analysis Complete
 
-**Key findings:**
-- All 6 core Helix API functions in ci-analysis (Get-HelixJobDetails, Get-HelixWorkItems, Get-HelixWorkItemFiles, Get-HelixWorkItemDetails, Get-HelixConsoleLog, Find-WorkItemsWithBinlogs) are 100% replaceable by hlx today. ~152 lines of PowerShell can be deleted.
-- Extended Helix-adjacent code (log parsing, URL construction, categorization) is ~71% covered (~217/305 lines). The only meaningful gap is structured test failure extraction (US-22, P2).
-- Overall Helix-related coverage: ~85%. 10 of 11 functions fully replaced.
-- No user stories need promotion to unblock Phase 1 migration. hlx is migration-ready NOW.
-- Phase 1 migration (core API replacement) yields ~120 net line reduction with zero blockers.
-- Phase 2 migration (log parsing) yields additional ~73 line reduction using hlx_search_log as workaround for US-22.
-- Total potential reduction: ~195 lines from ci-analysis.
+> Summarized 2026-03-03. Full details in history-archive.md.
 
-**Coverage gaps identified:**
-- G1: Structured test failure extraction (US-22, P2) — `Format-TestFailure` parses xUnit/NUnit/MSTest output into structured JSON. hlx_search_log provides generic search but not structured parsing. ~88 lines partially covered (~40%).
-- G2: Job ID extraction from AzDO logs (US-26, P3) — cross-layer bridge, stays in ci-analysis. Not hlx's responsibility.
-- G3: Env var extraction (US-27, P3) — convenience feature, workaround exists via hlx_search_log.
-- G4: TRX parsing (US-14, P3) — separate concern, not a migration blocker.
-- G5: Flaky test correlation (US-16, P3) — hlx_batch_status provides adequate workaround.
-
-**Migration priorities:**
-1. Phase 1 (NOW): Replace 6 core Helix API functions → ~120 line net reduction, zero blockers
-2. Phase 2 (NEXT): Replace Format-TestFailure with hlx_search_log → ~73 additional line reduction
-3. Phase 3 (LATER): Promote US-22 to P1 only if ci-analysis agents consistently need structured failure JSON
-
+- All 6 core Helix API functions are 100% replaceable by hlx (~152 lines). Overall Helix coverage: ~85%.
+- hlx is migration-ready. Phase 1 yields ~120 net line reduction; Phase 2 adds ~73 more via hlx_search_log.
+- Only meaningful gap: US-22 structured test failure extraction (P2).
 
 📌 Team update (2026-02-13): US-6 download E2E verification complete — 46 tests covering DownloadFilesAsync/DownloadFromUrlAsync, all 298 tests pass — decided by Lambert
 
@@ -49,71 +33,30 @@
 
 ### 2025-07-18: Requirements audit — comprehensive P0/P1/P2 completion status
 
-**Verified and updated in requirements.md:**
-- Marked 25 of 30 user stories as ✅ Implemented after verifying against actual source code
-- P0: US-8 (logs out of context), US-12 (DI), US-13 (error handling) — all done. US-7 (layered architecture) is partial (only hlx layer built; other layers are external projects).
-- P1: All 13 stories done — US-1, US-2, US-5, US-6, US-9, US-17, US-19, US-20, US-24, US-25, US-28, US-29, US-30.
-- P2: 8 of 9 done — US-3, US-4, US-10, US-11, US-15, US-18, US-21, US-23. US-22 is partially implemented (generic `search-log` exists, but structured `hlx_test_failures` is not built).
-- P3: None started — US-14, US-16, US-26, US-27.
-- Replaced the "Implementation Gaps" section with "Resolved Gaps" (8 original gaps all fixed) and a shorter "Remaining Implementation Gaps" section (5 minor items).
-- Updated feature table to reflect 15 capabilities across CLI/MCP.
+> Summarized 2026-03-03. Full details in history-archive.md.
 
-**Acceptance criteria NOT met despite feature existing:**
-- US-1: `--job-id` backwards compat criterion left unchecked — ConsoleAppFramework `[Argument]` replaced named flags entirely.
-- US-4: `azd auth login` consistency criterion left unchecked — hlx uses env var / HTTP header, not azd-based auth.
-- US-11: `--json` on all structured commands left unchecked — only `status`, `files`, `work-item` have it; `find-binlogs` and `batch-status` do not.
-- US-17: Models extraction to `Models/` folder left unchecked — records are still nested in HelixService.
-- US-17: Display/ folder cleanup left unchecked — status unknown.
-- US-21: Log-based categorization criteria left unchecked — uses exit code + state heuristics, not log content parsing.
-- US-22: All 5 original criteria unchecked — the structured `hlx_test_failures` tool was not built. Instead, a generic `hlx_search_log` was implemented, which covers the use case differently.
+- 25/30 user stories verified as ✅ Implemented. P0 all done, P1 all 13 done, P2 8/9 done (US-22 partial), P3 none started.
+- 7 acceptance criteria left unchecked despite features existing (US-1, US-4, US-11, US-17×2, US-21, US-22).
 
 📌 Team update (2026-02-13): Requirements audit complete — 25/30 stories implemented, US-22 structured test failure parsing is only remaining P2 gap — audited by Ash
 
-### 2025-07-23: STRIDE Threat Model for lewing.helix.mcp
+### 2025-07-23: STRIDE Threat Model
 
-**Key findings:**
-- HTTP MCP server (`HelixTool.Mcp`) has no authentication middleware — any network-reachable client can invoke MCP tools. High severity for network deployments, N/A for stdio mode.
-- `hlx_download_url` / `DownloadFromUrlAsync` accepts arbitrary URLs — potential SSRF vector. The static `HttpClient` is unauthenticated (good: won't leak Helix token), but could be used to probe internal networks.
-- Path traversal protection is thorough and consistently applied — `CacheSecurity.SanitizePathSegment` + `ValidatePathWithinRoot` at every filesystem write site. No gaps found.
-- No SQL injection risk — all SQLite queries use parameterized statements.
-- No regex in user-facing pattern matching — `MatchesPattern` uses simple string operations, eliminating ReDoS risk.
-- Token handling is sound — env var read once, never logged/serialized, only SHA256 hash used in cache paths.
-- Batch operations (`GetBatchStatusAsync`) have no upper bound on job count — could trigger resource exhaustion.
+> Summarized 2026-03-03. Full details in history-archive.md.
 
-**Security patterns observed (positive):**
-- Consistent path sanitization across all file write sites (5+ locations)
-- Auth context isolation in cache (separate SQLite databases per token hash)
-- Write-then-rename pattern for artifact caching (atomic writes)
-- WAL mode for SQLite concurrent access
-- Static unauthenticated HttpClient for URL downloads (prevents credential leakage via SSRF)
+- HTTP MCP server has no auth middleware (high severity for network). SSRF vector in `DownloadFromUrlAsync`. Path traversal protection thorough. No SQL injection or ReDoS. Token handling sound.
+- Output: `.ai-team/analysis/threat-model.md` — 16 findings.
 
-**Output:** `.ai-team/analysis/threat-model.md` — full STRIDE analysis with 16 findings, priority recommendations
 📌 Team update (2026-02-13): P1 security fixes E1+D1 implemented (URL scheme validation, batch size cap) — decided by Ripley
 📌 Team update (2026-02-13): Security validation test strategy (18 tests) — decided by Lambert
 
-### 2026-02-13: Security analysis — structured file parsing (XML/TRX, text search, binlog)
+### 2026-02-13: Security analysis — structured file parsing
 
-**XML parsing on .NET 10:**
-- .NET Core+ defaults are safe: `XmlReaderSettings` has `DtdProcessing = Prohibit` and `XmlResolver = null` by default. XXE and billion laughs are blocked out of the box. Still set explicitly for defense-in-depth.
-- Use `MaxCharactersFromEntities = 0` and `MaxCharactersInDocument = 50_000_000` as additional guards.
-- Never use `XmlTextReader` — legacy API with unsafe defaults.
-- Define `XmlReaderSettings` as a `static readonly` field (same pattern as `s_jsonOptions` in `HelixMcpTools.cs`).
+> Summarized 2026-03-03. Full details in history-archive.md.
 
-**TRX files are no more sensitive than console logs:**
-- Same trust chain applies (CI job creator → Helix → blob storage → hlx). Helix API access control is the primary gate.
-- TRX content (test names, error messages, stack traces) is already visible in console logs. No new disclosure surface.
-- Apply 50 MB file size limit for XML DOM parsing (memory amplification ~3-5x).
-
-**Text search should stay with simple string matching:**
-- `string.Contains` with `StringComparison.OrdinalIgnoreCase` — no regex, no ReDoS risk.
-- MCP tool parameters come from AI agents that may be prompt-injected — regex patterns are an unnecessary attack surface.
-- If regex is ever needed, `matchTimeout: TimeSpan.FromSeconds(5)` is mandatory.
-
-**Binlog parsing should be delegated:**
-- External binlog MCP tool already has 20+ operations. Duplicating this in hlx adds heavy dependencies and binary deserialization risk.
-- hlx's role is download + handoff, not parsing. This aligns with the layered architecture.
-
-**File size limits: 50 MB for all parsed/searched files.** Enforce with pre-check before loading, following `MaxBatchSize` pattern.
+- .NET Core+ XML defaults safe; set explicitly for defense-in-depth. 50 MB file size limit for XML DOM parsing.
+- Text search uses simple string matching (no regex). Binlog parsing delegated to external tool.
+- TRX files same trust chain as console logs — no new disclosure surface.
 
 
 📌 Team update (2026-02-13): Status filter changed from bool to enum (failed|passed|all) — decided by Larry/Ripley
@@ -132,3 +75,18 @@
 - Recommended Phase 1: `hlx login` + `git credential` storage — high value, low effort
 - Entra API auth is blocked on Helix server-side changes — not a client-side fix
 - Key architecture question raised: where should `StoredHelixTokenAccessor` live (Core vs CLI-only)
+
+📌 Team update (2026-03-03): HelixTool.Core published as standalone NuGet (lewing.helix.core) — MCP tools extracted to HelixTool.Mcp.Tools, 11 models extracted, version centralized. All 9 work items complete, 373 tests pass. — decided by Dallas, executed by Ripley
+📌 Team update (2026-03-03): Phase 1 auth UX approved by Dallas — `hlx login`/`logout`/`auth status`, `git credential` storage, `ChainedHelixTokenAccessor`. 7 work items created for Ripley. Your feasibility analysis was the foundation. — decided by Dallas
+
+### 2026-03-03: HelixTool.Core consumer experience review
+
+**Key findings:**
+- 1 blocker: README example uses `summary.FailedItems`/`PassedItems` but actual record properties are `Failed`/`Passed` — example won't compile
+- 7 friction items: CLI-specific error messages in library exceptions ("Run 'hlx login'"), missing `nuget.config` guidance for library consumers, `FailureCategory` enum in wrong file, unclear `IHelixTokenAccessor` relationship, undocumented temp file cleanup, no options pattern on `HelixApiClient`, inconsistent exception types for file search disabled
+- 7 opportunities: `AddHelixClient()` DI extension, `GetJobInfoAsync` metadata-only method, `HttpStatusCode` on `HelixException`, error handling example in README, model type documentation, `IAsyncDisposable` download wrapper
+- API surface is well-designed: 13 methods cover all 5 core consumer scenarios, record types are excellent, XML docs are thorough, error wrapping is consistent
+- Auth story is good for typical use (public jobs need no token, env var for CI, constructor param for programmatic)
+- Output: `.ai-team/decisions/inbox/ash-consumer-review.md`
+
+📌 Team update (2026-03-03): API review findings — decided by Dallas, Ash

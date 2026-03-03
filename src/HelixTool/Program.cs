@@ -89,10 +89,10 @@ public class Commands
             {
                 job = new { jobId = summary.JobId, summary.Name, summary.QueueId, summary.Creator, summary.Source, summary.Created, summary.Finished },
                 totalWorkItems = summary.TotalCount,
-                failedCount = summary.Failed.Count,
-                passedCount = summary.Passed.Count,
-                failed = showFailed ? summary.Failed.Select(f => new { f.Name, f.ExitCode, f.State, f.MachineName, duration = f.Duration?.ToString(), f.ConsoleLogUrl, failureCategory = f.FailureCategory?.ToString() }) : null,
-                passed = showPassed ? summary.Passed.Select(p => new { p.Name, p.ExitCode, p.State, p.MachineName, duration = p.Duration?.ToString(), p.ConsoleLogUrl, failureCategory = (string?)null }) : null
+                failedCount = summary.FailedItems.Count,
+                passedCount = summary.PassedItems.Count,
+                failed = showFailed ? summary.FailedItems.Select(f => new { f.Name, f.ExitCode, f.State, f.MachineName, duration = f.Duration?.ToString(), f.ConsoleLogUrl, failureCategory = f.FailureCategory?.ToString() }) : null,
+                passed = showPassed ? summary.PassedItems.Select(p => new { p.Name, p.ExitCode, p.State, p.MachineName, duration = p.Duration?.ToString(), p.ConsoleLogUrl, failureCategory = (string?)null }) : null
             };
             Console.WriteLine(JsonSerializer.Serialize(result, s_jsonOptions));
             return;
@@ -104,12 +104,12 @@ public class Commands
         Console.WriteLine($"Work items: {summary.TotalCount}");
         Console.WriteLine();
 
-        if (showFailed && summary.Failed.Count > 0)
+        if (showFailed && summary.FailedItems.Count > 0)
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"Failed: {summary.Failed.Count}");
+            Console.WriteLine($"Failed: {summary.FailedItems.Count}");
             Console.ResetColor();
-            foreach (var item in summary.Failed)
+            foreach (var item in summary.FailedItems)
             {
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.Write("  [FAIL] ");
@@ -136,9 +136,9 @@ public class Commands
         if (showPassed)
         {
             Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine($"\nPassed: {summary.Passed.Count}");
+            Console.WriteLine($"\nPassed: {summary.PassedItems.Count}");
             Console.ResetColor();
-            foreach (var item in summary.Passed)
+            foreach (var item in summary.PassedItems)
             {
                 Console.ForegroundColor = ConsoleColor.Green;
                 Console.Write("  [OK]   ");
@@ -149,10 +149,10 @@ public class Commands
                 Console.WriteLine();
             }
         }
-        else if (summary.Passed.Count > 0)
+        else if (summary.PassedItems.Count > 0)
         {
             Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine($"Passed: {summary.Passed.Count} (use 'hlx status <jobId> all' to show)");
+            Console.WriteLine($"Passed: {summary.PassedItems.Count} (use 'hlx status <jobId> all' to show)");
             Console.ResetColor();
         }
     }
@@ -313,12 +313,12 @@ public class Commands
         foreach (var job in batch.Jobs)
         {
             var idPrefix = job.JobId.Length >= 8 ? job.JobId[..8] : job.JobId;
-            Console.WriteLine($"Job {idPrefix}...: {job.Name} — {job.Failed.Count} failed, {job.Passed.Count} passed");
+            Console.WriteLine($"Job {idPrefix}...: {job.Name} — {job.FailedItems.Count} failed, {job.PassedItems.Count} passed");
         }
 
         Console.WriteLine($"Overall: {batch.TotalFailed} failed, {batch.TotalPassed} passed across {batch.Jobs.Count} jobs");
 
-        var allFailed = batch.Jobs.SelectMany(j => j.Failed).Where(f => f.FailureCategory.HasValue).ToList();
+        var allFailed = batch.Jobs.SelectMany(j => j.FailedItems).Where(f => f.FailureCategory.HasValue).ToList();
         if (allFailed.Count > 0)
         {
             var breakdown = allFailed

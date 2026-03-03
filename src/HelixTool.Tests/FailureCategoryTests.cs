@@ -126,8 +126,8 @@ public class FailureCategoryTests
         var result = await _svc.GetJobStatusAsync(ValidJobId);
 
         // Assert
-        Assert.Single(result.Failed);
-        Assert.NotNull(result.Failed[0].FailureCategory);
+        Assert.Single(result.FailedItems);
+        Assert.NotNull(result.FailedItems[0].FailureCategory);
     }
 
     [Fact]
@@ -165,7 +165,7 @@ public class FailureCategoryTests
         var result = await _svc.GetJobStatusAsync(ValidJobId);
 
         // Assert
-        Assert.Single(result.Passed);
-        Assert.Null(result.Passed[0].FailureCategory);
+        Assert.Single(result.PassedItems);
+        Assert.Null(result.PassedItems[0].FailureCategory);
     }
 }

@@ -62,3 +62,8 @@
 - **IHelixTokenAccessor.GetAccessToken() is synchronous.** Changing to async would be a cross-cutting change affecting all 3 projects. For Phase 1, sync-over-async (.GetAwaiter().GetResult()) on the git credential call is acceptable — it runs once at startup and completes in <100ms.
 - **Token resolution precedence: env var > stored credential.** Env var must win for backward compat and CI/CD override semantics. Never prompt during DI container setup.
 - **HelixService.cs has 7 identical error message strings** for 401 handling. These should be extracted to a constant when updating the message text.
+
+📌 Team update (2026-03-03): Core NuGet packaging execution complete — Ripley executed W1-W6/W9, Lambert verified W7 (373 tests pass), Kane completed W8 (README library docs). All 9 work items done. — decided by Dallas, executed by Ripley
+📌 Team update (2026-03-03): API surface review of lewing.helix.core completed. 3 🔴 items (seal HelixService/HelixException, List<T>→IReadOnlyList<T>, MatchesPattern→internal), 6 ⚠️ items (naming, docs, IHelixService interface, IJobDetails.Created typing). Review written to decisions/inbox/dallas-api-review.md. — decided by Dallas
+
+📌 Team update (2026-03-03): API review findings — decided by Dallas, Ash

@@ -75,11 +75,11 @@ public class HelixServiceDITests
         Assert.Equal("test-job", result.Name);
         Assert.Equal("windows.10.amd64", result.QueueId);
         Assert.Equal(2, result.TotalCount);
-        Assert.Single(result.Passed);
-        Assert.Single(result.Failed);
-        Assert.Equal("workitem1", result.Passed[0].Name);
-        Assert.Equal("workitem2", result.Failed[0].Name);
-        Assert.Equal(1, result.Failed[0].ExitCode);
+        Assert.Single(result.PassedItems);
+        Assert.Single(result.FailedItems);
+        Assert.Equal("workitem1", result.PassedItems[0].Name);
+        Assert.Equal("workitem2", result.FailedItems[0].Name);
+        Assert.Equal(1, result.FailedItems[0].ExitCode);
     }
 
     // --- Error: 404 HttpRequestException → HelixException with "not found" ---

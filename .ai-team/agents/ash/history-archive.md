@@ -61,3 +61,30 @@ After reading the full script, I can now quantify what hlx replaces more precise
 - US-9 (script removability) is now partially done — the mapping above IS the removability analysis. Remaining work: formalize the function→command mapping into a table.
 - US-20 (per-work-item detail in status) should be P1 not P2 — it's the single biggest gap preventing ci-analysis from using hlx. ci-analysis fetches details for every work item individually; hlx should do this in its status command.
 - US-30 (structured MCP output) is P1 — agents can't effectively use hlx if the MCP responses are just raw data.
+
+### 2025-07-18: US-9 Script Removability Analysis Complete (moved 2026-03-03)
+
+**Key findings:**
+- All 6 core Helix API functions in ci-analysis are 100% replaceable by hlx (~152 lines).
+- Extended Helix-adjacent code ~71% covered (~217/305 lines). Only meaningful gap: US-22 structured test failure extraction.
+- Overall Helix-related coverage: ~85%. 10 of 11 functions fully replaced.
+- Phase 1 migration: ~120 net line reduction. Phase 2: ~73 additional via hlx_search_log.
+- Coverage gaps: G1 structured test failures (P2), G2 Job ID from AzDO logs (P3), G3 env var extraction (P3), G4 TRX parsing (P3), G5 flaky test correlation (P3).
+
+### 2025-07-18: Requirements audit (moved 2026-03-03)
+
+- 25/30 user stories verified as implemented. P0 all done, P1 all 13 done, P2 8/9 done (US-22 partial), P3 none started.
+- 7 acceptance criteria left unchecked despite features existing (US-1, US-4, US-11, US-17×2, US-21, US-22).
+
+### 2025-07-23: STRIDE Threat Model (moved 2026-03-03)
+
+- HTTP MCP server has no auth middleware (high severity for network). SSRF vector in DownloadFromUrlAsync.
+- Path traversal protection thorough. No SQL injection or ReDoS. Token handling sound.
+- Security patterns: consistent path sanitization, auth context isolation, write-then-rename, WAL mode, unauthenticated HttpClient for URL downloads.
+- Output: .ai-team/analysis/threat-model.md — 16 findings.
+
+### 2026-02-13: Security analysis — structured file parsing (moved 2026-03-03)
+
+- .NET Core+ XML defaults safe; set explicitly for defense-in-depth. 50 MB limit for XML DOM parsing.
+- Text search uses simple string matching (no regex). Binlog parsing delegated to external tool.
+- TRX files same trust chain as console logs.
