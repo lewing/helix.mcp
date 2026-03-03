@@ -8,8 +8,9 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 
 var services = new ServiceCollection();
-services.AddSingleton<IHelixTokenAccessor>(_ =>
-    new EnvironmentHelixTokenAccessor(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
+services.AddSingleton<ICredentialStore, GitCredentialStore>();
+services.AddSingleton<ChainedHelixTokenAccessor>();
+services.AddSingleton<IHelixTokenAccessor>(sp => sp.GetRequiredService<ChainedHelixTokenAccessor>());
 services.AddSingleton<IHelixApiClientFactory, HelixApiClientFactory>();
 services.AddSingleton<CacheOptions>(sp =>
 {
@@ -51,10 +52,14 @@ public class Commands
     private static readonly JsonSerializerOptions s_jsonOptions = new() { WriteIndented = true };
 
     private readonly HelixService _svc;
+    private readonly ICredentialStore _credentialStore;
+    private readonly ChainedHelixTokenAccessor _tokenAccessor;
 
-    public Commands(HelixService svc)
+    public Commands(HelixService svc, ICredentialStore credentialStore, ChainedHelixTokenAccessor tokenAccessor)
     {
         _svc = svc;
+        _credentialStore = credentialStore;
+        _tokenAccessor = tokenAccessor;
     }
 
     /// <summary>Show work item summary for a Helix job.</summary>
@@ -679,5 +684,182 @@ Available as `failureCategory` in JSON and MCP output.
             return seconds > 0 ? $"{minutes}m {seconds}s" : $"{minutes}m";
         }
         return $"{(int)duration.TotalSeconds}s";
+    }
+
+    /// <summary>Authenticate with helix.dot.net by storing an API token.</summary>
+    /// <param name="noBrowser">Skip opening the browser.</param>
+    [Command("login")]
+    public async Task Login(bool noBrowser = false)
+    {
+        const string tokenUrl = "https://helix.dot.net/Account/Tokens";
+
+        Console.WriteLine("To authenticate, you need an API token from helix.dot.net:");
+        Console.WriteLine();
+
+        if (!noBrowser)
+        {
+            Console.WriteLine($"  1. Opening {tokenUrl} in your browser...");
+            try
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo(tokenUrl) { UseShellExecute = true };
+                System.Diagnostics.Process.Start(psi);
+            }
+            catch
+            {
+                Console.WriteLine($"     Could not open browser. Open this URL manually:");
+                Console.WriteLine($"     {tokenUrl}");
+            }
+        }
+        else
+        {
+            Console.WriteLine($"  1. Open {tokenUrl} in your browser");
+        }
+
+        Console.WriteLine("  2. Log in with your Microsoft account if prompted");
+        Console.WriteLine("  3. Generate a new API access token");
+        Console.WriteLine("  4. Paste it below");
+        Console.WriteLine();
+
+        // Check for existing token
+        var existing = await _credentialStore.GetTokenAsync("helix.dot.net", "helix-api-token");
+        if (existing is not null)
+        {
+            Console.Write("A token is already stored. Replace it? [y/N] ");
+            var answer = Console.ReadLine()?.Trim();
+            if (!string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine("Cancelled.");
+                return;
+            }
+        }
+
+        Console.Write("Token: ");
+        var token = ReadSecret();
+        Console.WriteLine();
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            Console.Error.WriteLine("No token provided.");
+            return;
+        }
+
+        // Validate token
+        Console.Write("Validating...");
+        try
+        {
+            var testClient = new HelixApiClient(token);
+            await testClient.ListWorkItemsAsync("00000000-0000-0000-0000-000000000000");
+            // If we get here without a 401, token is valid (we'll get a 404 for fake job, which is fine)
+            Console.WriteLine(" \u2713 Token is valid.");
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+        {
+            Console.Error.WriteLine(" \u2717 Token is invalid (401 Unauthorized). Not storing.");
+            return;
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            // 404 is expected for our fake job ID — token auth worked
+            Console.WriteLine(" \u2713 Token is valid.");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($" \u26a0 Could not validate ({ex.Message}). Storing anyway.");
+        }
+
+        await _credentialStore.StoreTokenAsync("helix.dot.net", "helix-api-token", token);
+        Console.WriteLine("\u2713 Token stored successfully.");
+    }
+
+    /// <summary>Remove stored Helix authentication token.</summary>
+    [Command("logout")]
+    public async Task Logout()
+    {
+        await _credentialStore.DeleteTokenAsync("helix.dot.net", "helix-api-token");
+        Console.WriteLine("\u2713 Token removed from credential store.");
+
+        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")))
+        {
+            Console.WriteLine("Note: HELIX_ACCESS_TOKEN environment variable is still set.");
+            Console.WriteLine("Unset it to fully log out: unset HELIX_ACCESS_TOKEN");
+        }
+    }
+
+    /// <summary>Show current authentication status.</summary>
+    [Command("auth-status")]
+    public async Task AuthStatus()
+    {
+        var token = _tokenAccessor.GetAccessToken();
+        var source = _tokenAccessor.Source;
+
+        switch (source)
+        {
+            case TokenSource.EnvironmentVariable:
+                Console.WriteLine("Token source: HELIX_ACCESS_TOKEN environment variable");
+                break;
+            case TokenSource.StoredCredential:
+                Console.WriteLine("Token source: stored credential (git credential)");
+                break;
+            default:
+                Console.Error.WriteLine("\u26a0 No Helix token configured.");
+                Console.Error.WriteLine("Run 'hlx login' to authenticate, or set HELIX_ACCESS_TOKEN.");
+                Environment.ExitCode = 1;
+                return;
+        }
+
+        // Test the token
+        Console.Write("API test:     ");
+        try
+        {
+            var testClient = new HelixApiClient(token);
+            await testClient.ListWorkItemsAsync("00000000-0000-0000-0000-000000000000");
+            Console.WriteLine("\u2713 Connected");
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            Console.WriteLine("\u2713 Connected");
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+        {
+            Console.WriteLine("\u2717 Token is invalid (401 Unauthorized)");
+            Environment.ExitCode = 1;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"\u26a0 Could not connect ({ex.Message})");
+            Environment.ExitCode = 1;
+        }
+    }
+
+    /// <summary>Read a line from stdin while masking input with bullet chars.</summary>
+    private static string ReadSecret()
+    {
+        var sb = new System.Text.StringBuilder();
+        while (true)
+        {
+            if (!Console.IsInputRedirected)
+            {
+                var key = Console.ReadKey(intercept: true);
+                if (key.Key == ConsoleKey.Enter)
+                    break;
+                if (key.Key == ConsoleKey.Backspace)
+                {
+                    if (sb.Length > 0)
+                    {
+                        sb.Length--;
+                        Console.Write("\b \b");
+                    }
+                    continue;
+                }
+                sb.Append(key.KeyChar);
+                Console.Write('\u2022');
+            }
+            else
+            {
+                return Console.ReadLine() ?? string.Empty;
+            }
+        }
+        return sb.ToString();
     }
 }

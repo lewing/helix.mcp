@@ -53,3 +53,12 @@
 📌 Team update (2026-02-15): Per-invocation temp dirs — decided by Ripley
 📌 Team update (2026-02-15): CI version validation — decided by Ripley
 📌 Team update (2026-03-01): UseStructuredContent refactor approved — typed return objects with UseStructuredContent=true for all 12 MCP tools (hlx_logs excepted). FileInfo_ naming noted as non-blocking. No breaking wire-format changes. — decided by Dallas
+📌 Team update (2026-03-03): Phase 1 auth UX architecture approved — `hlx login`/`logout`/`auth status` commands, `git credential` storage (Option A), `ChainedHelixTokenAccessor` with env var > stored > null precedence. 7 work items for Ripley. ICredentialStore + GitCredentialStore in Core, commands in CLI. No new NuGet deps required. — decided by Dallas
+
+## Learnings
+
+- **Helix auth is opaque tokens only.** The Helix API uses `Authorization: token <TOKEN>` with server-generated opaque strings. No Entra/JWT/OAuth possible until the Helix service team adds support server-side. This is a hard constraint — don't revisit.
+- **`git credential` is the right storage abstraction for CLI tools targeting .NET developers.** Zero new deps, cross-platform, delegates keychain management to the user's existing git credential helper. Same pattern `darc` uses.
+- **IHelixTokenAccessor.GetAccessToken() is synchronous.** Changing to async would be a cross-cutting change affecting all 3 projects. For Phase 1, sync-over-async (.GetAwaiter().GetResult()) on the git credential call is acceptable — it runs once at startup and completes in <100ms.
+- **Token resolution precedence: env var > stored credential.** Env var must win for backward compat and CI/CD override semantics. Never prompt during DI container setup.
+- **HelixService.cs has 7 identical error message strings** for 401 handling. These should be extracted to a constant when updating the message text.
