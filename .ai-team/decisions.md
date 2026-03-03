@@ -2967,3 +2967,9 @@ They do NOT answer:
 
 The publish workflow (`publish.yml`) validates all three match the git tag. Missing any one will fail the release.
 **Why:** v0.2.0 release required a force-push to fix because `server.json` wasn't updated alongside the csproj. The workflow caught it, but we should get it right the first time.
+
+
+### 2026-03-03: Default CLI behavior based on terminal context
+**By:** Ripley (Backend Dev)
+**What:** Use `Console.IsInputRedirected` to auto-detect context: interactive terminal defaults to `["--help"]`, redirected stdin defaults to `["mcp"]`. Previously, running `hlx` with no arguments in a terminal would hang waiting for JSON-RPC input.
+**Why:** `Console.IsInputRedirected` is a reliable .NET API — standard idiom for CLI tools that need different behavior in interactive vs. non-interactive contexts. No additional dependencies or platform-specific code required.
