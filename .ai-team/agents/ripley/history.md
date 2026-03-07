@@ -126,3 +126,9 @@
 - **IsTestResultFile() is public:** Needed by CLI (Program.cs) for file tagging. Uses exact-name and suffix matching (not substring like `MatchesPattern`).
 - **DownloadMatchingFilesAsync helper:** Downloads specific `IWorkItemFile` instances directly, bypassing the pattern-matching in `DownloadFilesAsync`. Uses same security (SanitizePathSegment + ValidatePathWithinRoot) and per-invocation temp dir isolation.
 - **Error message improvement (P0 #4):** When no test results found, error now lists searched patterns AND available files (up to 10 names), guiding users to understand why nothing was found.
+
+## Learnings (CacheStoreFactory Lazy<T> fix)
+
+- **ConcurrentDictionary.GetOrAdd race condition:** `GetOrAdd(key, factory)` does NOT guarantee single-invocation of the factory for a given key. Under contention, the factory can be called multiple times concurrently for the same key (only one result is stored, others are discarded). This is a documented .NET behavior. When the factory has side effects (like opening a SQLite DB and running `InitializeSchema()`), the concurrent invocations race on the same file, causing `ArgumentOutOfRangeException` from SQLitePCL on Windows.
+- **Fix pattern — Lazy<T> wrapping:** Change `ConcurrentDictionary<string, T>` to `ConcurrentDictionary<string, Lazy<T>>` and access `.Value` on return. `Lazy<T>` with default `LazyThreadSafetyMode.ExecutionAndPublication` guarantees the factory runs exactly once, even under contention. This is the standard .NET pattern for single-invocation semantics with `ConcurrentDictionary`.
+- **Dispose with Lazy<T>:** When disposing a `ConcurrentDictionary<K, Lazy<T>>`, check `lazy.IsValueCreated` before accessing `.Value` — avoids needlessly triggering lazy initialization during cleanup.
