@@ -333,7 +333,15 @@ public sealed class HelixMcpTools
         if (string.IsNullOrEmpty(workItem))
             throw new McpException("Work item name is required. Provide it as a separate parameter or include it in the Helix URL.");
 
-        var trxResults = await _svc.ParseTrxResultsAsync(jobId, workItem, fileName, includePassed, maxResults);
+        List<HelixService.TrxParseResult> trxResults;
+        try
+        {
+            trxResults = await _svc.ParseTrxResultsAsync(jobId, workItem, fileName, includePassed, maxResults);
+        }
+        catch (HelixException ex)
+        {
+            throw new McpException(ex.Message);
+        }
 
         return new TestResultsToolResult
         {
