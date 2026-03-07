@@ -108,3 +108,21 @@
 - Added `failureCategory` to the `hlx_status` MCP tool `[Description]` parenthetical field list (line 23 of HelixMcpTools.cs). The field was already returned in JSON output (line 46) but omitted from the description. This is a documentation-completeness fix per Dallas's decision that MCP descriptions should accurately list returned fields.
 
 📌 Team update (2026-03-01): UseStructuredContent refactor approved — typed return objects with UseStructuredContent=true for all 12 MCP tools (hlx_logs excepted). FileInfo_ naming noted as non-blocking. No breaking wire-format changes. — decided by Dallas
+
+## Learnings
+
+- **HelixException → McpException translation:** MCP tool handlers must catch `HelixException` from service methods and rethrow as `McpException`. The MCP SDK only surfaces `McpException` messages to clients — all other exceptions become generic "An error occurred" errors. This was the root cause of issue #4.
+- **xUnit XML parsing lives alongside TRX:** `ParseXunitFile` handles `<assemblies>/<assembly>/<collection>/<test>` schema. `DetectTestFileFormat` inspects the root XML element to distinguish TRX (`<TestRun>`) from xUnit (`<assemblies>` or `<assembly>`). Both reuse `TrxParseResult`/`TrxTestResult` records.
+- **Two-tier XML parsing strategy:** TRX files (downloaded via `*.trx`) are parsed strictly — `XmlException` propagates to preserve XXE detection. Fallback XML files (downloaded via `*.xml`) use best-effort parsing — `XmlException` is caught per-file and the file is skipped. This prevents DTD-attack files in `.xml` from crashing the tool while keeping security assertions on `.trx` files.
+- **ParseDownloadedFiles vs ParseDownloadedFilesBestEffort:** Two private helper methods extracted from `ParseTrxResultsAsync`. Strict mode for TRX/specific files, best-effort mode for XML fallback. Both handle cleanup in `finally` blocks.
+- **xUnit outcome normalization:** xUnit uses `result="Pass"/"Fail"/"Skip"` while TRX uses `outcome="Passed"/"Failed"`. `ParseXunitFile` normalizes to TRX-style ("Passed", "Failed", "Skipped") for consistent downstream processing.
+
+## Learnings (2026-03-07: Real Helix test result file patterns)
+
+- **Real-world file patterns discovered:** Runtime CoreCLR tests upload `{workitem}.testResults.xml.txt` to the regular files list (NOT testResults category). iOS/XHarness uploads `testResults.xml`. SDK and ASP.NET Core tests do NOT upload results to Helix blob storage (consumed locally by Azure Pipelines reporter).
+- **TestResultFilePatterns array:** `*.trx`, `testResults.xml` (exact), `*.testResults.xml.txt`, `testResults.xml.txt` (exact). Defined as `internal static readonly string[]` on HelixService. Order is priority for documentation but all matching files are returned.
+- **Single file list query:** `ParseTrxResultsAsync` now queries `ListWorkItemFilesAsync` once and matches all patterns, instead of issuing separate `DownloadFilesAsync` calls per pattern (which each queried the file list again). Reduces API calls from 2-3 to 1.
+- **All matching files returned:** Changed from "first matching pattern wins" to "return all discovered test result files." TRX files parsed strictly, everything else parsed best-effort. This is more useful when a work item has both formats.
+- **IsTestResultFile() is public:** Needed by CLI (Program.cs) for file tagging. Uses exact-name and suffix matching (not substring like `MatchesPattern`).
+- **DownloadMatchingFilesAsync helper:** Downloads specific `IWorkItemFile` instances directly, bypassing the pattern-matching in `DownloadFilesAsync`. Uses same security (SanitizePathSegment + ValidatePathWithinRoot) and per-invocation temp dir isolation.
+- **Error message improvement (P0 #4):** When no test results found, error now lists searched patterns AND available files (up to 10 names), guiding users to understand why nothing was found.

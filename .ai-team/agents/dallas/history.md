@@ -55,9 +55,16 @@
 📌 Team update (2026-03-01): UseStructuredContent refactor approved — typed return objects with UseStructuredContent=true for all 12 MCP tools (hlx_logs excepted). FileInfo_ naming noted as non-blocking. No breaking wire-format changes. — decided by Dallas
 📌 Team update (2026-03-03): Phase 1 auth UX architecture approved — `hlx login`/`logout`/`auth status` commands, `git credential` storage (Option A), `ChainedHelixTokenAccessor` with env var > stored > null precedence. 7 work items for Ripley. ICredentialStore + GitCredentialStore in Core, commands in CLI. No new NuGet deps required. — decided by Dallas
 
+📌 Team update (2026-03-07): AzDO pipeline architecture design — produced comprehensive design document for adding Azure DevOps pipeline wrapping to helix.mcp. Key decisions: add as `AzDO/` folder in HelixTool.Core (not separate project), use HttpClient + System.Text.Json (not TFS SDK — avoids 40+ transitive deps), use Azure.Identity for auth (AzureDeveloperCliCredential), 7 MCP tools with `azdo_` prefix, reuse existing SqliteCacheStore with `azdo:` key prefix, no CLI commands Phase 1. Document at `.ai-team/decisions/inbox/dallas-azdo-architecture.md`. — decided by Dallas, awaiting Larry's review
+
 ## Learnings
 
 - **Helix auth is opaque tokens only.** The Helix API uses `Authorization: token <TOKEN>` with server-generated opaque strings. No Entra/JWT/OAuth possible until the Helix service team adds support server-side. This is a hard constraint — don't revisit.
+- **AzDO auth uses Azure Identity (Entra ID).** The scope is `499b84ac-1321-427f-aa17-267ca6975798/.default`. `AzureDeveloperCliCredential` (via `azd auth login`) is the primary credential for CLI tools. `Azure.Identity` handles token caching/refresh internally.
+- **AzDO REST API is stable at v7.0.** The ci-analysis script uses `api-version=7.0` for all endpoints. The 7 endpoints we need (build, builds, timeline, log, changes, test runs, test results) are well-documented and unlikely to change.
+- **Microsoft.TeamFoundationServer.Client SDK is too heavy for our use case.** It pulls 40+ transitive deps including Newtonsoft.Json and a CVE-affected System.Data.SqlClient. HttpClient + System.Text.Json is sufficient for 7 REST endpoints.
+- **AzDO builds span two orgs: dnceng-public (PR builds) and dnceng (internal).** The API client must accept org/project as per-call parameters, not constructor-level config.
+- **Timeline for in-progress builds must never be cached.** The timeline changes as jobs complete — the ci-analysis script explicitly skips cache writes for in-progress builds.
 - **`git credential` is the right storage abstraction for CLI tools targeting .NET developers.** Zero new deps, cross-platform, delegates keychain management to the user's existing git credential helper. Same pattern `darc` uses.
 - **IHelixTokenAccessor.GetAccessToken() is synchronous.** Changing to async would be a cross-cutting change affecting all 3 projects. For Phase 1, sync-over-async (.GetAwaiter().GetResult()) on the git credential call is acceptable — it runs once at startup and completes in <100ms.
 - **Token resolution precedence: env var > stored credential.** Env var must win for backward compat and CI/CD override semantics. Never prompt during DI container setup.

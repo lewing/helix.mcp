@@ -23,6 +23,19 @@ Tools that return raw text content (console logs, file contents) should NOT use 
 ### Error Path Migration
 Replace `return JsonSerializer.Serialize(new { error = "..." })` with `throw new McpException("...")`. The MCP SDK translates exceptions into proper error responses. Use `McpException` for tool-level errors and `ArgumentException` for parameter validation.
 
+**Critical:** Service-layer exceptions (e.g., custom domain exceptions like `HelixException`) are NOT automatically surfaced to MCP clients. The SDK wraps non-`McpException` exceptions as generic "An error occurred invoking '{tool}'" messages. Tool handlers MUST catch domain exceptions and rethrow as `McpException`:
+
+```csharp
+try
+{
+    var result = await _svc.DoSomethingAsync(...);
+}
+catch (MyDomainException ex)
+{
+    throw new McpException(ex.Message);
+}
+```
+
 ### Type Naming
 Avoid collisions with BCL types (e.g., `System.IO.FileInfo`) by using domain-specific prefixes (e.g., `HelixFileInfo`) rather than suffixes or underscores. The C# type name doesn't affect the wire format but should still follow conventions for maintainability.
 
