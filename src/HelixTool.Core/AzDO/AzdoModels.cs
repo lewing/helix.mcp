@@ -249,6 +249,23 @@ public sealed record AzdoBuildConfiguration
     public int? BuildDefinitionId { get; init; }
 }
 
+/// <summary>Formatted build summary returned by <see cref="AzdoService.GetBuildSummaryAsync"/>.</summary>
+public sealed record AzdoBuildSummary(
+    int Id,
+    string? BuildNumber,
+    string? Status,
+    string? Result,
+    string? DefinitionName,
+    int? DefinitionId,
+    string? SourceBranch,
+    string? SourceVersion,
+    DateTimeOffset? QueueTime,
+    DateTimeOffset? StartTime,
+    DateTimeOffset? FinishTime,
+    TimeSpan? Duration,
+    string? RequestedFor,
+    string WebUrl);
+
 /// <summary>Individual test result within a test run.</summary>
 public sealed record AzdoTestResult
 {
