@@ -86,3 +86,5 @@
 📌 Team update (2026-03-07): CacheStoreFactory uses Lazy<T> wrapping — CacheStoreFactoryTests now pass reliably including ParallelCallsReturnSameInstance. — decided by Ripley
 
 📌 Team update (2026-03-07): AzDO caching strategy implemented — CachingAzdoApiClient with dynamic TTL by build status, azdo: key prefix, reuses ICacheStore infrastructure. Tests needed. — decided by Ripley
+
+📌 Team update (2026-03-07): AzdoService method signatures defined — 7 methods with URL resolution, GetBuildSummaryAsync flattened record, tailLines server-side slicing. Tests needed. — decided by Ripley

@@ -56,3 +56,5 @@
 
 📌 Team update (2026-03-07): AzDO pipeline support architecture adopted — new MCP tools for AzDO builds/timelines/logs. Documentation updates will be needed for README and llmstxt. — decided by Dallas
 📌 Team update (2026-03-07): Auth UX Phase 1 approved — hlx login/logout/auth-status commands coming. README will need auth documentation. — decided by Dallas
+
+📌 Team update (2026-03-07): AzdoService implemented — method signatures stable, can begin MCP tool descriptions. — decided by Ripley
