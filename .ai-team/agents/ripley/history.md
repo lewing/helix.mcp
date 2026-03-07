@@ -100,3 +100,12 @@
 📌 Team update (2026-03-07): Auth UX Phase 1 approved — hlx login + git credential storage + ChainedHelixTokenAccessor. 7 work items assigned for implementation. — decided by Dallas
 📌 Team update (2026-03-07): XXE test regression — ParseTrx_RejectsXxeDtdDeclaration fails after xUnit XML refactor. Review DetectTestFileFormat for DtdProcessing.Prohibit. — flagged by Lambert
 📌 Team update (2026-03-07): AzDO test patterns — Lambert wrote 55 tests, identified edge cases: negative buildIds accepted, TryResolve out-params default to DefaultOrg/DefaultProject, _resolved flag not thread-safe. — documented by Lambert
+
+## Learnings (2026-03-07: AzdoService)
+
+- **AzdoService pattern:** Thin business-logic layer between MCP tools and `IAzdoApiClient`. Constructor takes `IAzdoApiClient` (will be `CachingAzdoApiClient` at runtime via DI). Every method accepting `buildIdOrUrl` resolves via `AzdoIdResolver.Resolve()` to extract `(org, project, buildId)`.
+- **AzdoBuildSummary record:** Added to `AzdoModels.cs`. Flattens nested `AzdoBuild` fields (definition name/id, requestedFor display name) and computes `Duration` and `WebUrl`. MCP tools consume this directly.
+- **GetTestResultsAsync uses buildIdOrUrl for org/project:** Since `runId` is scoped to org/project (not globally unique), we resolve org/project from the build reference. The `buildId` itself is discarded (`_`).
+- **Tail lines in GetBuildLogAsync:** Splits on `\n` and uses range operator `lines[^tailLines.Value..]`. Handles null/zero/negative tailLines by returning full content.
+- **Service doesn't format JSON:** That's the MCP tool layer's job. Service returns typed records and collections.
+- **No exception wrapping yet:** Unlike HelixService which wraps `HttpRequestException` → `HelixException`, AzdoService currently lets exceptions propagate. We'll add `AzdoException` when the MCP tool layer needs it.

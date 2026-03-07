@@ -84,3 +84,5 @@
 📌 Team update (2026-03-07): Auth UX Phase 1 approved — testing needed for ICredentialStore, ChainedHelixTokenAccessor, hlx login/logout/auth-status commands (WI-1 through WI-7). — decided by Dallas
 📌 Team update (2026-03-07): AzDO architecture consolidated — Dallas architecture + Ripley foundation. AzDO lives in HelixTool.Core/AzDO/, mirrors Helix patterns. — decided by Dallas, Ripley
 📌 Team update (2026-03-07): CacheStoreFactory uses Lazy<T> wrapping — CacheStoreFactoryTests now pass reliably including ParallelCallsReturnSameInstance. — decided by Ripley
+
+📌 Team update (2026-03-07): AzDO caching strategy implemented — CachingAzdoApiClient with dynamic TTL by build status, azdo: key prefix, reuses ICacheStore infrastructure. Tests needed. — decided by Ripley
