@@ -14,18 +14,22 @@ public interface ICacheStoreFactory
 
 public sealed class CacheStoreFactory : ICacheStoreFactory, IDisposable
 {
-    private readonly ConcurrentDictionary<string, ICacheStore> _stores = new();
+    private readonly ConcurrentDictionary<string, Lazy<ICacheStore>> _stores = new();
 
     public ICacheStore GetOrCreate(CacheOptions options)
     {
         var key = options.AuthTokenHash ?? "public";
-        return _stores.GetOrAdd(key, _ => new SqliteCacheStore(options));
+        return _stores.GetOrAdd(key, _ => new Lazy<ICacheStore>(
+            () => new SqliteCacheStore(options))).Value;
     }
 
     public void Dispose()
     {
-        foreach (var store in _stores.Values)
-            store.Dispose();
+        foreach (var lazy in _stores.Values)
+        {
+            if (lazy.IsValueCreated)
+                lazy.Value.Dispose();
+        }
         _stores.Clear();
     }
 }

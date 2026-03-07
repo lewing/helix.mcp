@@ -577,11 +577,13 @@ public class HelixService
     /// <summary>Result of searching an uploaded file's content.</summary>
     public record FileContentSearchResult(string FileName, List<LogMatch> Matches, int TotalLines, bool Truncated, bool IsBinary);
 
-    /// <summary>Parsed test result from a TRX file.</summary>
+    /// <summary>Parsed test result from a TRX or xUnit XML file.</summary>
     public record TrxTestResult(string TestName, string Outcome, string? Duration, string? ComputerName, string? ErrorMessage, string? StackTrace);
 
-    /// <summary>Summary of parsed TRX test results.</summary>
+    /// <summary>Summary of parsed test results from a TRX or xUnit XML file.</summary>
     public record TrxParseResult(string FileName, int TotalTests, int Passed, int Failed, int Skipped, List<TrxTestResult> Results);
+
+    private enum TestFileFormat { Trx, Xunit, Unknown }
 
     private static readonly XmlReaderSettings s_trxReaderSettings = new()
     {
@@ -751,7 +753,142 @@ public class HelixService
         return new TrxParseResult(fileName, unitTestResults.Count, passed, failed, skipped, results);
     }
 
-    /// <summary>Parse TRX test result files from a Helix work item.</summary>
+    /// <summary>Detect whether an XML file is TRX or xUnit format by inspecting the root element.</summary>
+    private static TestFileFormat DetectTestFileFormat(string filePath)
+    {
+        using var stream = File.OpenRead(filePath);
+        using var reader = XmlReader.Create(stream, s_trxReaderSettings);
+        while (reader.Read())
+        {
+            if (reader.NodeType == XmlNodeType.Element)
+            {
+                // TRX files have root element "TestRun" in the VS TeamTest namespace
+                if (reader.LocalName == "TestRun")
+                    return TestFileFormat.Trx;
+                // xUnit XML files have root element "assemblies" or "assembly"
+                if (reader.LocalName is "assemblies" or "assembly")
+                    return TestFileFormat.Xunit;
+                return TestFileFormat.Unknown;
+            }
+        }
+        return TestFileFormat.Unknown;
+    }
+
+    /// <summary>Parse an xUnit XML result file.</summary>
+    private static TrxParseResult ParseXunitFile(string filePath, string fileName, bool includePassed, int maxResults)
+    {
+        using var fileStream = File.OpenRead(filePath);
+        using var reader = XmlReader.Create(fileStream, s_trxReaderSettings);
+
+        var doc = XDocument.Load(reader);
+
+        // xUnit XML format: <assemblies><assembly><collection><test> ...
+        // Or just <assembly><collection><test> ... (single assembly)
+        var tests = doc.Descendants("test").ToList();
+
+        int passed = 0, failed = 0, skipped = 0;
+        var results = new List<TrxTestResult>();
+
+        foreach (var test in tests)
+        {
+            var testName = test.Attribute("name")?.Value ?? "Unknown";
+            var result = test.Attribute("result")?.Value ?? "Unknown";
+            var time = test.Attribute("time")?.Value;
+
+            // Normalize xUnit result values to TRX-style outcomes
+            var outcome = result switch
+            {
+                "Pass" => "Passed",
+                "Fail" => "Failed",
+                "Skip" => "Skipped",
+                _ => result
+            };
+
+            switch (outcome.ToLowerInvariant())
+            {
+                case "passed": passed++; break;
+                case "failed": failed++; break;
+                default: skipped++; break;
+            }
+
+            string? errorMessage = null;
+            string? stackTrace = null;
+            if (outcome.Equals("Failed", StringComparison.OrdinalIgnoreCase))
+            {
+                var failure = test.Element("failure");
+                errorMessage = failure?.Element("message")?.Value;
+                stackTrace = failure?.Element("stack-trace")?.Value;
+
+                if (errorMessage?.Length > 500)
+                    errorMessage = errorMessage[..500] + "... (truncated)";
+                if (stackTrace?.Length > 1000)
+                    stackTrace = stackTrace[..1000] + "... (truncated)";
+            }
+
+            // For skipped tests, capture the reason
+            if (outcome.Equals("Skipped", StringComparison.OrdinalIgnoreCase) && errorMessage == null)
+            {
+                errorMessage = test.Element("reason")?.Value;
+                if (errorMessage?.Length > 500)
+                    errorMessage = errorMessage[..500] + "... (truncated)";
+            }
+
+            bool shouldInclude = outcome.Equals("Failed", StringComparison.OrdinalIgnoreCase) ||
+                                 (!outcome.Equals("Passed", StringComparison.OrdinalIgnoreCase)) ||
+                                 includePassed;
+
+            if (shouldInclude && results.Count < maxResults)
+            {
+                // xUnit uses seconds as a decimal; format as duration string
+                var duration = time != null ? $"{time}s" : null;
+                results.Add(new TrxTestResult(testName, outcome, duration, null, errorMessage, stackTrace));
+            }
+        }
+
+        return new TrxParseResult(fileName, tests.Count, passed, failed, skipped, results);
+    }
+
+    /// <summary>Parse a test result file, auto-detecting format (TRX or xUnit XML).</summary>
+    private static TrxParseResult? TryParseTestFile(string filePath, string fileName, bool includePassed, int maxResults)
+    {
+        var format = DetectTestFileFormat(filePath);
+        return format switch
+        {
+            TestFileFormat.Trx => ParseTrxFile(filePath, fileName, includePassed, maxResults),
+            TestFileFormat.Xunit => ParseXunitFile(filePath, fileName, includePassed, maxResults),
+            _ => null
+        };
+    }
+
+    /// <summary>Patterns used to discover test result files in work item file lists, in priority order.</summary>
+    internal static readonly string[] TestResultFilePatterns =
+    [
+        "*.trx",                     // VSTest / dotnet test TRX files
+        "testResults.xml",           // XHarness / xUnit XML (exact name)
+        "*.testResults.xml.txt",     // CoreCLR XUnitWrapperGenerator pattern
+        "testResults.xml.txt",       // CoreCLR variant (exact name)
+    ];
+
+    /// <summary>Check whether a file name matches any known test result pattern.</summary>
+    public static bool IsTestResultFile(string fileName)
+    {
+        foreach (var pattern in TestResultFilePatterns)
+        {
+            if (MatchesTestResultPattern(fileName, pattern))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>Match a file name against a test result pattern (supports *.ext and exact name).</summary>
+    private static bool MatchesTestResultPattern(string fileName, string pattern)
+    {
+        if (pattern.StartsWith("*."))
+            return fileName.EndsWith(pattern[1..], StringComparison.OrdinalIgnoreCase);
+        return fileName.Equals(pattern, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Parse test result files (TRX or xUnit XML) from a Helix work item.</summary>
     public async Task<List<TrxParseResult>> ParseTrxResultsAsync(
         string jobId, string workItem, string? fileName = null,
         bool includePassed = false, int maxResults = 200,
@@ -763,12 +900,102 @@ public class HelixService
         ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
         ArgumentException.ThrowIfNullOrWhiteSpace(workItem);
 
-        var pattern = fileName ?? "*.trx";
-        var downloadedPaths = await DownloadFilesAsync(jobId, workItem, pattern, cancellationToken);
+        if (fileName != null)
+        {
+            // Specific file requested — download and auto-detect format
+            var downloadedPaths = await DownloadFilesAsync(jobId, workItem, fileName, cancellationToken);
+            if (downloadedPaths.Count == 0)
+                throw new HelixException($"File '{fileName}' not found in work item '{workItem}'.");
 
-        if (downloadedPaths.Count == 0)
-            throw new HelixException($"No TRX files found in work item '{workItem}'.");
+            return ParseDownloadedFiles(downloadedPaths, fileName, includePassed, maxResults);
+        }
 
+        // Auto-discovery: get file list once and find all test result files
+        var id = HelixIdResolver.ResolveJobId(jobId);
+        List<IWorkItemFile> allFiles;
+        try
+        {
+            allFiles = (await _api.ListWorkItemFilesAsync(workItem, id, cancellationToken)).ToList();
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            throw new HelixException($"Work item '{workItem}' in job '{id}' not found.", ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new HelixException($"Helix API error: {ex.Message}", ex);
+        }
+
+        // Find test result files matching known patterns
+        var testResultFiles = allFiles.Where(f => IsTestResultFile(f.Name)).ToList();
+
+        if (testResultFiles.Count > 0)
+        {
+            // Download and parse discovered test result files
+            var downloadedPaths = await DownloadMatchingFilesAsync(testResultFiles, workItem, id, cancellationToken);
+
+            // TRX files are parsed strictly; other formats use best-effort
+            var trxPaths = downloadedPaths.Where(p => p.EndsWith(".trx", StringComparison.OrdinalIgnoreCase)).ToList();
+            var otherPaths = downloadedPaths.Where(p => !p.EndsWith(".trx", StringComparison.OrdinalIgnoreCase)).ToList();
+
+            var results = new List<TrxParseResult>();
+
+            if (trxPaths.Count > 0)
+                results.AddRange(ParseDownloadedFiles(trxPaths, null, includePassed, maxResults));
+
+            if (otherPaths.Count > 0)
+                results.AddRange(ParseDownloadedFilesBestEffort(otherPaths, includePassed, maxResults));
+
+            if (results.Count > 0)
+                return results;
+        }
+
+        // Build a helpful error message listing what was searched and what files exist
+        var fileNames = allFiles.Select(f => f.Name).ToList();
+        var patternsSearched = string.Join(", ", TestResultFilePatterns);
+        var availableFiles = fileNames.Count > 0
+            ? $" Available files: {string.Join(", ", fileNames.Take(10))}{(fileNames.Count > 10 ? $" (and {fileNames.Count - 10} more)" : "")}"
+            : " The work item has no uploaded files.";
+
+        throw new HelixException(
+            $"No test result files found in work item '{workItem}'. " +
+            $"Searched for: {patternsSearched}.{availableFiles}");
+    }
+
+    /// <summary>Download specific files from a work item's file list.</summary>
+    private async Task<List<string>> DownloadMatchingFilesAsync(
+        List<IWorkItemFile> files, string workItem, string jobId,
+        CancellationToken cancellationToken)
+    {
+        var idPrefix = jobId.Length >= 8 ? jobId[..8] : jobId;
+        var outDir = Path.Combine(Path.GetTempPath(), $"helix-{idPrefix}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outDir);
+        var paths = new List<string>();
+
+        foreach (var f in files)
+        {
+            await using var stream = await _api.GetFileAsync(f.Name, workItem, jobId, cancellationToken);
+            var safeName = CacheSecurity.SanitizePathSegment(Path.GetFileName(f.Name));
+            var outPath = Path.Combine(outDir, safeName);
+            CacheSecurity.ValidatePathWithinRoot(outPath, outDir);
+            Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
+            await using var file = File.Create(outPath);
+            await stream.CopyToAsync(file, cancellationToken);
+            paths.Add(outPath);
+        }
+
+        return paths;
+    }
+
+    /// <summary>Parse downloaded files strictly — XmlException propagates (preserves XXE detection on .trx).</summary>
+    private static List<TrxParseResult> ParseDownloadedFiles(
+        List<string> downloadedPaths, string? requestedFileName,
+        bool includePassed, int maxResults)
+    {
         var results = new List<TrxParseResult>();
         try
         {
@@ -776,10 +1003,48 @@ public class HelixService
             {
                 var fileInfo = new FileInfo(path);
                 if (fileInfo.Length > MaxSearchFileSizeBytes)
-                    throw new HelixException($"TRX file '{Path.GetFileName(path)}' exceeds the {MaxSearchFileSizeBytes / (1024 * 1024)}MB size limit.");
+                    throw new HelixException($"Test result file '{Path.GetFileName(path)}' exceeds the {MaxSearchFileSizeBytes / (1024 * 1024)}MB size limit.");
 
-                var trxFileName = fileName ?? Path.GetFileName(path);
-                results.Add(ParseTrxFile(path, trxFileName, includePassed, maxResults));
+                var parsedFileName = requestedFileName ?? Path.GetFileName(path);
+                var parsed = TryParseTestFile(path, parsedFileName, includePassed, maxResults);
+                if (parsed != null)
+                    results.Add(parsed);
+            }
+        }
+        finally
+        {
+            foreach (var p in downloadedPaths)
+                try { File.Delete(p); } catch { }
+        }
+
+        return results;
+    }
+
+    /// <summary>Parse downloaded XML files best-effort — skip unrecognized/malformed files gracefully.</summary>
+    private static List<TrxParseResult> ParseDownloadedFilesBestEffort(
+        List<string> downloadedPaths, bool includePassed, int maxResults)
+    {
+        var results = new List<TrxParseResult>();
+        try
+        {
+            foreach (var path in downloadedPaths)
+            {
+                var fileInfo = new FileInfo(path);
+                if (fileInfo.Length > MaxSearchFileSizeBytes)
+                    continue; // Skip oversized files in best-effort mode
+
+                try
+                {
+                    var parsedFileName = Path.GetFileName(path);
+                    var parsed = TryParseTestFile(path, parsedFileName, includePassed, maxResults);
+                    if (parsed != null)
+                        results.Add(parsed);
+                }
+                catch (XmlException)
+                {
+                    // Skip files that aren't valid XML or have security-blocked content
+                    continue;
+                }
             }
         }
         finally

@@ -253,19 +253,97 @@ public class TrxParsingTests
     }
 
     // ========================================================================
-    // 7. No TRX files
+    // 7. No test result files (issue #4 — clear error when no parseable
+    //    test result files exist). Production code now auto-discovers both
+    //    *.trx and *.xml files; these tests cover the paths where nothing
+    //    matches or nothing is parseable.
     // ========================================================================
 
     [Fact]
-    public async Task ParseTrx_ThrowsWhenNoTrxFilesFound()
+    public async Task ParseTrx_NoMatchingFiles_ThrowsHelixException()
     {
-        // Set up files that are NOT .trx
+        // Work item has files but none are .trx or .xml
         SetupMultipleFiles(
             ("build.binlog", null),
             ("output.log", null));
 
         await Assert.ThrowsAsync<HelixException>(
             () => _svc.ParseTrxResultsAsync(ValidJobId, WorkItem));
+    }
+
+    [Fact]
+    public async Task ParseTrx_NoMatchingFiles_ErrorMessageContainsWorkItemName()
+    {
+        // No .trx or .xml files → HelixException message must include work item name
+        SetupMultipleFiles(
+            ("build.binlog", null),
+            ("console.log", null));
+
+        var ex = await Assert.ThrowsAsync<HelixException>(
+            () => _svc.ParseTrxResultsAsync(ValidJobId, WorkItem));
+
+        Assert.Contains(WorkItem, ex.Message);
+    }
+
+    [Fact]
+    public async Task ParseTrx_EmptyFileList_ThrowsHelixException()
+    {
+        // Work item exists but has zero files at all
+        _mockApi.ListWorkItemFilesAsync(WorkItem, ValidJobId, Arg.Any<CancellationToken>())
+            .Returns(new List<IWorkItemFile>());
+
+        var ex = await Assert.ThrowsAsync<HelixException>(
+            () => _svc.ParseTrxResultsAsync(ValidJobId, WorkItem));
+        Assert.Contains(WorkItem, ex.Message);
+    }
+
+    [Fact]
+    public async Task ParseTrx_EmptyFileList_ErrorMentionsFileTypes()
+    {
+        // The error message should guide the user on what file types are supported
+        _mockApi.ListWorkItemFilesAsync(WorkItem, ValidJobId, Arg.Any<CancellationToken>())
+            .Returns(new List<IWorkItemFile>());
+
+        var ex = await Assert.ThrowsAsync<HelixException>(
+            () => _svc.ParseTrxResultsAsync(ValidJobId, WorkItem));
+        Assert.Contains(".trx", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ParseTrx_SpecificFileName_NotFound_ThrowsHelixException()
+    {
+        // Work item has files, but the specific requested file doesn't exist
+        SetupMultipleFiles(
+            ("build.binlog", null),
+            ("console.log", null));
+
+        var ex = await Assert.ThrowsAsync<HelixException>(
+            () => _svc.ParseTrxResultsAsync(ValidJobId, WorkItem, fileName: "missing.trx"));
+        Assert.Contains(WorkItem, ex.Message);
+        Assert.Contains("missing.trx", ex.Message);
+    }
+
+    [Fact]
+    public async Task ParseTrx_XmlFilesNotRecognizedFormat_ThrowsHelixException()
+    {
+        // Work item has .xml files but they aren't TRX or xUnit format —
+        // production auto-discovers *.xml, downloads them, but TryParseTestFile
+        // returns null for unrecognized formats.
+        var nonTestXml = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <configuration>
+              <appSettings>
+                <add key="Setting1" value="Value1" />
+              </appSettings>
+            </configuration>
+            """;
+
+        SetupMultipleFiles(
+            ("app.config.xml", nonTestXml));
+
+        var ex = await Assert.ThrowsAsync<HelixException>(
+            () => _svc.ParseTrxResultsAsync(ValidJobId, WorkItem));
+        Assert.Contains(WorkItem, ex.Message);
     }
 
     // ========================================================================

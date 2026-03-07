@@ -339,6 +339,60 @@ public class HelixMcpToolsTests
         await Assert.ThrowsAsync<McpException>(() => _tools.Download(ValidJobId, "wi1", "*"));
     }
 
+    // --- TestResults error surfacing tests (issue #4) ---
+
+    [Fact]
+    public async Task TestResults_NoMatchingFiles_ErrorContainsClearMessage()
+    {
+        // Arrange: work item with non-test files only (no .trx or .xml)
+        var f = Substitute.For<IWorkItemFile>();
+        f.Name.Returns("build.binlog");
+        f.Link.Returns("https://helix.dot.net/files/build.binlog");
+
+        _mockApi.ListWorkItemFilesAsync("no-test-wi", ValidJobId, Arg.Any<CancellationToken>())
+            .Returns(new List<IWorkItemFile> { f });
+
+        var ex = await Record.ExceptionAsync(
+            () => _tools.TestResults(ValidJobId, workItem: "no-test-wi"));
+
+        // The error message must be clear, not a generic "An error occurred"
+        Assert.NotNull(ex);
+        Assert.Contains("no-test-wi", ex.Message);
+        // Issue #4 contract: once error handling is added in MCP layer,
+        // this should be McpException instead of HelixException:
+        // Assert.IsType<McpException>(ex);
+    }
+
+    [Fact]
+    public async Task TestResults_EmptyFileList_ErrorContainsClearMessage()
+    {
+        _mockApi.ListWorkItemFilesAsync("empty-wi", ValidJobId, Arg.Any<CancellationToken>())
+            .Returns(new List<IWorkItemFile>());
+
+        var ex = await Record.ExceptionAsync(
+            () => _tools.TestResults(ValidJobId, workItem: "empty-wi"));
+
+        Assert.NotNull(ex);
+        Assert.Contains("empty-wi", ex.Message);
+    }
+
+    [Fact]
+    public async Task TestResults_MissingWorkItem_ThrowsMcpException()
+    {
+        // workItem is null and jobId is a plain GUID (no URL to extract from)
+        var ex = await Assert.ThrowsAsync<McpException>(
+            () => _tools.TestResults(ValidJobId, workItem: null));
+        Assert.Contains("Work item name is required", ex.Message);
+    }
+
+    [Fact]
+    public async Task TestResults_EmptyWorkItem_ThrowsMcpException()
+    {
+        var ex = await Assert.ThrowsAsync<McpException>(
+            () => _tools.TestResults(ValidJobId, workItem: ""));
+        Assert.Contains("Work item name is required", ex.Message);
+    }
+
     // --- Constructor tests ---
 
     [Fact]

@@ -1,0 +1,4 @@
+### 2026-03-07: Helix test result file patterns
+**By:** Ripley
+**What:** ParseTrxResultsAsync now discovers test result files using a priority-ordered `TestResultFilePatterns` array (`*.trx`, `testResults.xml`, `*.testResults.xml.txt`, `testResults.xml.txt`) instead of separate download calls per pattern. All matching files are returned (TRX strict, others best-effort). `IsTestResultFile()` is the canonical check used by CLI, MCP, and service code.
+**Why:** Real-world investigation of Helix jobs revealed that runtime CoreCLR tests upload `{name}.testResults.xml.txt` to the regular files list (not the testResults category), and iOS/XHarness tests upload `testResults.xml`. The previous code only searched `*.trx` then fell back to `*.xml` (which missed `.xml.txt` entirely and downloaded non-test XML files). The single file list query also reduces API calls from 2-3 to 1.
