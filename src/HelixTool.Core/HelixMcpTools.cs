@@ -126,8 +126,8 @@ public sealed class HelixMcpTools
         return new FilesResult
         {
             Binlogs = files.Where(f => HelixService.MatchesPattern(f.Name, "*.binlog")).Select(f => new FileInfo_ { Name = f.Name, Uri = f.Uri }).ToList(),
-            TestResults = files.Where(f => HelixService.MatchesPattern(f.Name, "*.trx")).Select(f => new FileInfo_ { Name = f.Name, Uri = f.Uri }).ToList(),
-            Other = files.Where(f => !HelixService.MatchesPattern(f.Name, "*.binlog") && !HelixService.MatchesPattern(f.Name, "*.trx")).Select(f => new FileInfo_ { Name = f.Name, Uri = f.Uri }).ToList()
+            TestResults = files.Where(f => HelixService.IsTestResultFile(f.Name)).Select(f => new FileInfo_ { Name = f.Name, Uri = f.Uri }).ToList(),
+            Other = files.Where(f => !HelixService.MatchesPattern(f.Name, "*.binlog") && !HelixService.IsTestResultFile(f.Name)).Select(f => new FileInfo_ { Name = f.Name, Uri = f.Uri }).ToList()
         };
     }
 

@@ -860,6 +860,34 @@ public class HelixService
         };
     }
 
+    /// <summary>Patterns used to discover test result files in work item file lists, in priority order.</summary>
+    internal static readonly string[] TestResultFilePatterns =
+    [
+        "*.trx",                     // VSTest / dotnet test TRX files
+        "testResults.xml",           // XHarness / xUnit XML (exact name)
+        "*.testResults.xml.txt",     // CoreCLR XUnitWrapperGenerator pattern
+        "testResults.xml.txt",       // CoreCLR variant (exact name)
+    ];
+
+    /// <summary>Check whether a file name matches any known test result pattern.</summary>
+    public static bool IsTestResultFile(string fileName)
+    {
+        foreach (var pattern in TestResultFilePatterns)
+        {
+            if (MatchesTestResultPattern(fileName, pattern))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>Match a file name against a test result pattern (supports *.ext and exact name).</summary>
+    private static bool MatchesTestResultPattern(string fileName, string pattern)
+    {
+        if (pattern.StartsWith("*."))
+            return fileName.EndsWith(pattern[1..], StringComparison.OrdinalIgnoreCase);
+        return fileName.Equals(pattern, StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>Parse test result files (TRX or xUnit XML) from a Helix work item.</summary>
     public async Task<List<TrxParseResult>> ParseTrxResultsAsync(
         string jobId, string workItem, string? fileName = null,
@@ -882,21 +910,85 @@ public class HelixService
             return ParseDownloadedFiles(downloadedPaths, fileName, includePassed, maxResults);
         }
 
-        // Auto-discovery: try .trx first
-        var trxPaths = await DownloadFilesAsync(jobId, workItem, "*.trx", cancellationToken);
-        if (trxPaths.Count > 0)
-            return ParseDownloadedFiles(trxPaths, null, includePassed, maxResults);
-
-        // Fallback: try .xml files (e.g., xUnit XML from ASP.NET Core --logger xunit)
-        var xmlPaths = await DownloadFilesAsync(jobId, workItem, "*.xml", cancellationToken);
-        if (xmlPaths.Count > 0)
+        // Auto-discovery: get file list once and find all test result files
+        var id = HelixIdResolver.ResolveJobId(jobId);
+        List<IWorkItemFile> allFiles;
+        try
         {
-            var results = ParseDownloadedFilesBestEffort(xmlPaths, includePassed, maxResults);
+            allFiles = (await _api.ListWorkItemFilesAsync(workItem, id, cancellationToken)).ToList();
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
+        {
+            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            throw new HelixException($"Work item '{workItem}' in job '{id}' not found.", ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new HelixException($"Helix API error: {ex.Message}", ex);
+        }
+
+        // Find test result files matching known patterns
+        var testResultFiles = allFiles.Where(f => IsTestResultFile(f.Name)).ToList();
+
+        if (testResultFiles.Count > 0)
+        {
+            // Download and parse discovered test result files
+            var downloadedPaths = await DownloadMatchingFilesAsync(testResultFiles, workItem, id, cancellationToken);
+
+            // TRX files are parsed strictly; other formats use best-effort
+            var trxPaths = downloadedPaths.Where(p => p.EndsWith(".trx", StringComparison.OrdinalIgnoreCase)).ToList();
+            var otherPaths = downloadedPaths.Where(p => !p.EndsWith(".trx", StringComparison.OrdinalIgnoreCase)).ToList();
+
+            var results = new List<TrxParseResult>();
+
+            if (trxPaths.Count > 0)
+                results.AddRange(ParseDownloadedFiles(trxPaths, null, includePassed, maxResults));
+
+            if (otherPaths.Count > 0)
+                results.AddRange(ParseDownloadedFilesBestEffort(otherPaths, includePassed, maxResults));
+
             if (results.Count > 0)
                 return results;
         }
 
-        throw new HelixException($"No test result files found in work item '{workItem}'. Looked for .trx (VSTest) and .xml (xUnit) files.");
+        // Build a helpful error message listing what was searched and what files exist
+        var fileNames = allFiles.Select(f => f.Name).ToList();
+        var patternsSearched = string.Join(", ", TestResultFilePatterns);
+        var availableFiles = fileNames.Count > 0
+            ? $" Available files: {string.Join(", ", fileNames.Take(10))}{(fileNames.Count > 10 ? $" (and {fileNames.Count - 10} more)" : "")}"
+            : " The work item has no uploaded files.";
+
+        throw new HelixException(
+            $"No test result files found in work item '{workItem}'. " +
+            $"Searched for: {patternsSearched}.{availableFiles}");
+    }
+
+    /// <summary>Download specific files from a work item's file list.</summary>
+    private async Task<List<string>> DownloadMatchingFilesAsync(
+        List<IWorkItemFile> files, string workItem, string jobId,
+        CancellationToken cancellationToken)
+    {
+        var idPrefix = jobId.Length >= 8 ? jobId[..8] : jobId;
+        var outDir = Path.Combine(Path.GetTempPath(), $"helix-{idPrefix}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outDir);
+        var paths = new List<string>();
+
+        foreach (var f in files)
+        {
+            await using var stream = await _api.GetFileAsync(f.Name, workItem, jobId, cancellationToken);
+            var safeName = CacheSecurity.SanitizePathSegment(Path.GetFileName(f.Name));
+            var outPath = Path.Combine(outDir, safeName);
+            CacheSecurity.ValidatePathWithinRoot(outPath, outDir);
+            Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
+            await using var file = File.Create(outPath);
+            await stream.CopyToAsync(file, cancellationToken);
+            paths.Add(outPath);
+        }
+
+        return paths;
     }
 
     /// <summary>Parse downloaded files strictly — XmlException propagates (preserves XXE detection on .trx).</summary>

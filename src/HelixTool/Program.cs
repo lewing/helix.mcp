@@ -181,8 +181,8 @@ public class Commands
             var result = new
             {
                 binlogs = files.Where(f => HelixService.MatchesPattern(f.Name, "*.binlog")).Select(f => new { f.Name, f.Uri }),
-                testResults = files.Where(f => HelixService.MatchesPattern(f.Name, "*.trx")).Select(f => new { f.Name, f.Uri }),
-                other = files.Where(f => !HelixService.MatchesPattern(f.Name, "*.binlog") && !HelixService.MatchesPattern(f.Name, "*.trx")).Select(f => new { f.Name, f.Uri })
+                testResults = files.Where(f => HelixService.IsTestResultFile(f.Name)).Select(f => new { f.Name, f.Uri }),
+                other = files.Where(f => !HelixService.MatchesPattern(f.Name, "*.binlog") && !HelixService.IsTestResultFile(f.Name)).Select(f => new { f.Name, f.Uri })
             };
             Console.WriteLine(JsonSerializer.Serialize(result, s_jsonOptions));
             return;
@@ -191,7 +191,7 @@ public class Commands
         foreach (var f in files)
         {
             var marker = HelixService.MatchesPattern(f.Name, "*.binlog") ? " [binlog]"
-                       : HelixService.MatchesPattern(f.Name, "*.trx") ? " [test-results]"
+                       : HelixService.IsTestResultFile(f.Name) ? " [test-results]"
                        : "";
             Console.WriteLine($"  {f.Name}{marker}");
         }
@@ -294,7 +294,7 @@ public class Commands
             foreach (var f in detail.Files)
             {
                 var tag = HelixService.MatchesPattern(f.Name, "*.binlog") ? " [binlog]"
-                    : HelixService.MatchesPattern(f.Name, "*.trx") ? " [test-results]"
+                    : HelixService.IsTestResultFile(f.Name) ? " [test-results]"
                     : "";
                 Console.WriteLine($"  {f.Name}{tag}");
             }
