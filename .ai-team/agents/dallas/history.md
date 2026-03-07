@@ -69,3 +69,7 @@
 - **IHelixTokenAccessor.GetAccessToken() is synchronous.** Changing to async would be a cross-cutting change affecting all 3 projects. For Phase 1, sync-over-async (.GetAwaiter().GetResult()) on the git credential call is acceptable — it runs once at startup and completes in <100ms.
 - **Token resolution precedence: env var > stored credential.** Env var must win for backward compat and CI/CD override semantics. Never prompt during DI container setup.
 - **HelixService.cs has 7 identical error message strings** for 401 handling. These should be extracted to a constant when updating the message text.
+
+📌 Team update (2026-03-07): Test result file discovery consolidated — ParseTrxResultsAsync uses TestResultFilePatterns array, supports TRX + xUnit XML, auto-detection via DetectTestFileFormat. — decided by Ripley
+📌 Team update (2026-03-07): CacheStoreFactory uses Lazy<T> wrapping — standard .NET pattern for ConcurrentDictionary.GetOrAdd with side effects. — decided by Ripley
+📌 Team update (2026-03-07): AzDO test patterns documented — Lambert identified edge cases in AzdoIdResolver (negative buildIds, TryResolve defaults, thread safety). — documented by Lambert

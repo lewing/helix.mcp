@@ -53,3 +53,6 @@
 📌 Team update (2026-02-27): Enhancement layer documentation consolidated — decided by Dallas, Kane
 📌 Team update (2026-02-27): MCP descriptions: behavioral contracts only, not implementation details — decided by Dallas
 📌 Team update (2026-03-01): UseStructuredContent refactor approved — typed return objects with UseStructuredContent=true for all 12 MCP tools (hlx_logs excepted). FileInfo_ naming noted as non-blocking. No breaking wire-format changes. — decided by Dallas
+
+📌 Team update (2026-03-07): AzDO pipeline support architecture adopted — new MCP tools for AzDO builds/timelines/logs. Documentation updates will be needed for README and llmstxt. — decided by Dallas
+📌 Team update (2026-03-07): Auth UX Phase 1 approved — hlx login/logout/auth-status commands coming. README will need auth documentation. — decided by Dallas

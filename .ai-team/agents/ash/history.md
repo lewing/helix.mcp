@@ -132,3 +132,7 @@
 - Recommended Phase 1: `hlx login` + `git credential` storage — high value, low effort
 - Entra API auth is blocked on Helix server-side changes — not a client-side fix
 - Key architecture question raised: where should `StoredHelixTokenAccessor` live (Core vs CLI-only)
+
+📌 Team update (2026-03-07): Auth UX analysis consolidated with Dallas's architecture — Phase 1 approved, git credential chosen (Option A), 7 work items defined. — decided by Dallas
+📌 Team update (2026-03-07): XXE test regression — DtdProcessing.Prohibit verification needed in DetectTestFileFormat after xUnit XML refactor. — flagged by Lambert
+📌 Team update (2026-03-07): AzDO architecture adopted — Azure Identity auth, separate from Helix PAT model. New security surface to review. — decided by Dallas, Ripley

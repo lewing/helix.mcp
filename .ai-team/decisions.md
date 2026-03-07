@@ -2973,3 +2973,114 @@ The publish workflow (`publish.yml`) validates all three match the git tag. Miss
 **By:** Ripley (Backend Dev)
 **What:** Use `Console.IsInputRedirected` to auto-detect context: interactive terminal defaults to `["--help"]`, redirected stdin defaults to `["mcp"]`. Previously, running `hlx` with no arguments in a terminal would hang waiting for JSON-RPC input.
 **Why:** `Console.IsInputRedirected` is a reliable .NET API — standard idiom for CLI tools that need different behavior in interactive vs. non-interactive contexts. No additional dependencies or platform-specific code required.
+
+
+
+### 2026-03-07: Helix auth UX — hlx login architecture (consolidated)
+**By:** Ash (analysis), Dallas (architecture)
+**Date:** 2026-03-03 (analysis), 2026-03-03 (architecture), consolidated 2026-03-07
+**Status:** Approved — Phase 1 ready for implementation
+
+**What:**
+- Helix API does **not** accept Entra JWT tokens — server-side limitation. Opaque tokens only via `Authorization: token <TOKEN>`.
+- Phase 1 approved: `hlx login` + `git credential` storage + token resolution chain.
+- Three new CLI commands: `hlx login` (browser open + token paste + validation), `hlx logout` (remove stored credential), `hlx auth status` (report source + test API).
+- Credential storage via `git credential` (Option A): zero new dependencies, cross-platform, proven pattern (`darc` precedent).
+- Token resolution chain (CLI): env var → stored credential → null. Env var wins for backward compatibility and CI/CD override.
+- New classes: `ICredentialStore`, `GitCredentialStore` (in Core), `ChainedHelixTokenAccessor` (in Core).
+- HTTP MCP fallback: Authorization header → env var → stored credential.
+- 7 work items defined (WI-1: ICredentialStore, WI-2: ChainedHelixTokenAccessor, WI-3: DI wiring, WI-4: hlx login, WI-5: hlx logout, WI-6: hlx auth status, WI-7: error message update).
+- Error messages in HelixService.cs updated from "Set HELIX_ACCESS_TOKEN..." to "Run 'hlx login' to authenticate, or set HELIX_ACCESS_TOKEN."
+
+**Why:**
+- Manual token generation + env var setup is the biggest UX friction point. Users must navigate to helix.dot.net → Profile → generate token → export env var in every shell.
+- `git credential` is battle-tested, cross-platform, and already familiar to the user base. Zero new dependencies.
+- Env var priority over stored credential preserves backward compatibility and enables CI/CD overrides.
+- Entra auth deferred to Phase 3 (blocked on Helix server adding JWT Bearer support).
+
+
+### 2026-03-07: Test result file discovery and xUnit XML support (consolidated)
+**By:** Ripley
+**Date:** 2025-07-24 (xUnit XML), 2026-03-07 (file patterns), consolidated 2026-03-07
+**Status:** Implemented
+
+**What:**
+- `ParseTrxResultsAsync` auto-discovers test result files using priority-ordered `TestResultFilePatterns` array: `*.trx`, `testResults.xml`, `*.testResults.xml.txt`, `testResults.xml.txt`.
+- xUnit XML format (`<assemblies>/<assembly>/<collection>/<test>`) supported alongside TRX. Format auto-detected via `DetectTestFileFormat`.
+- Strict parsing (XXE-safe, `DtdProcessing.Prohibit`) for `.trx`; best-effort for `.xml` fallback.
+- `IsTestResultFile()` is the canonical check used by CLI, MCP, and service code.
+- Single file list query reduces API calls from 2-3 to 1.
+- HelixException must be caught and rethrown as McpException in MCP tool handlers. MCP SDK only surfaces McpException messages to clients; other exceptions get wrapped as generic errors (root cause of issue #4).
+
+**Why:**
+- Runtime CoreCLR tests upload `{name}.testResults.xml.txt` to regular files (not testResults category); iOS/XHarness tests upload `testResults.xml`. Previous code only searched `*.trx` then `*.xml`.
+- ASP.NET Core projects use `--logger xunit` producing `TestResults.xml` in xUnit format, not `.trx`. Without fallback, `hlx_test_results` failed on those work items.
+
+
+### 2026-03-07: AzDO pipeline support — architecture and foundation (consolidated)
+**By:** Dallas (architecture), Ripley (implementation)
+**Date:** 2026-03-07
+**Status:** Foundation IMPLEMENTED, full architecture DRAFT
+
+**What:**
+- Add AzDO pipeline wrapping to helix.mcp, following established Helix patterns. Enables ci-analysis skill to query AzDO builds, timelines, logs, and test results.
+- Architecture mirrors Helix: `IAzdoApiClient` → `CachingAzdoApiClient` (decorator) → `AzdoService` → `AzdoMcpTools`.
+- Code lives in `src/HelixTool.Core/AzDO/` — no separate project. AzDO and Helix data are tightly coupled (Helix jobs spawned by AzDO builds).
+- Auth uses Azure Identity (`AzureDeveloperCliCredential`), keeping Helix PAT auth separate.
+- `IAzdoTokenAccessor.GetAccessTokenAsync()` returns `Task<string?>` (async, unlike Helix's sync accessor). `az CLI` subprocess call is inherently async.
+- Token caching is session-scoped — cached after first `az` call, not refreshed mid-session.
+- `AzdoIdResolver` parses AzDO URLs to extract org/project/buildId. `TryResolve()` wraps `Resolve()` via try/catch (single code path for correctness).
+- `AzdoBuildFilter` is client-side only (no JSON serialization attributes).
+- `AzdoTimelineAttempt` record included for `previousAttempts` on timeline records (needed for retried job detection).
+- Phase 1 scope: 7 core operations (get build, list builds, get timeline, get build log, get build changes, get test runs/results, URL parsing).
+- Foundation files created: `AzdoModels.cs`, `IAzdoTokenAccessor.cs`, `AzdoIdResolver.cs`.
+
+**Why:**
+- Eliminates need for a separate AzDO MCP server. CI investigation inherently spans both Helix and AzDO.
+- Shared cache infrastructure (`ICacheStore`, `SqliteCacheStore`) reused.
+- Separate project adds complexity for zero benefit at current scale.
+- Async token accessor avoids blocking with `.GetAwaiter().GetResult()` when callers are already async.
+
+
+### 2026-03-07: Future direction — AzDO pipeline wrapping
+**By:** Larry Ewing (via Copilot)
+**What:** After issue #4 is wrapped up, explore wrapping Azure DevOps pipelines as MCP tools, similar to how we wrap Helix today.
+**Why:** User request — captured for team discussion after current work completes.
+
+
+### 2026-03-07: AzDO test patterns and conventions
+
+
+#### Test file locations
+- `src/HelixTool.Tests/AzDO/AzdoIdResolverTests.cs` — 31 tests for URL parsing
+- `src/HelixTool.Tests/AzDO/AzdoTokenAccessorTests.cs` — 10 tests for auth chain
+- Namespace: `HelixTool.Tests.AzDO` (matches Core's `HelixTool.Core.AzDO`)
+
+#### Conventions
+- **Resolve() vs TryResolve():** AzdoIdResolver exposes both. Test Resolve() for throw behavior, TryResolve() for bool-return path. Both use same internal logic.
+- **Env var isolation:** `AzdoTokenAccessorTests` implements `IDisposable` to save/restore `AZDO_TOKEN` env var. Critical for parallel xUnit — env vars are process-global.
+- **Az CLI timeout:** Tests that fall through to az CLI take ~1s. Future: consider `[Trait("Category", "Slow")]` if test suite grows.
+
+#### Edge cases identified
+1. **Negative/zero buildIds are accepted** — `int.TryParse` succeeds for `-5` and `0`. No positivity validation in `AzdoIdResolver`. Recommend adding `buildId > 0` check.
+2. **TryResolve out-param defaults are not null** — they're `DefaultOrg`/`DefaultProject`, unlike typical `TryParse` patterns. Callers should check the return value, not the out params.
+3. **_resolved flag not thread-safe** — concurrent first calls to `AzCliAzdoTokenAccessor` without env var may spawn multiple `az` processes. Benign but wasteful. Consider `SemaphoreSlim` if this matters.
+4. **Env var read on every call** — `AZDO_TOKEN` is not cached. This is intentional (allows runtime token rotation) but means env var tests must carefully set/unset between assertions.
+
+#### Testability concerns for future AzDO work
+- `AzdoApiClient` will need `HttpMessageHandler` injection for mocking (same pattern as `HelixApiClient`)
+- `AzdoService` should take `IAzdoApiClient` via constructor for NSubstitute mocking
+- `AzdoMcpTools` can follow `HelixMcpToolsTests` pattern: mock service, test tool wrappers
+
+
+### 2026-03-07: XXE prevention test regression after xUnit XML refactor
+**By:** Lambert
+**What:** `ParseTrx_RejectsXxeDtdDeclaration` test now fails after xUnit XML auto-discovery refactor. `XmlException` is swallowed by `TryParseTestFile`/`DetectTestFileFormat`, returning `HelixException("Found XML files but none were in a recognized format")` instead. DTD content is not processed (safe), but error message no longer indicates security rejection.
+**Why:** Need to verify `DetectTestFileFormat` uses `DtdProcessing.Prohibit` and that the swallowed exception doesn't silently process DTD content. Test should be updated to assert `HelixException` not `XmlException`.
+
+
+### 2026-03-08: Use Lazy<T> in CacheStoreFactory to prevent concurrent factory invocation
+**By:** Ripley
+**Status:** Implemented
+**What:** Changed `ConcurrentDictionary<string, ICacheStore>` to `ConcurrentDictionary<string, Lazy<ICacheStore>>`. `Lazy<T>` (default `LazyThreadSafetyMode.ExecutionAndPublication`) guarantees factory runs exactly once per key. `Dispose()` checks `IsValueCreated` before accessing `.Value`.
+**Why:** `ConcurrentDictionary.GetOrAdd(key, factory)` doesn't guarantee single-invocation of the factory. Under contention, multiple `SqliteCacheStore` constructors raced on `InitializeSchema()` for the same SQLite file, producing `ArgumentOutOfRangeException` from SQLitePCL on Windows CI. Standard .NET pattern — use `Lazy<T>` wrapping whenever `ConcurrentDictionary.GetOrAdd` factories have side effects.

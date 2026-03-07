@@ -41,81 +41,26 @@
 - US-32 hlx_test_results: TRX parsing with secure XmlReaderSettings (DtdProcessing.Prohibit), ParseTrxResultsAsync, auto-discovery of .trx files, MCP tool + CLI command
 - Status filter refactor: bool includePassed → string filter (failed|passed|all), case-insensitive, breaking change
 - CI version validation: publish workflow validates csproj+server.json match git tag, /p:Version= override
-## Sessions (2026-02-12)
+## Core Context (summarized through 2026-02-27)
 
-**Cache implementation (R-CACHE-1 through R-CACHE-11):** SQLite-backed caching layer — ICacheStore, SqliteCacheStore (WAL mode, PRAGMA user_version=1), CachingHelixApiClient (decorator with TTL matrix), CacheOptions (XDG paths). Cache key format: `job:{jobId}:details`. Artifacts stored at `{cache_root}/artifacts/{jobId[0:8]}/{sanitized_key}`. HLX_CACHE_MAX_SIZE_MB=0 disables caching. Private DTO records for JSON round-tripping. `cache clear` and `cache status` CLI commands.
+**Cache (2026-02-12):** SQLite-backed (WAL mode, connection-per-operation with `Cache=Shared`), CachingHelixApiClient decorator with TTL matrix, XDG paths, `HLX_CACHE_MAX_SIZE_MB=0` disables. Auth isolation via per-token-hash DB + artifact dirs. Path traversal defense-in-depth: sanitize + `Path.GetFullPath` prefix check. `ValidatePathWithinRoot` must append `DirectorySeparatorChar` to root.
 
-**Cache security (2026-02-12):** Auth isolation (separate SQLite DB + artifacts per token SHA256 hash). Path traversal hardening (CacheSecurity.cs: ValidatePathWithinRoot, SanitizePathSegment, SanitizeCacheKeySegment). Applied to SqliteCacheStore, CachingHelixApiClient, HelixService download methods.
+**HTTP/SSE multi-auth (2026-02-13):** IHelixTokenAccessor + IHelixApiClientFactory + ICacheStoreFactory pattern. HttpContextHelixTokenAccessor in HelixTool.Mcp. Scoped DI for HTTP transport. Multi-auth deferred — single-token-per-process sufficient.
 
-**HTTP/SSE multi-auth (R-HTTP-1 through R-HTTP-5, 2026-02-13):** IHelixTokenAccessor + EnvironmentHelixTokenAccessor, IHelixApiClientFactory, ICacheStoreFactory (ConcurrentDictionary). SqliteCacheStore refactored to connection-per-operation with Cache=Shared. HttpContextHelixTokenAccessor in HelixTool.Mcp. Program.cs scoped DI wiring for HTTP transport. 252/252 tests pass.
+**MCP API refactoring:** FileEntry simplified to `(Name, Uri)`. `FindFilesAsync` generalized from binlog-only. `hlx_batch_status` uses `string[]` (native MCP arrays). All MCP JSON output camelCase via `JsonNamingPolicy.CamelCase`. `UseStructuredContent=true` for all 12 tools (hlx_logs excepted).
 
-## Learnings
+**Key patterns:**
+- `File.Move(overwrite: true)` on Windows: catch both `IOException` and `UnauthorizedAccessException`
+- Use `FileStream(..., FileShare.ReadWrite | FileShare.Delete)` for concurrent access
+- Per-invocation `Guid.NewGuid()` temp dirs to prevent cross-process races
+- `WithToolsFromAssembly()` needs explicit assembly arg for referenced libs
+- MCP descriptions should expose behavioral contracts, not implementation mechanics
 
-- SqliteCacheStore uses connection-per-operation (`OpenConnection()` returns new `SqliteConnection` with `Cache=Shared`). WAL mode set once in `InitializeSchema()`, `busy_timeout` set per-connection.
-- `File.Move(overwrite: true)` on Windows throws `UnauthorizedAccessException` (not just `IOException`) when target is locked by concurrent reader. Catch both.
-- `File.OpenRead()` uses `FileShare.Read` which blocks concurrent writers. Use `new FileStream(..., FileShare.ReadWrite | FileShare.Delete)` instead.
-- Temp files for write-then-rename must use unique names (`Guid.NewGuid()`) to avoid concurrent writer collisions.
-- Path traversal defense-in-depth: sanitize inputs (replace `..`, `/`, `\` with `_`) AND validate resolved paths via `Path.GetFullPath` prefix check.
-- `ValidatePathWithinRoot` must append `Path.DirectorySeparatorChar` to root before `StartsWith` — prevents `/foo/bar` matching `/foo/bar-evil/`.
-- `WithToolsFromAssembly()` (no args) only scans calling assembly. Pass `typeof(SomeToolClass).Assembly` for referenced libraries.
-- ModelContextProtocol base package added to Core for `[McpServerToolType]` and `[McpServerTool]` attributes.
-- `DownloadFilesAsync` shared temp dir `helix-{idPrefix}` causes cross-process race: concurrent stdio MCP server processes writing the same job's files via `File.Create` (truncates immediately) + `CopyToAsync` corrupt each other. Fix: append per-invocation `Guid.NewGuid():N` to temp dir name so each call is isolated.
+## Learnings (2026-03-01 onwards)
 
-📌 Team update (2026-02-13): R-HTTP-4 and R-HTTP-5 implemented — HttpContextHelixTokenAccessor + scoped DI for multi-client HTTP/SSE auth. 252/252 tests pass. — decided by Ripley
-
-
-📌 Team update (2026-02-13): HTTP/SSE multi-client auth architecture decided — IHttpContextAccessor + scoped IHelixApiClient factory pattern. ICacheStoreFactory for concurrent cache store management. SqliteCacheStore connection-per-operation refactor for HTTP concurrency safety. — decided by Dallas
-📌 Team update (2026-02-13): Multi-auth support deferred — current single-token-per-process model is sufficient for both stdio and HTTP transports. — decided by Dallas
-
-📌 Team update (2026-02-13): US-9 script removability analysis complete — 100% core API coverage, Phase 1 migration can proceed with zero blockers — decided by Ash
-📌 Team update (2026-02-13): US-6 download E2E verification complete — 46 tests covering DownloadFilesAsync/DownloadFromUrlAsync, all 298 tests pass — decided by Lambert
-
-📌 Team update (2026-02-15): README now documents caching (settings table, TTL policy, auth isolation), HTTP per-request multi-auth, and expanded project structure (Cache/, IHelixTokenAccessor, IHelixApiClientFactory, HttpContextHelixTokenAccessor) — decided by Kane
-
-📌 Team update (2026-02-13): Requirements audit complete — 25/30 stories implemented, US-22 structured test failure parsing is only remaining P2 gap — audited by Ash
-📌 Team update (2026-02-13): MCP API design review — 6 actionable improvements identified (P0: batch_status array fix, P1: add hlx_list_work_items, P2: naming, P3: response envelope) — reviewed by Dallas
-
-## Learnings (MCP API batch)
-
-- `MatchesPattern` promoted from `internal static` to `public static` so MCP tools and CLI can use it for file-type classification after removing `IsBinlog`/`IsTestResults` booleans from `FileEntry`.
-- `FileEntry` simplified to `(string Name, string Uri)` — file type classification is now done at the presentation layer via `MatchesPattern`, not stored on the record.
-- `BinlogResult` renamed to `FileSearchResult(string WorkItem, List<FileEntry> Files)` — generalized to support any file pattern search, not just binlogs.
-- `FindBinlogsAsync` is now a convenience wrapper around `FindFilesAsync(jobId, "*.binlog", ...)`.
-- `hlx_batch_status` MCP tool parameter changed from comma-separated `string` to `string[]` — MCP protocol handles array serialization natively.
-- `s_jsonOptions` in `HelixMcpTools.cs` uses `PropertyNamingPolicy = JsonNamingPolicy.CamelCase` — all MCP JSON output is now consistently camelCase. CLI `s_jsonOptions` in `Program.cs` is NOT changed (different UX).
-- `hlx_status` MCP tool parameter renamed from `all` to `includePassed` for clarity. CLI `--all` flag is NOT renamed.
-- Tests that assert PascalCase JSON property names (e.g., `"Name"`, `"ExitCode"`) in MCP output will need updating to camelCase — Lambert's responsibility.
-📌 Team update (2026-02-13): Generalize hlx_find_binlogs to hlx_find_files with pattern parameter — add generic FindFilesAsync in Core, keep hlx_find_binlogs as convenience alias, rename BinlogResult to FileSearchResult — decided by Dallas
-
-## 2026-02-15: Cross-agent note from Scribe
-
-- **Decision merged:** "camelCase JSON assertion convention" (Lambert, 2026-02-13) — convention established for camelCase in all MCP test assertions.
-- **Decision merged:** "MCP API Batch — Tests Need CamelCase Update" (Ripley, 2026-02-15) — your note to Lambert about test updates has been propagated.
-
-
-📌 Team update (2026-02-15): Cache security expectations documented in README (cached data subsection, auth isolation model, hlx cache clear recommendation) — decided by Kane
-📌 Team update (2026-02-15): README v0.1.3 comprehensive update — llmstxt in Program.cs needs sync (missing hlx_search_file, hlx_test_results, search-file, test-results) — decided by Kane
-📌 Team update (2026-02-15): DownloadFilesAsync temp dirs now per-invocation (helix-{id}-{Guid}) to prevent cross-process races — decided by Ripley
-📌 Team update (2026-02-15): CI version validation added to publish workflow — tag is source of truth, csproj+server.json must match — decided by Ripley
-
-📌 Team update (2026-02-27): Enhancement layer documentation consolidated — Dallas cataloged 12 value-adds, Kane audited doc surfaces and wrote README section. Remaining P1: llmstxt missing hlx_search_file/hlx_test_results, MCP descriptions need local-enhancement flags — decided by Dallas, Kane
-
-
-📌 Team update (2026-02-27): MCP descriptions should expose behavioral contracts, not implementation mechanics. P1: llmstxt still missing hlx_search_file and hlx_test_results. P1: hlx_status description should list failureCategory field — decided by Dallas
-
-## Learnings
-
-- Added `failureCategory` to the `hlx_status` MCP tool `[Description]` parenthetical field list (line 23 of HelixMcpTools.cs). The field was already returned in JSON output (line 46) but omitted from the description. This is a documentation-completeness fix per Dallas's decision that MCP descriptions should accurately list returned fields.
-
-📌 Team update (2026-03-01): UseStructuredContent refactor approved — typed return objects with UseStructuredContent=true for all 12 MCP tools (hlx_logs excepted). FileInfo_ naming noted as non-blocking. No breaking wire-format changes. — decided by Dallas
-
-## Learnings
-
-- **HelixException → McpException translation:** MCP tool handlers must catch `HelixException` from service methods and rethrow as `McpException`. The MCP SDK only surfaces `McpException` messages to clients — all other exceptions become generic "An error occurred" errors. This was the root cause of issue #4.
-- **xUnit XML parsing lives alongside TRX:** `ParseXunitFile` handles `<assemblies>/<assembly>/<collection>/<test>` schema. `DetectTestFileFormat` inspects the root XML element to distinguish TRX (`<TestRun>`) from xUnit (`<assemblies>` or `<assembly>`). Both reuse `TrxParseResult`/`TrxTestResult` records.
-- **Two-tier XML parsing strategy:** TRX files (downloaded via `*.trx`) are parsed strictly — `XmlException` propagates to preserve XXE detection. Fallback XML files (downloaded via `*.xml`) use best-effort parsing — `XmlException` is caught per-file and the file is skipped. This prevents DTD-attack files in `.xml` from crashing the tool while keeping security assertions on `.trx` files.
-- **ParseDownloadedFiles vs ParseDownloadedFilesBestEffort:** Two private helper methods extracted from `ParseTrxResultsAsync`. Strict mode for TRX/specific files, best-effort mode for XML fallback. Both handle cleanup in `finally` blocks.
-- **xUnit outcome normalization:** xUnit uses `result="Pass"/"Fail"/"Skip"` while TRX uses `outcome="Passed"/"Failed"`. `ParseXunitFile` normalizes to TRX-style ("Passed", "Failed", "Skipped") for consistent downstream processing.
+- **HelixException → McpException translation:** MCP tool handlers must catch `HelixException` and rethrow as `McpException`. Root cause of issue #4.
+- **xUnit XML parsing:** `ParseXunitFile` handles `<assemblies>/<assembly>/<collection>/<test>`. `DetectTestFileFormat` inspects root element (`<TestRun>` = TRX, `<assemblies>`/`<assembly>` = xUnit). Both reuse `TrxParseResult`/`TrxTestResult`.
+- **Two-tier XML parsing strategy:** TRX strict (XmlException propagates), XML fallback best-effort (XmlException caught per-file). xUnit outcome normalization: `Pass/Fail/Skip` → `Passed/Failed/Skipped`.
 
 ## Learnings (2026-03-07: Real Helix test result file patterns)
 
@@ -132,3 +77,26 @@
 - **ConcurrentDictionary.GetOrAdd race condition:** `GetOrAdd(key, factory)` does NOT guarantee single-invocation of the factory for a given key. Under contention, the factory can be called multiple times concurrently for the same key (only one result is stored, others are discarded). This is a documented .NET behavior. When the factory has side effects (like opening a SQLite DB and running `InitializeSchema()`), the concurrent invocations race on the same file, causing `ArgumentOutOfRangeException` from SQLitePCL on Windows.
 - **Fix pattern — Lazy<T> wrapping:** Change `ConcurrentDictionary<string, T>` to `ConcurrentDictionary<string, Lazy<T>>` and access `.Value` on return. `Lazy<T>` with default `LazyThreadSafetyMode.ExecutionAndPublication` guarantees the factory runs exactly once, even under contention. This is the standard .NET pattern for single-invocation semantics with `ConcurrentDictionary`.
 - **Dispose with Lazy<T>:** When disposing a `ConcurrentDictionary<K, Lazy<T>>`, check `lazy.IsValueCreated` before accessing `.Value` — avoids needlessly triggering lazy initialization during cleanup.
+
+## Learnings (2026-03-07: AzDO Foundation)
+
+- **AzDO files live in `src/HelixTool.Core/AzDO/`** — separate folder under Core, not a new project. Namespace: `HelixTool.Core.AzDO`.
+- **AzdoModels.cs:** All AzDO REST API v7.0 DTOs as `sealed record` types with `[JsonPropertyName]` for camelCase mapping. `AzdoListResponse<T>` wraps list endpoints. `AzdoBuildFilter` is client-side only (not deserialized from API). `AzdoTriggerInfo` uses `[JsonPropertyName("ci.message")]` and `[JsonPropertyName("pr.number")]` for dotted key names.
+- **IAzdoTokenAccessor.cs:** Async interface (`Task<string?>`) unlike Helix's sync `IHelixTokenAccessor`. Auth chain: `AZDO_TOKEN` env → `az account get-access-token` → null. Token cached after first `az` call. Does NOT use `Azure.Identity` — MSAL breaks on WSL (libsecret/D-Bus, arcade-services#6060).
+- **AzdoIdResolver.cs:** Static helper like `HelixIdResolver`. Supports dev.azure.com and *.visualstudio.com URL formats. Uses `Uri.TryCreate` + `HttpUtility.ParseQueryString` — no regex (ReDoS-safe, project security invariant). Defaults: org=`dnceng-public`, project=`public`. Provides both throwing `Resolve()` and non-throwing `TryResolve()`.
+- **`AzCliAzdoTokenAccessor` uses `Process.Start`** with redirected stdout, `CreateNoWindow=true`, catches all exceptions to return null on failure (enables anonymous access for public repos).
+- **IAzdoApiClient.cs:** 7-method interface mirroring IHelixApiClient pattern — GetBuild, ListBuilds, GetTimeline, GetBuildLog, GetBuildChanges, GetTestRuns, GetTestResults. All take `(org, project, ...)` + `CancellationToken`.
+- **AzdoApiClient.cs:** HTTP implementation using `HttpClient` + `IAzdoTokenAccessor`. Base URL: `https://dev.azure.com/{org}/{project}/_apis/`. All requests use `api-version=7.0`. Bearer auth when token is non-null. `System.Text.Json` with `PropertyNameCaseInsensitive=true`. Error handling: 401/403 → auth-failed message, 404 → null/empty list, other errors → `HttpRequestException` with status code + body snippet. List endpoints unwrap `AzdoListResponse<T>.Value`. Log endpoint reads plain text (not JSON). Test runs queried via `buildUri=vstfs:///Build/Build/{id}`. Test results default to `outcomes=Failed` with `$top=1000`.
+
+## Learnings (2026-03-07: AzDO Caching)
+
+- **CachingAzdoApiClient:** Decorator over `IAzdoApiClient`, follows `CachingHelixApiClient` pattern. Uses `ICacheStore.GetMetadataAsync`/`SetMetadataAsync` for JSON round-tripping (string-based). No DTO layer needed — AzDO model types are `sealed record` with `[JsonPropertyName]`, directly serializable unlike Helix's interface-based types.
+- **Cache key format:** `azdo:{org}:{project}:{type}:{id}` with `azdo:` prefix to namespace from Helix entries. Org and project segments sanitized via `CacheSecurity.SanitizeCacheKeySegment`. Build state keys use `azdo-build:` prefix for `IsJobCompletedAsync`/`SetJobCompletedAsync`.
+- **Dynamic TTL matrix:** Completed builds 4h, in-progress 15s. Timelines NEVER cached while running (skips cache entirely). Logs/changes 4h (immutable). Build lists 30s. Test runs/results 1h.
+- **Build completion tracking:** Reuses `ICacheStore.IsJobCompletedAsync`/`SetJobCompletedAsync` with composite key `azdo-build:{org}:{project}:{buildId}`. `GetBuildAsync` populates this state on cache miss. `GetTimelineAsync` and future status-dependent methods query it before deciding whether to cache.
+- **Filter hashing for ListBuildsAsync:** SHA256 hash (12-char hex) of `PrNumber|Branch|DefinitionId|Top|StatusFilter` concatenation. Deterministic, collision-resistant.
+- **ICacheStore interface:** `GetMetadataAsync(key)` → `string?`, `SetMetadataAsync(key, jsonValue, ttl)`, `GetArtifactAsync(key)` → `Stream?`, `SetArtifactAsync(key, stream)`, `IsJobCompletedAsync(jobId)` → `bool?`, `SetJobCompletedAsync(jobId, completed, ttl)`. The "jobId" parameter is just a string key — works for any entity, not just Helix jobs.
+
+📌 Team update (2026-03-07): Auth UX Phase 1 approved — hlx login + git credential storage + ChainedHelixTokenAccessor. 7 work items assigned for implementation. — decided by Dallas
+📌 Team update (2026-03-07): XXE test regression — ParseTrx_RejectsXxeDtdDeclaration fails after xUnit XML refactor. Review DetectTestFileFormat for DtdProcessing.Prohibit. — flagged by Lambert
+📌 Team update (2026-03-07): AzDO test patterns — Lambert wrote 55 tests, identified edge cases: negative buildIds accepted, TryResolve out-params default to DefaultOrg/DefaultProject, _resolved flag not thread-safe. — documented by Lambert
