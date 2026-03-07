@@ -109,3 +109,11 @@
 - **Tail lines in GetBuildLogAsync:** Splits on `\n` and uses range operator `lines[^tailLines.Value..]`. Handles null/zero/negative tailLines by returning full content.
 - **Service doesn't format JSON:** That's the MCP tool layer's job. Service returns typed records and collections.
 - **No exception wrapping yet:** Unlike HelixService which wraps `HttpRequestException` → `HelixException`, AzdoService currently lets exceptions propagate. We'll add `AzdoException` when the MCP tool layer needs it.
+
+## Learnings (2026-03-07: AzdoMcpTools)
+
+- **MCP tool registration pattern:** Annotate the class with `[McpServerToolType]`, each method with `[McpServerTool(Name = "...", Title = "...", ReadOnly = true, UseStructuredContent = true)]` and `[Description("...")]`. Constructor takes the service (DI-injected). The MCP SDK auto-discovers tools via `WithToolsFromAssembly()`.
+- **UseStructuredContent with model types:** When `UseStructuredContent = true`, return types are serialized to JSON by the MCP SDK. AzDO model types (`AzdoBuild`, `AzdoTimeline`, etc.) already have `[JsonPropertyName]` attributes from API deserialization, so they serialize correctly for MCP output too. No need for separate McpToolResults wrapper types when the API models already have proper JSON attributes.
+- **Plain text tool (azdo_log):** For text content, omit `UseStructuredContent = true` and return `string` directly — matches the `hlx_logs` pattern.
+- **Tool naming convention:** AzDO tools use `azdo_` prefix (vs `hlx_` for Helix). Names are snake_case, titles are human-readable with "AzDO" prefix.
+- **Tool descriptions for agents:** Descriptions should explain what data is returned, when to use the tool, how it relates to other tools (e.g., "Use after azdo_timeline to read logs"), and parameter format notes (e.g., "accepts build URL or plain integer ID").

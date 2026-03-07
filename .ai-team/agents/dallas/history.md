@@ -75,3 +75,6 @@
 📌 Team update (2026-03-07): AzDO test patterns documented — Lambert identified edge cases in AzdoIdResolver (negative buildIds, TryResolve defaults, thread safety). — documented by Lambert
 
 📌 Team update (2026-03-07): AzDO caching strategy — dynamic TTL (completed 4h, in-progress 15s, timelines never while running). No DTO layer needed for AzDO models. — decided by Ripley
+
+### 2026-03-07: Decision — AzdoMcpTools returns model types directly
+If we later need to reshape AzDO output differently from the API models, we'd add wrapper types then. For now, direct return is simpler and correct.

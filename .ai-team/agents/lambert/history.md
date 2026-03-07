@@ -88,3 +88,6 @@
 📌 Team update (2026-03-07): AzDO caching strategy implemented — CachingAzdoApiClient with dynamic TTL by build status, azdo: key prefix, reuses ICacheStore infrastructure. Tests needed. — decided by Ripley
 
 📌 Team update (2026-03-07): AzdoService method signatures defined — 7 methods with URL resolution, GetBuildSummaryAsync flattened record, tailLines server-side slicing. Tests needed. — decided by Ripley
+
+### 2026-03-07: Decision — AzdoMcpTools returns model types directly
+Tests for AzdoMcpTools should assert against the model types' `[JsonPropertyName]` names (camelCase). No separate MCP result wrappers exist for AzDO tools.

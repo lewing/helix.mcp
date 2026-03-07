@@ -58,3 +58,6 @@
 📌 Team update (2026-03-07): Auth UX Phase 1 approved — hlx login/logout/auth-status commands coming. README will need auth documentation. — decided by Dallas
 
 📌 Team update (2026-03-07): AzdoService implemented — method signatures stable, can begin MCP tool descriptions. — decided by Ripley
+
+### 2026-03-07: Decision — AzdoMcpTools returns model types directly
+7 new MCP tools need documentation: azdo_build, azdo_builds, azdo_timeline, azdo_log, azdo_changes, azdo_test_runs, azdo_test_results.

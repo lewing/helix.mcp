@@ -3096,3 +3096,21 @@ The publish workflow (`publish.yml`) validates all three match the git tag. Miss
 **Status:** Implemented
 **What:** AzdoService business logic layer — all `buildIdOrUrl` params resolve via `AzdoIdResolver.Resolve()`. `GetBuildSummaryAsync` returns flattened `AzdoBuildSummary` with computed `Duration` and `WebUrl`. `GetBuildLogAsync` has `int? tailLines` for server-side slicing. `ListBuildsAsync` takes raw org/project (no URL resolution). No exception wrapping yet — `HttpRequestException` propagates; will add `AzdoException` when MCP tools need it.
 **Why:** Mirrors HelixService pattern. URL resolution at service layer simplifies MCP tool implementations.
+# Decision: AzdoMcpTools — return model types directly
+
+**By:** Ripley
+**Date:** 2026-03-07
+
+## Context
+
+HelixMcpTools uses custom wrapper types in McpToolResults.cs with explicit `[JsonPropertyName]` attributes. For AzDO tools, the API model types (AzdoBuild, AzdoTimeline, AzdoTestRun, etc.) already have `[JsonPropertyName]` attributes from deserialization. AzdoBuildSummary is a positional record created by AzdoService.
+
+## Decision
+
+AzdoMcpTools returns AzDO model types directly instead of creating separate MCP result wrappers. This avoids duplicating DTOs that already have correct JSON serialization attributes. The `azdo_log` tool returns plain `string` (no UseStructuredContent) matching the `hlx_logs` pattern.
+
+## Impact
+
+- Lambert: Tests for AzdoMcpTools should assert against the model types' `[JsonPropertyName]` names (camelCase).
+- Kane: 7 new MCP tools need documentation: azdo_build, azdo_builds, azdo_timeline, azdo_log, azdo_changes, azdo_test_runs, azdo_test_results.
+- Dallas: If we later need to reshape AzDO output differently from the API models, we'd add wrapper types then. For now, direct return is simpler and correct.
