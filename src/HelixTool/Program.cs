@@ -2,6 +2,7 @@
 using ConsoleAppFramework;
 using HelixTool;
 using HelixTool.Core;
+using HelixTool.Core.AzDO;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -36,6 +37,18 @@ services.AddSingleton<IHelixApiClient>(sp =>
         sp.GetRequiredService<ICacheStore>(),
         sp.GetRequiredService<CacheOptions>()));
 services.AddSingleton<HelixService>();
+
+// AzDO services — same decorator pattern as Helix
+services.AddSingleton<IAzdoTokenAccessor, AzCliAzdoTokenAccessor>();
+services.AddSingleton<AzdoApiClient>(sp =>
+    new AzdoApiClient(new HttpClient(), sp.GetRequiredService<IAzdoTokenAccessor>()));
+services.AddSingleton<IAzdoApiClient>(sp =>
+    new CachingAzdoApiClient(
+        sp.GetRequiredService<AzdoApiClient>(),
+        sp.GetRequiredService<ICacheStore>(),
+        sp.GetRequiredService<CacheOptions>()));
+services.AddSingleton<AzdoService>();
+
 ConsoleApp.ServiceProvider = services.BuildServiceProvider();
 
 var app = ConsoleApp.Create();
@@ -596,6 +609,18 @@ Available as `failureCategory` in JSON and MCP output.
                 sp.GetRequiredService<ICacheStore>(),
                 sp.GetRequiredService<CacheOptions>()));
         builder.Services.AddSingleton<HelixService>();
+
+        // AzDO services — same decorator pattern as Helix
+        builder.Services.AddSingleton<IAzdoTokenAccessor, AzCliAzdoTokenAccessor>();
+        builder.Services.AddSingleton<AzdoApiClient>(sp =>
+            new AzdoApiClient(new HttpClient(), sp.GetRequiredService<IAzdoTokenAccessor>()));
+        builder.Services.AddSingleton<IAzdoApiClient>(sp =>
+            new CachingAzdoApiClient(
+                sp.GetRequiredService<AzdoApiClient>(),
+                sp.GetRequiredService<ICacheStore>(),
+                sp.GetRequiredService<CacheOptions>()));
+        builder.Services.AddSingleton<AzdoService>();
+
         builder.Services
             .AddMcpServer(options =>
             {

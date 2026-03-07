@@ -1,4 +1,5 @@
 using HelixTool.Core;
+using HelixTool.Core.AzDO;
 using HelixTool.Mcp;
 using ModelContextProtocol.Server;
 
@@ -49,6 +50,17 @@ builder.Services.AddScoped<IHelixApiClient>(sp =>
 
 // HelixService is scoped — follows its scoped dependencies
 builder.Services.AddScoped<HelixService>();
+
+// AzDO services — singleton token accessor, scoped API client with caching decorator
+builder.Services.AddSingleton<IAzdoTokenAccessor, AzCliAzdoTokenAccessor>();
+builder.Services.AddScoped<AzdoApiClient>(sp =>
+    new AzdoApiClient(new HttpClient(), sp.GetRequiredService<IAzdoTokenAccessor>()));
+builder.Services.AddScoped<IAzdoApiClient>(sp =>
+    new CachingAzdoApiClient(
+        sp.GetRequiredService<AzdoApiClient>(),
+        sp.GetRequiredService<ICacheStore>(),
+        sp.GetRequiredService<CacheOptions>()));
+builder.Services.AddScoped<AzdoService>();
 
 builder.Services
     .AddMcpServer(options =>
