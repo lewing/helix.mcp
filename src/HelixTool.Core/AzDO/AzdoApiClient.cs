@@ -38,7 +38,11 @@ public sealed class AzdoApiClient : IAzdoApiClient
             queryParams.Add($"$top={filter.Top}");
 
         if (!string.IsNullOrEmpty(filter.PrNumber))
-            queryParams.Add($"branchName=refs/pull/{filter.PrNumber}/merge");
+        {
+            if (!int.TryParse(filter.PrNumber, out var prNum))
+                throw new ArgumentException("prNumber must be a valid integer.", nameof(filter));
+            queryParams.Add($"branchName=refs/pull/{prNum}/merge");
+        }
         else if (!string.IsNullOrEmpty(filter.Branch))
             queryParams.Add($"branchName={Uri.EscapeDataString(filter.Branch)}");
 
