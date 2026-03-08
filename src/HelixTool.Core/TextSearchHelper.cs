@@ -18,6 +18,10 @@ public static class TextSearchHelper
     /// <summary>Search lines for a pattern with optional context.</summary>
     public static LogSearchResult SearchLines(string identifier, string[] lines, string pattern, int contextLines = 0, int maxMatches = 50)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
+        ArgumentOutOfRangeException.ThrowIfNegative(contextLines);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(maxMatches, 0);
+
         var matchIndices = new List<int>();
 
         for (int i = 0; i < lines.Length && matchIndices.Count < maxMatches; i++)

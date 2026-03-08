@@ -155,7 +155,7 @@ public sealed class TestResultsToolResult
     [JsonPropertyName("files")] public List<TestResultFile> Files { get; init; } = [];
 }
 
-// --- BatchStatus tool ---
+// --- AzDO SearchLog tool ---
 
 // --- SearchBuildLog tool ---
 

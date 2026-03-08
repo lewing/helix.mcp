@@ -174,14 +174,12 @@ public class TextSearchHelperTests
     // ── Null/empty pattern ──────────────────────────────────────────
 
     [Fact]
-    public void SearchLines_EmptyPattern_MatchesEveryLine()
+    public void SearchLines_EmptyPattern_Throws()
     {
-        // string.Contains("", OrdinalIgnoreCase) returns true for any string
         var lines = new[] { "line 1", "line 2", "line 3" };
 
-        var result = TextSearchHelper.SearchLines("test", lines, "", DefaultContext, DefaultMaxMatches);
-
-        Assert.Equal(3, result.Matches.Count);
+        Assert.Throws<ArgumentException>(() =>
+            TextSearchHelper.SearchLines("test", lines, "", DefaultContext, DefaultMaxMatches));
     }
 
     // ── Max matches limit ───────────────────────────────────────────

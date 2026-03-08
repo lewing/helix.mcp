@@ -145,6 +145,8 @@ public class AzdoService
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
+        ArgumentOutOfRangeException.ThrowIfNegative(contextLines);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(maxMatches, 0);
 
         if (HelixService.IsFileSearchDisabled)
             throw new InvalidOperationException("File content search is disabled by configuration.");
