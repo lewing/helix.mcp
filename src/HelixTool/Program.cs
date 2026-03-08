@@ -514,7 +514,7 @@ public class Commands
     public void LlmsTxt()
     {
         var text = """
-# hlx - Helix Test Infrastructure CLI
+# hlx - Helix & Azure DevOps CI Investigation CLI
 
 ## CLI Commands
 - `hlx status <jobId> [failed|passed|all]` — Work item summary (failed items with exit code, duration, machine)
@@ -548,12 +548,26 @@ public class Commands
 - `hlx_search_file` — Search a work item's uploaded file for lines matching a pattern
 - `hlx_test_results` — Parse TRX test result files from a work item
 
+### AzDO MCP Tools
+- `azdo_build` — Get build details by ID or AzDO URL (status, result, branch, timing, web URL)
+- `azdo_builds` — List builds with filters (definition, branch, PR number, status). Defaults to dnceng-public/public
+- `azdo_timeline` — Get build timeline (stages, jobs, tasks) with optional filter ('failed' or 'all'). Returns log IDs for azdo_log
+- `azdo_log` — Get build log content (last N lines, default 500). Use log ID from azdo_timeline
+- `azdo_changes` — Get commits/changes associated with a build
+- `azdo_test_runs` — List test runs for a build (total/passed/failed counts)
+- `azdo_test_results` — Get test results for a test run (outcome, duration, error details). Defaults to failed only (top 200)
+- `azdo_artifacts` — List build artifacts with optional pattern filter (e.g., '*.binlog'). Default top: 50
+- `azdo_test_attachments` — List attachments for a test result (screenshots, logs, dumps). Default top: 50
+
 ## Authentication
-Set HELIX_ACCESS_TOKEN env var for internal jobs. Public jobs need no auth.
+Set HELIX_ACCESS_TOKEN env var for internal Helix jobs. Public jobs need no auth.
+Set AZDO_TOKEN env var for internal AzDO projects. Falls back to `az account get-access-token`. Public projects (e.g., dnceng-public) need no auth.
 
 ## Input
 - Accepts bare GUIDs: `hlx status 02d8bd09-9400-4e86-8d2b-7a6ca21c5009`
 - Accepts Helix URLs: `hlx status https://helix.dot.net/api/jobs/02d8bd09.../details`
+- Accepts AzDO URLs: `azdo_build https://dev.azure.com/dnceng-public/public/_build/results?buildId=123`
+- Accepts AzDO build IDs: `azdo_build 123` (defaults to dnceng-public/public)
 - jobId and workItem are positional arguments (no --job-id flag needed)
 
 ## Failure Categorization
@@ -571,7 +585,8 @@ Available as `failureCategory` in JSON and MCP output.
 - Cache isolated per auth context: unauthenticated uses `{base}/public/`, token uses `{base}/cache-{hash}/` (first 8 chars of SHA256)
 - Cache location base: `%LOCALAPPDATA%/hlx/` (Windows) or `$XDG_CACHE_HOME/hlx/` (Linux/macOS)
 - Default max size: 1 GB. Configure via `HLX_CACHE_MAX_SIZE_MB` env var. Set to 0 to disable.
-- Running jobs: 15-30s TTL. Completed jobs: 1-4h TTL. Console logs never cached while running.
+- Helix TTL: Running jobs 15-30s, completed 1-4h. Console logs never cached while running.
+- AzDO TTL: Completed builds 4h, in-progress 15s, logs 4h (immutable), test results 1h.
 - Eviction: TTL-based + LRU when over max size. Artifacts expire after 7 days without access.
 - `cache clear` wipes ALL auth contexts. `cache status` shows the current auth context.
 """;

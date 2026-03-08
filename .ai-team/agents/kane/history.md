@@ -65,3 +65,16 @@
 📌 Team update (2026-03-08): AzDO security review complete — SEC-1 fix (prNumber validation) will change azdo_builds tool behavior. Security review patterns documented in decisions.md. — decided by Dallas
 
 📌 Team update (2026-03-08): AzDO context-limiting defaults — 6 AzDO MCP tools have safe defaults (tailLines=500, filter="failed", top=20/50/200). Tool descriptions may need updating. — decided by Ripley
+
+📌 Team update (2026-03-08): AzDO README + llmstxt documentation — 9 AzDO MCP tools documented in README (AzDO Tools subsection under MCP Tools) and llmstxt. AzDO auth chain, caching TTLs, and project structure added. Test count updated to 700. — documented by Kane
+
+## Learnings
+
+- AzDO tools are MCP-only (no CLI subcommands) — README documents them only in the MCP Tools section, not in CLI Commands
+- AzDO auth chain pattern: env var → az CLI → anonymous — different from Helix which uses env var → git credential → error
+- AzDO caching uses the same SqliteCacheStore but with distinct TTL rules per endpoint type (builds 4h completed/15s in-progress, logs 4h, tests 1h)
+- AzdoIdResolver accepts both dev.azure.com and visualstudio.com URL formats, plus plain integer build IDs
+- When adding a new API domain (AzDO alongside Helix), use subsections (### Helix Tools / ### AzDO Tools) rather than separate top-level sections to keep the README scannable
+- llmstxt raw string literal in Program.cs must stay flush-left — no indentation inside the `"""..."""` block
+- AzDO tools total 9 (not 7 as originally noted in earlier decision): azdo_build, azdo_builds, azdo_timeline, azdo_log, azdo_changes, azdo_test_runs, azdo_test_results, azdo_artifacts, azdo_test_attachments
+- Key AzDO source files: `src/HelixTool.Core/AzDO/AzdoMcpTools.cs` (tool definitions), `AzdoService.cs` (core logic), `AzdoIdResolver.cs` (URL/ID parsing), `CachingAzdoApiClient.cs` (cache wrapper)
