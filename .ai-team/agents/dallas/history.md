@@ -93,4 +93,4 @@ If we later need to reshape AzDO output differently from the API models, we'd ad
 📌 Team update (2026-03-08): AzDO docs use subsections within existing README structure — new API domains should follow this pattern (### under ## MCP Tools, ## Authentication, ## Caching). llmstxt updated with AzDO tools subsection. — decided by Kane
 
 📌 Team update (2026-03-08): `IsFileSearchDisabled` promoted from internal to public on `HelixService` — needed for MCP tools extraction to separate assembly. Consistent with existing public statics `MatchesPattern` and `IsTestResultFile`. — decided by Ripley
-�� Team update (2026-03-08): AzDO search gap analysis consolidated — P0 `azdo_search_log` implemented (PR #10). CI-analysis skill study validated priorities. New P1 candidates: `azdo_search_timeline`, multi-step log search. — analyzed by Ash
+📌 Team update (2026-03-08): AzDO search gap analysis consolidated — P0 `azdo_search_log` implemented (PR #10). CI-analysis skill study validated priorities. New P1 candidates: `azdo_search_timeline`, multi-step log search. — analyzed by Ash

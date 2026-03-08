@@ -1,6 +1,6 @@
 // Tests for AzDO search_log functionality.
 // Validates the AzdoService.SearchBuildLogAsync method that searches AzDO build logs.
-// Depends on Ripley's SearchBuildLogAsync implementation in AzdoService.
+// Ensures build log search returns expected matches, line numbers, and surrounding context.
 
 using HelixTool.Core;
 using HelixTool.Core.AzDO;

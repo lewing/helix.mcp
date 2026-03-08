@@ -148,7 +148,7 @@ public sealed class AzdoMcpTools
     [McpServerTool(Name = "azdo_search_log", Title = "Search AzDO Build Log", ReadOnly = true, UseStructuredContent = true),
      Description("Search a build step log for lines matching a pattern. Returns matching lines with optional context. Use this to find specific errors, stack traces, or patterns in AzDO build logs without reading the entire log. Use after azdo_timeline to get the log ID of a failed task.")]
     public async Task<SearchBuildLogResult> SearchLog(
-        [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildUrl,
+        [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildIdOrUrl,
         [Description("Log ID from the timeline record's log reference")] int logId,
         [Description("Text pattern to search for (case-insensitive)")] string pattern = "error",
         [Description("Lines of context before and after each match")] int contextLines = 2,
@@ -160,16 +160,16 @@ public sealed class AzdoMcpTools
         LogSearchResult result;
         try
         {
-            result = await _svc.SearchBuildLogAsync(buildUrl, logId, pattern, contextLines, maxMatches);
+            result = await _svc.SearchBuildLogAsync(buildIdOrUrl, logId, pattern, contextLines, maxMatches);
         }
-        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException)
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
         {
             throw new McpException(ex.Message);
         }
 
         return new SearchBuildLogResult
         {
-            Build = buildUrl,
+            Build = buildIdOrUrl,
             LogId = logId,
             Pattern = pattern,
             TotalLines = result.TotalLines,
