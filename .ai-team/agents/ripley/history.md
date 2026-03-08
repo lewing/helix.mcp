@@ -108,3 +108,5 @@
 - **Model records created:** `AzdoBuildArtifact`, `AzdoArtifactResource`, `AzdoTestAttachment` — all `sealed record` with `[JsonPropertyName]` attributes, added to `AzdoModels.cs`.
 - **Service-level `top` limiting for attachments:** The AzDO attachments API doesn't support `$top`, so the service applies `Take(top)` client-side. Artifacts typically have few entries so no `top` needed.
 - **MCP tool `azdo_test_attachments` takes explicit org/project:** Unlike `azdo_test_results` which resolves org/project from a buildIdOrUrl, attachments use explicit `org`/`project` params since there's no build context — only `runId` + `resultId`.
+
+📌 Team update (2026-03-08): AzDO artifacts must follow Helix patterns — caching and search patterns (hlx_files, hlx_find_files, hlx_search_file, hlx_download) must be mirrored for AzDO tools. — decided by Larry Ewing

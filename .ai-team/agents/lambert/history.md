@@ -97,3 +97,18 @@ Tests for AzdoMcpTools should assert against the model types' `[JsonPropertyName
 - **Total test count after AzDO security tests:** 594 tests (531 + 63 new).
 
 📌 Team update (2026-03-08): AzDO security review complete — 6 findings (1 Medium, 3 Low, 2 Info). Security test conventions consolidated into AzDO test patterns decision. 667 total tests. — decided by Dallas
+
+### 2026-03-08: AzDO Artifact & Attachment Tests (33 tests)
+- **AzdoArtifactTests** in `src/HelixTool.Tests/AzDO/AzdoArtifactTests.cs` — 33 tests across 5 categories:
+  - API Client: GetBuildArtifactsAsync (valid build, empty list), GetTestAttachmentsAsync (valid result, empty list)
+  - Service Layer: URL resolution for artifacts, plain ID defaults, top parameter limiting, top exceeds count
+  - Caching: cache miss/hit for both artifacts and attachments, TTL assertions (4h immutable for artifacts, 1h test TTL for attachments), azdo: prefix, disabled cache pass-through
+  - MCP Tools: azdo_artifacts (list, URL acceptance, empty), azdo_test_attachments (list, top, custom org/project, empty)
+  - Edge Cases: invalid buildId, empty string, null resource, large file size (2GB), createdDate, JSON round-trip
+- **CamelCase JSON verification pattern:** Use `root.GetProperty("camelCaseName").GetXxx()` to assert both property existence AND value — avoids xUnit2002 warnings on JsonElement (struct) with `Assert.NotNull()`.
+- **TestAttachments top parameter:** `AzdoService.GetTestAttachmentsAsync` applies top limiting via `results.Take(top).ToList()` after API call (API doesn't support server-side limiting for test attachments).
+- **Artifacts use ImmutableTtl (4h):** Artifacts are immutable once published, so caching uses the same 4h TTL as build logs and changes.
+- **TestAttachments use TestTtl (1h):** Consistent with test runs/results caching.
+- **Total test count after artifact tests:** 700 tests (667 + 33 new).
+
+📌 Team update (2026-03-08): AzDO context-limiting defaults — all AzDO MCP tools now have safe output-size defaults (tailLines=500, filter="failed", top=20/50/200). All overridable. 667 tests pass. — decided by Ripley

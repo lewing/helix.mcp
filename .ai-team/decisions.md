@@ -3256,3 +3256,29 @@ The resolver validates the host is either `dev.azure.com` or `*.visualstudio.com
 - **SEC-5/6 (Info)** are correctness and operational concerns, not security vulnerabilities. Document as known limitations.
 
 **Conditional approval: merge after fixing SEC-1.** The remaining findings should be tracked as follow-up work items.
+
+### 2026-03-08: AzDO MCP Tool Context-Limiting Defaults
+
+**By:** Ripley
+**Status:** Implemented
+
+**What:** Added safe output-size defaults to all AzDO MCP tools, matching Helix tool patterns:
+
+| Tool | Parameter | Default | Rationale |
+|------|-----------|---------|-----------|
+| `azdo_log` | `tailLines` | `500` | Matches `hlx_logs`; logs can be 100MB+ |
+| `azdo_timeline` | `filter` | `"failed"` | New param; non-succeeded + parent chain |
+| `azdo_changes` | `top` | `20` | Reasonable commit history window |
+| `azdo_test_runs` | `top` | `50` | Enough for most builds |
+| `azdo_test_results` | `top` | `200` | Matches `hlx_test_results`; was hardcoded 1000 |
+
+**Why:**
+- Unbounded outputs exhaust agent context windows
+- All parameters remain nullable/overridable for callers needing more data
+- Defaults live in MCP tool method signatures (not service code)
+- Cache keys include limit parameters to prevent stale partial results
+- Timeline filtering is client-side (AzDO API has no timeline filter support): identifies non-succeeded records + walks parentId chain for hierarchical context
+### 2026-03-08: User directive — AzDO artifacts must follow Helix patterns
+**By:** Larry Ewing (via Copilot)
+**What:** AzDO artifact and attachment tools must follow the same caching and search patterns as the Helix tools (hlx_files, hlx_find_files, hlx_search_file, hlx_download)
+**Why:** User request — captured for team memory. Consistency between Helix and AzDO tool behavior is important for agent usability.

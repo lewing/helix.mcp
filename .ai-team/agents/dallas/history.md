@@ -85,3 +85,5 @@ If we later need to reshape AzDO output differently from the API models, we'd ad
 - **Singleton `AzCliAzdoTokenAccessor` with `_resolved` flag doesn't handle token expiry.** For long-running MCP servers, az CLI tokens (~1h lifetime) will expire. Not a security bug (fails closed with 401), but an operational gap. Future work: track JWT expiry or use `AZDO_TOKEN` with external rotation.
 - **`CacheSecurity.SanitizeCacheKeySegment` is the established pattern for cache key hygiene.** AzDO caching correctly reuses it. Any new cacheable subsystem must use it too.
 - **Security review convention established:** For new API integrations, review all 7 focus areas (command injection, SSRF, token leakage, input validation, cache isolation, HTTP security, pattern consistency). Use SEC-{N} IDs with severity levels.
+
+📌 Team update (2026-03-08): AzDO context-limiting defaults — safe output-size defaults added to all AzDO MCP tools, matching Helix patterns. Defaults in method signatures, cache keys include limit params. — decided by Ripley
