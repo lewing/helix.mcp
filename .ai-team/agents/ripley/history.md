@@ -62,3 +62,11 @@
 - **CRLF normalization in AzDO logs:** AzDO logs may use `\r\n` line endings. Must normalize (`\r\n` → `\n`, `\r` → `\n`) before `Split('\n')`, and trim trailing empty entry to match `File.ReadAllLines` semantics used by Helix search paths.
 - **MCP result field naming honesty:** When a field can contain either an ID or a URL (because the tool accepts both), name the property to reflect the broader type (e.g., `Build` not `BuildId`). The `[JsonPropertyName]` attribute controls wire format independently.
 - **McpException wrapping pattern:** Service calls in MCP tool handlers should be wrapped in `try/catch` for expected exceptions (`InvalidOperationException`, `HttpRequestException`) and rethrown as `McpException` with the original message. This matches the `HelixException → McpException` pattern in `HelixMcpTools`.
+
+## Learnings (azdo_search_timeline implementation)
+
+- **Domain types in Core, not MCP.Tools:** `TimelineSearchMatch` and `TimelineSearchResult` live in `HelixTool.Core.AzDO` (AzdoModels.cs), not McpToolResults.cs. Core can't reference Mcp.Tools. MCP tools return Core types directly (same pattern as `AzdoBuildSummary`).
+- **`[JsonIgnore]` for raw record access:** `TimelineSearchMatch.Record` exposes the underlying `AzdoTimelineRecord` with `[JsonIgnore]` — keeps MCP JSON output flat while giving tests/service consumers raw access to the timeline record.
+- **Duration formatting in service layer:** Service computes formatted duration strings (e.g., "5m 30s") from `StartTime`/`FinishTime` and includes them in the DTO. Avoids duplicating formatting logic in MCP tool and CLI layers. `FormatDuration` is private to `AzdoService`.
+- **Null timeline → InvalidOperationException:** When timeline is null (build not found or no timeline available), the service throws `InvalidOperationException` rather than returning empty results. MCP layer catches and wraps as `McpException`.
+- **Pre-existing tests drove API shape:** Tests were pre-written expecting specific DTO properties (`Record`, `MatchedIssues`, `Duration`, `LogId`, `ParentName`). Aligning the service return type to match test expectations rather than fighting them.
