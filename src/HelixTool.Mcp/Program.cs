@@ -1,6 +1,7 @@
 using HelixTool.Core;
 using HelixTool.Core.AzDO;
 using HelixTool.Mcp;
+using HelixTool.Mcp.Tools;
 using ModelContextProtocol.Server;
 
 var builder = WebApplication.CreateBuilder(args);

@@ -19,6 +19,7 @@
   <ItemGroup>
     <ProjectReference Include="..\HelixTool.Core\HelixTool.Core.csproj" />
     <ProjectReference Include="..\HelixTool.Mcp\HelixTool.Mcp.csproj" />
+    <ProjectReference Include="..\HelixTool.Mcp.Tools\HelixTool.Mcp.Tools.csproj" />
   </ItemGroup>
 
 </Project>

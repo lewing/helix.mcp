@@ -1,4 +1,5 @@
 using HelixTool.Core.AzDO;
+using HelixTool.Mcp.Tools;
 using NSubstitute;
 using Xunit;
 

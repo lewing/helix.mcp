@@ -78,3 +78,5 @@
 - llmstxt raw string literal in Program.cs must stay flush-left — no indentation inside the `"""..."""` block
 - AzDO tools total 9 (not 7 as originally noted in earlier decision): azdo_build, azdo_builds, azdo_timeline, azdo_log, azdo_changes, azdo_test_runs, azdo_test_results, azdo_artifacts, azdo_test_attachments
 - Key AzDO source files: `src/HelixTool.Core/AzDO/AzdoMcpTools.cs` (tool definitions), `AzdoService.cs` (core logic), `AzdoIdResolver.cs` (URL/ID parsing), `CachingAzdoApiClient.cs` (cache wrapper)
+
+📌 Team update (2026-03-08): `IsFileSearchDisabled` promoted from internal to public on `HelixService` — needed for MCP tools extraction to separate assembly. Consistent with existing public statics `MatchesPattern` and `IsTestResultFile`. — decided by Ripley

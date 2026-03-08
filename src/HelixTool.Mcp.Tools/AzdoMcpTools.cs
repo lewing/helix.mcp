@@ -2,7 +2,9 @@ using System.ComponentModel;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
-namespace HelixTool.Core.AzDO;
+using HelixTool.Core.AzDO;
+
+namespace HelixTool.Mcp.Tools;
 
 [McpServerToolType]
 public sealed class AzdoMcpTools
