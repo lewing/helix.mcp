@@ -131,4 +131,24 @@ public sealed class AzdoMcpTools
     {
         return await _svc.GetTestResultsAsync(buildId, runId, top);
     }
+
+    [McpServerTool(Name = "azdo_artifacts", Title = "AzDO Build Artifacts", ReadOnly = true, UseStructuredContent = true),
+     Description("List artifacts produced by an Azure DevOps build (logs, test results, binlogs, etc.). Returns artifact names, resource types, and download URLs. Use to discover what files a build published.")]
+    public async Task<IReadOnlyList<AzdoBuildArtifact>> Artifacts(
+        [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId)
+    {
+        return await _svc.GetBuildArtifactsAsync(buildId);
+    }
+
+    [McpServerTool(Name = "azdo_test_attachments", Title = "AzDO Test Attachments", ReadOnly = true, UseStructuredContent = true),
+     Description("List attachments for a specific test result (screenshots, logs, dumps). Use after azdo_test_results to get files attached to a failed test. Requires run ID and result ID from previous tool output.")]
+    public async Task<IReadOnlyList<AzdoTestAttachment>> TestAttachments(
+        [Description("Test run ID from azdo_test_runs output")] int runId,
+        [Description("Test result ID from azdo_test_results output")] int resultId,
+        [Description("Azure DevOps project (default: public)")] string project = "public",
+        [Description("Azure DevOps organization (default: dnceng-public)")] string org = "dnceng-public",
+        [Description("Maximum number of attachments to return (default: 50)")] int top = 50)
+    {
+        return await _svc.GetTestAttachmentsAsync(org, project, runId, resultId, top);
+    }
 }

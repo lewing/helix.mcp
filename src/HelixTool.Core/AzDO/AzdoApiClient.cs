@@ -103,6 +103,18 @@ public sealed class AzdoApiClient : IAzdoApiClient
         return await GetListAsync<AzdoTestResult>(url, ct);
     }
 
+    public async Task<IReadOnlyList<AzdoBuildArtifact>> GetBuildArtifactsAsync(string org, string project, int buildId, CancellationToken ct = default)
+    {
+        var url = BuildUrl(org, project, $"build/builds/{buildId}/artifacts");
+        return await GetListAsync<AzdoBuildArtifact>(url, ct);
+    }
+
+    public async Task<IReadOnlyList<AzdoTestAttachment>> GetTestAttachmentsAsync(string org, string project, int runId, int resultId, CancellationToken ct = default)
+    {
+        var url = BuildUrl(org, project, $"test/runs/{runId}/results/{resultId}/attachments");
+        return await GetListAsync<AzdoTestAttachment>(url, ct);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
 
     private static string BuildUrl(string org, string project, string path)

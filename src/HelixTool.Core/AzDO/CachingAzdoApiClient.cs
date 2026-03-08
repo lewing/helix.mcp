@@ -159,6 +159,37 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         return result;
     }
 
+    public async Task<IReadOnlyList<AzdoBuildArtifact>> GetBuildArtifactsAsync(string org, string project, int buildId, CancellationToken ct = default)
+    {
+        if (!_enabled) return await _inner.GetBuildArtifactsAsync(org, project, buildId, ct);
+
+        var key = BuildCacheKey(org, project, $"artifacts:{buildId}");
+        var cached = await _cache.GetMetadataAsync(key, ct);
+        if (cached is not null)
+            return JsonSerializer.Deserialize<List<AzdoBuildArtifact>>(cached) ?? [];
+
+        var result = await _inner.GetBuildArtifactsAsync(org, project, buildId, ct);
+        // Artifacts are immutable once the build publishes them
+        await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), ImmutableTtl, ct);
+
+        return result;
+    }
+
+    public async Task<IReadOnlyList<AzdoTestAttachment>> GetTestAttachmentsAsync(string org, string project, int runId, int resultId, CancellationToken ct = default)
+    {
+        if (!_enabled) return await _inner.GetTestAttachmentsAsync(org, project, runId, resultId, ct);
+
+        var key = BuildCacheKey(org, project, $"testattachments:{runId}:{resultId}");
+        var cached = await _cache.GetMetadataAsync(key, ct);
+        if (cached is not null)
+            return JsonSerializer.Deserialize<List<AzdoTestAttachment>>(cached) ?? [];
+
+        var result = await _inner.GetTestAttachmentsAsync(org, project, runId, resultId, ct);
+        await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
+
+        return result;
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
 
     private static string BuildCacheKey(string org, string project, string suffix)

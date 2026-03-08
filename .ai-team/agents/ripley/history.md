@@ -119,3 +119,18 @@
 - **Tool descriptions for agents:** Descriptions should explain what data is returned, when to use the tool, how it relates to other tools (e.g., "Use after azdo_timeline to read logs"), and parameter format notes (e.g., "accepts build URL or plain integer ID").
 
 📌 Team update (2026-03-08): AzDO security review — SEC-1 (Medium) prNumber query injection must be fixed with int.TryParse before merge. SEC-2/3/4 (Low) non-blocking follow-ups. — decided by Dallas
+
+## Learnings (AzDO Context-Limiting Defaults)
+
+- **Context-limiting patterns for AzDO tools:** All 6 AzDO MCP tools now have safe output-size defaults matching the Helix tool patterns. Defaults live in MCP tool method signatures (not buried in service/client code).
+- **Parameter defaults chosen:** `azdo_log` tailLines=500 (matches hlx_logs), `azdo_changes` top=20, `azdo_test_runs` top=50, `azdo_test_results` top=200 (matches hlx_test_results, was hardcoded 1000), `azdo_timeline` filter="failed". All remain overridable by callers.
+- **Timeline filtering is client-side:** AzDO API doesn't support filtering timeline records, so the "failed" filter works client-side: identify non-succeeded records + records with issues, then walk up parentId chain to include ancestors for hierarchical context.
+- **Cache key must include limit parameters:** When adding `top` parameters, cache keys in CachingAzdoApiClient must incorporate the limit value to avoid serving stale partial results from a different limit request.
+
+## Learnings (AzDO Build Artifacts & Test Attachments)
+
+- **Build artifacts endpoint:** `GET _apis/build/builds/{buildId}/artifacts` returns `AzdoListResponse<AzdoBuildArtifact>`. Each artifact has `name` and a nested `resource` with `type`, `data`, `downloadUrl`, `url`. Artifacts are immutable once published — cached with `ImmutableTtl` (4h).
+- **Test attachments endpoint:** `GET _apis/test/runs/{runId}/results/{resultId}/attachments` returns `AzdoListResponse<AzdoTestAttachment>`. Each attachment has `fileName`, `size`, `comment`, `url`, `createdDate`. Cached with `TestTtl` (1h).
+- **Model records created:** `AzdoBuildArtifact`, `AzdoArtifactResource`, `AzdoTestAttachment` — all `sealed record` with `[JsonPropertyName]` attributes, added to `AzdoModels.cs`.
+- **Service-level `top` limiting for attachments:** The AzDO attachments API doesn't support `$top`, so the service applies `Take(top)` client-side. Artifacts typically have few entries so no `top` needed.
+- **MCP tool `azdo_test_attachments` takes explicit org/project:** Unlike `azdo_test_results` which resolves org/project from a buildIdOrUrl, attachments use explicit `org`/`project` params since there's no build context — only `runId` + `resultId`.

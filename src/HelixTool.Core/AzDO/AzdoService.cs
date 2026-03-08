@@ -115,4 +115,27 @@ public class AzdoService
         var (org, project, _) = AzdoIdResolver.Resolve(buildIdOrUrl);
         return await _client.GetTestResultsAsync(org, project, runId, top, ct);
     }
+
+    /// <summary>
+    /// Get build artifacts by build ID or AzDO URL.
+    /// </summary>
+    public async Task<IReadOnlyList<AzdoBuildArtifact>> GetBuildArtifactsAsync(
+        string buildIdOrUrl, CancellationToken ct = default)
+    {
+        var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
+        return await _client.GetBuildArtifactsAsync(org, project, buildId, ct);
+    }
+
+    /// <summary>
+    /// Get test result attachments for a specific test result.
+    /// Org/project are provided explicitly since runId/resultId are scoped to org/project.
+    /// </summary>
+    public async Task<IReadOnlyList<AzdoTestAttachment>> GetTestAttachmentsAsync(
+        string org, string project, int runId, int resultId, int top = 50, CancellationToken ct = default)
+    {
+        var results = await _client.GetTestAttachmentsAsync(org, project, runId, resultId, ct);
+        if (results.Count <= top)
+            return results;
+        return results.Take(top).ToList();
+    }
 }

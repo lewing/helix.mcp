@@ -266,6 +266,57 @@ public sealed record AzdoBuildSummary(
     string? RequestedFor,
     string WebUrl);
 
+/// <summary>Build artifact (GET _apis/build/builds/{id}/artifacts).</summary>
+public sealed record AzdoBuildArtifact
+{
+    [JsonPropertyName("id")]
+    public int Id { get; init; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; init; }
+
+    [JsonPropertyName("resource")]
+    public AzdoArtifactResource? Resource { get; init; }
+}
+
+/// <summary>Resource details for a build artifact.</summary>
+public sealed record AzdoArtifactResource
+{
+    [JsonPropertyName("type")]
+    public string? Type { get; init; }
+
+    [JsonPropertyName("data")]
+    public string? Data { get; init; }
+
+    [JsonPropertyName("downloadUrl")]
+    public string? DownloadUrl { get; init; }
+
+    [JsonPropertyName("url")]
+    public string? Url { get; init; }
+}
+
+/// <summary>Attachment on a test result (GET _apis/test/Runs/{runId}/Results/{resultId}/attachments).</summary>
+public sealed record AzdoTestAttachment
+{
+    [JsonPropertyName("id")]
+    public int Id { get; init; }
+
+    [JsonPropertyName("fileName")]
+    public string? FileName { get; init; }
+
+    [JsonPropertyName("size")]
+    public long Size { get; init; }
+
+    [JsonPropertyName("comment")]
+    public string? Comment { get; init; }
+
+    [JsonPropertyName("url")]
+    public string? Url { get; init; }
+
+    [JsonPropertyName("createdDate")]
+    public DateTimeOffset? CreatedDate { get; init; }
+}
+
 /// <summary>Individual test result within a test run.</summary>
 public sealed record AzdoTestResult
 {
