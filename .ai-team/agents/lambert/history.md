@@ -145,3 +145,21 @@ Tests for AzdoMcpTools should assert against the model types' `[JsonPropertyName
 - **Also added:** `FileSearchConfigCollection.cs` — a `[CollectionDefinition("FileSearchConfig", DisableParallelization = true)]` class. The three existing test classes used `[Collection("FileSearchConfig")]` without a formal definition; adding the definition is best practice and makes the intent explicit.
 - **Env var cleanup was already correct:** The test uses save-original / try / finally-restore pattern (lines 239–249).
 - **Convention:** All test classes that mutate `HLX_DISABLE_FILE_SEARCH` must use `[Collection("FileSearchConfig")]`.
+
+### AzDO Search Timeline Tests (19 tests)
+- **AzdoSearchTimelineTests** in `src/HelixTool.Tests/AzDO/AzdoSearchTimelineTests.cs` — 19 tests across 7 categories:
+  - Name/Issue matching: match by record name, match by issue message, case-insensitive match
+  - Record type filtering: filter by Task, filter by Stage
+  - Result filtering: resultFilter="all" (all results), resultFilter="failed" (non-succeeded only), default (null) defaults to "failed"
+  - No matches / empty / null: no matches returns empty, empty timeline returns empty, null timeline throws InvalidOperationException
+  - Input validation: null/empty/whitespace pattern throws ArgumentException
+  - Context/metadata: parent name resolution, duration calculation (FormatDuration: "5m 30s"), log ID inclusion
+  - Edge cases: multiple matched issues (filters non-matching), match in both name and issues (no record duplication)
+- **Key implementation details discovered:**
+  - `SearchTimelineAsync` returns `TimelineSearchResult` (from `HelixTool.Core.AzDO` namespace, defined in `AzdoModels.cs`)
+  - Types were moved from `McpToolResults.cs` to `AzdoModels.cs` during implementation
+  - Null timeline throws `InvalidOperationException`, not returns empty result
+  - Default `resultFilter` is `"failed"` (excludes succeeded records without issues)
+  - `FormatDuration` formats as: `>1h` → "Xh Ym", `>1m` → "Xm Ys", else "Xs"
+  - Matches include `RecordId`, `Name`, `Type`, `State`, `Result`, `Duration` (formatted string), `LogId`, `MatchedIssues`, `ParentName`
+- **Parallel development pattern:** Tests written in parallel with Ripley's implementation. Initial version used value-tuple return type (Ripley's WIP); adapted to final `TimelineSearchResult` class after Ripley completed. The `HelixTool.Mcp.Tools.McpToolResults.cs` still has duplicate type definitions that need cleanup.

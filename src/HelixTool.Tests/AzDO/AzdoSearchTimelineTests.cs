@@ -55,7 +55,7 @@ public class AzdoSearchTimelineTests
         var result = await _svc.SearchTimelineAsync("42", "Build");
 
         Assert.Single(result.Matches);
-        Assert.Equal("Build solution", result.Matches[0].Record.Name);
+        Assert.Equal("Build solution", result.Matches[0].Name);
     }
 
     // ── Match by issue message ──────────────────────────────────────
@@ -89,7 +89,7 @@ public class AzdoSearchTimelineTests
         var result = await _svc.SearchTimelineAsync("42", "build solution");
 
         Assert.Single(result.Matches);
-        Assert.Equal("Build Solution", result.Matches[0].Record.Name);
+        Assert.Equal("Build Solution", result.Matches[0].Name);
     }
 
     // ── Filter by record type ───────────────────────────────────────
@@ -106,8 +106,8 @@ public class AzdoSearchTimelineTests
         var result = await _svc.SearchTimelineAsync("42", "error", recordType: "Task");
 
         Assert.Single(result.Matches);
-        Assert.Equal("Task", result.Matches[0].Record.Type);
-        Assert.Equal("error step", result.Matches[0].Record.Name);
+        Assert.Equal("Task", result.Matches[0].Type);
+        Assert.Equal("error step", result.Matches[0].Name);
     }
 
     [Fact]
@@ -121,8 +121,8 @@ public class AzdoSearchTimelineTests
         var result = await _svc.SearchTimelineAsync("42", "error", recordType: "Stage");
 
         Assert.Single(result.Matches);
-        Assert.Equal("Stage", result.Matches[0].Record.Type);
-        Assert.Equal("error stage", result.Matches[0].Record.Name);
+        Assert.Equal("Stage", result.Matches[0].Type);
+        Assert.Equal("error stage", result.Matches[0].Name);
     }
 
     // ── Result filter ───────────────────────────────────────────────
@@ -154,7 +154,7 @@ public class AzdoSearchTimelineTests
 
         Assert.Equal(2, result.Matches.Count);
         Assert.All(result.Matches, m =>
-            Assert.NotEqual("succeeded", m.Record.Result, StringComparer.OrdinalIgnoreCase));
+            Assert.NotEqual("succeeded", m.Result, StringComparer.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -169,7 +169,7 @@ public class AzdoSearchTimelineTests
         var result = await _svc.SearchTimelineAsync("42", "error");
 
         Assert.Single(result.Matches);
-        Assert.Equal("error task B", result.Matches[0].Record.Name);
+        Assert.Equal("error task B", result.Matches[0].Name);
     }
 
     // ── No matches ──────────────────────────────────────────────────
@@ -185,6 +185,7 @@ public class AzdoSearchTimelineTests
         var result = await _svc.SearchTimelineAsync("42", "NONEXISTENT_PATTERN");
 
         Assert.Empty(result.Matches);
+        Assert.Equal(0, result.MatchCount);
         Assert.Equal(2, result.TotalRecords);
     }
 
@@ -254,11 +255,9 @@ public class AzdoSearchTimelineTests
         var result = await _svc.SearchTimelineAsync("42", "error");
 
         var match = Assert.Single(result.Matches);
-        // Duration is computed from Record.StartTime/FinishTime
-        Assert.NotNull(match.Record.StartTime);
-        Assert.NotNull(match.Record.FinishTime);
-        var duration = match.Record.FinishTime!.Value - match.Record.StartTime!.Value;
-        Assert.Equal(TimeSpan.FromMinutes(5).Add(TimeSpan.FromSeconds(30)), duration);
+        Assert.NotNull(match.Duration);
+        // FormatDuration: 5m 30s
+        Assert.Equal("5m 30s", match.Duration);
     }
 
     // ── Log ID included ─────────────────────────────────────────────
@@ -273,8 +272,7 @@ public class AzdoSearchTimelineTests
         var result = await _svc.SearchTimelineAsync("42", "error");
 
         var match = Assert.Single(result.Matches);
-        Assert.NotNull(match.Record.Log);
-        Assert.Equal(99, match.Record.Log!.Id);
+        Assert.Equal(99, match.LogId);
     }
 
     // ── Multiple matched issues ─────────────────────────────────────
@@ -317,8 +315,7 @@ public class AzdoSearchTimelineTests
 
         // Should appear only once even though "error" matches both name and issue
         Assert.Single(result.Matches);
-        Assert.Equal("error handler task", result.Matches[0].Record.Name);
+        Assert.Equal("error handler task", result.Matches[0].Name);
         Assert.Single(result.Matches[0].MatchedIssues);
     }
 }
-
