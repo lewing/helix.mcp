@@ -108,3 +108,32 @@ Tests for AzdoMcpTools should assert against the model types' `[JsonPropertyName
 - **Init-only properties in test helpers:** AzdoBuild uses `init;` setters — must set StartTime/FinishTime via object initializer parameters, not post-construction assignment.
 - **AzdoChangeAuthor vs AzdoIdentityRef:** `AzdoBuildChange.Author` is `AzdoChangeAuthor`, not `AzdoIdentityRef`. Separate type with only `DisplayName`.
 - **Total test count after proactive tests:** 753 tests (700 + 53 new).
+
+### 2026-03-08: AzDO Search Log & TextSearchHelper Tests (41 tests)
+- **TextSearchHelperTests** in `src/HelixTool.Tests/TextSearchHelperTests.cs` — 20 tests:
+  - Basic matching: single match, multiple matches, correct line numbers (1-based)
+  - Context lines: zero (null context), 1-line, 3-line, clamped at start/end of content
+  - Case insensitivity: Theory with 4 case variants (error/ERROR/Error/eRrOr)
+  - Edge cases: no matches, empty content, empty pattern (matches all lines)
+  - Max matches: limit to 2 of 10, limit to 1 of 3
+  - Overlapping context: close matches produce independent context windows
+  - Large content: 10K lines with single match at line 5000, with and without context
+  - Identifier passthrough: verifies WorkItem field in result
+  - Special characters: parentheses, brackets — literal string match, not regex
+- **AzdoSearchLogTests** in `src/HelixTool.Tests/AzDO/AzdoSearchLogTests.cs` — 21 tests:
+  - Happy path: single/multiple error matches with correct line numbers
+  - No matches: returns empty matches list with correct TotalLines
+  - Context lines: zero (null context), 5-line extended context with correct boundaries
+  - Max matches: limits output to first N matches
+  - Large log: 10K lines, single match at line 5000
+  - Special characters: parentheses and brackets matched literally (no regex)
+  - URL resolution: dev.azure.com URL resolves org/project correctly, Received() assertion
+  - Case insensitivity: uppercase pattern matches lowercase log content
+  - Input validation: null/empty/whitespace pattern throws ArgumentException
+  - Null log content: throws InvalidOperationException
+  - Search disabled: HLX_DISABLE_FILE_SEARCH=true throws InvalidOperationException (env var test with cleanup)
+  - Result identifier: contains logId in WorkItem field (Ripley uses `log:{logId}`)
+- **TextSearchHelper is a pure static class** — 5 required params (identifier, lines, pattern, contextLines, maxMatches), no defaults. Tests use DefaultContext=0 and DefaultMaxMatches=50 constants.
+- **AzdoService.SearchBuildLogAsync** delegates to TextSearchHelper after fetching log via GetBuildLogAsync. Uses `HelixService.IsFileSearchDisabled` guard (shared with Helix search).
+- **Env var test pattern:** save original, set, try/finally restore — for `HLX_DISABLE_FILE_SEARCH` testing.
+- **Total test count after search log tests:** 791 tests (750 baseline + 41 new).

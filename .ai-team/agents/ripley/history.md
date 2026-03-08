@@ -46,3 +46,11 @@
 - **`WithToolsFromAssembly` assembly reference:** Both CLI and HTTP server use `typeof(HelixMcpTools).Assembly` — since HelixMcpTools moved to `HelixTool.Mcp.Tools` assembly, this automatically picks up the right assembly. No code change needed.
 - **Test project references all three:** `HelixTool.Tests.csproj` now references Core, Mcp, and Mcp.Tools projects. Six test files needed `using HelixTool.Mcp.Tools;` added.
 - **git mv preserves history:** Used `git mv` for all three file moves to maintain blame/log continuity.
+
+## Learnings (azdo_search_log implementation)
+
+- **TextSearchHelper extraction:** `SearchLines()` moved from `HelixService` (private static) to `TextSearchHelper` (public static) in `HelixTool.Core`. The three record types (`LogMatch`, `LogSearchResult`, `FileContentSearchResult`) also promoted to top-level in the `HelixTool.Core` namespace since they're now shared between Helix and AzDO code paths.
+- **Default parameter values matter:** Added `contextLines = 0, maxMatches = 50` defaults to `TextSearchHelper.SearchLines()` — existing tests relied on calling with fewer args. When extracting methods to public APIs, always check test call sites for implicit parameter expectations.
+- **AzDO log fetching already supports full content:** `AzdoApiClient.GetBuildLogAsync` returns the complete log; `AzdoService.GetBuildLogAsync` adds optional `tailLines` truncation. For search, pass `tailLines: null` to get full content.
+- **IsFileSearchDisabled dual-check pattern:** Both the MCP tool layer (throws `McpException`) and the service layer (throws `InvalidOperationException`) check `IsFileSearchDisabled`. The MCP check provides user-friendly errors; the service check is defense-in-depth for CLI consumers.
+- **CLI search output pattern:** Context lines displayed with `>>>` prefix for the matching line and `   ` prefix for context. Line numbers right-aligned in a 6-char column.

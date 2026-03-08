@@ -144,10 +144,10 @@ public class AzdoService
         int contextLines = 2, int maxMatches = 50,
         CancellationToken ct = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
+
         if (HelixService.IsFileSearchDisabled)
             throw new InvalidOperationException("File content search is disabled by configuration.");
-
-        ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
 
         var content = await GetBuildLogAsync(buildIdOrUrl, logId, tailLines: null, ct);
         if (content is null)
