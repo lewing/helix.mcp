@@ -10,9 +10,9 @@ When an AI agent investigates a CI failure in a dotnet repo, it needs to inspect
 
 hlx solves this by wrapping the Helix API as MCP tools that return structured, pre-parsed data:
 
-- **Structured output** — `hlx_status` returns categorized failure summaries as JSON; `hlx_test_results` parses TRX files and returns test names, outcomes, and error messages directly. No raw text parsing needed.
+- **Structured output** — `helix_status` returns categorized failure summaries as JSON; `helix_test_results` parses TRX files and returns test names, outcomes, and error messages directly. No raw text parsing needed.
 - **Cross-process caching** — API responses and downloaded artifacts are cached in a local SQLite database. Different MCP server instances (one per IDE/agent) share the same cache, so the second agent to inspect a job gets instant results. TTLs are smart — running jobs cache briefly (15–30s), completed jobs cache for hours.
-- **Context-efficient** — `hlx_search_log` and `hlx_search_file` search in place and return matching lines with context, so agents never need to download a full log. `hlx_find_files` locates artifacts across work items without listing every file.
+- **Context-efficient** — `helix_search_log` and `helix_search_file` search in place and return matching lines with context, so agents never need to download a full log. `helix_find_files` locates artifacts across work items without listing every file.
 - **Zero config** — public dotnet CI jobs work out of the box. Install and go.
 
 > **ci-analysis replacement:** hlx provides 100% coverage of the Helix API surface used by the `ci-analysis` skill's ~150 lines of PowerShell, with structured caching, failure categorization, and MCP tool support on top.
@@ -226,17 +226,17 @@ Add the following to your MCP client config. The `--yes` flag ensures `dnx` does
 
 | Tool | Description |
 |------|-------------|
-| `hlx_status` | Get work item pass/fail summary for a Helix job. Accepts a `filter` parameter: `failed` (default), `passed`, or `all`. Returns structured JSON with job metadata, failed items (with exit codes, state, duration, machine, failure category), and passed count. |
-| `hlx_logs` | Get console log content for a work item. Returns the log text directly (last N lines if `tail` specified, default 500). |
-| `hlx_files` | List uploaded files for a work item, grouped by type. Returns binlogs, testResults, and other files with names and URIs. |
-| `hlx_download` | Download files from a work item to a temp directory. Supports glob patterns (e.g., `*.binlog`). Returns local file paths. |
-| `hlx_download_url` | Download a file by direct blob storage URL (e.g., from `hlx_files` output). Returns the local file path. |
-| `hlx_find_files` | Search work items in a job for files matching a glob pattern (`*.binlog`, `*.trx`, `*.dmp`, etc.). Returns work item names and matching file URIs. |
-| `hlx_work_item` | Get detailed info about a specific work item: exit code, state, machine, duration, failure category, console log URL, and uploaded files. |
-| `hlx_batch_status` | Get status for multiple Helix jobs at once (max 50). Accepts an array of job IDs/URLs. Returns per-job summaries, overall totals, and failure breakdown by category. |
-| `hlx_search_log` | Search a work item's console log for lines matching a pattern. Returns matching lines with context. Supports `contextLines` and `maxMatches` parameters. |
-| `hlx_search_file` | Search an uploaded file's content for lines matching a pattern — without downloading it. Supports context lines and max match limits. Disabled when `HLX_DISABLE_FILE_SEARCH=true`. |
-| `hlx_test_results` | Parse TRX test result files from a work item. Returns structured test results: names, outcomes, durations, and error messages/stack traces for failures. Auto-discovers `.trx` files or filter to a specific one. Disabled when `HLX_DISABLE_FILE_SEARCH=true`. |
+| `helix_status` | Get work item pass/fail summary for a Helix job. Accepts a `filter` parameter: `failed` (default), `passed`, or `all`. Returns structured JSON with job metadata, failed items (with exit codes, state, duration, machine, failure category), and passed count. |
+| `helix_logs` | Get console log content for a work item. Returns the log text directly (last N lines if `tail` specified, default 500). |
+| `helix_files` | List uploaded files for a work item, grouped by type. Returns binlogs, testResults, and other files with names and URIs. |
+| `helix_download` | Download files from a work item to a temp directory. Supports glob patterns (e.g., `*.binlog`). Returns local file paths. |
+| `helix_download_url` | Download a file by direct blob storage URL (e.g., from `helix_files` output). Returns the local file path. |
+| `helix_find_files` | Search work items in a job for files matching a glob pattern (`*.binlog`, `*.trx`, `*.dmp`, etc.). Returns work item names and matching file URIs. |
+| `helix_work_item` | Get detailed info about a specific work item: exit code, state, machine, duration, failure category, console log URL, and uploaded files. |
+| `helix_batch_status` | Get status for multiple Helix jobs at once (max 50). Accepts an array of job IDs/URLs. Returns per-job summaries, overall totals, and failure breakdown by category. |
+| `helix_search_log` | Search a work item's console log for lines matching a pattern. Returns matching lines with context. Supports `contextLines` and `maxMatches` parameters. |
+| `helix_search_file` | Search an uploaded file's content for lines matching a pattern — without downloading it. Supports context lines and max match limits. Disabled when `HLX_DISABLE_FILE_SEARCH=true`. |
+| `helix_test_results` | Parse TRX test result files from a work item. Returns structured test results: names, outcomes, durations, and error messages/stack traces for failures. Auto-discovers `.trx` files or filter to a specific one. Disabled when `HLX_DISABLE_FILE_SEARCH=true`. |
 
 ### AzDO Tools
 
@@ -302,8 +302,8 @@ hlx isn't a thin API wrapper — it adds a local intelligence layer between agen
 | Enhancement | What you get | Why it matters |
 |-------------|-------------|----------------|
 | **Failure classification** | Every failed work item is categorized (Timeout, Crash, BuildFailure, TestFailure, InfrastructureError, etc.) from exit code + state + work item name | Agents can triage without parsing logs. The Helix API only gives you an exit code. |
-| **TRX test result parsing** | `hlx_test_results` returns test names, outcomes, durations, and error messages as structured JSON | The raw API gives you a `.trx` file URL. hlx downloads it, parses the VS Test XML (XXE-safe), and extracts what matters. |
-| **Remote content search** | `hlx_search_file` and `hlx_search_log` return matching lines with context — no full download needed | Agents search multi-MB logs without blowing their context window. Includes binary detection and a 50 MB cap. |
+| **TRX test result parsing** | `helix_test_results` returns test names, outcomes, durations, and error messages as structured JSON | The raw API gives you a `.trx` file URL. hlx downloads it, parses the VS Test XML (XXE-safe), and extracts what matters. |
+| **Remote content search** | `helix_search_file` and `helix_search_log` return matching lines with context — no full download needed | Agents search multi-MB logs without blowing their context window. Includes binary detection and a 50 MB cap. |
 | **Cross-process SQLite cache** | WAL-mode SQLite with LRU eviction and a 1 GB cap. Multiple hlx instances share one cache. | The second agent to inspect a job gets instant results. Auth-isolated directories prevent cross-token leakage. |
 | **Smart TTL policy** | Running jobs: 15–30s. Completed jobs: 1–4h. Console logs for running jobs: never cached. | Helix jobs transition from mutable (running) to immutable (completed). The TTL strategy tracks this lifecycle so agents always see fresh data for active jobs and avoid redundant calls for finished ones. |
 
@@ -312,9 +312,9 @@ hlx isn't a thin API wrapper — it adds a local intelligence layer between agen
 | Enhancement | What you get |
 |-------------|-------------|
 | **URL parsing** | Pass full Helix URLs instead of extracting job IDs and work item names yourself. hlx parses both from a single URL. |
-| **Cross-work-item file discovery** | `hlx_find_files` scans N work items for files matching a glob and aggregates results — one tool call instead of N+1 API calls. |
-| **Batch status aggregation** | `hlx_batch_status` queries up to 50 jobs in parallel with overall totals and failure breakdown by category. |
-| **File type classification** | `hlx_files` groups uploaded files into binlogs, test results, and other — no manual filename matching. |
+| **Cross-work-item file discovery** | `helix_find_files` scans N work items for files matching a glob and aggregates results — one tool call instead of N+1 API calls. |
+| **Batch status aggregation** | `helix_batch_status` queries up to 50 jobs in parallel with overall totals and failure breakdown by category. |
+| **File type classification** | `helix_files` groups uploaded files into binlogs, test results, and other — no manual filename matching. |
 | **Computed duration** | Work item durations are calculated and formatted as human-readable strings (e.g., `2m 34s`). |
 | **Console log URL construction** | Log download URLs are built from job/work-item IDs — agents don't need to know the Helix URL format. |
 | **Auth-isolated cache storage** | Each unique token gets its own cache directory (`cache-{hash}/`). Unauthenticated requests use `public/`. |
@@ -541,8 +541,8 @@ hlx cache clear    # Wipe all cached data (all auth contexts)
 
 - **Safe XML parsing:** TRX files are parsed with `DtdProcessing.Prohibit`, `XmlResolver = null`, and a 50 MB character limit to prevent XXE and billion-laughs attacks.
 - **Path traversal protection:** All cache paths and download file names are sanitized via `CacheSecurity` — directory separators are replaced and `..` sequences are stripped. Resolved paths are validated to stay within their designated root.
-- **URL scheme validation:** `hlx_download_url` only accepts HTTP/HTTPS URLs; other schemes are rejected.
-- **File search toggle:** Set `HLX_DISABLE_FILE_SEARCH=true` to disable `hlx_search_file`, `hlx_search_log`, and `hlx_test_results`. Useful for locked-down deployments where file content inspection is not desired.
+- **URL scheme validation:** `helix_download_url` only accepts HTTP/HTTPS URLs; other schemes are rejected.
+- **File search toggle:** Set `HLX_DISABLE_FILE_SEARCH=true` to disable `helix_search_file`, `helix_search_log`, and `helix_test_results`. Useful for locked-down deployments where file content inspection is not desired.
 - **Input validation:** Job IDs are resolved through `HelixIdResolver` (GUIDs and URLs). Batch operations are capped at 50 jobs per request. File search is limited to 50 MB files.
 - **Credential storage:** Tokens stored via `hlx login` are managed by the OS keychain through `git credential` (macOS Keychain, Windows Credential Manager, or libsecret on Linux). hlx never stores tokens in plaintext files.
 

@@ -2,7 +2,7 @@
 // Tests target expected behavior from Ripley's concurrent implementation:
 //   E1 — URL scheme validation in DownloadFromUrlAsync
 //   D1 — Batch size limit in GetBatchStatusAsync
-//   MCP — hlx_batch_status array size enforcement
+//   MCP — helix_batch_status array size enforcement
 //
 // If Ripley's code hasn't landed yet, some tests will fail to compile — expected.
 
@@ -177,7 +177,7 @@ public class SecurityValidationTests
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // 3. MCP Tool — hlx_batch_status array size enforcement
+    // 3. MCP Tool — helix_batch_status array size enforcement
     // ─────────────────────────────────────────────────────────────────
 
     [Fact]

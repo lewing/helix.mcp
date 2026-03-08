@@ -16,7 +16,7 @@ public sealed class HelixMcpTools
         _svc = svc;
     }
 
-    [McpServerTool(Name = "hlx_status", Title = "Helix Job Status", ReadOnly = true, UseStructuredContent = true), Description("Get work item pass/fail summary for a Helix job. Returns structured JSON with job metadata, failed items (with exit codes, state, duration, machine, failureCategory), and passed count. Use the 'filter' parameter to control which work items are included: 'failed' (default), 'passed', or 'all'.")]
+    [McpServerTool(Name = "helix_status", Title = "Helix Job Status", ReadOnly = true, UseStructuredContent = true), Description("Get work item pass/fail summary for a Helix job. Returns structured JSON with job metadata, failed items (with exit codes, state, duration, machine, failureCategory), and passed count. Use the 'filter' parameter to control which work items are included: 'failed' (default), 'passed', or 'all'.")]
     public async Task<StatusResult> Status(
         [Description("Helix job ID (GUID) or full Helix URL")] string jobId,
         [Description("Filter: 'failed' (default) shows only failures, 'passed' shows only passed, 'all' shows everything")] string filter = "failed")
@@ -83,7 +83,7 @@ public sealed class HelixMcpTools
         return $"{(int)d.TotalSeconds}s";
     }
 
-    [McpServerTool(Name = "hlx_logs", Title = "Helix Work Item Logs", ReadOnly = true), Description("Get console log content for a Helix work item. Returns the log text directly (last N lines if tail specified).")]
+    [McpServerTool(Name = "helix_logs", Title = "Helix Work Item Logs", ReadOnly = true), Description("Get console log content for a Helix work item. Returns the log text directly (last N lines if tail specified).")]
     public async Task<string> Logs(
         [Description("Helix job ID (GUID), Helix job URL, or full work item URL (which includes both job ID and work item name)")] string jobId,
         [Description("Work item name (optional if included in the jobId URL)")] string? workItem = null,
@@ -105,7 +105,7 @@ public sealed class HelixMcpTools
         return await _svc.GetConsoleLogContentAsync(jobId, workItem, tail);
     }
 
-    [McpServerTool(Name = "hlx_files", Title = "Helix Work Item Files", ReadOnly = true, UseStructuredContent = true), Description("List uploaded files for a Helix work item, grouped by type. Returns binlogs, testResults, and other files with names and URIs.")]
+    [McpServerTool(Name = "helix_files", Title = "Helix Work Item Files", ReadOnly = true, UseStructuredContent = true), Description("List uploaded files for a Helix work item, grouped by type. Returns binlogs, testResults, and other files with names and URIs.")]
     public async Task<FilesResult> Files(
         [Description("Helix job ID (GUID), Helix job URL, or full work item URL (which includes both job ID and work item name)")] string jobId,
         [Description("Work item name (optional if included in the jobId URL)")] string? workItem = null)
@@ -133,7 +133,7 @@ public sealed class HelixMcpTools
         };
     }
 
-    [McpServerTool(Name = "hlx_download", Title = "Download Helix Files", Idempotent = true, UseStructuredContent = true), Description("Download files from a Helix work item to temp directory. Returns local file paths. Use pattern to filter (e.g., '*.binlog').")]
+    [McpServerTool(Name = "helix_download", Title = "Download Helix Files", Idempotent = true, UseStructuredContent = true), Description("Download files from a Helix work item to temp directory. Returns local file paths. Use pattern to filter (e.g., '*.binlog').")]
     public async Task<DownloadResult> Download(
         [Description("Helix job ID (GUID), Helix job URL, or full work item URL (which includes both job ID and work item name)")] string jobId,
         [Description("Work item name (optional if included in the jobId URL)")] string? workItem = null,
@@ -160,7 +160,7 @@ public sealed class HelixMcpTools
         return new DownloadResult { DownloadedFiles = paths };
     }
 
-    [McpServerTool(Name = "hlx_find_files", Title = "Find Files in Helix Job", ReadOnly = true, UseStructuredContent = true), Description("Search work items in a Helix job for files matching a pattern. Returns work item names and matching file URIs. Use pattern like '*.binlog', '*.trx', '*.dmp', or '*' for all files.")]
+    [McpServerTool(Name = "helix_find_files", Title = "Find Files in Helix Job", ReadOnly = true, UseStructuredContent = true), Description("Search work items in a Helix job for files matching a pattern. Returns work item names and matching file URIs. Use pattern like '*.binlog', '*.trx', '*.dmp', or '*' for all files.")]
     public async Task<FindFilesResult> FindFiles(
         [Description("Helix job ID (GUID) or URL")] string jobId,
         [Description("File name or glob pattern (e.g., *.binlog, *.trx, *.dmp). Default: all files")] string pattern = "*",
@@ -181,7 +181,7 @@ public sealed class HelixMcpTools
         };
     }
 
-    [McpServerTool(Name = "hlx_download_url", Title = "Download File by URL", Idempotent = true, UseStructuredContent = true), Description("Download a file by direct URL (e.g., blob storage URI from hlx_files output). Returns the local file path.")]
+    [McpServerTool(Name = "helix_download_url", Title = "Download File by URL", Idempotent = true, UseStructuredContent = true), Description("Download a file by direct URL (e.g., blob storage URI from helix_files output). Returns the local file path.")]
     public async Task<DownloadUrlResult> DownloadUrl(
         [Description("Direct file URL to download")] string url)
     {
@@ -189,7 +189,7 @@ public sealed class HelixMcpTools
         return new DownloadUrlResult { DownloadedFile = path };
     }
 
-    [McpServerTool(Name = "hlx_work_item", Title = "Helix Work Item Details", ReadOnly = true, UseStructuredContent = true), Description("Get detailed info about a specific work item including exit code, state, machine, duration, files, and console log URL.")]
+    [McpServerTool(Name = "helix_work_item", Title = "Helix Work Item Details", ReadOnly = true, UseStructuredContent = true), Description("Get detailed info about a specific work item including exit code, state, machine, duration, files, and console log URL.")]
     public async Task<WorkItemToolResult> WorkItem(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null)
@@ -221,7 +221,7 @@ public sealed class HelixMcpTools
         };
     }
 
-    [McpServerTool(Name = "hlx_search_log", Title = "Search Helix Console Log", ReadOnly = true, UseStructuredContent = true), Description("Search a work item's console log for lines matching a pattern. Returns matching lines with optional context. Use this to find specific errors, stack traces, or patterns in Helix test output.")]
+    [McpServerTool(Name = "helix_search_log", Title = "Search Helix Console Log", ReadOnly = true, UseStructuredContent = true), Description("Search a work item's console log for lines matching a pattern. Returns matching lines with optional context. Use this to find specific errors, stack traces, or patterns in Helix test output.")]
     public async Task<SearchLogResult> SearchLog(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
@@ -261,10 +261,10 @@ public sealed class HelixMcpTools
         };
     }
 
-    [McpServerTool(Name = "hlx_search_file", Title = "Search Helix File", ReadOnly = true, UseStructuredContent = true), Description("Search a work item's uploaded file for lines matching a pattern. Returns matching lines with optional context. Use this to find specific errors, stack traces, or patterns in Helix test output files without downloading them.")]
+    [McpServerTool(Name = "helix_search_file", Title = "Search Helix File", ReadOnly = true, UseStructuredContent = true), Description("Search a work item's uploaded file for lines matching a pattern. Returns matching lines with optional context. Use this to find specific errors, stack traces, or patterns in Helix test output files without downloading them.")]
     public async Task<SearchFileResult> SearchFile(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
-        [Description("File name to search (exact name from hlx_files output)")] string fileName,
+        [Description("File name to search (exact name from helix_files output)")] string fileName,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
         [Description("Text pattern to search for (case-insensitive)")] string pattern = "error",
         [Description("Lines of context before and after each match")] int contextLines = 2,
@@ -306,7 +306,7 @@ public sealed class HelixMcpTools
         };
     }
 
-    [McpServerTool(Name = "hlx_test_results", Title = "Parse TRX Test Results", ReadOnly = true, UseStructuredContent = true), Description("Parse TRX test result files from a Helix work item. Returns structured test results including test names, outcomes, durations, and error messages for failed tests. Auto-discovers all .trx files or filter to a specific one.")]
+    [McpServerTool(Name = "helix_test_results", Title = "Parse TRX Test Results", ReadOnly = true, UseStructuredContent = true), Description("Parse TRX test result files from a Helix work item. Returns structured test results including test names, outcomes, durations, and error messages for failed tests. Auto-discovers all .trx files or filter to a specific one.")]
     public async Task<TestResultsToolResult> TestResults(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
@@ -363,7 +363,7 @@ public sealed class HelixMcpTools
         };
     }
 
-    [McpServerTool(Name = "hlx_batch_status", Title = "Batch Helix Job Status", ReadOnly = true, UseStructuredContent = true), Description("Get status for multiple Helix jobs at once. Returns per-job summaries and overall totals. Maximum 50 jobs per request.")]
+    [McpServerTool(Name = "helix_batch_status", Title = "Batch Helix Job Status", ReadOnly = true, UseStructuredContent = true), Description("Get status for multiple Helix jobs at once. Returns per-job summaries and overall totals. Maximum 50 jobs per request.")]
     public async Task<BatchStatusResult> BatchStatus(
         [Description("Helix job IDs (GUIDs) or URLs")] string[] jobIds)
     {
