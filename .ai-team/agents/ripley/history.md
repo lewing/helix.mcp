@@ -55,3 +55,10 @@
 - **IsFileSearchDisabled dual-check pattern:** Both the MCP tool layer (throws `McpException`) and the service layer (throws `InvalidOperationException`) check `IsFileSearchDisabled`. The MCP check provides user-friendly errors; the service check is defense-in-depth for CLI consumers.
 - **CLI search output pattern:** Context lines displayed with `>>>` prefix for the matching line and `   ` prefix for context. Line numbers right-aligned in a 6-char column.
 📌 Team update (2026-03-08): AzDO search gap analysis consolidated — CI-analysis skill study validated `azdo_search_log` as P0, confirmed `SearchLines()` extraction approach. New P1 ideas: `azdo_search_timeline`, `azdo_search_log_across_steps`. — analyzed by Ash
+
+## Learnings (PR #10 review fixes)
+
+- **CLI line-number calculation:** When displaying context blocks, derive `startLine` from `m.LineNumber - contextLines` (clamped to 0) instead of using `TakeWhile(c => c != m.Line).Count()`. The TakeWhile approach breaks when duplicate line text appears earlier in the context window.
+- **CRLF normalization in AzDO logs:** AzDO logs may use `\r\n` line endings. Must normalize (`\r\n` → `\n`, `\r` → `\n`) before `Split('\n')`, and trim trailing empty entry to match `File.ReadAllLines` semantics used by Helix search paths.
+- **MCP result field naming honesty:** When a field can contain either an ID or a URL (because the tool accepts both), name the property to reflect the broader type (e.g., `Build` not `BuildId`). The `[JsonPropertyName]` attribute controls wire format independently.
+- **McpException wrapping pattern:** Service calls in MCP tool handlers should be wrapped in `try/catch` for expected exceptions (`InvalidOperationException`, `HttpRequestException`) and rethrown as `McpException` with the original message. This matches the `HelixException → McpException` pattern in `HelixMcpTools`.
