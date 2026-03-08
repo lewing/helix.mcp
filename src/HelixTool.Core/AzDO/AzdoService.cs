@@ -177,6 +177,21 @@ public class AzdoService
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
 
+        if (recordType is not null &&
+            !recordType.Equals("Stage", StringComparison.OrdinalIgnoreCase) &&
+            !recordType.Equals("Job", StringComparison.OrdinalIgnoreCase) &&
+            !recordType.Equals("Task", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"Invalid recordType '{recordType}'. Must be 'Stage', 'Job', or 'Task'.", nameof(recordType));
+        }
+
+        if (resultFilter is not null &&
+            !resultFilter.Equals("failed", StringComparison.OrdinalIgnoreCase) &&
+            !resultFilter.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"Invalid resultFilter '{resultFilter}'. Must be 'failed' or 'all'.", nameof(resultFilter));
+        }
+
         var timeline = await GetTimelineAsync(buildIdOrUrl, ct);
         if (timeline is null)
             throw new InvalidOperationException($"No timeline available for build '{buildIdOrUrl}'.");

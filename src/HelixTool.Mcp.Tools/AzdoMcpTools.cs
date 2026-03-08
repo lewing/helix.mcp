@@ -189,7 +189,7 @@ public sealed class AzdoMcpTools
         [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildIdOrUrl,
         [Description("Text pattern to search for in record names and issue messages (case-insensitive)")] string pattern,
         [Description("Filter by record type: 'Stage', 'Job', or 'Task'. Omit for all types")] string? recordType = null,
-        [Description("Result filter: 'failed' (default) shows only non-succeeded records, 'all' shows everything")] string resultFilter = "failed")
+        [Description("Result filter: 'failed' (default) shows non-succeeded records and any records with timeline issues; 'all' shows everything")] string resultFilter = "failed")
     {
         try
         {

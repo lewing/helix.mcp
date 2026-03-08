@@ -356,7 +356,7 @@ public sealed class TimelineSearchMatch
     [JsonPropertyName("parentName")] public string? ParentName { get; init; }
 
     /// <summary>Raw timeline record for programmatic access (excluded from JSON serialization).</summary>
-    [JsonIgnore] public AzdoTimelineRecord Record { get; init; } = new();
+    [JsonIgnore] public AzdoTimelineRecord? Record { get; init; }
 }
 
 /// <summary>Result of searching timeline records by pattern.</summary>
