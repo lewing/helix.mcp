@@ -1,6 +1,6 @@
 # helix.mcp — MCP server and CLI for investigating .NET CI failures (Helix + Azure DevOps)
 
-An MCP server that exposes [.NET Helix](https://helix.dot.net) and [Azure DevOps](https://dev.azure.com) APIs as 22 structured tools with cross-process local caching — purpose-built for AI agents diagnosing CI failures in dotnet repos (runtime, sdk, aspnetcore, etc.). Also works as a standalone CLI for humans.
+An MCP server that exposes [.NET Helix](https://helix.dot.net) and [Azure DevOps](https://dev.azure.com) APIs as 20 structured tools with cross-process local caching — purpose-built for AI agents diagnosing CI failures in dotnet repos (runtime, sdk, aspnetcore, etc.). Also works as a standalone CLI for humans.
 
 Built with [Squad](https://github.com/bradygaster/squad) — [meet the squad](.ai-team/SQUAD.md).
 
@@ -100,11 +100,8 @@ hlx files 02d8bd09 "dotnet-watch.Tests.dll.1"
 # Download binlogs from a work item
 hlx download 02d8bd09 "dotnet-watch.Tests.dll.1" --pattern "*.binlog"
 
-# Scan work items to find which ones have binlogs
-hlx find-binlogs 02d8bd09
-
-# Search work items for any file type
-hlx find-files 02d8bd09 --pattern "*.trx"
+# Search work items for files by pattern (e.g., binlogs, trx, dmp)
+hlx find-files 02d8bd09 --pattern "*.binlog"
 
 # Download a file by direct URL (from hlx files output)
 hlx download-url "https://helix..."
@@ -123,6 +120,37 @@ hlx search-file 02d8bd09 "dotnet-watch.Tests.dll.1" "testhost.log" "error"
 
 # Parse TRX test results from a work item
 hlx test-results 02d8bd09 "dotnet-watch.Tests.dll.1"
+```
+
+### AzDO CLI
+
+```bash
+# Get details for a specific AzDO build
+hlx azdo build 12345678
+
+# List recent builds, optionally filtered by branch
+hlx azdo builds --branch main
+
+# Show build timeline (stages, jobs, tasks)
+hlx azdo timeline 12345678
+
+# Read a specific build log (use log ID from timeline output)
+hlx azdo log 12345678 42
+
+# List commits/changes in a build
+hlx azdo changes 12345678
+
+# List test runs for a build
+hlx azdo test-runs 12345678
+
+# Get test results for a specific test run
+hlx azdo test-results 12345678 98765
+
+# List build artifacts
+hlx azdo artifacts 12345678
+
+# List attachments for a test result
+hlx azdo test-attachments 98765 1234
 ```
 
 Accepts bare GUIDs or full Helix URLs:
@@ -204,7 +232,6 @@ Add the following to your MCP client config. The `--yes` flag ensures `dnx` does
 | `hlx_download` | Download files from a work item to a temp directory. Supports glob patterns (e.g., `*.binlog`). Returns local file paths. |
 | `hlx_download_url` | Download a file by direct blob storage URL (e.g., from `hlx_files` output). Returns the local file path. |
 | `hlx_find_files` | Search work items in a job for files matching a glob pattern (`*.binlog`, `*.trx`, `*.dmp`, etc.). Returns work item names and matching file URIs. |
-| `hlx_find_binlogs` | Scan work items in a job to find which ones contain binlog files. Shortcut for `hlx_find_files` with `*.binlog` pattern. |
 | `hlx_work_item` | Get detailed info about a specific work item: exit code, state, machine, duration, failure category, console log URL, and uploaded files. |
 | `hlx_batch_status` | Get status for multiple Helix jobs at once (max 50). Accepts an array of job IDs/URLs. Returns per-job summaries, overall totals, and failure breakdown by category. |
 | `hlx_search_log` | Search a work item's console log for lines matching a pattern. Returns matching lines with context. Supports `contextLines` and `maxMatches` parameters. |
@@ -235,7 +262,6 @@ Add the following to your MCP client config. The `--yes` flag ensures `dnx` does
 | `hlx download <jobId> <workItem> [--pattern PAT]` | Download work item files. Glob pattern (default: `*`). |
 | `hlx download-url <url>` | Download a file by direct blob storage URL. |
 | `hlx find-files <jobId> [--pattern PAT] [--max-items N]` | Search work items for files matching a glob pattern. |
-| `hlx find-binlogs <jobId> [--max-items N]` | Shortcut for `find-files --pattern "*.binlog"`. |
 | `hlx work-item <jobId> <workItem>` | Detailed work item info (exit code, state, machine, files). |
 | `hlx batch-status <jobId1> <jobId2> ...` | Status for multiple jobs in parallel. |
 | `hlx search-log <jobId> <workItem> <pattern> [--context N] [--max-matches N]` | Search console log for a pattern. |
@@ -247,6 +273,21 @@ Add the following to your MCP client config. The `--yes` flag ensures `dnx` does
 | `hlx cache status` | Show cache size, entry count, oldest/newest entries. |
 | `hlx cache clear` | Wipe all cached data (all auth contexts). |
 | `hlx mcp` | Start MCP server over stdio. Also the default when no command is given. |
+| `hlx llms-txt` | Print CLI documentation for LLM agents (tool descriptions, parameters, usage). |
+
+### AzDO CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `hlx azdo build <buildId>` | Get details of a specific AzDO build (status, result, branch, timing, URL). |
+| `hlx azdo builds [--branch B] [--pr N] [--definition-id D] [--status S] [--top N]` | List recent builds for a project. Defaults to dnceng-public/public. |
+| `hlx azdo timeline <buildId> [--filter failed\|all]` | Show build timeline (stages, jobs, tasks). Default filter: `failed`. |
+| `hlx azdo log <buildId> <logId> [--tail-lines N]` | Get log content for a build log entry. Default tail: 500 lines. |
+| `hlx azdo changes <buildId> [--top N]` | List commits/changes associated with a build. |
+| `hlx azdo test-runs <buildId> [--top N]` | List test runs for a build (total, passed, failed counts). |
+| `hlx azdo test-results <buildId> <runId> [--top N]` | Get test results for a specific test run. Defaults to failed tests (top 200). |
+| `hlx azdo artifacts <buildId> [--pattern PAT] [--top N]` | List build artifacts. Supports glob-style filtering (e.g., `*.binlog`). |
+| `hlx azdo test-attachments <runId> <resultId> [--top N]` | List attachments for a test result (screenshots, logs, dumps). |
 
 ## Failure Categorization
 

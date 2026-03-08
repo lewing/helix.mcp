@@ -255,66 +255,6 @@ public class HelixMcpToolsTests
         Assert.Equal("https://helix.dot.net/files/artifact.zip", item.Uri);
     }
 
-    // --- FindBinlogs tests ---
-
-    [Fact]
-    public async Task FindBinlogs_ReturnsValidJsonWithScanResults()
-    {
-        var wi1 = Substitute.For<IWorkItemSummary>();
-        wi1.Name.Returns("wi-with-binlog");
-        var wi2 = Substitute.For<IWorkItemSummary>();
-        wi2.Name.Returns("wi-no-binlog");
-
-        _mockApi.ListWorkItemsAsync(ValidJobId, Arg.Any<CancellationToken>())
-            .Returns(new List<IWorkItemSummary> { wi1, wi2 });
-
-        var binlogFile = Substitute.For<IWorkItemFile>();
-        binlogFile.Name.Returns("msbuild.binlog");
-        binlogFile.Link.Returns("https://helix.dot.net/files/msbuild.binlog");
-
-        var txtFile = Substitute.For<IWorkItemFile>();
-        txtFile.Name.Returns("output.txt");
-        txtFile.Link.Returns("https://helix.dot.net/files/output.txt");
-
-        _mockApi.ListWorkItemFilesAsync("wi-with-binlog", ValidJobId, Arg.Any<CancellationToken>())
-            .Returns(new List<IWorkItemFile> { binlogFile, txtFile });
-        _mockApi.ListWorkItemFilesAsync("wi-no-binlog", ValidJobId, Arg.Any<CancellationToken>())
-            .Returns(new List<IWorkItemFile> { txtFile });
-
-        var result = await _tools.FindBinlogs(ValidJobId);
-
-        Assert.Equal(30, result.ScannedItems);
-        Assert.Equal(1, result.Found);
-
-        Assert.Single(result.Results);
-        Assert.Equal("wi-with-binlog", result.Results[0].WorkItem);
-
-        Assert.Single(result.Results[0].Files);
-        Assert.Equal("msbuild.binlog", result.Results[0].Files[0].Name);
-    }
-
-    [Fact]
-    public async Task FindBinlogs_NoBinlogs_ReturnsEmptyResults()
-    {
-        var wi = Substitute.For<IWorkItemSummary>();
-        wi.Name.Returns("wi-plain");
-
-        _mockApi.ListWorkItemsAsync(ValidJobId, Arg.Any<CancellationToken>())
-            .Returns(new List<IWorkItemSummary> { wi });
-
-        var txtFile = Substitute.For<IWorkItemFile>();
-        txtFile.Name.Returns("output.txt");
-        txtFile.Link.Returns("https://helix.dot.net/files/output.txt");
-
-        _mockApi.ListWorkItemFilesAsync("wi-plain", ValidJobId, Arg.Any<CancellationToken>())
-            .Returns(new List<IWorkItemFile> { txtFile });
-
-        var result = await _tools.FindBinlogs(ValidJobId);
-
-        Assert.Equal(0, result.Found);
-        Assert.Empty(result.Results);
-    }
-
     // --- Download tests ---
 
     [Fact]
@@ -466,37 +406,6 @@ public class HelixMcpToolsTests
         Assert.Equal("*", result.Pattern);
         Assert.Equal(1, result.Found);
         Assert.Equal(3, result.Results[0].Files.Count);
-    }
-
-    [Fact]
-    public async Task FindBinlogs_DelegatesToFindFiles()
-    {
-        var wi = Substitute.For<IWorkItemSummary>();
-        wi.Name.Returns("wi-binlog");
-
-        _mockApi.ListWorkItemsAsync(ValidJobId, Arg.Any<CancellationToken>())
-            .Returns(new List<IWorkItemSummary> { wi });
-
-        var binlogFile = Substitute.For<IWorkItemFile>();
-        binlogFile.Name.Returns("msbuild.binlog");
-        binlogFile.Link.Returns("https://helix.dot.net/files/msbuild.binlog");
-
-        var txtFile = Substitute.For<IWorkItemFile>();
-        txtFile.Name.Returns("output.txt");
-        txtFile.Link.Returns("https://helix.dot.net/files/output.txt");
-
-        _mockApi.ListWorkItemFilesAsync("wi-binlog", ValidJobId, Arg.Any<CancellationToken>())
-            .Returns(new List<IWorkItemFile> { binlogFile, txtFile });
-
-        // FindBinlogs delegates to FindFiles with *.binlog pattern
-        var binlogResult = await _tools.FindBinlogs(ValidJobId);
-        var findFilesResult = await _tools.FindFiles(ValidJobId, "*.binlog");
-
-        // Both should have same structure: pattern, scannedItems, found, results with files
-        Assert.Equal("*.binlog", binlogResult.Pattern);
-        Assert.Equal("*.binlog", findFilesResult.Pattern);
-        Assert.Equal(binlogResult.Found, findFilesResult.Found);
-        Assert.Equal(binlogResult.Results.Count, findFilesResult.Results.Count);
     }
 
     // --- BatchStatus tests ---
