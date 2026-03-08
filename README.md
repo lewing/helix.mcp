@@ -100,11 +100,8 @@ hlx files 02d8bd09 "dotnet-watch.Tests.dll.1"
 # Download binlogs from a work item
 hlx download 02d8bd09 "dotnet-watch.Tests.dll.1" --pattern "*.binlog"
 
-# Scan work items to find which ones have binlogs
-hlx find-binlogs 02d8bd09
-
-# Search work items for any file type
-hlx find-files 02d8bd09 --pattern "*.trx"
+# Search work items for files by pattern (e.g., binlogs, trx, dmp)
+hlx find-files 02d8bd09 --pattern "*.binlog"
 
 # Download a file by direct URL (from hlx files output)
 hlx download-url "https://helix..."
@@ -204,7 +201,6 @@ Add the following to your MCP client config. The `--yes` flag ensures `dnx` does
 | `hlx_download` | Download files from a work item to a temp directory. Supports glob patterns (e.g., `*.binlog`). Returns local file paths. |
 | `hlx_download_url` | Download a file by direct blob storage URL (e.g., from `hlx_files` output). Returns the local file path. |
 | `hlx_find_files` | Search work items in a job for files matching a glob pattern (`*.binlog`, `*.trx`, `*.dmp`, etc.). Returns work item names and matching file URIs. |
-| `hlx_find_binlogs` | Scan work items in a job to find which ones contain binlog files. Shortcut for `hlx_find_files` with `*.binlog` pattern. |
 | `hlx_work_item` | Get detailed info about a specific work item: exit code, state, machine, duration, failure category, console log URL, and uploaded files. |
 | `hlx_batch_status` | Get status for multiple Helix jobs at once (max 50). Accepts an array of job IDs/URLs. Returns per-job summaries, overall totals, and failure breakdown by category. |
 | `hlx_search_log` | Search a work item's console log for lines matching a pattern. Returns matching lines with context. Supports `contextLines` and `maxMatches` parameters. |
@@ -235,7 +231,6 @@ Add the following to your MCP client config. The `--yes` flag ensures `dnx` does
 | `hlx download <jobId> <workItem> [--pattern PAT]` | Download work item files. Glob pattern (default: `*`). |
 | `hlx download-url <url>` | Download a file by direct blob storage URL. |
 | `hlx find-files <jobId> [--pattern PAT] [--max-items N]` | Search work items for files matching a glob pattern. |
-| `hlx find-binlogs <jobId> [--max-items N]` | Shortcut for `find-files --pattern "*.binlog"`. |
 | `hlx work-item <jobId> <workItem>` | Detailed work item info (exit code, state, machine, files). |
 | `hlx batch-status <jobId1> <jobId2> ...` | Status for multiple jobs in parallel. |
 | `hlx search-log <jobId> <workItem> <pattern> [--context N] [--max-matches N]` | Search console log for a pattern. |

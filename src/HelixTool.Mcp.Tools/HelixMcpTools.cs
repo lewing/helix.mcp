@@ -181,12 +181,6 @@ public sealed class HelixMcpTools
         };
     }
 
-    [McpServerTool(Name = "hlx_find_binlogs", Title = "Find Binlogs in Helix Job", ReadOnly = true, UseStructuredContent = true), Description("Scan work items in a Helix job to find which ones contain binlog files. Returns work item names and binlog URIs.")]
-    public async Task<FindFilesResult> FindBinlogs(
-        [Description("Helix job ID (GUID) or URL")] string jobId,
-        [Description("Maximum work items to scan (default: 30)")] int maxItems = 30)
-        => await FindFiles(jobId, "*.binlog", maxItems);
-
     [McpServerTool(Name = "hlx_download_url", Title = "Download File by URL", Idempotent = true, UseStructuredContent = true), Description("Download a file by direct URL (e.g., blob storage URI from hlx_files output). Returns the local file path.")]
     public async Task<DownloadUrlResult> DownloadUrl(
         [Description("Direct file URL to download")] string url)
