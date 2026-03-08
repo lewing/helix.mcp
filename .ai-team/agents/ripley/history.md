@@ -111,4 +111,10 @@
 
 📌 Team update (2026-03-08): AzDO artifacts must follow Helix patterns — caching and search patterns (hlx_files, hlx_find_files, hlx_search_file, hlx_download) must be mirrored for AzDO tools. — decided by Larry Ewing
 
+## Learnings (AzDO Artifact Pattern Filtering & Cache Key Fix)
+
+- **Pattern matching reuses `HelixService.MatchesPattern`:** AzDO artifact filtering uses the same static method as Helix — `*` matches all, `*.ext` matches suffix, else case-insensitive substring. No regex (ReDoS-safe, project security invariant). The method lives on `HelixService` and is referenced cross-namespace by `AzdoService`.
+- **Cache key parameter patterns:** Every limit/filter parameter that changes the cached result set MUST be included in the cache key. The `GetBuildChangesAsync` pattern `changes:{buildId}:{top}` is the reference. `GetTestAttachmentsAsync` was fixed from `testattachments:{runId}:{resultId}` to `testattachments:{runId}:{resultId}:{top}`. When adding new parameters to any cached method, always check the corresponding `CachingAzdoApiClient` cache key.
+- **Top parameter threading for test attachments:** The `top` parameter was threaded through `IAzdoApiClient` → `AzdoApiClient` → `CachingAzdoApiClient` → `AzdoService`. The AzDO API itself doesn't support `$top` for attachments, but the parameter is needed at the caching layer for correct cache key generation. The service layer applies `Take(top)` client-side.
+
 📌 Team update (2026-03-08): AzDO artifact/attachment test patterns — 33 tests added, caching decisions: artifacts 4h (immutable), attachments 1h (test-scoped). 700 total tests. — documented by Lambert
