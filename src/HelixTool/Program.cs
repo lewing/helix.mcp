@@ -13,30 +13,31 @@ services.AddSingleton<ICredentialStore, GitCredentialStore>();
 services.AddSingleton<ChainedHelixTokenAccessor>();
 services.AddSingleton<IHelixTokenAccessor>(sp => sp.GetRequiredService<ChainedHelixTokenAccessor>());
 services.AddSingleton<IHelixApiClientFactory, HelixApiClientFactory>();
-services.AddSingleton<CacheOptions>(sp =>
+services.AddSingleton<CacheOptions>(_ =>
 {
-    var token = sp.GetRequiredService<IHelixTokenAccessor>().GetAccessToken();
-    var opts = new CacheOptions
-    {
-        AuthTokenHash = CacheOptions.ComputeTokenHash(token)
-    };
+    // Don't resolve Helix auth eagerly — let it be lazy so MCP/AzDO commands
+    // can start without prompting for Helix credentials.
+    var opts = new CacheOptions { AuthTokenHash = null };
     var maxStr = Environment.GetEnvironmentVariable("HLX_CACHE_MAX_SIZE_MB");
     if (int.TryParse(maxStr, out var mb))
         opts = opts with { MaxSizeBytes = (long)mb * 1024 * 1024 };
     return opts;
 });
 services.AddSingleton<ICacheStore>(sp => new SqliteCacheStore(sp.GetRequiredService<CacheOptions>()));
-services.AddSingleton<HelixApiClient>(sp =>
+// Defer Helix token resolution — only resolves when a Helix command is invoked.
+services.AddSingleton(sp => new Lazy<HelixApiClient>(() =>
 {
     var token = sp.GetRequiredService<IHelixTokenAccessor>().GetAccessToken();
     return new HelixApiClient(token);
-});
+}));
+services.AddSingleton<HelixApiClient>(sp => sp.GetRequiredService<Lazy<HelixApiClient>>().Value);
 services.AddSingleton<IHelixApiClient>(sp =>
     new CachingHelixApiClient(
         sp.GetRequiredService<HelixApiClient>(),
         sp.GetRequiredService<ICacheStore>(),
         sp.GetRequiredService<CacheOptions>()));
 services.AddSingleton<HelixService>();
+services.AddSingleton(sp => new Lazy<HelixService>(() => sp.GetRequiredService<HelixService>()));
 
 // AzDO services — same decorator pattern as Helix
 services.AddSingleton<IAzdoTokenAccessor, AzCliAzdoTokenAccessor>();
@@ -64,13 +65,15 @@ public class Commands
 {
     private static readonly JsonSerializerOptions s_jsonOptions = new() { WriteIndented = true };
 
-    private readonly HelixService _svc;
+    private readonly Lazy<HelixService> _lazySvc;
     private readonly ICredentialStore _credentialStore;
     private readonly ChainedHelixTokenAccessor _tokenAccessor;
 
-    public Commands(HelixService svc, ICredentialStore credentialStore, ChainedHelixTokenAccessor tokenAccessor)
+    private HelixService Svc => _lazySvc.Value;
+
+    public Commands(Lazy<HelixService> svc, ICredentialStore credentialStore, ChainedHelixTokenAccessor tokenAccessor)
     {
-        _svc = svc;
+        _lazySvc = svc;
         _credentialStore = credentialStore;
         _tokenAccessor = tokenAccessor;
     }
@@ -93,7 +96,7 @@ public class Commands
         var showPassed = filter.Equals("passed", StringComparison.OrdinalIgnoreCase) || filter.Equals("all", StringComparison.OrdinalIgnoreCase);
 
         Console.Error.Write("Fetching job details...");
-        var summary = await _svc.GetJobStatusAsync(jobId);
+        var summary = await Svc.GetJobStatusAsync(jobId);
         Console.Error.WriteLine(" done.");
 
         if (json)
@@ -176,7 +179,7 @@ public class Commands
     [Command("logs")]
     public async Task Logs([Argument] string jobId, [Argument] string workItem)
     {
-        var path = await _svc.DownloadConsoleLogAsync(jobId, workItem);
+        var path = await Svc.DownloadConsoleLogAsync(jobId, workItem);
         Console.WriteLine(path);
     }
 
@@ -187,7 +190,7 @@ public class Commands
     [Command("files")]
     public async Task Files([Argument] string jobId, [Argument] string workItem, bool json = false)
     {
-        var files = await _svc.GetWorkItemFilesAsync(jobId, workItem);
+        var files = await Svc.GetWorkItemFilesAsync(jobId, workItem);
 
         if (json)
         {
@@ -217,7 +220,7 @@ public class Commands
     [Command("download")]
     public async Task Download([Argument] string jobId, [Argument] string workItem, string pattern = "*")
     {
-        var paths = await _svc.DownloadFilesAsync(jobId, workItem, pattern);
+        var paths = await Svc.DownloadFilesAsync(jobId, workItem, pattern);
         if (paths.Count == 0)
         {
             Console.Error.WriteLine($"No files matching '{pattern}' found.");
@@ -232,7 +235,7 @@ public class Commands
     [Command("download-url")]
     public async Task DownloadUrl([Argument] string url)
     {
-        var path = await _svc.DownloadFromUrlAsync(url);
+        var path = await Svc.DownloadFromUrlAsync(url);
         Console.WriteLine(path);
     }
 
@@ -244,7 +247,7 @@ public class Commands
     public async Task FindFiles([Argument] string jobId, string pattern = "*", int maxItems = 30)
     {
         Console.WriteLine($"Scanning up to {maxItems} work items for '{pattern}'...");
-        var results = await _svc.FindFilesAsync(jobId, pattern, maxItems);
+        var results = await Svc.FindFilesAsync(jobId, pattern, maxItems);
         foreach (var r in results)
         {
             Console.Write($"  {r.WorkItem}: ");
@@ -270,7 +273,7 @@ public class Commands
     [Command("work-item")]
     public async Task WorkItem([Argument] string jobId, [Argument] string workItem, bool json = false)
     {
-        var detail = await _svc.GetWorkItemDetailAsync(jobId, workItem);
+        var detail = await Svc.GetWorkItemDetailAsync(jobId, workItem);
 
         if (json)
         {
@@ -320,7 +323,7 @@ public class Commands
     public async Task BatchStatus([Argument] params string[] jobIds)
     {
         Console.Error.Write("Fetching batch status...");
-        var batch = await _svc.GetBatchStatusAsync(jobIds);
+        var batch = await Svc.GetBatchStatusAsync(jobIds);
         Console.Error.WriteLine(" done.");
 
         foreach (var job in batch.Jobs)
@@ -352,7 +355,7 @@ public class Commands
     public async Task SearchLog([Argument] string jobId, [Argument] string workItem,
         [Argument] string pattern, int context = 2, int maxMatches = 50)
     {
-        var result = await _svc.SearchConsoleLogAsync(jobId, workItem, pattern, context, maxMatches);
+        var result = await Svc.SearchConsoleLogAsync(jobId, workItem, pattern, context, maxMatches);
 
         Console.WriteLine($"Searching for \"{pattern}\" in console log ({result.TotalLines} lines)...");
         Console.WriteLine($"Found {result.Matches.Count} matches:");
@@ -402,7 +405,7 @@ public class Commands
     public async Task SearchFile([Argument] string jobId, [Argument] string workItem,
         [Argument] string fileName, [Argument] string pattern, int context = 2, int maxMatches = 50)
     {
-        var result = await _svc.SearchFileAsync(jobId, workItem, fileName, pattern, context, maxMatches);
+        var result = await Svc.SearchFileAsync(jobId, workItem, fileName, pattern, context, maxMatches);
 
         if (result.IsBinary)
         {
@@ -457,7 +460,7 @@ public class Commands
     public async Task TestResults([Argument] string jobId, [Argument] string workItem,
         string? fileName = null, bool includePassed = false, int maxResults = 200)
     {
-        var trxResults = await _svc.ParseTrxResultsAsync(jobId, workItem, fileName, includePassed, maxResults);
+        var trxResults = await Svc.ParseTrxResultsAsync(jobId, workItem, fileName, includePassed, maxResults);
 
         foreach (var file in trxResults)
         {
@@ -585,24 +588,21 @@ Available as `failureCategory` in JSON and MCP output.
         builder.Services.AddSingleton<IHelixTokenAccessor>(_ =>
             new EnvironmentHelixTokenAccessor(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
         builder.Services.AddSingleton<IHelixApiClientFactory, HelixApiClientFactory>();
-        builder.Services.AddSingleton<CacheOptions>(sp =>
+        builder.Services.AddSingleton<CacheOptions>(_ =>
         {
-            var token = sp.GetRequiredService<IHelixTokenAccessor>().GetAccessToken();
-            var opts = new CacheOptions
-            {
-                AuthTokenHash = CacheOptions.ComputeTokenHash(token)
-            };
+            var opts = new CacheOptions { AuthTokenHash = null };
             var maxStr = Environment.GetEnvironmentVariable("HLX_CACHE_MAX_SIZE_MB");
             if (int.TryParse(maxStr, out var mb))
                 opts = opts with { MaxSizeBytes = (long)mb * 1024 * 1024 };
             return opts;
         });
         builder.Services.AddSingleton<ICacheStore>(sp => new SqliteCacheStore(sp.GetRequiredService<CacheOptions>()));
-        builder.Services.AddSingleton<HelixApiClient>(sp =>
+        builder.Services.AddSingleton(sp => new Lazy<HelixApiClient>(() =>
         {
             var token = sp.GetRequiredService<IHelixTokenAccessor>().GetAccessToken();
             return new HelixApiClient(token);
-        });
+        }));
+        builder.Services.AddSingleton<HelixApiClient>(sp => sp.GetRequiredService<Lazy<HelixApiClient>>().Value);
         builder.Services.AddSingleton<IHelixApiClient>(sp =>
             new CachingHelixApiClient(
                 sp.GetRequiredService<HelixApiClient>(),
