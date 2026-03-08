@@ -137,3 +137,4 @@ Tests for AzdoMcpTools should assert against the model types' `[JsonPropertyName
 - **AzdoService.SearchBuildLogAsync** delegates to TextSearchHelper after fetching log via GetBuildLogAsync. Uses `HelixService.IsFileSearchDisabled` guard (shared with Helix search).
 - **Env var test pattern:** save original, set, try/finally restore — for `HLX_DISABLE_FILE_SEARCH` testing.
 - **Total test count after search log tests:** 791 tests (750 baseline + 41 new).
+📌 Team update (2026-03-08): Search types extracted to top-level namespace — `LogMatch`, `LogSearchResult`, `FileContentSearchResult` moved from `HelixService` nested records to `HelixTool.Core` namespace in `TextSearchHelper.cs`. — decided by Ripley

@@ -54,3 +54,4 @@
 - **AzDO log fetching already supports full content:** `AzdoApiClient.GetBuildLogAsync` returns the complete log; `AzdoService.GetBuildLogAsync` adds optional `tailLines` truncation. For search, pass `tailLines: null` to get full content.
 - **IsFileSearchDisabled dual-check pattern:** Both the MCP tool layer (throws `McpException`) and the service layer (throws `InvalidOperationException`) check `IsFileSearchDisabled`. The MCP check provides user-friendly errors; the service check is defense-in-depth for CLI consumers.
 - **CLI search output pattern:** Context lines displayed with `>>>` prefix for the matching line and `   ` prefix for context. Line numbers right-aligned in a 6-char column.
+📌 Team update (2026-03-08): AzDO search gap analysis consolidated — CI-analysis skill study validated `azdo_search_log` as P0, confirmed `SearchLines()` extraction approach. New P1 ideas: `azdo_search_timeline`, `azdo_search_log_across_steps`. — analyzed by Ash
