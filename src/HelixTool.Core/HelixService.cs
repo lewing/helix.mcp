@@ -569,15 +569,6 @@ public class HelixService
     /// <summary>Maximum file size allowed for content search (50 MB).</summary>
     internal const long MaxSearchFileSizeBytes = 50 * 1024 * 1024;
 
-    /// <summary>Result of searching a console log.</summary>
-    public record LogSearchResult(string WorkItem, List<LogMatch> Matches, int TotalLines);
-
-    /// <summary>A single match in a console log.</summary>
-    public record LogMatch(int LineNumber, string Line, List<string>? Context = null);
-
-    /// <summary>Result of searching an uploaded file's content.</summary>
-    public record FileContentSearchResult(string FileName, List<LogMatch> Matches, int TotalLines, bool Truncated, bool IsBinary);
-
     /// <summary>Parsed test result from a TRX or xUnit XML file.</summary>
     public record TrxTestResult(string TestName, string Outcome, string? Duration, string? ComputerName, string? ErrorMessage, string? StackTrace);
 
@@ -594,35 +585,6 @@ public class HelixService
         MaxCharactersInDocument = 50_000_000,
         Async = true
     };
-
-    /// <summary>Search lines for a pattern with optional context.</summary>
-    private static LogSearchResult SearchLines(string identifier, string[] lines, string pattern, int contextLines, int maxMatches)
-    {
-        var matchIndices = new List<int>();
-
-        for (int i = 0; i < lines.Length && matchIndices.Count < maxMatches; i++)
-        {
-            if (lines[i].Contains(pattern, StringComparison.OrdinalIgnoreCase))
-                matchIndices.Add(i);
-        }
-
-        var matches = new List<LogMatch>();
-        foreach (var idx in matchIndices)
-        {
-            List<string>? context = null;
-            if (contextLines > 0)
-            {
-                int start = Math.Max(0, idx - contextLines);
-                int end = Math.Min(lines.Length - 1, idx + contextLines);
-                context = new List<string>();
-                for (int j = start; j <= end; j++)
-                    context.Add(lines[j]);
-            }
-            matches.Add(new LogMatch(idx + 1, lines[idx], context));
-        }
-
-        return new LogSearchResult(identifier, matches, lines.Length);
-    }
 
     /// <summary>Search a work item's console log for lines matching a pattern.</summary>
     public async Task<LogSearchResult> SearchConsoleLogAsync(
@@ -641,7 +603,7 @@ public class HelixService
         try
         {
             var allLines = await File.ReadAllLinesAsync(path, cancellationToken);
-            return SearchLines(workItem, allLines, pattern, contextLines, maxMatches);
+            return TextSearchHelper.SearchLines(workItem, allLines, pattern, contextLines, maxMatches);
         }
         finally
         {
@@ -685,7 +647,7 @@ public class HelixService
                 return new FileContentSearchResult(fileName, [], 0, false, true);
 
             var allLines = await File.ReadAllLinesAsync(filePath, cancellationToken);
-            var searchResult = SearchLines(fileName, allLines, pattern, contextLines, maxMatches);
+            var searchResult = TextSearchHelper.SearchLines(fileName, allLines, pattern, contextLines, maxMatches);
             var truncated = searchResult.Matches.Count >= maxMatches;
 
             return new FileContentSearchResult(fileName, searchResult.Matches, searchResult.TotalLines, truncated, false);

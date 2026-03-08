@@ -2,6 +2,7 @@ using System.ComponentModel;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
+using HelixTool.Core;
 using HelixTool.Core.AzDO;
 
 namespace HelixTool.Mcp.Tools;
@@ -142,6 +143,44 @@ public sealed class AzdoMcpTools
         [Description("Maximum number of artifacts to return (default: 50)")] int top = 50)
     {
         return await _svc.GetBuildArtifactsAsync(buildId, pattern, top);
+    }
+
+    [McpServerTool(Name = "azdo_search_log", Title = "Search AzDO Build Log", ReadOnly = true, UseStructuredContent = true),
+     Description("Search a build step log for lines matching a pattern. Returns matching lines with optional context. Use this to find specific errors, stack traces, or patterns in AzDO build logs without reading the entire log. Use after azdo_timeline to get the log ID of a failed task.")]
+    public async Task<SearchBuildLogResult> SearchLog(
+        [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildIdOrUrl,
+        [Description("Log ID from the timeline record's log reference")] int logId,
+        [Description("Text pattern to search for (case-insensitive)")] string pattern = "error",
+        [Description("Lines of context before and after each match")] int contextLines = 2,
+        [Description("Maximum number of matches to return")] int maxMatches = 50)
+    {
+        if (HelixService.IsFileSearchDisabled)
+            throw new McpException("File content search is disabled by configuration.");
+
+        LogSearchResult result;
+        try
+        {
+            result = await _svc.SearchBuildLogAsync(buildIdOrUrl, logId, pattern, contextLines, maxMatches);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
+        {
+            throw new McpException(ex.Message);
+        }
+
+        return new SearchBuildLogResult
+        {
+            Build = buildIdOrUrl,
+            LogId = logId,
+            Pattern = pattern,
+            TotalLines = result.TotalLines,
+            MatchCount = result.Matches.Count,
+            Matches = result.Matches.Select(m => new SearchMatch
+            {
+                LineNumber = m.LineNumber,
+                Line = m.Line,
+                Context = m.Context
+            }).ToList()
+        };
     }
 
     [McpServerTool(Name = "azdo_test_attachments", Title = "AzDO Test Attachments", ReadOnly = true, UseStructuredContent = true),

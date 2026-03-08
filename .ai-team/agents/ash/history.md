@@ -40,3 +40,4 @@
 📌 Team update (2026-03-07): AzDO architecture adopted — Azure Identity auth, separate from Helix PAT model. New security surface to review. — decided by Dallas, Ripley
 
 📌 Team update (2026-03-08): AzDO security review complete — 6 findings documented. SEC-1 (query injection) is the only code fix required. SSRF, command injection, token leakage, cache isolation all verified safe. — decided by Dallas
+📌 Team update (2026-03-08): Search gap P0 implemented — `azdo_search_log` shipped in PR #10. `TextSearchHelper` extraction validates shared utility recommendation. 41 tests passing. — implemented by Ripley, tested by Lambert
