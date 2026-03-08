@@ -46,19 +46,59 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_timeline", Title = "AzDO Build Timeline", ReadOnly = true, UseStructuredContent = true),
-     Description("Get the build timeline showing stages, jobs, and tasks for an Azure DevOps build. Returns hierarchical timeline records with state, result, timing, log references, and issues. Use to drill into which stage/job/task failed and find log IDs for azdo_log.")]
+     Description("Get the build timeline showing stages, jobs, and tasks for an Azure DevOps build. Returns hierarchical timeline records with state, result, timing, log references, and issues. Use the 'filter' parameter to control which records are returned. Use to drill into which stage/job/task failed and find log IDs for azdo_log.")]
     public async Task<AzdoTimeline?> Timeline(
-        [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId)
+        [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId,
+        [Description("Filter: 'failed' (default) shows only non-succeeded records, 'all' shows everything")] string filter = "failed")
     {
-        return await _svc.GetTimelineAsync(buildId);
+        if (!filter.Equals("failed", StringComparison.OrdinalIgnoreCase) &&
+            !filter.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"Invalid filter '{filter}'. Must be 'failed' or 'all'.", nameof(filter));
+        }
+
+        var timeline = await _svc.GetTimelineAsync(buildId);
+
+        if (timeline is null || filter.Equals("all", StringComparison.OrdinalIgnoreCase))
+            return timeline;
+
+        // Filter to non-succeeded records: failed, canceled, partially succeeded, or with issues
+        var failedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var r in timeline.Records)
+        {
+            if (r.Id is null) continue;
+            var isFailed = r.Result is not null &&
+                !r.Result.Equals("succeeded", StringComparison.OrdinalIgnoreCase);
+            var hasIssues = r.Issues is { Count: > 0 };
+            if (isFailed || hasIssues)
+                failedIds.Add(r.Id);
+        }
+
+        // Include parent records for context (walk up parentId chain)
+        var allIds = new HashSet<string>(failedIds, StringComparer.OrdinalIgnoreCase);
+        var recordById = timeline.Records
+            .Where(r => r.Id is not null)
+            .ToDictionary(r => r.Id!, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var id in failedIds)
+        {
+            var current = recordById.GetValueOrDefault(id);
+            while (current?.ParentId is not null && allIds.Add(current.ParentId))
+            {
+                current = recordById.GetValueOrDefault(current.ParentId);
+            }
+        }
+
+        var filtered = timeline.Records.Where(r => r.Id is not null && allIds.Contains(r.Id)).ToList();
+        return new AzdoTimeline { Id = timeline.Id, Records = filtered };
     }
 
     [McpServerTool(Name = "azdo_log", Title = "AzDO Build Log", ReadOnly = true),
-     Description("Get log content for a specific build log. Returns plain text log output. Use after azdo_timeline to read the log of a failed task (use the log ID from the timeline record). Optionally return only the last N lines.")]
+     Description("Get log content for a specific build log. Returns plain text log output. Use after azdo_timeline to read the log of a failed task (use the log ID from the timeline record). Returns last N lines by default to prevent context overflow.")]
     public async Task<string> Log(
         [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId,
         [Description("Log ID from the timeline record's log reference")] int logId,
-        [Description("Number of lines from the end to return (default: all)")] int? tailLines = null)
+        [Description("Number of lines from the end to return (default: 500)")] int? tailLines = 500)
     {
         var content = await _svc.GetBuildLogAsync(buildId, logId, tailLines);
         return content ?? string.Empty;
@@ -67,25 +107,28 @@ public sealed class AzdoMcpTools
     [McpServerTool(Name = "azdo_changes", Title = "AzDO Build Changes", ReadOnly = true, UseStructuredContent = true),
      Description("Get the commits/changes associated with an Azure DevOps build. Returns commit IDs, messages, authors, and timestamps. Use to see what code changes triggered or are included in a build.")]
     public async Task<IReadOnlyList<AzdoBuildChange>> Changes(
-        [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId)
+        [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId,
+        [Description("Maximum number of changes to return (default: 20)")] int top = 20)
     {
-        return await _svc.GetBuildChangesAsync(buildId);
+        return await _svc.GetBuildChangesAsync(buildId, top);
     }
 
     [McpServerTool(Name = "azdo_test_runs", Title = "AzDO Test Runs", ReadOnly = true, UseStructuredContent = true),
      Description("Get test runs for an Azure DevOps build. Returns test run summaries with total, passed, and failed counts. Use to get an overview of test execution for a build before drilling into individual test results with azdo_test_results.")]
     public async Task<IReadOnlyList<AzdoTestRun>> TestRuns(
-        [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId)
+        [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId,
+        [Description("Maximum number of test runs to return (default: 50)")] int top = 50)
     {
-        return await _svc.GetTestRunsAsync(buildId);
+        return await _svc.GetTestRunsAsync(buildId, top);
     }
 
     [McpServerTool(Name = "azdo_test_results", Title = "AzDO Test Results", ReadOnly = true, UseStructuredContent = true),
      Description("Get test results for a specific test run. Returns individual test case results including outcome, duration, and error details for failures. Defaults to showing only failed tests. Use after azdo_test_runs to investigate specific test failures.")]
     public async Task<IReadOnlyList<AzdoTestResult>> TestResults(
         [Description("AzDO build ID (integer) or full AzDO build URL — used to resolve org/project context")] string buildId,
-        [Description("Test run ID from azdo_test_runs output")] int runId)
+        [Description("Test run ID from azdo_test_runs output")] int runId,
+        [Description("Maximum number of test results to return (default: 200)")] int top = 200)
     {
-        return await _svc.GetTestResultsAsync(buildId, runId);
+        return await _svc.GetTestResultsAsync(buildId, runId, top);
     }
 }

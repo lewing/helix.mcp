@@ -114,46 +114,46 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         return result;
     }
 
-    public async Task<IReadOnlyList<AzdoBuildChange>> GetBuildChangesAsync(string org, string project, int buildId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<AzdoBuildChange>> GetBuildChangesAsync(string org, string project, int buildId, int? top = null, CancellationToken ct = default)
     {
-        if (!_enabled) return await _inner.GetBuildChangesAsync(org, project, buildId, ct);
+        if (!_enabled) return await _inner.GetBuildChangesAsync(org, project, buildId, top, ct);
 
-        var key = BuildCacheKey(org, project, $"changes:{buildId}");
+        var key = BuildCacheKey(org, project, $"changes:{buildId}:{top}");
         var cached = await _cache.GetMetadataAsync(key, ct);
         if (cached is not null)
             return JsonSerializer.Deserialize<List<AzdoBuildChange>>(cached) ?? [];
 
-        var result = await _inner.GetBuildChangesAsync(org, project, buildId, ct);
+        var result = await _inner.GetBuildChangesAsync(org, project, buildId, top, ct);
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), ImmutableTtl, ct);
 
         return result;
     }
 
-    public async Task<IReadOnlyList<AzdoTestRun>> GetTestRunsAsync(string org, string project, int buildId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<AzdoTestRun>> GetTestRunsAsync(string org, string project, int buildId, int? top = null, CancellationToken ct = default)
     {
-        if (!_enabled) return await _inner.GetTestRunsAsync(org, project, buildId, ct);
+        if (!_enabled) return await _inner.GetTestRunsAsync(org, project, buildId, top, ct);
 
-        var key = BuildCacheKey(org, project, $"testruns:{buildId}");
+        var key = BuildCacheKey(org, project, $"testruns:{buildId}:{top}");
         var cached = await _cache.GetMetadataAsync(key, ct);
         if (cached is not null)
             return JsonSerializer.Deserialize<List<AzdoTestRun>>(cached) ?? [];
 
-        var result = await _inner.GetTestRunsAsync(org, project, buildId, ct);
+        var result = await _inner.GetTestRunsAsync(org, project, buildId, top, ct);
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
 
         return result;
     }
 
-    public async Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(string org, string project, int runId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(string org, string project, int runId, int top = 200, CancellationToken ct = default)
     {
-        if (!_enabled) return await _inner.GetTestResultsAsync(org, project, runId, ct);
+        if (!_enabled) return await _inner.GetTestResultsAsync(org, project, runId, top, ct);
 
-        var key = BuildCacheKey(org, project, $"testresults:{runId}");
+        var key = BuildCacheKey(org, project, $"testresults:{runId}:{top}");
         var cached = await _cache.GetMetadataAsync(key, ct);
         if (cached is not null)
             return JsonSerializer.Deserialize<List<AzdoTestResult>>(cached) ?? [];
 
-        var result = await _inner.GetTestResultsAsync(org, project, runId, ct);
+        var result = await _inner.GetTestResultsAsync(org, project, runId, top, ct);
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
 
         return result;

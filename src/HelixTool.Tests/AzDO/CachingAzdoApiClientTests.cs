@@ -308,7 +308,7 @@ public class CachingAzdoApiClientTests
         _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns((string?)null);
 
-        _inner.GetTestRunsAsync("org", "proj", 1, Arg.Any<CancellationToken>())
+        _inner.GetTestRunsAsync("org", "proj", 1, Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns(new List<AzdoTestRun>());
 
         await _sut.GetTestRunsAsync("org", "proj", 1);
@@ -325,7 +325,7 @@ public class CachingAzdoApiClientTests
         _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns((string?)null);
 
-        _inner.GetTestResultsAsync("org", "proj", 77, Arg.Any<CancellationToken>())
+        _inner.GetTestResultsAsync("org", "proj", 77, Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(new List<AzdoTestResult>());
 
         await _sut.GetTestResultsAsync("org", "proj", 77);
@@ -346,7 +346,7 @@ public class CachingAzdoApiClientTests
         var result = await _sut.GetTestRunsAsync("org", "proj", 1);
 
         Assert.Single(result);
-        await _inner.DidNotReceive().GetTestRunsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
+        await _inner.DidNotReceive().GetTestRunsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<int?>(), Arg.Any<CancellationToken>());
     }
 
     // ── GetBuildChangesAsync: immutable TTL ──────────────────────────
@@ -357,7 +357,7 @@ public class CachingAzdoApiClientTests
         _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns((string?)null);
 
-        _inner.GetBuildChangesAsync("org", "proj", 1, Arg.Any<CancellationToken>())
+        _inner.GetBuildChangesAsync("org", "proj", 1, Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns(new List<AzdoBuildChange>());
 
         await _sut.GetBuildChangesAsync("org", "proj", 1);

@@ -118,7 +118,7 @@ public class AzdoApiClientTests
 
         var url = _handler.LastRequest!.RequestUri!.ToString();
         Assert.Contains("test/runs/999/results", url);
-        Assert.Contains("$top=1000", url);
+        Assert.Contains("$top=200", url);
         Assert.Contains("outcomes=Failed", url);
         Assert.Contains("api-version=7.0", url);
     }

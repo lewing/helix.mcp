@@ -82,22 +82,24 @@ public sealed class AzdoApiClient : IAzdoApiClient
         return await response.Content.ReadAsStringAsync(ct);
     }
 
-    public async Task<IReadOnlyList<AzdoBuildChange>> GetBuildChangesAsync(string org, string project, int buildId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<AzdoBuildChange>> GetBuildChangesAsync(string org, string project, int buildId, int? top = null, CancellationToken ct = default)
     {
-        var url = BuildUrl(org, project, $"build/builds/{buildId}/changes");
+        var topParam = top is > 0 ? $"?$top={top}" : "";
+        var url = BuildUrl(org, project, $"build/builds/{buildId}/changes{topParam}");
         return await GetListAsync<AzdoBuildChange>(url, ct);
     }
 
-    public async Task<IReadOnlyList<AzdoTestRun>> GetTestRunsAsync(string org, string project, int buildId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<AzdoTestRun>> GetTestRunsAsync(string org, string project, int buildId, int? top = null, CancellationToken ct = default)
     {
         var buildUri = Uri.EscapeDataString($"vstfs:///Build/Build/{buildId}");
-        var url = BuildUrl(org, project, $"test/runs?buildUri={buildUri}");
+        var topParam = top is > 0 ? $"&$top={top}" : "";
+        var url = BuildUrl(org, project, $"test/runs?buildUri={buildUri}{topParam}");
         return await GetListAsync<AzdoTestRun>(url, ct);
     }
 
-    public async Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(string org, string project, int runId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(string org, string project, int runId, int top = 200, CancellationToken ct = default)
     {
-        var url = BuildUrl(org, project, $"test/runs/{runId}/results?$top=1000&outcomes=Failed");
+        var url = BuildUrl(org, project, $"test/runs/{runId}/results?$top={top}&outcomes=Failed");
         return await GetListAsync<AzdoTestResult>(url, ct);
     }
 

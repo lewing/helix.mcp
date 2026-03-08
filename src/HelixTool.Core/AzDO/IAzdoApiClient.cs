@@ -10,7 +10,7 @@ public interface IAzdoApiClient
     Task<IReadOnlyList<AzdoBuild>> ListBuildsAsync(string org, string project, AzdoBuildFilter filter, CancellationToken ct = default);
     Task<AzdoTimeline?> GetTimelineAsync(string org, string project, int buildId, CancellationToken ct = default);
     Task<string?> GetBuildLogAsync(string org, string project, int buildId, int logId, CancellationToken ct = default);
-    Task<IReadOnlyList<AzdoBuildChange>> GetBuildChangesAsync(string org, string project, int buildId, CancellationToken ct = default);
-    Task<IReadOnlyList<AzdoTestRun>> GetTestRunsAsync(string org, string project, int buildId, CancellationToken ct = default);
-    Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(string org, string project, int runId, CancellationToken ct = default);
+    Task<IReadOnlyList<AzdoBuildChange>> GetBuildChangesAsync(string org, string project, int buildId, int? top = null, CancellationToken ct = default);
+    Task<IReadOnlyList<AzdoTestRun>> GetTestRunsAsync(string org, string project, int buildId, int? top = null, CancellationToken ct = default);
+    Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(string org, string project, int runId, int top = 200, CancellationToken ct = default);
 }

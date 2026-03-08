@@ -90,7 +90,7 @@ public class AzdoServiceTests
         {
             new() { Id = "abc123", Message = "fix bug" }
         };
-        _mockApi.GetBuildChangesAsync("dnceng-public", "public", 7, Arg.Any<CancellationToken>())
+        _mockApi.GetBuildChangesAsync("dnceng-public", "public", 7, Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns(changes);
 
         var result = await _svc.GetBuildChangesAsync("7");
@@ -103,7 +103,7 @@ public class AzdoServiceTests
     public async Task GetTestRunsAsync_PlainId_PassesDefaultsToClient()
     {
         var runs = new List<AzdoTestRun> { new() { Id = 1, Name = "run1" } };
-        _mockApi.GetTestRunsAsync("dnceng-public", "public", 50, Arg.Any<CancellationToken>())
+        _mockApi.GetTestRunsAsync("dnceng-public", "public", 50, Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns(runs);
 
         var result = await _svc.GetTestRunsAsync("50");
@@ -119,7 +119,7 @@ public class AzdoServiceTests
         {
             new() { Id = 1, TestCaseTitle = "TestA", Outcome = "Failed" }
         };
-        _mockApi.GetTestResultsAsync("myorg", "proj", 77, Arg.Any<CancellationToken>())
+        _mockApi.GetTestResultsAsync("myorg", "proj", 77, Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(results);
 
         var result = await _svc.GetTestResultsAsync(
@@ -355,7 +355,7 @@ public class AzdoServiceTests
     [Fact]
     public async Task GetBuildChangesAsync_EmptyList_ReturnsEmpty()
     {
-        _mockApi.GetBuildChangesAsync("dnceng-public", "public", 1, Arg.Any<CancellationToken>())
+        _mockApi.GetBuildChangesAsync("dnceng-public", "public", 1, Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns(new List<AzdoBuildChange>());
 
         var result = await _svc.GetBuildChangesAsync("1");
@@ -366,7 +366,7 @@ public class AzdoServiceTests
     [Fact]
     public async Task GetTestRunsAsync_EmptyList_ReturnsEmpty()
     {
-        _mockApi.GetTestRunsAsync("dnceng-public", "public", 1, Arg.Any<CancellationToken>())
+        _mockApi.GetTestRunsAsync("dnceng-public", "public", 1, Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns(new List<AzdoTestRun>());
 
         var result = await _svc.GetTestRunsAsync("1");

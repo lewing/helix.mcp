@@ -133,7 +133,7 @@ public class AzdoMcpToolsTests
         var timeline = new AzdoTimeline
         {
             Id = "tl-1",
-            Records = [new AzdoTimelineRecord { Id = "r1", Name = "Build", Type = "Stage" }]
+            Records = [new AzdoTimelineRecord { Id = "r1", Name = "Build", Type = "Stage", Result = "failed" }]
         };
         _mockApi.GetTimelineAsync("dnceng-public", "public", 10, Arg.Any<CancellationToken>())
             .Returns(timeline);
@@ -208,7 +208,7 @@ public class AzdoMcpToolsTests
             new() { Id = "sha1", Message = "first commit", Author = new AzdoChangeAuthor { DisplayName = "Dev" } },
             new() { Id = "sha2", Message = "second commit" }
         };
-        _mockApi.GetBuildChangesAsync("dnceng-public", "public", 1, Arg.Any<CancellationToken>())
+        _mockApi.GetBuildChangesAsync("dnceng-public", "public", 1, Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns(changes);
 
         var result = await _tools.Changes("1");
@@ -228,7 +228,7 @@ public class AzdoMcpToolsTests
         {
             new() { Id = 1, Name = "Windows Tests", TotalTests = 100, PassedTests = 95, FailedTests = 5 }
         };
-        _mockApi.GetTestRunsAsync("dnceng-public", "public", 42, Arg.Any<CancellationToken>())
+        _mockApi.GetTestRunsAsync("dnceng-public", "public", 42, Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns(runs);
 
         var result = await _tools.TestRuns("42");
@@ -255,7 +255,7 @@ public class AzdoMcpToolsTests
                 ErrorMessage = "Assert.Equal failed"
             }
         };
-        _mockApi.GetTestResultsAsync("dnceng-public", "public", 77, Arg.Any<CancellationToken>())
+        _mockApi.GetTestResultsAsync("dnceng-public", "public", 77, Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(results);
 
         var result = await _tools.TestResults("42", 77);
@@ -269,13 +269,13 @@ public class AzdoMcpToolsTests
     [Fact]
     public async Task TestResults_UrlBuildId_ResolvesOrgProject()
     {
-        _mockApi.GetTestResultsAsync("myorg", "proj", 10, Arg.Any<CancellationToken>())
+        _mockApi.GetTestResultsAsync("myorg", "proj", 10, Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(new List<AzdoTestResult>());
 
         await _tools.TestResults(
             "https://dev.azure.com/myorg/proj/_build/results?buildId=999", 10);
 
-        await _mockApi.Received(1).GetTestResultsAsync("myorg", "proj", 10, Arg.Any<CancellationToken>());
+        await _mockApi.Received(1).GetTestResultsAsync("myorg", "proj", 10, Arg.Any<int>(), Arg.Any<CancellationToken>());
     }
 
     // ── azdo_builds PR number filter ────────────────────────────────

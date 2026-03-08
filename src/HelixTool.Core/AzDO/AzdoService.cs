@@ -89,20 +89,20 @@ public class AzdoService
     /// Get changes (commits) associated with a build.
     /// </summary>
     public async Task<IReadOnlyList<AzdoBuildChange>> GetBuildChangesAsync(
-        string buildIdOrUrl, CancellationToken ct = default)
+        string buildIdOrUrl, int? top = null, CancellationToken ct = default)
     {
         var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
-        return await _client.GetBuildChangesAsync(org, project, buildId, ct);
+        return await _client.GetBuildChangesAsync(org, project, buildId, top, ct);
     }
 
     /// <summary>
     /// Get test runs for a build.
     /// </summary>
     public async Task<IReadOnlyList<AzdoTestRun>> GetTestRunsAsync(
-        string buildIdOrUrl, CancellationToken ct = default)
+        string buildIdOrUrl, int? top = null, CancellationToken ct = default)
     {
         var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
-        return await _client.GetTestRunsAsync(org, project, buildId, ct);
+        return await _client.GetTestRunsAsync(org, project, buildId, top, ct);
     }
 
     /// <summary>
@@ -110,9 +110,9 @@ public class AzdoService
     /// Org/project are resolved from the buildIdOrUrl since runId is scoped to org/project.
     /// </summary>
     public async Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(
-        string buildIdOrUrl, int runId, CancellationToken ct = default)
+        string buildIdOrUrl, int runId, int top = 200, CancellationToken ct = default)
     {
         var (org, project, _) = AzdoIdResolver.Resolve(buildIdOrUrl);
-        return await _client.GetTestResultsAsync(org, project, runId, ct);
+        return await _client.GetTestResultsAsync(org, project, runId, top, ct);
     }
 }
