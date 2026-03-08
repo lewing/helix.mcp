@@ -87,3 +87,5 @@ If we later need to reshape AzDO output differently from the API models, we'd ad
 - **Security review convention established:** For new API integrations, review all 7 focus areas (command injection, SSRF, token leakage, input validation, cache isolation, HTTP security, pattern consistency). Use SEC-{N} IDs with severity levels.
 
 📌 Team update (2026-03-08): AzDO context-limiting defaults — safe output-size defaults added to all AzDO MCP tools, matching Helix patterns. Defaults in method signatures, cache keys include limit params. — decided by Ripley
+
+📌 Team update (2026-03-08): AzDO artifact/attachment test patterns — artifact caching ImmutableTtl (4h), attachment caching TestTtl (1h). Service-layer limiting for attachments. 700 total tests. — documented by Lambert

@@ -3282,3 +3282,15 @@ The resolver validates the host is either `dev.azure.com` or `*.visualstudio.com
 **By:** Larry Ewing (via Copilot)
 **What:** AzDO artifact and attachment tools must follow the same caching and search patterns as the Helix tools (hlx_files, hlx_find_files, hlx_search_file, hlx_download)
 **Why:** User request — captured for team memory. Consistency between Helix and AzDO tool behavior is important for agent usability.
+
+### 2026-03-08: AzDO Artifact/Attachment Test Patterns
+
+**By:** Lambert
+**Status:** Informational
+
+**What:** 33 tests added for `azdo_artifacts` and `azdo_test_attachments` MCP tools. Patterns established:
+1. CamelCase JSON assertions: use `GetProperty("name").GetString()` to avoid xUnit2002 on `JsonElement` (value type).
+2. TestAttachments top limiting happens in service layer via `Take(top)` — AzDO API doesn't support server-side limiting for attachments.
+3. Artifact caching uses `ImmutableTtl` (4h). Attachment caching uses `TestTtl` (1h).
+
+**Why:** Documents test conventions and caching decisions for AzDO artifact tools. Total test count: 700.

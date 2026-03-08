@@ -110,3 +110,5 @@
 - **MCP tool `azdo_test_attachments` takes explicit org/project:** Unlike `azdo_test_results` which resolves org/project from a buildIdOrUrl, attachments use explicit `org`/`project` params since there's no build context — only `runId` + `resultId`.
 
 📌 Team update (2026-03-08): AzDO artifacts must follow Helix patterns — caching and search patterns (hlx_files, hlx_find_files, hlx_search_file, hlx_download) must be mirrored for AzDO tools. — decided by Larry Ewing
+
+📌 Team update (2026-03-08): AzDO artifact/attachment test patterns — 33 tests added, caching decisions: artifacts 4h (immutable), attachments 1h (test-scoped). 700 total tests. — documented by Lambert
