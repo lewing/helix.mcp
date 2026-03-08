@@ -157,6 +157,20 @@ public sealed class TestResultsToolResult
 
 // --- BatchStatus tool ---
 
+// --- SearchBuildLog tool ---
+
+public sealed class SearchBuildLogResult
+{
+    [JsonPropertyName("buildId")] public string BuildId { get; init; } = "";
+    [JsonPropertyName("logId")] public int LogId { get; init; }
+    [JsonPropertyName("pattern")] public string Pattern { get; init; } = "";
+    [JsonPropertyName("totalLines")] public int TotalLines { get; init; }
+    [JsonPropertyName("matchCount")] public int MatchCount { get; init; }
+    [JsonPropertyName("matches")] public List<SearchMatch> Matches { get; init; } = [];
+}
+
+// --- BatchStatus tool ---
+
 public sealed class BatchJobEntry
 {
     [JsonPropertyName("jobId")] public string JobId { get; init; } = "";

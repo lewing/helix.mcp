@@ -536,6 +536,7 @@ public class Commands
 - `hlx azdo builds [--org ORG] [--project PROJ] [--top N] [--branch B] [--pr-number N] [--definition-id N] [--status S] [--json]` — List builds
 - `hlx azdo timeline <buildId> [--filter failed|all] [--json]` — Build timeline (stages, jobs, tasks with log IDs)
 - `hlx azdo log <buildId> <logId> [--tail-lines N]` — Get build log content (last N lines, default 500)
+- `hlx azdo search-log <buildId> <logId> [--pattern P] [--context-lines N] [--max-matches N] [--json]` — Search build log for pattern matches
 - `hlx azdo changes <buildId> [--top N] [--json]` — Commits/changes associated with a build
 - `hlx azdo test-runs <buildId> [--top N] [--json]` — List test runs for a build
 - `hlx azdo test-results <buildId> <runId> [--top N] [--json]` — Test results for a test run (defaults to failed)
@@ -564,6 +565,7 @@ public class Commands
 - `azdo_builds` — List builds with filters (definition, branch, PR number, status). Defaults to dnceng-public/public
 - `azdo_timeline` — Get build timeline (stages, jobs, tasks) with optional filter ('failed' or 'all'). Returns log IDs for azdo_log
 - `azdo_log` — Get build log content (last N lines, default 500). Use log ID from azdo_timeline
+- `azdo_search_log` — Search a build log for lines matching a pattern (case-insensitive). Use log ID from azdo_timeline
 - `azdo_changes` — Get commits/changes associated with a build
 - `azdo_test_runs` — List test runs for a build (total/passed/failed counts)
 - `azdo_test_results` — Get test results for a test run (outcome, duration, error details). Defaults to failed only (top 200)
@@ -1126,6 +1128,48 @@ public class AzdoCommands
             return;
         }
         Console.Write(content);
+    }
+
+    /// <summary>Search a build log for lines matching a pattern.</summary>
+    /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
+    /// <param name="logId">Log ID from the timeline record's log reference.</param>
+    /// <param name="pattern">Text pattern to search for (case-insensitive).</param>
+    /// <param name="contextLines">Lines of context before and after each match.</param>
+    /// <param name="maxMatches">Maximum number of matches to return.</param>
+    /// <param name="json">Output as structured JSON.</param>
+    [Command("azdo search-log")]
+    public async Task SearchLog([Argument] string buildId, [Argument] int logId,
+        string pattern = "error", int contextLines = 2, int maxMatches = 50, bool json = false)
+    {
+        var result = await _svc.SearchBuildLogAsync(buildId, logId, pattern, contextLines, maxMatches);
+
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(result, s_jsonOptions));
+            return;
+        }
+
+        Console.WriteLine($"Search: '{pattern}' in log {logId} — {result.Matches.Count} match(es) in {result.TotalLines} lines");
+        Console.WriteLine();
+
+        foreach (var m in result.Matches)
+        {
+            if (m.Context is { Count: > 0 })
+            {
+                int startLine = m.LineNumber - (m.Context.TakeWhile(c => c != m.Line).Count());
+                foreach (var line in m.Context)
+                {
+                    var prefix = line == m.Line ? ">>>" : "   ";
+                    Console.WriteLine($"  {prefix} {startLine,6}: {line}");
+                    startLine++;
+                }
+                Console.WriteLine();
+            }
+            else
+            {
+                Console.WriteLine($"  >>> {m.LineNumber,6}: {m.Line}");
+            }
+        }
     }
 
     /// <summary>Get the commits/changes associated with a build.</summary>

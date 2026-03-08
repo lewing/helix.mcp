@@ -136,6 +136,28 @@ public class AzdoService
     }
 
     /// <summary>
+    /// Search a build log for lines matching a pattern.
+    /// Fetches the full log content, then applies <see cref="TextSearchHelper.SearchLines"/>.
+    /// </summary>
+    public async Task<LogSearchResult> SearchBuildLogAsync(
+        string buildIdOrUrl, int logId, string pattern,
+        int contextLines = 2, int maxMatches = 50,
+        CancellationToken ct = default)
+    {
+        if (HelixService.IsFileSearchDisabled)
+            throw new InvalidOperationException("File content search is disabled by configuration.");
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
+
+        var content = await GetBuildLogAsync(buildIdOrUrl, logId, tailLines: null, ct);
+        if (content is null)
+            throw new InvalidOperationException($"Log {logId} not found for build '{buildIdOrUrl}'.");
+
+        var lines = content.Split('\n');
+        return TextSearchHelper.SearchLines($"log:{logId}", lines, pattern, contextLines, maxMatches);
+    }
+
+    /// <summary>
     /// Get test result attachments for a specific test result.
     /// Org/project are provided explicitly since runId/resultId are scoped to org/project.
     /// </summary>
