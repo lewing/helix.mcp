@@ -181,3 +181,27 @@
 
 📌 Team update (2026-02-15): DownloadFilesAsync temp dirs now per-invocation (helix-{id}-{Guid}) to prevent cross-process races — decided by Ripley
 📌 Team update (2026-02-15): CI version validation added to publish workflow — tag is source of truth for package version — decided by Ripley
+
+## Archived from history.md (2026-03-08 summarization)
+
+### Old team updates (2026-02-11 through 2026-02-15)
+📌 Team update (2026-02-11): US-10/US-23 implemented — decided by Ripley
+📌 Team update (2026-02-11): US-21 failure categorization — decided by Ripley
+📌 Team update (2026-02-13): HTTP/SSE multi-client auth — decided by Dallas
+📌 Team update (2026-02-13): Multi-auth deferred — decided by Dallas
+📌 Team update (2026-02-13): US-9 script removability — decided by Ash
+📌 Team update (2026-02-13): Requirements audit — audited by Ash
+📌 Team update (2026-02-13): MCP API design review — reviewed by Dallas
+📌 Team update (2026-02-13): hlx_find_files generalization — decided by Dallas
+📌 Team update (2026-02-13): P1 security fixes E1+D1 — decided by Ripley
+📌 Team update (2026-02-13): Remote search design — decided by Dallas
+📌 Team update (2026-02-13): HLX_DISABLE_FILE_SEARCH toggle — decided by Larry Ewing
+📌 Team update (2026-02-13): US-31 hlx_search_file — decided by Ripley
+📌 Team update (2026-02-13): Status filter changed — decided by Larry/Ripley
+📌 Team update (2026-02-15): DownloadFilesAsync per-invocation temp dirs — decided by Ripley
+�� Team update (2026-02-15): CI version validation — decided by Ripley
+
+### Old learnings (pre 2026-02-22)
+- **ParseTrxResultsAsync auto-discovery:** Production code now tries `*.trx` first, falls back to `*.xml`, then throws `HelixException` with work-item name in the message. Two error paths: "No test result files found" (no files at all) and "Found XML files but none were in a recognized format" (files found but unrecognizable).
+- **SetupMultipleFiles mock pitfall:** Files with `null` content don't configure `GetFileAsync`. If `DownloadFilesAsync` matches them by pattern, the null stream causes `NullReferenceException`. Always use non-matching extensions (`.binlog`, `.log`) for "no files found" tests, or provide actual content for downloadable files.
+- **MCP error surfacing pattern:** `HelixMcpTools.TestResults` currently lets `HelixException` propagate uncaught. Use `Record.ExceptionAsync` + message assertions (not exception type) to write tests that pass both before and after a try/catch wrapper is added. Comment out `Assert.IsType<McpException>` as a contract marker.

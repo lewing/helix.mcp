@@ -3048,24 +3048,48 @@ The publish workflow (`publish.yml`) validates all three match the git tag. Miss
 **Why:** User request — captured for team discussion after current work completes.
 
 
-### 2026-03-07: AzDO test patterns and conventions
+### 2026-03-07: AzDO test patterns and conventions (consolidated)
 
+**By:** Lambert, Dallas
+**Updated:** 2026-03-08 — merged security testing conventions
 
 #### Test file locations
 - `src/HelixTool.Tests/AzDO/AzdoIdResolverTests.cs` — 31 tests for URL parsing
 - `src/HelixTool.Tests/AzDO/AzdoTokenAccessorTests.cs` — 10 tests for auth chain
+- `src/HelixTool.Tests/AzDO/AzdoSecurityTests.cs` — 63 security-focused tests
 - Namespace: `HelixTool.Tests.AzDO` (matches Core's `HelixTool.Core.AzDO`)
 
-#### Conventions
+#### General conventions
 - **Resolve() vs TryResolve():** AzdoIdResolver exposes both. Test Resolve() for throw behavior, TryResolve() for bool-return path. Both use same internal logic.
-- **Env var isolation:** `AzdoTokenAccessorTests` implements `IDisposable` to save/restore `AZDO_TOKEN` env var. Critical for parallel xUnit — env vars are process-global.
+- **Env var isolation:** `AzdoTokenAccessorTests` implements `IDisposable` to save/restore `AZDO_TOKEN` env var. Critical for parallel xUnit — env vars are process-global. Use try/finally blocks.
 - **Az CLI timeout:** Tests that fall through to az CLI take ~1s. Future: consider `[Trait("Category", "Slow")]` if test suite grows.
+
+#### Security test categories
+- **URL input validation** — malicious URLs, path traversal, SSRF vectors, injection
+- **Command injection** — shell safety, env var passthrough, process construction
+- **Request construction** — SSRF prevention, token leakage, header injection
+- **Cache isolation** — key namespacing, org/project separation, poisoning resistance
+- **End-to-end** — AzdoService rejects bad input before any API call
+
+#### Security test patterns
+- **Token leakage assertion:** `Assert.DoesNotContain("token-value", ex.Message)` on all error paths (401/403/500)
+- **SSRF prevention:** `Assert.StartsWith("https://dev.azure.com/", url)` and `Assert.Equal("dev.azure.com", uri.Host)`
+- **Cache key isolation:** Verify `SetMetadataAsync` called with different keys for different org/project
+- **Credential leakage:** `Assert.DoesNotContain("user"/"pass", org/project)` for URLs with embedded credentials
+- **Rejection is safe:** Use `TryResolve` for inputs where rejection or safe parsing are both acceptable
+- **No-API-call guard:** After throwing on bad input, verify `DidNotReceive()` on mock client
+- **CapturingHttpHandler:** Each security test class defines a local `CapturingHttpHandler` (same pattern as `FakeHttpMessageHandler`). Avoids coupling test classes.
 
 #### Edge cases identified
 1. **Negative/zero buildIds are accepted** — `int.TryParse` succeeds for `-5` and `0`. No positivity validation in `AzdoIdResolver`. Recommend adding `buildId > 0` check.
 2. **TryResolve out-param defaults are not null** — they're `DefaultOrg`/`DefaultProject`, unlike typical `TryParse` patterns. Callers should check the return value, not the out params.
 3. **_resolved flag not thread-safe** — concurrent first calls to `AzCliAzdoTokenAccessor` without env var may spawn multiple `az` processes. Benign but wasteful. Consider `SemaphoreSlim` if this matters.
 4. **Env var read on every call** — `AZDO_TOKEN` is not cached. This is intentional (allows runtime token rotation) but means env var tests must carefully set/unset between assertions.
+5. **Duplicate query params:** `HttpUtility.ParseQueryString` concatenates with commas → `int.TryParse` rejects safely
+6. **Embedded credentials in URLs:** `Uri` parses `user:pass@` as UserInfo; resolver only reads `Host`/`Path` — safe
+7. **Path traversal in org/project:** `Uri` normalizes `../../` away; `CacheSecurity.SanitizeCacheKeySegment` strips remaining
+8. **Int overflow buildId:** `long.MaxValue` as buildId fails `int.TryParse` → `ArgumentException`
+9. **Newlines in token env var:** Returned verbatim — potential header injection if token used unsafely (mitigated by `AuthenticationHeaderValue`)
 
 #### Testability concerns for future AzDO work
 - `AzdoApiClient` will need `HttpMessageHandler` injection for mocking (same pattern as `HelixApiClient`)
@@ -3096,21 +3120,139 @@ The publish workflow (`publish.yml`) validates all three match the git tag. Miss
 **Status:** Implemented
 **What:** AzdoService business logic layer — all `buildIdOrUrl` params resolve via `AzdoIdResolver.Resolve()`. `GetBuildSummaryAsync` returns flattened `AzdoBuildSummary` with computed `Duration` and `WebUrl`. `GetBuildLogAsync` has `int? tailLines` for server-side slicing. `ListBuildsAsync` takes raw org/project (no URL resolution). No exception wrapping yet — `HttpRequestException` propagates; will add `AzdoException` when MCP tools need it.
 **Why:** Mirrors HelixService pattern. URL resolution at service layer simplifies MCP tool implementations.
-# Decision: AzdoMcpTools — return model types directly
-
+### 2026-03-07: AzdoMcpTools — return model types directly
 **By:** Ripley
-**Date:** 2026-03-07
+**What:** AzdoMcpTools returns AzDO model types directly instead of creating separate MCP result wrappers. API model types already have `[JsonPropertyName]` attributes. `azdo_log` returns plain `string` (no UseStructuredContent) matching `hlx_logs` pattern.
+**Why:** Avoids duplicating DTOs that already have correct JSON serialization. If reshaping is needed later, add wrapper types then.
+**Impact:** Lambert — test against `[JsonPropertyName]` names (camelCase). Kane — 7 new MCP tools need docs. Dallas — wrapper types deferred.
 
-## Context
 
-HelixMcpTools uses custom wrapper types in McpToolResults.cs with explicit `[JsonPropertyName]` attributes. For AzDO tools, the API model types (AzdoBuild, AzdoTimeline, AzdoTestRun, etc.) already have `[JsonPropertyName]` attributes from deserialization. AzdoBuildSummary is a positional record created by AzdoService.
+### 2026-03-08: AzDO Security Review Findings
+**By:** Dallas
+**What:** Security review of AzDO integration code (8 files)
+**Why:** Pre-merge security gate for PR #6
 
-## Decision
+---
 
-AzdoMcpTools returns AzDO model types directly instead of creating separate MCP result wrappers. This avoids duplicating DTOs that already have correct JSON serialization attributes. The `azdo_log` tool returns plain `string` (no UseStructuredContent) matching the `hlx_logs` pattern.
+## Findings
 
-## Impact
+### SEC-1 — Query Parameter Injection via `prNumber`
+- **Severity:** Medium
+- **Title:** Unescaped `prNumber` allows query parameter injection into AzDO API calls
+- **Location:** `AzdoApiClient.cs`, `ListBuildsAsync`, line 41
+- **Description:** The `prNumber` field is interpolated directly into the query string without `Uri.EscapeDataString`:
+  ```csharp
+  queryParams.Add($"branchName=refs/pull/{filter.PrNumber}/merge");
+  ```
+  Compare with `branch` (line 43) and `statusFilter` (line 49), which ARE properly escaped. A `prNumber` value like `"123&$top=99999"` would inject an additional query parameter into the AzDO API URL, potentially altering results.
+- **Recommendation:** Either validate `prNumber` as an integer (`int.TryParse`) or apply `Uri.EscapeDataString`. Integer validation is preferred since PR numbers are always integers — this also prevents semantic abuse.
+  ```csharp
+  if (!string.IsNullOrEmpty(filter.PrNumber))
+  {
+      if (!int.TryParse(filter.PrNumber, out var prNum))
+          throw new ArgumentException("prNumber must be a valid integer.", nameof(filter));
+      queryParams.Add($"branchName=refs/pull/{prNum}/merge");
+  }
+  ```
+- **Exploit scenario:** An MCP client sends `prNumber: "123&definitions=999"` to the `azdo_builds` tool. The injected `definitions` parameter overrides or supplements the intended query, returning builds from a different pipeline than expected. Impact is limited to data integrity (results are still from `dev.azure.com`, not SSRF).
 
-- Lambert: Tests for AzdoMcpTools should assert against the model types' `[JsonPropertyName]` names (camelCase).
-- Kane: 7 new MCP tools need documentation: azdo_build, azdo_builds, azdo_timeline, azdo_log, azdo_changes, azdo_test_runs, azdo_test_results.
-- Dallas: If we later need to reshape AzDO output differently from the API models, we'd add wrapper types then. For now, direct return is simpler and correct.
+---
+
+### SEC-2 — HttpClient Created Without IHttpClientFactory
+- **Severity:** Low
+- **Title:** Raw `new HttpClient()` risks socket exhaustion under load
+- **Location:** `HelixTool.Mcp/Program.cs`, line 57; `HelixTool/Program.cs`, lines 44, 616
+- **Description:** Both DI registrations create `new HttpClient()` directly instead of using `IHttpClientFactory`. In the HTTP/MCP server where many scoped requests may be created, each scoped `AzdoApiClient` gets a new `HttpClient` instance. While not a direct security vulnerability, socket exhaustion under sustained load can cause denial of service via `SocketException`.
+- **Recommendation:** Register a named `HttpClient` via `builder.Services.AddHttpClient<AzdoApiClient>()` or inject `IHttpClientFactory`. This also centralizes timeout and handler configuration.
+
+---
+
+### SEC-3 — Unbounded Response Size on Log Retrieval
+- **Severity:** Low
+- **Title:** `GetBuildLogAsync` reads entire log into memory without size limits
+- **Location:** `AzdoApiClient.cs`, `GetBuildLogAsync`, line 78
+- **Description:** Build logs are read as a full string via `response.Content.ReadAsStringAsync`. AzDO build logs can be tens of megabytes. In multi-client HTTP mode, several concurrent log requests could exhaust server memory. The Helix side has the same pattern but it pre-dates multi-client mode.
+- **Recommendation:** Add a configurable max response size (e.g., 10 MB) or stream logs with a size cutoff. The `tailLines` parameter in `AzdoService.GetBuildLogAsync` mitigates this at the service layer but only AFTER the full content is already in memory.
+
+---
+
+### SEC-4 — No Configurable Timeout on AzDO HttpClient
+- **Severity:** Low
+- **Title:** Default 100s timeout may be too generous for CI tool use case
+- **Location:** `HelixTool.Mcp/Program.cs`, line 57 (`new HttpClient()`)
+- **Description:** The HttpClient uses the default 100-second timeout. A slow or unresponsive AzDO API could tie up server threads for extended periods. In multi-client HTTP mode, this could exhaust the thread pool.
+- **Recommendation:** Set an explicit timeout (e.g., 30s) appropriate for the AzDO API call patterns. Can be centralized if SEC-2's `IHttpClientFactory` recommendation is adopted.
+
+---
+
+### SEC-5 — AzCliAzdoTokenAccessor Not Thread-Safe
+- **Severity:** Info
+- **Title:** Race condition on `_resolved`/`_cachedToken` in singleton accessor
+- **Location:** `IAzdoTokenAccessor.cs`, `AzCliAzdoTokenAccessor`, lines 23–37
+- **Description:** `_cachedToken` and `_resolved` are not protected by a lock or `Lazy<T>`. In HTTP mode where the accessor is singleton and multiple requests arrive concurrently on startup, `TryGetAzCliTokenAsync` could execute multiple times. Not exploitable — string references are atomic in .NET, and double-execution just wastes a process spawn. However, it deviates from the `Lazy<T>` pattern established for `CacheStoreFactory`.
+- **Recommendation:** Use `SemaphoreSlim` or `Lazy<Task<string?>>` for one-shot initialization, consistent with the project's existing patterns.
+
+---
+
+### SEC-6 — AzDO CLI Token Never Refreshed After Initial Resolution
+- **Severity:** Info
+- **Title:** Singleton token accessor caches az CLI token indefinitely
+- **Location:** `IAzdoTokenAccessor.cs`, `AzCliAzdoTokenAccessor`, line 32–33
+- **Description:** Once `_resolved = true`, the cached token is returned forever. Azure CLI tokens (Entra ID JWT) typically expire after ~1 hour. For long-running MCP servers, the server will start returning 401 errors after token expiry. Not a security vulnerability (fails closed), but an operational concern for availability.
+- **Recommendation:** Either track token expiry and re-fetch, or document that long-running servers should use `AZDO_TOKEN` env var with externally managed rotation.
+
+---
+
+## Areas Reviewed — No Issues Found
+
+### ✅ Command Injection (`AzCliAzdoTokenAccessor`)
+The `az account get-access-token` command uses only hardcoded constants (`AzdoResourceId`). No user-controlled input flows into `ProcessStartInfo.Arguments`. `UseShellExecute = false` prevents shell metacharacter interpretation. **Safe.**
+
+### ✅ SSRF (`AzdoApiClient.BuildUrl`)
+All HTTP requests are constructed via `BuildUrl` which hardcodes `https://dev.azure.com/` as the base URL. `org` and `project` parameters are escaped with `Uri.EscapeDataString`, preventing authority override (`@`), path traversal (`../`), or fragment injection (`#`). Even raw MCP parameters (in `azdo_builds` tool) cannot redirect requests to a non-AzDO host. **Safe.**
+
+### ✅ SSRF (`AzdoIdResolver`)
+The resolver validates the host is either `dev.azure.com` or `*.visualstudio.com` and throws `ArgumentException` for all other hosts. Extracted org/project values are then used with `BuildUrl` (which hardcodes the target host). URL parsing uses `Uri.TryCreate` — no regex, no ReDoS risk. **Safe.**
+
+### ✅ Token Leakage
+- Tokens are never logged or included in error messages. `ThrowOnAuthFailure` says "Set AZDO_TOKEN or run 'az login'" without echoing the token.
+- `ThrowOnUnexpectedError` includes a 500-char snippet of the AzDO error response body — this is API error text, not credentials.
+- Cache stores serialized response data, not tokens. Cache keys include org/project but not token material.
+- `AzCliAzdoTokenAccessor` catches all exceptions silently (returns `null`) — no stack traces that might reveal token fragments.
+**Safe.**
+
+### ✅ Cache Isolation (Multi-User HTTP Mode)
+- `IAzdoTokenAccessor` is singleton (shared server credentials) — correct for server-side AzDO auth.
+- `ICacheStore` is scoped by Helix token hash via `CacheOptions.AuthTokenHash` → separate SQLite databases per user.
+- `CachingAzdoApiClient` cache keys use `CacheSecurity.SanitizeCacheKeySegment()` for org/project — path traversal and key delimiter injection are prevented.
+- AzDO data cached under one user's Helix token hash cannot be accessed by another user.
+**Safe.**
+
+### ✅ TLS Enforcement
+`BuildUrl` hardcodes `https://` scheme. `AzdoIdResolver` accepts `http://` URLs for parsing only — the actual API request always uses the HTTPS URL from `BuildUrl`. Default `HttpClient` validates TLS certificates (no custom `HttpClientHandler`). **Safe.**
+
+### ✅ Input Validation (MCP Parameters)
+- `buildId` parameters pass through `AzdoIdResolver.Resolve()` which validates format (integer or recognized AzDO URL).
+- Integer parameters (`logId`, `runId`, `top`, `definitionId`) are type-safe at the MCP schema level.
+- `branch` and `statusFilter` are properly `Uri.EscapeDataString`-escaped.
+- Exception: `prNumber` — see SEC-1.
+
+### ✅ Consistency with Existing Helix Patterns
+- Cache key sanitization reuses `CacheSecurity.SanitizeCacheKeySegment()` from the Helix caching code.
+- URL construction uses `Uri.EscapeDataString`, consistent with Helix URL handling.
+- Error handling follows the established `ThrowOnAuthFailure`/`ThrowOnUnexpectedError` pattern.
+- The decorator caching pattern mirrors `CachingHelixApiClient`.
+
+---
+
+## Verdict
+
+**PR #6 is safe to merge with one recommended fix (SEC-1).**
+
+- **SEC-1 (Medium)** is the only finding that warrants a code change before merge. The fix is a one-line `int.TryParse` validation — minimal risk, high value. Without it, an MCP client can inject arbitrary query parameters into AzDO API calls, which is a violation of the principle of least surprise even though the blast radius is limited to `dev.azure.com`.
+
+- **SEC-2/3/4 (Low)** are real but non-blocking improvements that can be addressed in a follow-up. They affect availability under load, not confidentiality or integrity.
+
+- **SEC-5/6 (Info)** are correctness and operational concerns, not security vulnerabilities. Document as known limitations.
+
+**Conditional approval: merge after fixing SEC-1.** The remaining findings should be tracked as follow-up work items.

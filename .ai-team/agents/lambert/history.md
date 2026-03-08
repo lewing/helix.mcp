@@ -7,7 +7,7 @@
 - **Test project:** `src/HelixTool.Tests/HelixTool.Tests.csproj` — xUnit, net10.0, references HelixTool.Core and HelixTool.Mcp
 - **Testable units:** HelixIdResolver (pure functions), MatchesPattern (internal static via InternalsVisibleTo), HelixService (via NSubstitute mocks of IHelixApiClient), HelixMcpTools (through HelixService)
 
-## Core Context (summarized through 2026-02-15)
+## Core Context (summarized through 2026-02-22)
 
 **Test infrastructure:** xUnit on net10.0 with NSubstitute 5.* for mocking. `MatchesPattern` exposed via `InternalsVisibleTo`. DI test pattern: shared `_mockApi`/`_svc` fields, per-test mock arrangement.
 
@@ -39,29 +39,13 @@
 - `CacheOptions.GetEffectiveCacheRoot()` appends `/public` or `/cache-{hash}` — use this, not `_tempDir`
 - Known race in `GetArtifactAsync`: `File.Exists` and `FileStream` open not atomic — tolerate `FileNotFoundException`
 - Write-to-temp-then-rename in `SetArtifactAsync` ensures atomic artifact writes
+- **Older team updates (2026-02-11 to 2026-02-15):** 15 cross-agent updates received covering US-10/23, US-21, HTTP/SSE auth, multi-auth deferral, US-9/31, security fixes, hlx_find_files, remote search, status filter, temp dirs, CI validation. Archived to history-archive.md.
+- **Older learnings (pre 2026-02-22):** ParseTrxResultsAsync auto-discovery (two error paths), SetupMultipleFiles mock pitfall (null content → NRE), MCP error surfacing pattern (Record.ExceptionAsync + message assertions). Archived to history-archive.md.
 
-📌 Team update (2026-02-11): US-10/US-23 implemented — decided by Ripley
-📌 Team update (2026-02-11): US-21 failure categorization — decided by Ripley
-📌 Team update (2026-02-13): HTTP/SSE multi-client auth — decided by Dallas
-📌 Team update (2026-02-13): Multi-auth deferred — decided by Dallas
-📌 Team update (2026-02-13): US-9 script removability — decided by Ash
-📌 Team update (2026-02-13): Requirements audit — audited by Ash
-📌 Team update (2026-02-13): MCP API design review — reviewed by Dallas
-📌 Team update (2026-02-13): hlx_find_files generalization — decided by Dallas
-📌 Team update (2026-02-13): P1 security fixes E1+D1 — decided by Ripley
-📌 Team update (2026-02-13): Remote search design — decided by Dallas
-📌 Team update (2026-02-13): HLX_DISABLE_FILE_SEARCH toggle — decided by Larry Ewing
-📌 Team update (2026-02-13): US-31 hlx_search_file — decided by Ripley
-📌 Team update (2026-02-13): Status filter changed — decided by Larry/Ripley
-📌 Team update (2026-02-15): DownloadFilesAsync per-invocation temp dirs — decided by Ripley
-📌 Team update (2026-02-15): CI version validation — decided by Ripley
 📌 Team update (2026-03-01): UseStructuredContent refactor approved — typed return objects with UseStructuredContent=true for all 12 MCP tools (hlx_logs excepted). FileInfo_ naming noted as non-blocking. No breaking wire-format changes. — decided by Dallas
 
 ## Learnings
 
-- **ParseTrxResultsAsync auto-discovery:** Production code now tries `*.trx` first, falls back to `*.xml`, then throws `HelixException` with work-item name in the message. Two error paths: "No test result files found" (no files at all) and "Found XML files but none were in a recognized format" (files found but unrecognizable).
-- **SetupMultipleFiles mock pitfall:** Files with `null` content don't configure `GetFileAsync`. If `DownloadFilesAsync` matches them by pattern, the null stream causes `NullReferenceException`. Always use non-matching extensions (`.binlog`, `.log`) for "no files found" tests, or provide actual content for downloadable files.
-- **MCP error surfacing pattern:** `HelixMcpTools.TestResults` currently lets `HelixException` propagate uncaught. Use `Record.ExceptionAsync` + message assertions (not exception type) to write tests that pass both before and after a try/catch wrapper is added. Comment out `Assert.IsType<McpException>` as a contract marker.
 - **Pre-existing XXE test broken:** `ParseTrx_RejectsXxeDtdDeclaration` fails after production refactoring — `TryParseTestFile` swallows the `XmlException` from DTD prohibition and returns null. Filed to decisions inbox as a potential security regression.
 - **Ripley's refactored ParseTrxResultsAsync (squad/4):** Production code now uses `IsTestResultFile()` with `TestResultFilePatterns` array (4 patterns: `*.trx`, `testResults.xml`, `*.testResults.xml.txt`, `testResults.xml.txt`). Auto-discovery fetches file list once, filters by patterns, downloads matching files. TRX parsed strictly, xUnit XML parsed best-effort. Both format results returned together (no TRX-preferred fallback). Error message includes work item name, searched patterns, and available file list.
 - **XunitXmlParsingTests added (43 tests):** Covers `IsTestResultFile` pattern matching (13 inline data cases), `TestResultFilePatterns` verification, xUnit XML parsing (name, counts, failure messages, stack traces, skip reasons, duration formatting), multi-assembly aggregation, empty assembly, single `<assembly>` root, maxResults limiting, error truncation, error message clarity (work item name, patterns, available files, not generic), XXE prevention (best-effort and strict paths), mixed TRX+xUnit returns both.
@@ -91,3 +75,25 @@
 
 ### 2026-03-07: Decision — AzdoMcpTools returns model types directly
 Tests for AzdoMcpTools should assert against the model types' `[JsonPropertyName]` names (camelCase). No separate MCP result wrappers exist for AzDO tools.
+
+### 2026-03-07: AzDO Security Tests (63 tests)
+- **AzdoSecurityTests** in `src/HelixTool.Tests/AzDO/AzdoSecurityTests.cs` — 63 tests across 5 categories:
+  - AzdoIdResolver malicious URL inputs (embedded credentials, non-AzDO hosts/SSRF, path traversal, query injection, unicode, long URLs, scheme attacks, integer overflow)
+  - AzCliAzdoTokenAccessor command injection safety (no shell execute, env var passthrough, CLI failure resilience)
+  - AzdoApiClient request construction (SSRF prevention via host assertion, token leakage in errors, special chars in org/project, null/empty token)
+  - CachingAzdoApiClient cache isolation (org/project key separation, azdo: prefix, no tokens in cached data, cache key poisoning via path traversal/colons, disabled cache)
+  - AzdoService end-to-end (malicious URLs rejected before API call, null/empty/invalid inputs)
+- **Security test patterns established:**
+  - Token leakage: `Assert.DoesNotContain(tokenValue, ex.Message)` on all error paths
+  - SSRF: `Assert.StartsWith("https://dev.azure.com/", url)` and host assertion
+  - Cache isolation: verify `SetMetadataAsync` called with different keys for different org/project
+  - No-API-call guard: `DidNotReceive()` assertion after input rejection
+- **Edge cases discovered:**
+  - `HttpUtility.ParseQueryString` concatenates duplicate query params with commas → `int.TryParse` rejects safely (not first-value)
+  - `Uri` parses embedded credentials as UserInfo; resolver only reads Host/Path — safe by design
+  - `Uri` normalizes `../../` in path; `CacheSecurity.SanitizeCacheKeySegment` strips remaining traversal chars
+  - `long.MaxValue` as buildId fails `int.TryParse` → `ArgumentException` (safe overflow handling)
+  - Newlines in AZDO_TOKEN env var returned verbatim — potential header injection risk (mitigated by `AuthenticationHeaderValue`)
+- **Total test count after AzDO security tests:** 594 tests (531 + 63 new).
+
+📌 Team update (2026-03-08): AzDO security review complete — 6 findings (1 Medium, 3 Low, 2 Info). Security test conventions consolidated into AzDO test patterns decision. 667 total tests. — decided by Dallas

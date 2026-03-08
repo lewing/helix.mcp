@@ -61,3 +61,5 @@
 
 ### 2026-03-07: Decision — AzdoMcpTools returns model types directly
 7 new MCP tools need documentation: azdo_build, azdo_builds, azdo_timeline, azdo_log, azdo_changes, azdo_test_runs, azdo_test_results.
+
+📌 Team update (2026-03-08): AzDO security review complete — SEC-1 fix (prNumber validation) will change azdo_builds tool behavior. Security review patterns documented in decisions.md. — decided by Dallas

@@ -117,3 +117,5 @@
 - **Plain text tool (azdo_log):** For text content, omit `UseStructuredContent = true` and return `string` directly — matches the `hlx_logs` pattern.
 - **Tool naming convention:** AzDO tools use `azdo_` prefix (vs `hlx_` for Helix). Names are snake_case, titles are human-readable with "AzDO" prefix.
 - **Tool descriptions for agents:** Descriptions should explain what data is returned, when to use the tool, how it relates to other tools (e.g., "Use after azdo_timeline to read logs"), and parameter format notes (e.g., "accepts build URL or plain integer ID").
+
+📌 Team update (2026-03-08): AzDO security review — SEC-1 (Medium) prNumber query injection must be fixed with int.TryParse before merge. SEC-2/3/4 (Low) non-blocking follow-ups. — decided by Dallas

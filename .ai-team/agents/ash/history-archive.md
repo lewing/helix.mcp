@@ -61,3 +61,49 @@ After reading the full script, I can now quantify what hlx replaces more precise
 - US-9 (script removability) is now partially done — the mapping above IS the removability analysis. Remaining work: formalize the function→command mapping into a table.
 - US-20 (per-work-item detail in status) should be P1 not P2 — it's the single biggest gap preventing ci-analysis from using hlx. ci-analysis fetches details for every work item individually; hlx should do this in its status command.
 - US-30 (structured MCP output) is P1 — agents can't effectively use hlx if the MCP responses are just raw data.
+
+## Archived from history.md (2026-03-08 summarization)
+
+### 2025-07-18: US-9 Script Removability Analysis Complete
+
+**Key findings:**
+- All 6 core Helix API functions in ci-analysis are 100% replaceable by hlx. ~152 lines deletable.
+- Extended Helix-adjacent code ~71% covered. Only gap: structured test failure extraction (US-22, P2).
+- Overall Helix-related coverage: ~85%. Migration-ready.
+- Phase 1: ~120 net line reduction, zero blockers. Phase 2: ~73 additional via hlx_search_log.
+
+**Coverage gaps:** G1: US-22 (structured test failures), G2: US-26 (Job ID extraction), G3: US-27 (env var extraction), G4: US-14 (TRX parsing), G5: US-16 (flaky test correlation).
+
+📌 Team update (2026-02-13): US-6 download E2E — 46 tests, all 298 pass — Lambert
+📌 Team update (2026-02-15): README documents ci-analysis replacement — Kane
+
+### 2025-07-18: Requirements audit — comprehensive P0/P1/P2 completion status
+
+- 25 of 30 user stories marked ✅ Implemented
+- P0: US-8/12/13 done. P1: All 13 done. P2: 8 of 9 done (US-22 partial). P3: None started.
+- Replaced "Implementation Gaps" with "Resolved Gaps" (8 fixed) + "Remaining" (5 minor).
+- Acceptance criteria gaps: US-1 backward compat, US-4 azd auth, US-11 --json coverage, US-17 Models/, US-21 log-based, US-22 structured failures.
+📌 Team update (2026-02-13): Requirements audit — 25/30 stories done — Ash
+
+### 2025-07-23: STRIDE Threat Model for lewing.helix.mcp
+
+- HTTP MCP server has no auth middleware — high severity for network deployments
+- hlx_download_url accepts arbitrary URLs — SSRF vector (unauthenticated HttpClient mitigates token leakage)
+- Path traversal protection thorough and consistent
+- No SQL injection (parameterized), no ReDoS (no regex in user patterns)
+- Token handling sound (env var read once, SHA256 hash in cache paths)
+- Batch operations (GetBatchStatusAsync) had no upper bound — now capped
+- Output: `.ai-team/analysis/threat-model.md` — 16 STRIDE findings
+📌 Team update (2026-02-13): P1 security fixes E1+D1 implemented — Ripley
+📌 Team update (2026-02-13): Security validation test strategy (18 tests) — Lambert
+
+### 2026-02-13: Security analysis — structured file parsing
+
+- .NET Core+ XML defaults are safe (DtdProcessing=Prohibit, XmlResolver=null). Set explicitly for defense-in-depth.
+- TRX files same trust level as console logs. 50 MB file size limit.
+- Text search: string.Contains with OrdinalIgnoreCase — no regex, no ReDoS.
+- Binlog parsing delegated to external MCP tool (layered architecture).
+📌 Team update (2026-02-13): Status filter changed — Larry/Ripley
+📌 Team update (2026-02-15): Per-invocation temp dirs — Ripley
+📌 Team update (2026-02-15): CI version validation — Ripley
+📌 Team update (2026-03-01): UseStructuredContent refactor approved — Dallas
