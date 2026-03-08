@@ -60,3 +60,35 @@
 📌 Team update (2026-02-15): README v0.1.3 comprehensive update — llmstxt in Program.cs needs sync (missing hlx_search_file, hlx_test_results, search-file, test-results) — decided by Kane
 📌 Team update (2026-02-15): DownloadFilesAsync temp dirs now per-invocation (helix-{id}-{Guid}) to prevent cross-process races — decided by Ripley
 📌 Team update (2026-02-15): CI version validation added to publish workflow — tag is source of truth, csproj+server.json must match — decided by Ripley
+## Summarized History (through 2026-02-11) — archived 2026-03-08
+
+**Architecture & DI (P0):** Implemented IHelixApiClient interface with projection interfaces for Helix SDK types, HelixApiClient wrapper, HelixException, constructor injection on HelixService, CancellationToken on all methods, input validation (D1-D10). DI for CLI via `ConsoleApp.ServiceProvider`, for MCP via `builder.Services.AddSingleton<>()`.
+
+**Key patterns established:**
+- Helix SDK types are concrete — mockable via projection interfaces (IJobDetails, IWorkItemSummary, IWorkItemDetails, IWorkItemFile)
+- `TaskCanceledException`: use `cancellationToken.IsCancellationRequested` to distinguish timeout vs cancellation
+- Program.cs has UTF-8 BOM — use `UTF8Encoding($true)` when writing
+- `FormatDuration` duplicated in CLI/MCP — extract to Core if third consumer appears
+- HelixMcpTools.cs duplicated in HelixTool and HelixTool.Mcp — both must be updated together
+- Two DI containers in CLI: one for commands, separate `Host.CreateApplicationBuilder()` for `hlx mcp`
+
+**Features implemented:**
+- US-1 (positional args), US-5 (dotnet tool packaging v0.1.0), US-11 (--json flag on status/files)
+- US-17 (namespace cleanup: HelixTool.Core, HelixTool.Mcp), US-18 (removed unused Spectre.Console)
+- US-20 (rich status: State, ExitCode, Duration, MachineName), US-24 (download by URL)
+- US-25 (ConsoleLogUrl on WorkItemResult), US-29 (MCP URL parsing for optional workItem)
+- US-30 (structured JSON: grouped files, jobId+helixUrl in status)
+- US-10 (WorkItemDetail + work-item command + hlx_work_item MCP tool)
+- US-23 (BatchJobSummary + batch-status command + hlx_batch_status MCP tool, SemaphoreSlim(5) throttling)
+- Stdio MCP transport via `hlx mcp` subcommand
+
+**Team updates received:**
+- Architecture review, caching strategy, cache TTL policy, requirements backlog (30 US), docs fixes (Kane), auth design (US-4), MCP test strategy — all in decisions.md
+
+**2025-07-23 session (archived):**
+- STRIDE threat model action items: E1 URL scheme validation in DownloadFromUrlAsync, D1 batch size guard in GetBatchStatusAsync
+- P1 security fixes implemented: URL scheme check (http/https only, throws ArgumentException), MaxBatchSize=50 const with guard in GetBatchStatusAsync, MCP tool description updated
+- US-31 hlx_search_file: extracted SearchLines helper, added SearchFileAsync (binary detection, 50MB cap, config toggle), MCP tool + CLI command
+- US-32 hlx_test_results: TRX parsing with secure XmlReaderSettings (DtdProcessing.Prohibit), ParseTrxResultsAsync, auto-discovery of .trx files, MCP tool + CLI command
+- Status filter refactor: bool includePassed → string filter (failed|passed|all), case-insensitive, breaking change
+- CI version validation: publish workflow validates csproj+server.json match git tag, /p:Version= override

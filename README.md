@@ -1,6 +1,6 @@
-# helix.mcp — MCP server and CLI for investigating .NET Helix CI failures
+# helix.mcp — MCP server and CLI for investigating .NET CI failures (Helix + Azure DevOps)
 
-An MCP server that exposes the [.NET Helix](https://helix.dot.net) API as 13 structured tools with cross-process local caching — purpose-built for AI agents diagnosing CI failures in dotnet repos (runtime, sdk, aspnetcore, etc.). Also works as a standalone CLI for humans.
+An MCP server that exposes [.NET Helix](https://helix.dot.net) and [Azure DevOps](https://dev.azure.com) APIs as 22 structured tools with cross-process local caching — purpose-built for AI agents diagnosing CI failures in dotnet repos (runtime, sdk, aspnetcore, etc.). Also works as a standalone CLI for humans.
 
 Built with [Squad](https://github.com/bradygaster/squad) — [meet the squad](.ai-team/SQUAD.md).
 
@@ -21,7 +21,7 @@ hlx solves this by wrapping the Helix API as MCP tools that return structured, p
 
 The project is split into three layers:
 
-- **HelixTool.Core** — Shared library containing `HelixService`, `IHelixApiClient`, and model types. All Helix API logic lives here.
+- **HelixTool.Core** — Shared library containing `HelixService`, `AzdoService`, API clients, and model types. Helix API logic lives at the root; AzDO pipeline integration lives in `AzDO/`.
 - **HelixTool** — CLI tool built with [ConsoleAppFramework](https://github.com/Cysharp/ConsoleAppFramework). Serves both human-readable terminal commands and a stdio MCP server (`hlx mcp`). MCP is also the default mode when no subcommand is given.
 - **HelixTool.Mcp** — Standalone MCP HTTP server built with [ModelContextProtocol](https://github.com/modelcontextprotocol/csharp-sdk). Returns structured JSON for LLM agents over HTTP.
 
@@ -194,6 +194,8 @@ Add the following to your MCP client config. The `--yes` flag ensures `dnx` does
 
 ## MCP Tools
 
+### Helix Tools
+
 | Tool | Description |
 |------|-------------|
 | `hlx_status` | Get work item pass/fail summary for a Helix job. Accepts a `filter` parameter: `failed` (default), `passed`, or `all`. Returns structured JSON with job metadata, failed items (with exit codes, state, duration, machine, failure category), and passed count. |
@@ -208,6 +210,20 @@ Add the following to your MCP client config. The `--yes` flag ensures `dnx` does
 | `hlx_search_log` | Search a work item's console log for lines matching a pattern. Returns matching lines with context. Supports `contextLines` and `maxMatches` parameters. |
 | `hlx_search_file` | Search an uploaded file's content for lines matching a pattern — without downloading it. Supports context lines and max match limits. Disabled when `HLX_DISABLE_FILE_SEARCH=true`. |
 | `hlx_test_results` | Parse TRX test result files from a work item. Returns structured test results: names, outcomes, durations, and error messages/stack traces for failures. Auto-discovers `.trx` files or filter to a specific one. Disabled when `HLX_DISABLE_FILE_SEARCH=true`. |
+
+### AzDO Tools
+
+| Tool | Description |
+|------|-------------|
+| `azdo_build` | Get details of a specific Azure DevOps build. Returns build metadata including status, result, definition, source branch, timing, and web URL. Accepts a build URL or plain integer ID. |
+| `azdo_builds` | List recent builds for an Azure DevOps project. Returns build summaries with status, result, branch, and timing. Filter by branch, PR number, definition ID, or status. Defaults to dnceng-public/public. |
+| `azdo_timeline` | Get the build timeline showing stages, jobs, and tasks. Returns hierarchical records with state, result, timing, log references, and issues. Accepts a `filter` parameter: `failed` (default) or `all`. Use to find log IDs for `azdo_log`. |
+| `azdo_log` | Get log content for a specific build log. Returns plain text (last N lines, default 500). Use after `azdo_timeline` to read the log of a failed task. |
+| `azdo_changes` | Get commits/changes associated with a build. Returns commit IDs, messages, authors, and timestamps. |
+| `azdo_test_runs` | List test runs for a build. Returns test run summaries with total, passed, and failed counts. Use before `azdo_test_results` to get run IDs. |
+| `azdo_test_results` | Get test results for a specific test run. Returns individual test case outcomes, durations, and error details. Defaults to showing only failed tests (top 200). |
+| `azdo_artifacts` | List artifacts produced by a build. Returns artifact names, resource types, and download URLs. Supports pattern filtering (e.g., `*.binlog`, `*.trx`). Default top: 50. |
+| `azdo_test_attachments` | List attachments for a specific test result (screenshots, logs, dumps). Requires run ID and result ID from previous tool output. Default top: 50. |
 
 ## CLI Commands
 
@@ -280,6 +296,15 @@ src/
 │   ├── ICredentialStore.cs  # Credential storage abstraction
 │   ├── GitCredentialStore.cs # git credential CLI implementation
 │   ├── HelixException.cs   # Typed exceptions
+│   ├── AzDO/               # Azure DevOps pipeline integration
+│   │   ├── AzdoService.cs           # Core AzDO operations (builds, timelines, logs, tests)
+│   │   ├── AzdoMcpTools.cs          # MCP tool definitions ([McpServerToolType])
+│   │   ├── AzdoIdResolver.cs        # Build ID and URL parsing (dev.azure.com + visualstudio.com)
+│   │   ├── AzdoApiClient.cs         # AzDO REST API implementation
+│   │   ├── IAzdoApiClient.cs        # API abstraction
+│   │   ├── CachingAzdoApiClient.cs  # Transparent caching wrapper
+│   │   ├── IAzdoTokenAccessor.cs    # Token resolution abstraction
+│   │   └── AzdoModels.cs            # Response model types
 │   └── Cache/              # SQLite-backed response caching
 │       ├── SqliteCacheStore.cs       # Cache storage implementation
 │       ├── CachingHelixApiClient.cs  # Transparent caching wrapper
@@ -289,10 +314,12 @@ src/
 ├── HelixTool.Mcp/          # MCP HTTP server
 │   ├── Program.cs                         # ASP.NET Core + ModelContextProtocol
 │   └── HttpContextHelixTokenAccessor.cs   # Per-request token from Authorization header
-└── HelixTool.Tests/        # Unit tests (373 tests)
+└── HelixTool.Tests/        # Unit tests (700 tests)
 ```
 
 ## Authentication
+
+### Helix
 
 No authentication is needed for public Helix jobs (dotnet open-source CI). For internal/private jobs, use `hlx login`:
 
@@ -358,9 +385,38 @@ Each authenticated client gets isolated cache storage. If no header is present, 
 
 If a job requires authentication and no token is set, hlx will show an actionable error message.
 
+### Azure DevOps
+
+No authentication is needed for public AzDO projects (e.g., `dnceng-public/public`). For internal/private projects:
+
+**Token resolution order:**
+
+1. `AZDO_TOKEN` environment variable (highest priority)
+2. Azure CLI — `az account get-access-token` (automatic if Azure CLI is signed in)
+3. No token → anonymous access (works for public projects)
+
+For MCP clients, pass the token in the server config:
+
+```json
+{
+  "servers": {
+    "hlx": {
+      "type": "stdio",
+      "command": "dotnet",
+      "args": ["dnx", "--yes", "lewing.helix.mcp"],
+      "env": {
+        "AZDO_TOKEN": "your-azdo-pat-here"
+      }
+    }
+  }
+}
+```
+
+> **Multi-org support:** AzDO tools accept `org` and `project` parameters per call, defaulting to `dnceng-public` / `public`. No global org configuration is needed.
+
 ## Caching
 
-Helix API responses are automatically cached to a local SQLite database — no configuration needed.
+Both Helix and AzDO API responses are automatically cached to a local SQLite database — no configuration needed.
 
 Multiple MCP server instances share a single cache safely:
 
@@ -427,7 +483,9 @@ flowchart LR
 | Cache location (Linux/macOS) | `$XDG_CACHE_HOME/hlx/` | — |
 | Artifact expiry | 7 days without access | — |
 
-**TTL policy:** Running jobs use short TTLs (15–30s). Completed jobs cache for 1–4h. Console logs are never cached while a job is still running.
+**TTL policy — Helix:** Running jobs use short TTLs (15–30s). Completed jobs cache for 1–4h. Console logs are never cached while a job is still running.
+
+**TTL policy — AzDO:** Completed builds cache for 4h. In-progress builds cache for 15s. Build logs cache for 4h (immutable after creation). Test results cache for 1h.
 
 **Auth isolation:** Each unique token gets its own cache directory (`cache-{hash}`). Unauthenticated requests use `public/`. The HTTP MCP server isolates per-request tokens automatically.
 
