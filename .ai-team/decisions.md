@@ -3117,3 +3117,51 @@ The resolver validates the host is either `dev.azure.com` or `*.visualstudio.com
 **By:** Kane
 **What:** The `llmstxt` command output now includes all 9 AzDO MCP tools in a dedicated subsection, plus AzDO auth chain and AzDO-specific caching TTLs.
 **Why:** LLM agents reading `llmstxt` need to know about AzDO tools to use them. Keeping Helix and AzDO tool lists visually separated makes it clear which tools work with which system.
+
+### 2026-03-08: IHttpClientFactory with named clients for HTTP lifecycle management
+**By:** Ripley
+**What:** Replaced static `HttpClient` in HelixService and `new HttpClient()` in AzdoApiClient DI with IHttpClientFactory named clients ("HelixDownload" and "AzDO"), both configured with 5-minute timeout.
+**Why:** Static HttpClient causes socket exhaustion and blocks DNS refresh. IHttpClientFactory manages handler lifecycle automatically. Named clients allow different timeout/config per use case. The optional `HttpClient?` constructor parameter on HelixService preserves backward compatibility with 17 test files.
+
+### 2026-03-08: HttpCompletionOption.ResponseHeadersRead for all AzDO HTTP requests
+**By:** Ripley
+**What:** All AzDO API client methods (GetAsync, GetListAsync, GetBuildLogAsync) now use ResponseHeadersRead instead of default ResponseContentRead.
+**Why:** Prevents buffering entire response bodies in memory before processing. Especially important for large build logs. HelixService.DownloadFromUrlAsync already used this pattern — now consistent across both backends.
+
+### 2026-03-08: AzDO CLI commands mirror MCP tools 1:1
+**By:** Ripley
+**What:** Added 9 `azdo-*` CLI subcommands in a separate `AzdoCommands` class, each calling the same `AzdoService` methods as the MCP tools.
+**Why:** Users without MCP clients can now use all AzDO functionality directly from the command line. Follows the existing Helix pattern (Commands class with ConsoleAppFramework attributes). Timeline filtering logic is duplicated from MCP tools rather than extracted to a shared method — flagging this for Dallas review on whether to extract.
+
+### 2026-03-08: Proactive Test Patterns for SEC-2/3/4
+
+**By:** Lambert
+**Date:** 2026-03-08
+
+#### Context
+Ripley is working on SEC-2 (IHttpClientFactory), SEC-3 (streaming), SEC-4 (timeout config), and AzDO CLI subcommands in parallel. Tests written proactively to validate expected behavior.
+
+#### Test Files Created
+- `src/HelixTool.Tests/HttpClientConfigurationTests.cs` — 13 tests
+- `src/HelixTool.Tests/StreamingBehaviorTests.cs` — 18 tests
+- `src/HelixTool.Tests/AzDO/AzdoCliCommandTests.cs` — 22 tests
+
+#### Key Patterns Established
+
+### Timeout vs. Cancellation Testing
+- Timeout: `TaskCanceledException` without cancelled token → wraps in `HelixException`
+- Cancellation: `TaskCanceledException` with cancelled token → rethrows directly
+- Use `DelayingHttpMessageHandler` to simulate real timeouts
+
+### NSubstitute for Stream-returning methods
+- Cannot use `.ThrowsAsync()` on `Task<Stream>` — use `.Returns<Stream>(_ => throw ...)` instead
+
+### Init-only Properties in Test Helpers
+- Models with `init;` setters need all values in object initializer
+- Create helper methods with optional parameters: `CreateBuild(id, status, result, startTime?, finishTime?)`
+
+#### What May Need Updating After Ripley's Changes
+- **SEC-2:** If IHttpClientFactory is used, add tests for named client configuration
+- **SEC-3:** If streaming replaces read-all-to-string, StreamingBehaviorTests may need refactoring
+- **SEC-4:** If explicit timeout is configured in DI, add a test asserting the configured value
+- **CLI:** If AzDO CLI commands are added as a new Commands class, add registration and argument parsing tests

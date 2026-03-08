@@ -112,3 +112,33 @@ Tests for AzdoMcpTools should assert against the model types' `[JsonPropertyName
 - **Total test count after artifact tests:** 700 tests (667 + 33 new).
 
 📌 Team update (2026-03-08): AzDO context-limiting defaults — all AzDO MCP tools now have safe output-size defaults (tailLines=500, filter="failed", top=20/50/200). All overridable. 667 tests pass. — decided by Ripley
+
+### 2026-03-08: Proactive Tests for SEC-2/3/4 and AzDO CLI (53 tests)
+- **HttpClientConfigurationTests** in `src/HelixTool.Tests/HttpClientConfigurationTests.cs` — 13 tests:
+  - AzdoApiClient constructor null-guard validation
+  - HttpClient timeout configuration validation (reasonable range 30s–10min, not infinite)
+  - Timeout vs. cancellation behavior: timeout wraps in HelixException, user cancellation rethrows directly
+  - AzdoApiClient mid-request timeout throws TaskCanceledException
+  - IHttpClientFactory readiness: validates factory-created HttpClient pattern
+  - DelayingHttpMessageHandler helper for timeout simulation
+- **StreamingBehaviorTests** in `src/HelixTool.Tests/StreamingBehaviorTests.cs` — 18 tests:
+  - Empty stream → empty string; empty stream with tailLines → empty string
+  - Large content (1000 lines) reads fully; large content with tailLines returns last N
+  - TailLines edge cases: exceeds line count, single line, single-line-no-newlines
+  - Connection error handling: HttpError → HelixException, NotFound → HelixException, Unauthorized → mentions login
+  - Stream disposal verified via TrackingMemoryStream
+  - Special characters: ANSI escape codes, UTF-8 emoji preserved
+  - Input validation: null/empty/whitespace jobId and workItem
+  - Moderate-size log (~50KB) reads to string correctly
+- **AzdoCliCommandTests** in `src/HelixTool.Tests/AzDO/AzdoCliCommandTests.cs` — 22 tests:
+  - Build summary: plain ID defaults, URL resolution, not-found, invalid buildId, duration calculation, in-progress null duration
+  - Timeline: valid returns timeline, null returns null
+  - Build log: content, tailLines, not-found
+  - Build changes: returns list, top parameter passed through
+  - Test runs/results: list returns, results returned
+  - List builds: filter passthrough
+  - Artifacts: default pattern, pattern filter, top limiting
+- **NSubstitute `.Returns<Stream>` pattern for exceptions:** `ThrowsAsync` doesn't compile for `Task<Stream>` — use `.Returns<Stream>(_ => throw new Ex())` instead.
+- **Init-only properties in test helpers:** AzdoBuild uses `init;` setters — must set StartTime/FinishTime via object initializer parameters, not post-construction assignment.
+- **AzdoChangeAuthor vs AzdoIdentityRef:** `AzdoBuildChange.Author` is `AzdoChangeAuthor`, not `AzdoIdentityRef`. Separate type with only `DisplayName`.
+- **Total test count after proactive tests:** 753 tests (700 + 53 new).

@@ -120,3 +120,14 @@
 📌 Team update (2026-03-08): AzDO artifact/attachment test patterns — 33 tests added, caching decisions: artifacts 4h (immutable), attachments 1h (test-scoped). 700 total tests. — documented by Lambert
 
 📌 Team update (2026-03-08): AzDO docs use subsections within existing README structure — new API domains should follow this pattern (### under ## MCP Tools, ## Authentication, ## Caching). llmstxt updated with AzDO tools subsection. — decided by Kane
+
+## Learnings (2026-03-08: SEC-2/3/4 + AzDO CLI)
+
+- **IHttpClientFactory pattern (SEC-2):** Replaced static `HttpClient s_httpClient` in HelixService with constructor-injected `HttpClient`. Constructor signature: `HelixService(IHelixApiClient api, HttpClient? httpClient = null)` — optional parameter preserves test compatibility (17 test files construct HelixService with one arg). Production code uses `IHttpClientFactory.CreateClient("HelixDownload")` via DI. AzdoApiClient already accepted HttpClient via constructor — DI registrations updated from `new HttpClient()` to factory-sourced. Named clients: `"HelixDownload"` and `"AzDO"`.
+- **Three DI containers updated:** Top-level CLI (ServiceCollection), `Mcp()` command (Host.CreateApplicationBuilder), and HelixTool.Mcp (WebApplication.CreateBuilder). Each registers `AddHttpClient("HelixDownload", ...)` and `AddHttpClient("AzDO", ...)` with 5-minute timeout.
+- **Microsoft.Extensions.Http package:** Added to HelixTool.csproj (v10.0.0). ASP.NET Core MCP project has it transitively.
+- **Streaming (SEC-3):** AzdoApiClient.GetBuildLogAsync, GetAsync<T>, and GetListAsync<T> all now use `HttpCompletionOption.ResponseHeadersRead` for streaming. Log download streams via `StreamReader.ReadToEndAsync` instead of `ReadAsStringAsync`. Error paths (`ThrowOnUnexpectedError`) only read body on failure, so streaming is not defeated on success path.
+- **Timeout (SEC-4):** 5-minute timeout configured on named HttpClients in DI registration. Applies to all HelixService URL downloads and all AzDO API calls.
+- **AzDO CLI commands:** 9 commands in `AzdoCommands` class: `azdo-build`, `azdo-builds`, `azdo-timeline`, `azdo-log`, `azdo-changes`, `azdo-test-runs`, `azdo-test-results`, `azdo-artifacts`, `azdo-test-attachments`. Registered via `app.Add<AzdoCommands>()`. Each mirrors its MCP tool counterpart. Human-readable output with color coding; `--json` flag for structured JSON. Timeline filtering logic duplicated from MCP tools (client-side failed filter with parent chain walk-up).
+- **FormatDuration and FormatBytes are internal static on Commands:** AzdoCommands references them as `Commands.FormatDuration()` and `Commands.FormatBytes()` — avoids duplication.
+- **llmstxt updated:** Added AzDO CLI Commands section listing all 9 commands with parameter documentation.
