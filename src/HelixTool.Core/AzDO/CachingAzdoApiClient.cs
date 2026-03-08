@@ -175,16 +175,16 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         return result;
     }
 
-    public async Task<IReadOnlyList<AzdoTestAttachment>> GetTestAttachmentsAsync(string org, string project, int runId, int resultId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<AzdoTestAttachment>> GetTestAttachmentsAsync(string org, string project, int runId, int resultId, int top = 50, CancellationToken ct = default)
     {
-        if (!_enabled) return await _inner.GetTestAttachmentsAsync(org, project, runId, resultId, ct);
+        if (!_enabled) return await _inner.GetTestAttachmentsAsync(org, project, runId, resultId, top, ct);
 
-        var key = BuildCacheKey(org, project, $"testattachments:{runId}:{resultId}");
+        var key = BuildCacheKey(org, project, $"testattachments:{runId}:{resultId}:{top}");
         var cached = await _cache.GetMetadataAsync(key, ct);
         if (cached is not null)
             return JsonSerializer.Deserialize<List<AzdoTestAttachment>>(cached) ?? [];
 
-        var result = await _inner.GetTestAttachmentsAsync(org, project, runId, resultId, ct);
+        var result = await _inner.GetTestAttachmentsAsync(org, project, runId, resultId, top, ct);
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
 
         return result;

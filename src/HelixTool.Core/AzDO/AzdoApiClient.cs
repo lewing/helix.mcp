@@ -109,7 +109,7 @@ public sealed class AzdoApiClient : IAzdoApiClient
         return await GetListAsync<AzdoBuildArtifact>(url, ct);
     }
 
-    public async Task<IReadOnlyList<AzdoTestAttachment>> GetTestAttachmentsAsync(string org, string project, int runId, int resultId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<AzdoTestAttachment>> GetTestAttachmentsAsync(string org, string project, int runId, int resultId, int top = 50, CancellationToken ct = default)
     {
         var url = BuildUrl(org, project, $"test/runs/{runId}/results/{resultId}/attachments");
         return await GetListAsync<AzdoTestAttachment>(url, ct);

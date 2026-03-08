@@ -90,7 +90,7 @@ public class AzdoArtifactTests
             }
         };
 
-        _mockApi.GetTestAttachmentsAsync("dnceng-public", "public", 1, 2, Arg.Any<CancellationToken>())
+        _mockApi.GetTestAttachmentsAsync("dnceng-public", "public", 1, 2, Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(attachments);
 
         var result = await _svc.GetTestAttachmentsAsync("dnceng-public", "public", 1, 2);
@@ -103,7 +103,7 @@ public class AzdoArtifactTests
     [Fact]
     public async Task GetTestAttachmentsAsync_ReturnsEmptyListWhenNoAttachments()
     {
-        _mockApi.GetTestAttachmentsAsync("dnceng-public", "public", 1, 2, Arg.Any<CancellationToken>())
+        _mockApi.GetTestAttachmentsAsync("dnceng-public", "public", 1, 2, Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(new List<AzdoTestAttachment>());
 
         var result = await _svc.GetTestAttachmentsAsync("dnceng-public", "public", 1, 2);
@@ -147,7 +147,7 @@ public class AzdoArtifactTests
             .Select(i => new AzdoTestAttachment { Id = i, FileName = $"file{i}.txt", Size = i * 100 })
             .ToList();
 
-        _mockApi.GetTestAttachmentsAsync("org", "proj", 1, 2, Arg.Any<CancellationToken>())
+        _mockApi.GetTestAttachmentsAsync("org", "proj", 1, 2, Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(attachments);
 
         var result = await _svc.GetTestAttachmentsAsync("org", "proj", 1, 2, top: 3);
@@ -166,7 +166,7 @@ public class AzdoArtifactTests
             new() { Id = 2, FileName = "b.txt", Size = 200 }
         };
 
-        _mockApi.GetTestAttachmentsAsync("org", "proj", 1, 2, Arg.Any<CancellationToken>())
+        _mockApi.GetTestAttachmentsAsync("org", "proj", 1, 2, Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(attachments);
 
         var result = await _svc.GetTestAttachmentsAsync("org", "proj", 1, 2, top: 100);
@@ -285,14 +285,14 @@ public class AzdoArtifactTests
         {
             new() { Id = 1, FileName = "trace.log", Size = 512 }
         };
-        inner.GetTestAttachmentsAsync("org", "proj", 5, 10, Arg.Any<CancellationToken>())
+        inner.GetTestAttachmentsAsync("org", "proj", 5, 10, Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(attachments);
 
         var result = await sut.GetTestAttachmentsAsync("org", "proj", 5, 10);
 
         Assert.Single(result);
         Assert.Equal("trace.log", result[0].FileName);
-        await inner.Received(1).GetTestAttachmentsAsync("org", "proj", 5, 10, Arg.Any<CancellationToken>());
+        await inner.Received(1).GetTestAttachmentsAsync("org", "proj", 5, 10, Arg.Any<int>(), Arg.Any<CancellationToken>());
         await cache.Received(1).SetMetadataAsync(
             Arg.Any<string>(), Arg.Any<string>(), Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
     }
@@ -317,7 +317,7 @@ public class AzdoArtifactTests
         Assert.Single(result);
         Assert.Equal("cached.log", result[0].FileName);
         await inner.DidNotReceive().GetTestAttachmentsAsync(
-            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -330,7 +330,7 @@ public class AzdoArtifactTests
 
         cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns((string?)null);
-        inner.GetTestAttachmentsAsync("org", "proj", 5, 10, Arg.Any<CancellationToken>())
+        inner.GetTestAttachmentsAsync("org", "proj", 5, 10, Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(new List<AzdoTestAttachment>());
 
         await sut.GetTestAttachmentsAsync("org", "proj", 5, 10);
@@ -369,7 +369,7 @@ public class AzdoArtifactTests
         var opts = new CacheOptions { MaxSizeBytes = 0 };
         var sut = new CachingAzdoApiClient(inner, cache, opts);
 
-        inner.GetTestAttachmentsAsync("org", "proj", 5, 10, Arg.Any<CancellationToken>())
+        inner.GetTestAttachmentsAsync("org", "proj", 5, 10, Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(new List<AzdoTestAttachment> { new() { Id = 1, FileName = "f.txt" } });
 
         var result = await sut.GetTestAttachmentsAsync("org", "proj", 5, 10);
@@ -486,7 +486,7 @@ public class AzdoArtifactTests
             }
         };
 
-        _mockApi.GetTestAttachmentsAsync("dnceng-public", "public", 1, 2, Arg.Any<CancellationToken>())
+        _mockApi.GetTestAttachmentsAsync("dnceng-public", "public", 1, 2, Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(attachments);
 
         var result = await _tools.TestAttachments(1, 2);
@@ -504,7 +504,7 @@ public class AzdoArtifactTests
             .Select(i => new AzdoTestAttachment { Id = i, FileName = $"file{i}.txt", Size = i * 100 })
             .ToList();
 
-        _mockApi.GetTestAttachmentsAsync("dnceng-public", "public", 1, 2, Arg.Any<CancellationToken>())
+        _mockApi.GetTestAttachmentsAsync("dnceng-public", "public", 1, 2, Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(attachments);
 
         var result = await _tools.TestAttachments(1, 2, top: 5);
@@ -517,19 +517,19 @@ public class AzdoArtifactTests
     [Fact]
     public async Task TestAttachments_CustomOrgAndProject()
     {
-        _mockApi.GetTestAttachmentsAsync("custom-org", "custom-proj", 1, 2, Arg.Any<CancellationToken>())
+        _mockApi.GetTestAttachmentsAsync("custom-org", "custom-proj", 1, 2, Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(new List<AzdoTestAttachment>());
 
         await _tools.TestAttachments(1, 2, org: "custom-org", project: "custom-proj");
 
         await _mockApi.Received(1).GetTestAttachmentsAsync(
-            "custom-org", "custom-proj", 1, 2, Arg.Any<CancellationToken>());
+            "custom-org", "custom-proj", 1, 2, Arg.Any<int>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
     public async Task TestAttachments_EmptyList_ReturnsEmpty()
     {
-        _mockApi.GetTestAttachmentsAsync("dnceng-public", "public", 1, 2, Arg.Any<CancellationToken>())
+        _mockApi.GetTestAttachmentsAsync("dnceng-public", "public", 1, 2, Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(new List<AzdoTestAttachment>());
 
         var result = await _tools.TestAttachments(1, 2);
@@ -608,7 +608,7 @@ public class AzdoArtifactTests
             new() { Id = 1, FileName = "large-dump.dmp", Size = 2_147_483_648L } // 2 GB
         };
 
-        _mockApi.GetTestAttachmentsAsync("dnceng-public", "public", 1, 2, Arg.Any<CancellationToken>())
+        _mockApi.GetTestAttachmentsAsync("dnceng-public", "public", 1, 2, Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(attachments);
 
         var result = await _tools.TestAttachments(1, 2);
@@ -626,7 +626,7 @@ public class AzdoArtifactTests
             new() { Id = 1, FileName = "output.log", Size = 100, CreatedDate = created }
         };
 
-        _mockApi.GetTestAttachmentsAsync("dnceng-public", "public", 1, 2, Arg.Any<CancellationToken>())
+        _mockApi.GetTestAttachmentsAsync("dnceng-public", "public", 1, 2, Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(attachments);
 
         var result = await _tools.TestAttachments(1, 2);

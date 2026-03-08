@@ -133,11 +133,13 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_artifacts", Title = "AzDO Build Artifacts", ReadOnly = true, UseStructuredContent = true),
-     Description("List artifacts produced by an Azure DevOps build (logs, test results, binlogs, etc.). Returns artifact names, resource types, and download URLs. Use to discover what files a build published.")]
+     Description("List artifacts produced by an Azure DevOps build (logs, test results, binlogs, etc.). Returns artifact names, resource types, and download URLs. Use to discover what files a build published. Supports glob-style pattern filtering (e.g., '*.binlog', '*.trx') and result limiting.")]
     public async Task<IReadOnlyList<AzdoBuildArtifact>> Artifacts(
-        [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId)
+        [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId,
+        [Description("Filter artifacts by name using glob-style matching (e.g., '*.binlog', '*.trx', or '*' for all). Default: all artifacts")] string pattern = "*",
+        [Description("Maximum number of artifacts to return (default: 50)")] int top = 50)
     {
-        return await _svc.GetBuildArtifactsAsync(buildId);
+        return await _svc.GetBuildArtifactsAsync(buildId, pattern, top);
     }
 
     [McpServerTool(Name = "azdo_test_attachments", Title = "AzDO Test Attachments", ReadOnly = true, UseStructuredContent = true),

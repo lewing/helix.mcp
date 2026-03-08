@@ -118,12 +118,21 @@ public class AzdoService
 
     /// <summary>
     /// Get build artifacts by build ID or AzDO URL.
+    /// Optionally filters by name pattern and limits result count.
     /// </summary>
     public async Task<IReadOnlyList<AzdoBuildArtifact>> GetBuildArtifactsAsync(
-        string buildIdOrUrl, CancellationToken ct = default)
+        string buildIdOrUrl, string pattern = "*", int top = 50, CancellationToken ct = default)
     {
         var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
-        return await _client.GetBuildArtifactsAsync(org, project, buildId, ct);
+        var results = await _client.GetBuildArtifactsAsync(org, project, buildId, ct);
+
+        if (pattern != "*")
+            results = results.Where(a => HelixService.MatchesPattern(a.Name ?? string.Empty, pattern)).ToList();
+
+        if (results.Count > top)
+            results = results.Take(top).ToList();
+
+        return results;
     }
 
     /// <summary>
@@ -133,7 +142,7 @@ public class AzdoService
     public async Task<IReadOnlyList<AzdoTestAttachment>> GetTestAttachmentsAsync(
         string org, string project, int runId, int resultId, int top = 50, CancellationToken ct = default)
     {
-        var results = await _client.GetTestAttachmentsAsync(org, project, runId, resultId, ct);
+        var results = await _client.GetTestAttachmentsAsync(org, project, runId, resultId, top, ct);
         if (results.Count <= top)
             return results;
         return results.Take(top).ToList();
