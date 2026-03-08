@@ -91,3 +91,5 @@ If we later need to reshape AzDO output differently from the API models, we'd ad
 📌 Team update (2026-03-08): AzDO artifact/attachment test patterns — artifact caching ImmutableTtl (4h), attachment caching TestTtl (1h). Service-layer limiting for attachments. 700 total tests. — documented by Lambert
 
 📌 Team update (2026-03-08): AzDO docs use subsections within existing README structure — new API domains should follow this pattern (### under ## MCP Tools, ## Authentication, ## Caching). llmstxt updated with AzDO tools subsection. — decided by Kane
+
+📌 Team update (2026-03-08): `IsFileSearchDisabled` promoted from internal to public on `HelixService` — needed for MCP tools extraction to separate assembly. Consistent with existing public statics `MatchesPattern` and `IsTestResultFile`. — decided by Ripley
