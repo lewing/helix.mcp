@@ -5,6 +5,10 @@ using ModelContextProtocol.Server;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Named HttpClients via IHttpClientFactory — avoids socket exhaustion, enables timeout config
+builder.Services.AddHttpClient("HelixDownload", c => c.Timeout = TimeSpan.FromMinutes(5));
+builder.Services.AddHttpClient("AzDO", c => c.Timeout = TimeSpan.FromMinutes(5));
+
 // HttpContext accessor for per-request token resolution
 builder.Services.AddHttpContextAccessor();
 
@@ -49,12 +53,17 @@ builder.Services.AddScoped<IHelixApiClient>(sp =>
 });
 
 // HelixService is scoped — follows its scoped dependencies
-builder.Services.AddScoped<HelixService>();
+builder.Services.AddScoped<HelixService>(sp =>
+    new HelixService(
+        sp.GetRequiredService<IHelixApiClient>(),
+        sp.GetRequiredService<IHttpClientFactory>().CreateClient("HelixDownload")));
 
 // AzDO services — singleton token accessor, scoped API client with caching decorator
 builder.Services.AddSingleton<IAzdoTokenAccessor, AzCliAzdoTokenAccessor>();
 builder.Services.AddScoped<AzdoApiClient>(sp =>
-    new AzdoApiClient(new HttpClient(), sp.GetRequiredService<IAzdoTokenAccessor>()));
+    new AzdoApiClient(
+        sp.GetRequiredService<IHttpClientFactory>().CreateClient("AzDO"),
+        sp.GetRequiredService<IAzdoTokenAccessor>()));
 builder.Services.AddScoped<IAzdoApiClient>(sp =>
     new CachingAzdoApiClient(
         sp.GetRequiredService<AzdoApiClient>(),

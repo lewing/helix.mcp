@@ -9,6 +9,8 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 
 var services = new ServiceCollection();
+services.AddHttpClient("HelixDownload", c => c.Timeout = TimeSpan.FromMinutes(5));
+services.AddHttpClient("AzDO", c => c.Timeout = TimeSpan.FromMinutes(5));
 services.AddSingleton<ICredentialStore, GitCredentialStore>();
 services.AddSingleton<ChainedHelixTokenAccessor>();
 services.AddSingleton<IHelixTokenAccessor>(sp => sp.GetRequiredService<ChainedHelixTokenAccessor>());
@@ -36,13 +38,18 @@ services.AddSingleton<IHelixApiClient>(sp =>
         sp.GetRequiredService<HelixApiClient>(),
         sp.GetRequiredService<ICacheStore>(),
         sp.GetRequiredService<CacheOptions>()));
-services.AddSingleton<HelixService>();
+services.AddSingleton<HelixService>(sp =>
+    new HelixService(
+        sp.GetRequiredService<IHelixApiClient>(),
+        sp.GetRequiredService<IHttpClientFactory>().CreateClient("HelixDownload")));
 services.AddSingleton(sp => new Lazy<HelixService>(() => sp.GetRequiredService<HelixService>()));
 
 // AzDO services — same decorator pattern as Helix
 services.AddSingleton<IAzdoTokenAccessor, AzCliAzdoTokenAccessor>();
 services.AddSingleton<AzdoApiClient>(sp =>
-    new AzdoApiClient(new HttpClient(), sp.GetRequiredService<IAzdoTokenAccessor>()));
+    new AzdoApiClient(
+        sp.GetRequiredService<IHttpClientFactory>().CreateClient("AzDO"),
+        sp.GetRequiredService<IAzdoTokenAccessor>()));
 services.AddSingleton<IAzdoApiClient>(sp =>
     new CachingAzdoApiClient(
         sp.GetRequiredService<AzdoApiClient>(),
@@ -54,6 +61,7 @@ ConsoleApp.ServiceProvider = services.BuildServiceProvider();
 
 var app = ConsoleApp.Create();
 app.Add<Commands>();
+app.Add<AzdoCommands>();
 // When no command is specified: default to MCP server mode if stdin is redirected
 // (e.g. piped or launched by an MCP host), otherwise show help text for interactive use.
 app.Run(args.Length == 0 ? (Console.IsInputRedirected ? ["mcp"] : ["--help"]) : args);
@@ -530,6 +538,17 @@ public class Commands
 - `hlx cache status` — Show cache size, entry count, oldest/newest entries
 - `hlx cache clear` — Wipe all cached data (SQLite + artifact files)
 
+### AzDO CLI Commands
+- `hlx azdo-build <buildId> [--json]` — Get build details (status, result, branch, timing, URL)
+- `hlx azdo-builds [--org ORG] [--project PROJ] [--top N] [--branch B] [--pr-number N] [--definition-id N] [--status S] [--json]` — List builds
+- `hlx azdo-timeline <buildId> [--filter failed|all] [--json]` — Build timeline (stages, jobs, tasks with log IDs)
+- `hlx azdo-log <buildId> <logId> [--tail-lines N]` — Get build log content (last N lines, default 500)
+- `hlx azdo-changes <buildId> [--top N] [--json]` — Commits/changes associated with a build
+- `hlx azdo-test-runs <buildId> [--top N] [--json]` — List test runs for a build
+- `hlx azdo-test-results <buildId> <runId> [--top N] [--json]` — Test results for a test run (defaults to failed)
+- `hlx azdo-artifacts <buildId> [--pattern P] [--top N] [--json]` — List build artifacts with optional pattern filter
+- `hlx azdo-test-attachments <runId> <resultId> [--org ORG] [--project PROJ] [--top N] [--json]` — Test result attachments
+
 ## MCP Server
 - `hlx mcp` — Start MCP server over stdio (for VS Code, Claude Desktop, etc.)
 - `hlx-mcp` or `dotnet run --project src/HelixTool.Mcp` — HTTP MCP server
@@ -600,6 +619,8 @@ Available as `failureCategory` in JSON and MCP output.
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
         builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
+        builder.Services.AddHttpClient("HelixDownload", c => c.Timeout = TimeSpan.FromMinutes(5));
+        builder.Services.AddHttpClient("AzDO", c => c.Timeout = TimeSpan.FromMinutes(5));
         builder.Services.AddSingleton<IHelixTokenAccessor>(_ =>
             new EnvironmentHelixTokenAccessor(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
         builder.Services.AddSingleton<IHelixApiClientFactory, HelixApiClientFactory>();
@@ -623,12 +644,17 @@ Available as `failureCategory` in JSON and MCP output.
                 sp.GetRequiredService<HelixApiClient>(),
                 sp.GetRequiredService<ICacheStore>(),
                 sp.GetRequiredService<CacheOptions>()));
-        builder.Services.AddSingleton<HelixService>();
+        builder.Services.AddSingleton<HelixService>(sp =>
+            new HelixService(
+                sp.GetRequiredService<IHelixApiClient>(),
+                sp.GetRequiredService<IHttpClientFactory>().CreateClient("HelixDownload")));
 
         // AzDO services — same decorator pattern as Helix
         builder.Services.AddSingleton<IAzdoTokenAccessor, AzCliAzdoTokenAccessor>();
         builder.Services.AddSingleton<AzdoApiClient>(sp =>
-            new AzdoApiClient(new HttpClient(), sp.GetRequiredService<IAzdoTokenAccessor>()));
+            new AzdoApiClient(
+                sp.GetRequiredService<IHttpClientFactory>().CreateClient("AzDO"),
+                sp.GetRequiredService<IAzdoTokenAccessor>()));
         builder.Services.AddSingleton<IAzdoApiClient>(sp =>
             new CachingAzdoApiClient(
                 sp.GetRequiredService<AzdoApiClient>(),
@@ -901,5 +927,401 @@ Available as `failureCategory` in JSON and MCP output.
             }
         }
         return sb.ToString();
+    }
+}
+
+/// <summary>
+/// CLI commands for Azure DevOps build and test investigation.
+/// </summary>
+public class AzdoCommands
+{
+    private static readonly JsonSerializerOptions s_jsonOptions = new() { WriteIndented = true };
+
+    private readonly AzdoService _svc;
+
+    public AzdoCommands(AzdoService svc)
+    {
+        _svc = svc;
+    }
+
+    /// <summary>Get details of a specific Azure DevOps build.</summary>
+    /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
+    /// <param name="json">Output as structured JSON instead of human-readable text.</param>
+    [Command("azdo-build")]
+    public async Task Build([Argument] string buildId, bool json = false)
+    {
+        var summary = await _svc.GetBuildSummaryAsync(buildId);
+
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(summary, s_jsonOptions));
+            return;
+        }
+
+        Console.WriteLine($"Build #{summary.Id}: {summary.BuildNumber}");
+        Console.WriteLine($"  Definition: {summary.DefinitionName} ({summary.DefinitionId})");
+        Console.WriteLine($"  Status:     {summary.Status}  Result: {summary.Result}");
+        Console.WriteLine($"  Branch:     {summary.SourceBranch}");
+        Console.WriteLine($"  Commit:     {summary.SourceVersion}");
+        Console.WriteLine($"  Requested:  {summary.RequestedFor}");
+        if (summary.StartTime.HasValue)
+            Console.WriteLine($"  Started:    {summary.StartTime.Value:u}");
+        if (summary.FinishTime.HasValue)
+            Console.WriteLine($"  Finished:   {summary.FinishTime.Value:u}");
+        if (summary.Duration.HasValue)
+            Console.WriteLine($"  Duration:   {Commands.FormatDuration(summary.Duration.Value)}");
+        Console.WriteLine($"  URL:        {summary.WebUrl}");
+    }
+
+    /// <summary>List recent builds for an Azure DevOps project.</summary>
+    /// <param name="org">Azure DevOps organization (default: dnceng-public).</param>
+    /// <param name="project">Azure DevOps project (default: public).</param>
+    /// <param name="top">Maximum number of builds to return.</param>
+    /// <param name="branch">Filter by branch name.</param>
+    /// <param name="prNumber">Filter by pull request number.</param>
+    /// <param name="definitionId">Filter by pipeline definition ID.</param>
+    /// <param name="status">Filter by build status.</param>
+    /// <param name="json">Output as structured JSON.</param>
+    [Command("azdo-builds")]
+    public async Task Builds(string org = "dnceng-public", string project = "public",
+        int top = 10, string? branch = null, string? prNumber = null,
+        int? definitionId = null, string? status = null, bool json = false)
+    {
+        var filter = new AzdoBuildFilter
+        {
+            PrNumber = prNumber,
+            Branch = branch,
+            DefinitionId = definitionId,
+            Top = top,
+            StatusFilter = status
+        };
+
+        var builds = await _svc.ListBuildsAsync(org, project, filter);
+
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(builds, s_jsonOptions));
+            return;
+        }
+
+        if (builds.Count == 0)
+        {
+            Console.WriteLine("No builds found.");
+            return;
+        }
+
+        foreach (var b in builds)
+        {
+            var result = b.Result ?? b.Status ?? "unknown";
+            var defName = b.Definition?.Name ?? "?";
+            Console.Write($"  #{b.Id} ");
+
+            if (result.Equals("succeeded", StringComparison.OrdinalIgnoreCase))
+                Console.ForegroundColor = ConsoleColor.Green;
+            else if (result.Equals("failed", StringComparison.OrdinalIgnoreCase))
+                Console.ForegroundColor = ConsoleColor.Red;
+            else
+                Console.ForegroundColor = ConsoleColor.Yellow;
+
+            Console.Write($"[{result}]");
+            Console.ResetColor();
+            Console.Write($" {defName}");
+            if (b.SourceBranch is not null)
+                Console.Write($" ({b.SourceBranch})");
+            if (b.FinishTime.HasValue)
+                Console.Write($" {b.FinishTime.Value:u}");
+            Console.WriteLine();
+        }
+    }
+
+    /// <summary>Get the build timeline showing stages, jobs, and tasks.</summary>
+    /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
+    /// <param name="filter">Filter: 'failed' (default) or 'all'.</param>
+    /// <param name="json">Output as structured JSON.</param>
+    [Command("azdo-timeline")]
+    public async Task Timeline([Argument] string buildId, string filter = "failed", bool json = false)
+    {
+        if (!filter.Equals("failed", StringComparison.OrdinalIgnoreCase) &&
+            !filter.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"Invalid filter '{filter}'. Must be 'failed' or 'all'.", nameof(filter));
+        }
+
+        var timeline = await _svc.GetTimelineAsync(buildId);
+        if (timeline is null)
+        {
+            Console.Error.WriteLine("No timeline available for this build.");
+            return;
+        }
+
+        var records = timeline.Records;
+        if (filter.Equals("failed", StringComparison.OrdinalIgnoreCase))
+        {
+            var failedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var r in records)
+            {
+                if (r.Id is null) continue;
+                var isFailed = r.Result is not null &&
+                    !r.Result.Equals("succeeded", StringComparison.OrdinalIgnoreCase);
+                var hasIssues = r.Issues is { Count: > 0 };
+                if (isFailed || hasIssues)
+                    failedIds.Add(r.Id);
+            }
+
+            var allIds = new HashSet<string>(failedIds, StringComparer.OrdinalIgnoreCase);
+            var recordById = records.Where(r => r.Id is not null)
+                .ToDictionary(r => r.Id!, StringComparer.OrdinalIgnoreCase);
+            foreach (var id in failedIds)
+            {
+                var current = recordById.GetValueOrDefault(id);
+                while (current?.ParentId is not null && allIds.Add(current.ParentId))
+                    current = recordById.GetValueOrDefault(current.ParentId);
+            }
+            records = records.Where(r => r.Id is not null && allIds.Contains(r.Id)).ToList();
+        }
+
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(new AzdoTimeline { Id = timeline.Id, Records = records }, s_jsonOptions));
+            return;
+        }
+
+        foreach (var r in records)
+        {
+            var indent = r.Type?.Equals("Stage", StringComparison.OrdinalIgnoreCase) == true ? "" :
+                         r.Type?.Equals("Phase", StringComparison.OrdinalIgnoreCase) == true ? "  " :
+                         r.Type?.Equals("Job", StringComparison.OrdinalIgnoreCase) == true ? "    " : "      ";
+
+            var result = r.Result ?? r.State ?? "?";
+            if (result.Equals("failed", StringComparison.OrdinalIgnoreCase))
+                Console.ForegroundColor = ConsoleColor.Red;
+            else if (result.Equals("succeeded", StringComparison.OrdinalIgnoreCase))
+                Console.ForegroundColor = ConsoleColor.Green;
+            else
+                Console.ForegroundColor = ConsoleColor.Yellow;
+
+            Console.Write($"{indent}[{result}]");
+            Console.ResetColor();
+            Console.Write($" {r.Name}");
+            if (r.Log is not null)
+                Console.Write($" (log: {r.Log.Id})");
+            Console.WriteLine();
+
+            if (r.Issues is { Count: > 0 })
+            {
+                foreach (var issue in r.Issues)
+                {
+                    Console.ForegroundColor = issue.Type?.Equals("error", StringComparison.OrdinalIgnoreCase) == true
+                        ? ConsoleColor.Red : ConsoleColor.Yellow;
+                    Console.WriteLine($"{indent}  {issue.Type}: {issue.Message}");
+                    Console.ResetColor();
+                }
+            }
+        }
+    }
+
+    /// <summary>Get log content for a specific build log.</summary>
+    /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
+    /// <param name="logId">Log ID from the timeline record's log reference.</param>
+    /// <param name="tailLines">Number of lines from the end to return.</param>
+    [Command("azdo-log")]
+    public async Task Log([Argument] string buildId, [Argument] int logId, int? tailLines = 500)
+    {
+        var content = await _svc.GetBuildLogAsync(buildId, logId, tailLines);
+        if (content is null)
+        {
+            Console.Error.WriteLine("Log not found.");
+            return;
+        }
+        Console.Write(content);
+    }
+
+    /// <summary>Get the commits/changes associated with a build.</summary>
+    /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
+    /// <param name="top">Maximum number of changes to return.</param>
+    /// <param name="json">Output as structured JSON.</param>
+    [Command("azdo-changes")]
+    public async Task Changes([Argument] string buildId, int top = 20, bool json = false)
+    {
+        var changes = await _svc.GetBuildChangesAsync(buildId, top);
+
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(changes, s_jsonOptions));
+            return;
+        }
+
+        if (changes.Count == 0)
+        {
+            Console.WriteLine("No changes found.");
+            return;
+        }
+
+        foreach (var c in changes)
+        {
+            var sha = c.Id?.Length > 8 ? c.Id[..8] : c.Id;
+            var author = c.Author?.DisplayName ?? "?";
+            var msg = c.Message?.Split('\n')[0] ?? "";
+            Console.WriteLine($"  {sha}  {author}  {msg}");
+        }
+    }
+
+    /// <summary>List test runs for a build.</summary>
+    /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
+    /// <param name="top">Maximum number of test runs to return.</param>
+    /// <param name="json">Output as structured JSON.</param>
+    [Command("azdo-test-runs")]
+    public async Task TestRuns([Argument] string buildId, int top = 50, bool json = false)
+    {
+        var runs = await _svc.GetTestRunsAsync(buildId, top);
+
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(runs, s_jsonOptions));
+            return;
+        }
+
+        if (runs.Count == 0)
+        {
+            Console.WriteLine("No test runs found.");
+            return;
+        }
+
+        foreach (var r in runs)
+        {
+            Console.Write($"  Run #{r.Id}: {r.Name}  ");
+            Console.Write($"Total: {r.TotalTests}  ");
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.Write($"Passed: {r.PassedTests}  ");
+            if (r.FailedTests > 0)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.Write($"Failed: {r.FailedTests}");
+            }
+            else
+            {
+                Console.Write($"Failed: {r.FailedTests}");
+            }
+            Console.ResetColor();
+            Console.WriteLine();
+        }
+    }
+
+    /// <summary>Get test results for a specific test run.</summary>
+    /// <param name="buildId">AzDO build ID or URL — used to resolve org/project context.</param>
+    /// <param name="runId">Test run ID from azdo-test-runs output.</param>
+    /// <param name="top">Maximum number of test results to return.</param>
+    /// <param name="json">Output as structured JSON.</param>
+    [Command("azdo-test-results")]
+    public async Task TestResults([Argument] string buildId, [Argument] int runId,
+        int top = 200, bool json = false)
+    {
+        var results = await _svc.GetTestResultsAsync(buildId, runId, top);
+
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(results, s_jsonOptions));
+            return;
+        }
+
+        if (results.Count == 0)
+        {
+            Console.WriteLine("No test results found.");
+            return;
+        }
+
+        foreach (var t in results)
+        {
+            var outcome = t.Outcome ?? "?";
+            if (outcome.Equals("Failed", StringComparison.OrdinalIgnoreCase))
+                Console.ForegroundColor = ConsoleColor.Red;
+            else if (outcome.Equals("Passed", StringComparison.OrdinalIgnoreCase))
+                Console.ForegroundColor = ConsoleColor.Green;
+            else
+                Console.ForegroundColor = ConsoleColor.Yellow;
+
+            Console.Write($"  [{outcome}] ");
+            Console.ResetColor();
+            Console.Write(t.TestCaseTitle ?? t.AutomatedTestName ?? $"Result #{t.Id}");
+            if (t.DurationInMs.HasValue)
+                Console.Write($" ({t.DurationInMs.Value:F0}ms)");
+            Console.WriteLine();
+
+            if (t.ErrorMessage is not null)
+            {
+                Console.ForegroundColor = ConsoleColor.DarkRed;
+                Console.WriteLine($"         {t.ErrorMessage}");
+                Console.ResetColor();
+            }
+        }
+    }
+
+    /// <summary>List artifacts produced by a build.</summary>
+    /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
+    /// <param name="pattern">Filter artifacts by name using glob-style matching.</param>
+    /// <param name="top">Maximum number of artifacts to return.</param>
+    /// <param name="json">Output as structured JSON.</param>
+    [Command("azdo-artifacts")]
+    public async Task Artifacts([Argument] string buildId, string pattern = "*",
+        int top = 50, bool json = false)
+    {
+        var artifacts = await _svc.GetBuildArtifactsAsync(buildId, pattern, top);
+
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(artifacts, s_jsonOptions));
+            return;
+        }
+
+        if (artifacts.Count == 0)
+        {
+            Console.WriteLine("No artifacts found.");
+            return;
+        }
+
+        foreach (var a in artifacts)
+        {
+            Console.Write($"  {a.Name}");
+            if (a.Resource?.Type is not null)
+                Console.Write($" [{a.Resource.Type}]");
+            Console.WriteLine();
+        }
+    }
+
+    /// <summary>List attachments for a specific test result.</summary>
+    /// <param name="runId">Test run ID from azdo-test-runs output.</param>
+    /// <param name="resultId">Test result ID from azdo-test-results output.</param>
+    /// <param name="org">Azure DevOps organization (default: dnceng-public).</param>
+    /// <param name="project">Azure DevOps project (default: public).</param>
+    /// <param name="top">Maximum number of attachments to return.</param>
+    /// <param name="json">Output as structured JSON.</param>
+    [Command("azdo-test-attachments")]
+    public async Task TestAttachments([Argument] int runId, [Argument] int resultId,
+        string org = "dnceng-public", string project = "public",
+        int top = 50, bool json = false)
+    {
+        var attachments = await _svc.GetTestAttachmentsAsync(org, project, runId, resultId, top);
+
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(attachments, s_jsonOptions));
+            return;
+        }
+
+        if (attachments.Count == 0)
+        {
+            Console.WriteLine("No attachments found.");
+            return;
+        }
+
+        foreach (var a in attachments)
+        {
+            Console.Write($"  {a.FileName}");
+            if (a.Size > 0)
+                Console.Write($" ({Commands.FormatBytes(a.Size)})");
+            if (a.Comment is not null)
+                Console.Write($" — {a.Comment}");
+            Console.WriteLine();
+        }
     }
 }

@@ -71,7 +71,7 @@ public sealed class AzdoApiClient : IAzdoApiClient
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         await ApplyAuthAsync(request, ct);
 
-        using var response = await _http.SendAsync(request, ct);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
 
         if (response.StatusCode == HttpStatusCode.NotFound)
             return null;
@@ -79,7 +79,9 @@ public sealed class AzdoApiClient : IAzdoApiClient
         await ThrowOnAuthFailure(response);
         await ThrowOnUnexpectedError(response);
 
-        return await response.Content.ReadAsStringAsync(ct);
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var reader = new StreamReader(stream);
+        return await reader.ReadToEndAsync(ct);
     }
 
     public async Task<IReadOnlyList<AzdoBuildChange>> GetBuildChangesAsync(string org, string project, int buildId, int? top = null, CancellationToken ct = default)
@@ -136,7 +138,7 @@ public sealed class AzdoApiClient : IAzdoApiClient
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         await ApplyAuthAsync(request, ct);
 
-        using var response = await _http.SendAsync(request, ct);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
 
         if (response.StatusCode == HttpStatusCode.NotFound)
             return null;
@@ -144,7 +146,7 @@ public sealed class AzdoApiClient : IAzdoApiClient
         await ThrowOnAuthFailure(response);
         await ThrowOnUnexpectedError(response);
 
-        using var stream = await response.Content.ReadAsStreamAsync(ct);
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
         return await JsonSerializer.DeserializeAsync<T>(stream, s_jsonOptions, ct);
     }
 
@@ -153,7 +155,7 @@ public sealed class AzdoApiClient : IAzdoApiClient
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         await ApplyAuthAsync(request, ct);
 
-        using var response = await _http.SendAsync(request, ct);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
 
         if (response.StatusCode == HttpStatusCode.NotFound)
             return [];
@@ -161,7 +163,7 @@ public sealed class AzdoApiClient : IAzdoApiClient
         await ThrowOnAuthFailure(response);
         await ThrowOnUnexpectedError(response);
 
-        using var stream = await response.Content.ReadAsStreamAsync(ct);
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
         var wrapper = await JsonSerializer.DeserializeAsync<AzdoListResponse<T>>(stream, s_jsonOptions, ct);
         return wrapper?.Value ?? [];
     }

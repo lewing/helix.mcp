@@ -23,15 +23,18 @@ public enum FailureCategory
 public class HelixService
 {
     private readonly IHelixApiClient _api;
+    private readonly HttpClient _httpClient;
 
     /// <summary>
     /// Initializes a new instance of <see cref="HelixService"/>.
     /// </summary>
     /// <param name="api">The Helix API client to use for all SDK calls.</param>
+    /// <param name="httpClient">HttpClient for direct URL downloads. When null, a default instance is created (test convenience).</param>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="api"/> is <c>null</c>.</exception>
-    public HelixService(IHelixApiClient api)
+    public HelixService(IHelixApiClient api, HttpClient? httpClient = null)
     {
         _api = api ?? throw new ArgumentNullException(nameof(api));
+        _httpClient = httpClient ?? new HttpClient();
     }
 
     /// <summary>Represents a single work item's name and exit code.</summary>
@@ -373,8 +376,6 @@ public class HelixService
         }
     }
 
-    private static readonly HttpClient s_httpClient = new();
-
     /// <summary>Download a file from a direct URL (e.g., blob storage URI) to a temp file.</summary>
     /// <param name="url">Direct file URL to download.</param>
     /// <param name="cancellationToken">Optional cancellation token.</param>
@@ -394,7 +395,7 @@ public class HelixService
             var path = Path.Combine(Path.GetTempPath(), $"helix-download-{safeName}");
             CacheSecurity.ValidatePathWithinRoot(path, Path.GetTempPath());
 
-            using var response = await s_httpClient.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            using var response = await _httpClient.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             response.EnsureSuccessStatusCode();
 
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
