@@ -118,3 +118,5 @@
 - **Top parameter threading for test attachments:** The `top` parameter was threaded through `IAzdoApiClient` → `AzdoApiClient` → `CachingAzdoApiClient` → `AzdoService`. The AzDO API itself doesn't support `$top` for attachments, but the parameter is needed at the caching layer for correct cache key generation. The service layer applies `Take(top)` client-side.
 
 📌 Team update (2026-03-08): AzDO artifact/attachment test patterns — 33 tests added, caching decisions: artifacts 4h (immutable), attachments 1h (test-scoped). 700 total tests. — documented by Lambert
+
+📌 Team update (2026-03-08): AzDO docs use subsections within existing README structure — new API domains should follow this pattern (### under ## MCP Tools, ## Authentication, ## Caching). llmstxt updated with AzDO tools subsection. — decided by Kane
