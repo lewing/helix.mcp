@@ -157,11 +157,19 @@ public sealed class AzdoMcpTools
         if (HelixService.IsFileSearchDisabled)
             throw new McpException("File content search is disabled by configuration.");
 
-        var result = await _svc.SearchBuildLogAsync(buildUrl, logId, pattern, contextLines, maxMatches);
+        LogSearchResult result;
+        try
+        {
+            result = await _svc.SearchBuildLogAsync(buildUrl, logId, pattern, contextLines, maxMatches);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException)
+        {
+            throw new McpException(ex.Message);
+        }
 
         return new SearchBuildLogResult
         {
-            BuildId = buildUrl,
+            Build = buildUrl,
             LogId = logId,
             Pattern = pattern,
             TotalLines = result.TotalLines,

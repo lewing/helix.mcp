@@ -138,3 +138,10 @@ Tests for AzdoMcpTools should assert against the model types' `[JsonPropertyName
 - **Env var test pattern:** save original, set, try/finally restore — for `HLX_DISABLE_FILE_SEARCH` testing.
 - **Total test count after search log tests:** 791 tests (750 baseline + 41 new).
 📌 Team update (2026-03-08): Search types extracted to top-level namespace — `LogMatch`, `LogSearchResult`, `FileContentSearchResult` moved from `HelixService` nested records to `HelixTool.Core` namespace in `TextSearchHelper.cs`. — decided by Ripley
+
+### PR #10 Review Fix: Test Parallelism for Env Var Tests
+- **Problem:** `AzdoSearchLogTests.SearchBuildLog_WhenSearchDisabled_ThrowsInvalidOperation` mutates the process-wide `HLX_DISABLE_FILE_SEARCH` env var, which can cause flaky failures when xUnit runs tests in parallel.
+- **Fix:** Added `[Collection("FileSearchConfig")]` to `AzdoSearchLogTests` to match the existing pattern used by `TrxParsingTests`, `SearchFileTests`, and `XunitXmlParsingTests`. Classes in the same collection run sequentially, preventing concurrent env var access.
+- **Also added:** `FileSearchConfigCollection.cs` — a `[CollectionDefinition("FileSearchConfig", DisableParallelization = true)]` class. The three existing test classes used `[Collection("FileSearchConfig")]` without a formal definition; adding the definition is best practice and makes the intent explicit.
+- **Env var cleanup was already correct:** The test uses save-original / try / finally-restore pattern (lines 239–249).
+- **Convention:** All test classes that mutate `HLX_DISABLE_FILE_SEARCH` must use `[Collection("FileSearchConfig")]`.

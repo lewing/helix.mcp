@@ -1156,7 +1156,7 @@ public class AzdoCommands
         {
             if (m.Context is { Count: > 0 })
             {
-                int startLine = m.LineNumber - (m.Context.TakeWhile(c => c != m.Line).Count());
+                int startLine = Math.Max(0, m.LineNumber - contextLines);
                 foreach (var line in m.Context)
                 {
                     var prefix = line == m.Line ? ">>>" : "   ";

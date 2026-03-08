@@ -153,7 +153,14 @@ public class AzdoService
         if (content is null)
             throw new InvalidOperationException($"Log {logId} not found for build '{buildIdOrUrl}'.");
 
-        var lines = content.Split('\n');
+        var normalized = content
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal);
+        var lines = normalized.Split('\n');
+        if (normalized.EndsWith("\n", StringComparison.Ordinal) && lines.Length > 0)
+        {
+            Array.Resize(ref lines, lines.Length - 1);
+        }
         return TextSearchHelper.SearchLines($"log:{logId}", lines, pattern, contextLines, maxMatches);
     }
 
