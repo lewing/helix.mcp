@@ -2,7 +2,9 @@ using System.ComponentModel;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
-namespace HelixTool.Core;
+using HelixTool.Core;
+
+namespace HelixTool.Mcp.Tools;
 
 [McpServerToolType]
 public sealed class HelixMcpTools

@@ -7,6 +7,7 @@
 // If Ripley's code hasn't landed yet, some tests will fail to compile — expected.
 
 using HelixTool.Core;
+using HelixTool.Mcp.Tools;
 using NSubstitute;
 using Xunit;
 

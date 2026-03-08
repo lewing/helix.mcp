@@ -131,3 +131,13 @@
 - **AzDO CLI commands:** 9 commands in `AzdoCommands` class: `azdo-build`, `azdo-builds`, `azdo-timeline`, `azdo-log`, `azdo-changes`, `azdo-test-runs`, `azdo-test-results`, `azdo-artifacts`, `azdo-test-attachments`. Registered via `app.Add<AzdoCommands>()`. Each mirrors its MCP tool counterpart. Human-readable output with color coding; `--json` flag for structured JSON. Timeline filtering logic duplicated from MCP tools (client-side failed filter with parent chain walk-up).
 - **FormatDuration and FormatBytes are internal static on Commands:** AzdoCommands references them as `Commands.FormatDuration()` and `Commands.FormatBytes()` — avoids duplication.
 - **llmstxt updated:** Added AzDO CLI Commands section listing all 9 commands with parameter documentation.
+
+## Learnings (HelixTool.Mcp.Tools extraction)
+
+- **HelixTool.Mcp.Tools project:** New class library at `src/HelixTool.Mcp.Tools/` containing MCP tool definitions (HelixMcpTools, AzdoMcpTools) and MCP result DTOs (McpToolResults.cs). No NuGet packaging metadata — Larry doesn't want library packages published yet.
+- **Namespace: `HelixTool.Mcp.Tools`:** All three moved files use this namespace. AzdoMcpTools was previously `HelixTool.Core.AzDO`, now unified under `HelixTool.Mcp.Tools`. AzDO model/service types (`AzdoBuildSummary`, `AzdoService`, etc.) remain in `HelixTool.Core.AzDO`.
+- **ModelContextProtocol package removed from Core:** Core no longer references `ModelContextProtocol` — that dependency now lives in `HelixTool.Mcp.Tools`. Core is purely business logic + API client + caching.
+- **`IsFileSearchDisabled` promoted to public:** Was `internal static` on `HelixService`, had to become `public` because `HelixMcpTools` moved to a separate assembly. Same visibility pattern as `MatchesPattern` and `IsTestResultFile`.
+- **`WithToolsFromAssembly` assembly reference:** Both CLI and HTTP server use `typeof(HelixMcpTools).Assembly` — since HelixMcpTools moved to `HelixTool.Mcp.Tools` assembly, this automatically picks up the right assembly. No code change needed.
+- **Test project references all three:** `HelixTool.Tests.csproj` now references Core, Mcp, and Mcp.Tools projects. Six test files needed `using HelixTool.Mcp.Tools;` added.
+- **git mv preserves history:** Used `git mv` for all three file moves to maintain blame/log continuity.

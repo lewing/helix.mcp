@@ -563,7 +563,7 @@ public class HelixService
     }
 
     /// <summary>Whether file content search is disabled by configuration.</summary>
-    internal static bool IsFileSearchDisabled =>
+    public static bool IsFileSearchDisabled =>
         string.Equals(Environment.GetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH"), "true", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Maximum file size allowed for content search (50 MB).</summary>

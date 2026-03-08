@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace HelixTool.Core;
+namespace HelixTool.Mcp.Tools;
 
 // --- Status tool ---
 

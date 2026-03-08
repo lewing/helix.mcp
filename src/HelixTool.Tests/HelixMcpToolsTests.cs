@@ -1,4 +1,5 @@
 using HelixTool.Core;
+using HelixTool.Mcp.Tools;
 using ModelContextProtocol;
 using NSubstitute;
 using Xunit;

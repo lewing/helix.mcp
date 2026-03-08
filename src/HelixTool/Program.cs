@@ -3,6 +3,7 @@ using ConsoleAppFramework;
 using HelixTool;
 using HelixTool.Core;
 using HelixTool.Core.AzDO;
+using HelixTool.Mcp.Tools;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
