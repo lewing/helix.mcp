@@ -167,6 +167,121 @@ public class AzdoService
     }
 
     /// <summary>
+    /// Search timeline records by pattern (case-insensitive substring match on record names and issue messages).
+    /// </summary>
+    public async Task<TimelineSearchResult> SearchTimelineAsync(
+        string buildIdOrUrl, string pattern,
+        string? recordType = null,
+        string? resultFilter = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
+
+        var timeline = await GetTimelineAsync(buildIdOrUrl, ct);
+        if (timeline is null)
+            throw new InvalidOperationException($"No timeline available for build '{buildIdOrUrl}'.");
+
+        var records = timeline.Records;
+        var recordById = records
+            .Where(r => r.Id is not null)
+            .ToDictionary(r => r.Id!, StringComparer.OrdinalIgnoreCase);
+
+        // Default resultFilter to "failed" (non-succeeded)
+        resultFilter ??= "failed";
+
+        var matches = new List<TimelineSearchMatch>();
+
+        foreach (var r in records)
+        {
+            // Apply recordType filter
+            if (recordType is not null && !string.Equals(r.Type, recordType, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            // Apply resultFilter
+            if (resultFilter.Equals("failed", StringComparison.OrdinalIgnoreCase))
+            {
+                var isFailed = r.Result is not null &&
+                    !r.Result.Equals("succeeded", StringComparison.OrdinalIgnoreCase);
+                var hasIssues = r.Issues is { Count: > 0 };
+                if (!isFailed && !hasIssues)
+                    continue;
+            }
+            // "all" = no filtering
+
+            // Search record name
+            bool nameMatches = r.Name is not null &&
+                r.Name.Contains(pattern, StringComparison.OrdinalIgnoreCase);
+
+            // Search issue messages
+            var matchedIssues = new List<string>();
+            if (r.Issues is { Count: > 0 })
+            {
+                foreach (var issue in r.Issues)
+                {
+                    if (issue.Message is not null &&
+                        issue.Message.Contains(pattern, StringComparison.OrdinalIgnoreCase))
+                    {
+                        matchedIssues.Add(issue.Message);
+                    }
+                }
+            }
+
+            if (!nameMatches && matchedIssues.Count == 0)
+                continue;
+
+            // Resolve parent name for context
+            string? parentName = null;
+            if (r.ParentId is not null && recordById.TryGetValue(r.ParentId, out var parent))
+                parentName = parent.Name;
+
+            // Compute duration
+            TimeSpan? duration = (r.StartTime.HasValue && r.FinishTime.HasValue)
+                ? r.FinishTime.Value - r.StartTime.Value
+                : null;
+
+            matches.Add(new TimelineSearchMatch
+            {
+                RecordId = r.Id ?? "",
+                Name = r.Name ?? "",
+                Type = r.Type ?? "",
+                State = r.State,
+                Result = r.Result,
+                Duration = duration.HasValue ? FormatDuration(duration.Value) : null,
+                LogId = r.Log?.Id,
+                MatchedIssues = matchedIssues,
+                ParentName = parentName,
+                Record = r
+            });
+        }
+
+        return new TimelineSearchResult
+        {
+            Build = buildIdOrUrl,
+            Pattern = pattern,
+            TotalRecords = records.Count,
+            MatchCount = matches.Count,
+            Matches = matches
+        };
+    }
+
+    private static string FormatDuration(TimeSpan duration)
+    {
+        if (duration.TotalHours >= 1)
+        {
+            var hours = (int)duration.TotalHours;
+            var minutes = duration.Minutes;
+            return minutes > 0 ? $"{hours}h {minutes}m" : $"{hours}h";
+        }
+        if (duration.TotalMinutes >= 1)
+        {
+            var minutes = (int)duration.TotalMinutes;
+            var seconds = duration.Seconds;
+            return seconds > 0 ? $"{minutes}m {seconds}s" : $"{minutes}m";
+        }
+        return $"{(int)duration.TotalSeconds}s";
+    }
+
+    /// <summary>
     /// Get test result attachments for a specific test result.
     /// Org/project are provided explicitly since runId/resultId are scoped to org/project.
     /// </summary>

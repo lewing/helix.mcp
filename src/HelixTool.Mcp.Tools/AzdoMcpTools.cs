@@ -183,6 +183,24 @@ public sealed class AzdoMcpTools
         };
     }
 
+    [McpServerTool(Name = "azdo_search_timeline", Title = "AzDO Search Timeline", ReadOnly = true, UseStructuredContent = true),
+     Description("Search an Azure DevOps build timeline for records matching a pattern. Searches record names and issue messages. Use to find failed steps, specific tasks, or errors without manually scanning the full timeline. Returns matching records with log IDs for follow-up with azdo_log or azdo_search_log.")]
+    public async Task<TimelineSearchResult> SearchTimeline(
+        [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildIdOrUrl,
+        [Description("Text pattern to search for in record names and issue messages (case-insensitive)")] string pattern,
+        [Description("Filter by record type: 'Stage', 'Job', or 'Task'. Omit for all types")] string? recordType = null,
+        [Description("Result filter: 'failed' (default) shows only non-succeeded records, 'all' shows everything")] string resultFilter = "failed")
+    {
+        try
+        {
+            return await _svc.SearchTimelineAsync(buildIdOrUrl, pattern, recordType, resultFilter);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
+        {
+            throw new McpException(ex.Message);
+        }
+    }
+
     [McpServerTool(Name = "azdo_test_attachments", Title = "AzDO Test Attachments", ReadOnly = true, UseStructuredContent = true),
      Description("List attachments for a specific test result (screenshots, logs, dumps). Use after azdo_test_results to get files attached to a failed test. Requires run ID and result ID from previous tool output.")]
     public async Task<IReadOnlyList<AzdoTestAttachment>> TestAttachments(

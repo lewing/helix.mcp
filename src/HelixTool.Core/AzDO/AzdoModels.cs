@@ -341,3 +341,30 @@ public sealed record AzdoTestResult
     [JsonPropertyName("automatedTestName")]
     public string? AutomatedTestName { get; init; }
 }
+
+/// <summary>A single timeline record matching a search pattern.</summary>
+public sealed class TimelineSearchMatch
+{
+    [JsonPropertyName("recordId")] public string RecordId { get; init; } = "";
+    [JsonPropertyName("name")] public string Name { get; init; } = "";
+    [JsonPropertyName("type")] public string Type { get; init; } = "";
+    [JsonPropertyName("state")] public string? State { get; init; }
+    [JsonPropertyName("result")] public string? Result { get; init; }
+    [JsonPropertyName("duration")] public string? Duration { get; init; }
+    [JsonPropertyName("logId")] public int? LogId { get; init; }
+    [JsonPropertyName("matchedIssues")] public List<string> MatchedIssues { get; init; } = [];
+    [JsonPropertyName("parentName")] public string? ParentName { get; init; }
+
+    /// <summary>Raw timeline record for programmatic access (excluded from JSON serialization).</summary>
+    [JsonIgnore] public AzdoTimelineRecord Record { get; init; } = new();
+}
+
+/// <summary>Result of searching timeline records by pattern.</summary>
+public sealed class TimelineSearchResult
+{
+    [JsonPropertyName("build")] public string Build { get; init; } = "";
+    [JsonPropertyName("pattern")] public string Pattern { get; init; } = "";
+    [JsonPropertyName("totalRecords")] public int TotalRecords { get; init; }
+    [JsonPropertyName("matchCount")] public int MatchCount { get; init; }
+    [JsonPropertyName("matches")] public List<TimelineSearchMatch> Matches { get; init; } = [];
+}
