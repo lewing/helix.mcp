@@ -73,7 +73,23 @@ public class AzdoService
         string buildIdOrUrl, int logId, int? tailLines = null, CancellationToken ct = default)
     {
         var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
-        var content = await _client.GetBuildLogAsync(org, project, buildId, logId, ct);
+
+        // Optimization: use lineCount metadata to fetch only the tail
+        if (tailLines is > 0)
+        {
+            var logsList = await _client.GetBuildLogsListAsync(org, project, buildId, ct);
+            var logEntry = logsList.FirstOrDefault(e => e.Id == logId);
+
+            if (logEntry is not null && logEntry.LineCount > tailLines.Value * 2)
+            {
+                var startLine = (int)(logEntry.LineCount - tailLines.Value);
+                return await _client.GetBuildLogAsync(org, project, buildId, logId,
+                    startLine: startLine, ct: ct);
+            }
+        }
+
+        // Fallback: fetch full log, trim client-side
+        var content = await _client.GetBuildLogAsync(org, project, buildId, logId, ct: ct);
 
         if (content is null || tailLines is null or <= 0)
             return content;
@@ -382,7 +398,7 @@ public class AzdoService
             if (remainingMatches <= 0 || logsSearched >= maxLogsToSearch)
                 break;
 
-            var content = await _client.GetBuildLogAsync(org, project, buildId, logId, ct);
+            var content = await _client.GetBuildLogAsync(org, project, buildId, logId, ct: ct);
 
             if (content is null)
                 continue;

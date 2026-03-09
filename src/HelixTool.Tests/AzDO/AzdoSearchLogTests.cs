@@ -25,7 +25,7 @@ public class AzdoSearchLogTests
     private void SetupBuildLog(string content, string org = "dnceng-public", string project = "public",
         int buildId = 42, int logId = 7)
     {
-        _mockApi.GetBuildLogAsync(org, project, buildId, logId, Arg.Any<CancellationToken>())
+        _mockApi.GetBuildLogAsync(org, project, buildId, logId, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns(content);
     }
 
@@ -180,7 +180,7 @@ public class AzdoSearchLogTests
     [Fact]
     public async Task SearchBuildLog_AcceptsUrl_ResolvesOrgProject()
     {
-        _mockApi.GetBuildLogAsync("myorg", "myproject", 123, 5, Arg.Any<CancellationToken>())
+        _mockApi.GetBuildLogAsync("myorg", "myproject", 123, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns("line 1\nerror: test failure\nline 3");
 
         var result = await _svc.SearchBuildLogAsync(
@@ -188,7 +188,7 @@ public class AzdoSearchLogTests
 
         var match = Assert.Single(result.Matches);
         Assert.Equal(2, match.LineNumber);
-        await _mockApi.Received(1).GetBuildLogAsync("myorg", "myproject", 123, 5, Arg.Any<CancellationToken>());
+        await _mockApi.Received(1).GetBuildLogAsync("myorg", "myproject", 123, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>());
     }
 
     // ── Case insensitivity ──────────────────────────────────────────
@@ -221,7 +221,7 @@ public class AzdoSearchLogTests
     [Fact]
     public async Task SearchBuildLog_NullLogContent_ThrowsInvalidOperation()
     {
-        _mockApi.GetBuildLogAsync("dnceng-public", "public", 42, 7, Arg.Any<CancellationToken>())
+        _mockApi.GetBuildLogAsync("dnceng-public", "public", 42, 7, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns((string?)null);
 
         // Ripley's implementation throws InvalidOperationException for null log content

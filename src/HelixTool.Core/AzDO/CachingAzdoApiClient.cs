@@ -96,21 +96,68 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         return result;
     }
 
-    public async Task<string?> GetBuildLogAsync(string org, string project, int buildId, int logId, CancellationToken ct = default)
+    public async Task<string?> GetBuildLogAsync(string org, string project, int buildId, int logId, int? startLine = null, int? endLine = null, CancellationToken ct = default)
     {
-        if (!_enabled) return await _inner.GetBuildLogAsync(org, project, buildId, logId, ct);
+        if (!_enabled)
+            return await _inner.GetBuildLogAsync(org, project, buildId, logId, startLine, endLine, ct);
 
-        var key = BuildCacheKey(org, project, $"log:{buildId}:{logId}");
-        var cached = await _cache.GetMetadataAsync(key, ct);
-        if (cached is not null)
-            return JsonSerializer.Deserialize<string>(cached);
+        var contentKey = BuildCacheKey(org, project, $"log:{buildId}:{logId}");
+        var freshKey = BuildCacheKey(org, project, $"log-fresh:{buildId}:{logId}");
 
-        var result = await _inner.GetBuildLogAsync(org, project, buildId, logId, ct);
-        if (result is null)
-            return null;
+        var cachedJson = await _cache.GetMetadataAsync(contentKey, ct);
+        string? fullContent = cachedJson is not null
+            ? JsonSerializer.Deserialize<string>(cachedJson)
+            : null;
 
-        // Logs are immutable once written
-        await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), ImmutableTtl, ct);
+        if (fullContent is not null)
+        {
+            // Check freshness — stale means the 15s marker expired
+            var isFresh = await _cache.GetMetadataAsync(freshKey, ct) is not null;
+
+            if (!isFresh)
+            {
+                // Stale: delta-append instead of full re-download
+                var isCompleted = await IsBuildCompletedAsync(org, project, buildId, ct);
+                var cachedLineCount = CountLines(fullContent);
+                var delta = await _inner.GetBuildLogAsync(
+                    org, project, buildId, logId, startLine: cachedLineCount, ct: ct);
+
+                if (!string.IsNullOrEmpty(delta))
+                {
+                    fullContent += delta;
+                    await _cache.SetMetadataAsync(contentKey,
+                        JsonSerializer.Serialize(fullContent), ImmutableTtl, ct);
+                }
+
+                if (!isCompleted)
+                    await _cache.SetMetadataAsync(freshKey, "\"1\"", InProgressTtl, ct);
+                else
+                    await _cache.SetMetadataAsync(freshKey, "\"1\"", ImmutableTtl, ct);
+            }
+
+            // Serve full or range from (possibly refreshed) cached content
+            if (startLine is null && endLine is null)
+                return fullContent;
+
+            return ExtractRange(fullContent, startLine, endLine);
+        }
+
+        // Not cached — range request with no cached full log: pass through, don't cache partial
+        if (startLine is not null || endLine is not null)
+            return await _inner.GetBuildLogAsync(org, project, buildId, logId, startLine, endLine, ct);
+
+        // Full log first fetch
+        var result = await _inner.GetBuildLogAsync(org, project, buildId, logId, ct: ct);
+        if (result is null) return null;
+
+        var completed = await IsBuildCompletedAsync(org, project, buildId, ct);
+        await _cache.SetMetadataAsync(contentKey, JsonSerializer.Serialize(result), ImmutableTtl, ct);
+
+        if (!completed)
+            await _cache.SetMetadataAsync(freshKey, "\"1\"", InProgressTtl, ct);
+        else
+            await _cache.SetMetadataAsync(freshKey, "\"1\"", ImmutableTtl, ct);
+
         return result;
     }
 
@@ -239,5 +286,25 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         var raw = $"{filter.PrNumber}|{filter.Branch}|{filter.DefinitionId}|{filter.Top}|{filter.StatusFilter}";
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(raw));
         return Convert.ToHexString(hash)[..12].ToLowerInvariant();
+    }
+
+    internal static int CountLines(string content)
+    {
+        if (string.IsNullOrEmpty(content)) return 0;
+        var count = content.Split('\n').Length;
+        if (content.EndsWith('\n')) count--;
+        return count;
+    }
+
+    internal static string? ExtractRange(string content, int? startLine, int? endLine)
+    {
+        var lines = content.Split('\n');
+        var start = startLine ?? 0;
+        var end = endLine ?? (lines.Length - 1);
+
+        start = Math.Max(0, Math.Min(start, lines.Length - 1));
+        end = Math.Max(start, Math.Min(end, lines.Length - 1));
+
+        return string.Join('\n', lines[start..(end + 1)]);
     }
 }

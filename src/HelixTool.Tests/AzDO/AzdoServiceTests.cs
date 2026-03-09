@@ -74,7 +74,7 @@ public class AzdoServiceTests
     [Fact]
     public async Task GetBuildLogAsync_Url_ResolvesCorrectly()
     {
-        _mockApi.GetBuildLogAsync("myorg", "proj", 10, 5, Arg.Any<CancellationToken>())
+        _mockApi.GetBuildLogAsync("myorg", "proj", 10, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns("log content");
 
         var result = await _svc.GetBuildLogAsync(
@@ -236,7 +236,7 @@ public class AzdoServiceTests
     public async Task GetBuildLogAsync_TailLines_ReturnsLastNLines()
     {
         var lines = string.Join("\n", Enumerable.Range(1, 20).Select(i => $"line {i}"));
-        _mockApi.GetBuildLogAsync("dnceng-public", "public", 1, 5, Arg.Any<CancellationToken>())
+        _mockApi.GetBuildLogAsync("dnceng-public", "public", 1, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns(lines);
 
         var result = await _svc.GetBuildLogAsync("1", 5, tailLines: 3);
@@ -252,7 +252,7 @@ public class AzdoServiceTests
     [Fact]
     public async Task GetBuildLogAsync_TailLinesExceedsTotalLines_ReturnsAllContent()
     {
-        _mockApi.GetBuildLogAsync("dnceng-public", "public", 1, 5, Arg.Any<CancellationToken>())
+        _mockApi.GetBuildLogAsync("dnceng-public", "public", 1, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns("line 1\nline 2");
 
         var result = await _svc.GetBuildLogAsync("1", 5, tailLines: 100);
@@ -264,7 +264,7 @@ public class AzdoServiceTests
     public async Task GetBuildLogAsync_NullTailLines_ReturnsFullContent()
     {
         var full = "line 1\nline 2\nline 3";
-        _mockApi.GetBuildLogAsync("dnceng-public", "public", 1, 5, Arg.Any<CancellationToken>())
+        _mockApi.GetBuildLogAsync("dnceng-public", "public", 1, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns(full);
 
         var result = await _svc.GetBuildLogAsync("1", 5, tailLines: null);
@@ -276,7 +276,7 @@ public class AzdoServiceTests
     public async Task GetBuildLogAsync_ZeroTailLines_ReturnsFullContent()
     {
         var full = "line 1\nline 2";
-        _mockApi.GetBuildLogAsync("dnceng-public", "public", 1, 5, Arg.Any<CancellationToken>())
+        _mockApi.GetBuildLogAsync("dnceng-public", "public", 1, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns(full);
 
         var result = await _svc.GetBuildLogAsync("1", 5, tailLines: 0);
@@ -288,7 +288,7 @@ public class AzdoServiceTests
     public async Task GetBuildLogAsync_NegativeTailLines_ReturnsFullContent()
     {
         var full = "line 1\nline 2";
-        _mockApi.GetBuildLogAsync("dnceng-public", "public", 1, 5, Arg.Any<CancellationToken>())
+        _mockApi.GetBuildLogAsync("dnceng-public", "public", 1, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns(full);
 
         var result = await _svc.GetBuildLogAsync("1", 5, tailLines: -1);
@@ -322,7 +322,7 @@ public class AzdoServiceTests
     [Fact]
     public async Task GetBuildLogAsync_NullContent_ReturnsNull()
     {
-        _mockApi.GetBuildLogAsync("dnceng-public", "public", 1, 5, Arg.Any<CancellationToken>())
+        _mockApi.GetBuildLogAsync("dnceng-public", "public", 1, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns((string?)null);
 
         var result = await _svc.GetBuildLogAsync("1", 5);
@@ -333,7 +333,7 @@ public class AzdoServiceTests
     [Fact]
     public async Task GetBuildLogAsync_NullContent_IgnoresTailLines()
     {
-        _mockApi.GetBuildLogAsync("dnceng-public", "public", 1, 5, Arg.Any<CancellationToken>())
+        _mockApi.GetBuildLogAsync("dnceng-public", "public", 1, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns((string?)null);
 
         var result = await _svc.GetBuildLogAsync("1", 5, tailLines: 10);
