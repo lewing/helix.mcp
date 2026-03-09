@@ -86,3 +86,7 @@ Tests for AzdoMcpTools should assert against the model types' `[JsonPropertyName
 - **Merged 2 overlapping filter tests** in `HelixMcpToolsTests`: `Status_FilterFailed_PassedIsNull` and `Status_DefaultFilter_ShowsOnlyFailed` tested the same behavior (default filter is "failed"). Combined into one test that verifies both the default and explicit "failed" filter.
 - **Pattern observed**: Proactive test files written before production code tends to produce near-duplicates of the actual test file once it lands. Worth catching during PR review.
 - **Test count**: 864 → 844 (net -20 tests removed). All 844 pass.
+
+📌 Team update (2026-03-09): CI profile analysis — 14 recommendations for MCP tool descriptions and error messages. Description changes (REC-1–6, 9, 13, 14) are text-only. Error message changes (REC-7, 8) in HelixService.cs need test verification. — decided by Ash
+
+📌 Team update (2025-07-24): Test quality review — Delete AzdoCliCommandTests.cs (rescue 3 unique tests), remove 3 ImplementsInterface tests, merge 2 overlapping filter tests. Net -17 tests, zero coverage loss. Test guideline: prune proactive tests when real tests land. — decided by Dallas

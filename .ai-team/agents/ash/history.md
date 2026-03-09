@@ -41,3 +41,17 @@
 
 📌 Team update (2026-03-08): AzDO security review complete — 6 findings documented. SEC-1 (query injection) is the only code fix required. SSRF, command injection, token leakage, cache isolation all verified safe. — decided by Dallas
 📌 Team update (2026-03-08): Search gap P0 implemented — `azdo_search_log` shipped in PR #10. `TextSearchHelper` extraction validates shared utility recommendation. 41 tests passing. — implemented by Ripley, tested by Lambert
+
+### 2026-03-09: CI repo profile analysis — cross-repo test pattern insights
+
+- `helix_test_results` only works for 2 of 6 major repos (runtime CoreCLR, runtime XHarness) — all others use Arcade reporter which consumes result XML locally before upload
+- The split is by **test runner** (XUnitWrapperGenerator / XHarness upload results; Arcade `run.py` does not), not by repository
+- Best console search pattern varies dramatically: `[FAIL]` (runtime, efcore), `  Failed` (aspnetcore), `Failed`/`Error` (sdk), `aborted`/`Process exited` (roslyn)
+- AzDO test run `failedTests` summary counts are untrustworthy across ALL 6 repos — real failures hidden behind `failedTests: 0` metadata
+- Helix task names differ: `Send to Helix` (runtime/aspnetcore), `🟣 Run TestBuild Tests` (sdk), embedded in `Run Unit Tests` (roslyn), `Send job to helix` (efcore)
+- VMR (dotnet/dotnet) doesn't use Helix at all — pure build validation with ~30 agent-local tests
+- SDK "tests" are builds — most failures are crashes/infra (exit 130, -4), not assertion failures; synthetic `WorkItemExecution` results generated for crashes
+- Roslyn's dominant failure mode is crashes (stack overflow, OOM) producing dump files but no test results — `[FAIL]` search returns 0 matches
+- EF Core runs tests both locally on agents AND via Helix — dual execution model unique among dotnet repos
+- 14 recommendations produced: 3 P0, 6 P1, 4 P2, 1 P3 → `.ai-team/decisions/inbox/ash-ci-profile-analysis.md`
+- Key P0s: improve `helix_test_results` description to steer agents away from futile TRX searches; add repo-specific pattern guidance to `helix_search_log`; improve error messages with actionable next steps
