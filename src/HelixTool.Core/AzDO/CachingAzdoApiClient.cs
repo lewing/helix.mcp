@@ -291,24 +291,55 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
     internal static int CountLines(string content)
     {
         if (string.IsNullOrEmpty(content)) return 0;
-        var count = content.Split('\n').Length;
-        if (content.EndsWith('\n')) count--;
+        var count = content.AsSpan().Count('\n');
+        // When content doesn't end with '\n', there's one more line after the last '\n'
+        if (!content.EndsWith('\n')) count++;
         return count;
     }
 
     internal static string? ExtractRange(string content, int? startLine, int? endLine)
     {
-        var lines = content.Split('\n');
-        var start = startLine ?? 0;
-        var end = endLine ?? (lines.Length - 1);
+        var span = content.AsSpan();
+        var totalLines = CountLines(content);
+        if (totalLines == 0) return null;
 
-        if (start >= lines.Length || start < 0)
+        var start = startLine ?? 0;
+        var end = endLine ?? (totalLines - 1);
+
+        if (start >= totalLines || start < 0)
             return null;
 
-        end = Math.Min(end, lines.Length - 1);
+        end = Math.Min(end, totalLines - 1);
         if (end < start)
             return null;
 
-        return string.Join('\n', lines[start..(end + 1)]);
+        // Find the character offset of the start line
+        var startOffset = 0;
+        for (var i = 0; i < start; i++)
+        {
+            var nl = span[startOffset..].IndexOf('\n');
+            if (nl < 0) return null;
+            startOffset += nl + 1;
+        }
+
+        // Find the character offset just past the end line's '\n'
+        var endOffset = startOffset;
+        for (var i = start; i <= end; i++)
+        {
+            var nl = span[endOffset..].IndexOf('\n');
+            if (nl < 0)
+            {
+                // Last line has no trailing newline
+                endOffset = span.Length;
+                break;
+            }
+            endOffset += nl + 1;
+        }
+
+        // Trim trailing '\n' from the result to match original Join behavior
+        if (endOffset > startOffset && span[endOffset - 1] == '\n')
+            endOffset--;
+
+        return content[startOffset..endOffset];
     }
 }
