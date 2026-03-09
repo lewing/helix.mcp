@@ -108,3 +108,5 @@ Freshness marker pattern: content key (4h) + sentinel (15s). Delta-append via Co
 
 📌 Team update (2026-03-09): Incremental log fetching Phase 1+2 approved — API range support, dual-key append-on-expire caching, tail optimization. 863/863 tests, 32 new. P0: CountLines off-by-one. — reviewed by Dallas
 📌 Team update (2026-03-09): Timeline search result types live in Core — TimelineSearchMatch/TimelineSearchResult in AzdoModels.cs. MCP tools return Core types directly. [JsonIgnore] on Record for flat JSON. — decided by Ripley
+
+📌 Team update (2025-07-18): Perf review identified 17 allocation issues — decided by Ripley

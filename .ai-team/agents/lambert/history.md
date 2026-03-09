@@ -75,3 +75,5 @@ Tests for AzdoMcpTools should assert against the model types' `[JsonPropertyName
 📌 Team update (2026-03-09): P0 CountLines off-by-one fix — Split('\n') overcounts by 1 for trailing newline content. Fix: subtract 1 when content ends with '\n'. Affects delta-fetch startLine computation. — decided by Dallas
 📌 Team update (2026-03-09): azdo_search_log_across_steps full design spec merged — 4-bucket ranking, early termination, GetBuildLogsListAsync, NormalizeAndSplit extraction. 19 estimated tests. — decided by Dallas
 📌 Team update (2026-03-09): Timeline search result types live in Core — TimelineSearchMatch/TimelineSearchResult in AzdoModels.cs, not McpToolResults.cs. MCP tools return Core types directly. [JsonIgnore] on Record for flat JSON. — decided by Ripley
+
+📌 Team update (2025-07-18): Perf review identified 17 allocation issues — decided by Ripley

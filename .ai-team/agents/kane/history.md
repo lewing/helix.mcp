@@ -85,3 +85,5 @@
 - `azdo_search_log_across_steps` is gated by `HLX_DISABLE_FILE_SEARCH` same as other search tools — added to Security section's file search toggle list
 
 📌 Team update (2026-03-08): `IsFileSearchDisabled` promoted from internal to public on `HelixService` — needed for MCP tools extraction to separate assembly. Consistent with existing public statics `MatchesPattern` and `IsTestResultFile`. — decided by Ripley
+
+📌 Team update (2025-07-18): Perf review identified 17 allocation issues — decided by Ripley
