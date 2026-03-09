@@ -225,11 +225,8 @@ public class HelixService
             var content = await reader.ReadToEndAsync(cancellationToken);
 
             if (tailLines.HasValue)
-            {
-                var lines = content.Split('\n');
-                var start = Math.Max(0, lines.Length - tailLines.Value);
-                return string.Join('\n', lines[start..]);
-            }
+                return StringHelpers.TailLines(content, tailLines.Value);
+
             return content;
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)

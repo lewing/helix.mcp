@@ -12,7 +12,7 @@ internal static class StringHelpers
     /// </summary>
     public static string TailLines(string content, int lineCount)
     {
-        if (lineCount <= 0)
+        if (lineCount <= 0 || content.Length == 0)
             return content;
 
         var span = content.AsSpan();
