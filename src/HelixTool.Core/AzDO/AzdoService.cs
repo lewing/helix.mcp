@@ -377,16 +377,17 @@ public class AzdoService
         var logsSearched = 0;
         var steps = new List<StepSearchResult>();
 
-        foreach (var (bucket, lineCount, logId, record) in buckets)
+        foreach (var (_, lineCount, logId, record) in buckets)
         {
             if (remainingMatches <= 0 || logsSearched >= maxLogsToSearch)
                 break;
 
             var content = await _client.GetBuildLogAsync(org, project, buildId, logId, ct);
-            logsSearched++;
 
             if (content is null)
                 continue;
+
+            logsSearched++;
 
             var lines = NormalizeAndSplit(content);
             var searchResult = TextSearchHelper.SearchLines(

@@ -1159,12 +1159,12 @@ public class AzdoCommands
         {
             if (m.Context is { Count: > 0 })
             {
-                int startLine = Math.Max(0, m.LineNumber - contextLines);
+                int currentLineNumber = Math.Max(1, m.LineNumber - contextLines);
                 foreach (var line in m.Context)
                 {
-                    var prefix = line == m.Line ? ">>>" : "   ";
-                    Console.WriteLine($"  {prefix} {startLine,6}: {line}");
-                    startLine++;
+                    var prefix = currentLineNumber == m.LineNumber ? ">>>" : "   ";
+                    Console.WriteLine($"  {prefix} {currentLineNumber,6}: {line}");
+                    currentLineNumber++;
                 }
                 Console.WriteLine();
             }
@@ -1458,12 +1458,12 @@ public class AzdoCommands
             {
                 if (m.Context is { Count: > 0 })
                 {
-                    int startLine = Math.Max(0, m.LineNumber - contextLines);
+                    int currentLineNumber = Math.Max(1, m.LineNumber - contextLines);
                     foreach (var line in m.Context)
                     {
-                        var prefix = line == m.Line ? ">>>" : "   ";
-                        Console.WriteLine($"    {prefix} {startLine,6}: {line}");
-                        startLine++;
+                        var prefix = currentLineNumber == m.LineNumber ? ">>>" : "   ";
+                        Console.WriteLine($"    {prefix} {currentLineNumber,6}: {line}");
+                        currentLineNumber++;
                     }
                     Console.WriteLine();
                 }
