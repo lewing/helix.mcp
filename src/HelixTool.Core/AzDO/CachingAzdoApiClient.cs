@@ -124,6 +124,9 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
                 if (!string.IsNullOrEmpty(delta))
                 {
+                    // Ensure newline separator so delta doesn't merge with last cached line
+                    if (fullContent.Length > 0 && !fullContent.EndsWith('\n'))
+                        fullContent += '\n';
                     fullContent += delta;
                     // Only write back if our appended result is at least as long as what's
                     // currently cached (guards against concurrent refresh losing lines)
