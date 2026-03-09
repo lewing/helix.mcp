@@ -2,6 +2,7 @@ using System.Text.Json;
 using HelixTool.Core;
 using HelixTool.Core.AzDO;
 using HelixTool.Mcp.Tools;
+using ModelContextProtocol;
 using NSubstitute;
 using Xunit;
 
@@ -569,8 +570,9 @@ public class AzdoArtifactTests
     [Fact]
     public async Task Artifacts_InvalidBuildId_ThrowsArgumentException()
     {
-        await Assert.ThrowsAnyAsync<ArgumentException>(
+        var ex = await Assert.ThrowsAnyAsync<McpException>(
             () => _tools.Artifacts("not-a-valid-id"));
+        Assert.Contains("Failed to get build artifacts:", ex.Message);
     }
 
     [Fact]
