@@ -596,16 +596,10 @@ public class HelixService
         ArgumentException.ThrowIfNullOrWhiteSpace(workItem);
         ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
 
-        var path = await DownloadConsoleLogAsync(jobId, workItem, cancellationToken);
-        try
-        {
-            var allLines = await File.ReadAllLinesAsync(path, cancellationToken);
-            return TextSearchHelper.SearchLines(workItem, allLines, pattern, contextLines, maxMatches);
-        }
-        finally
-        {
-            try { File.Delete(path); } catch { }
-        }
+        // Stream directly to memory instead of writing to disk then reading back
+        var content = await GetConsoleLogContentAsync(jobId, workItem, tailLines: null, cancellationToken);
+        var allLines = content.Split('\n');
+        return TextSearchHelper.SearchLines(workItem, allLines, pattern, contextLines, maxMatches);
     }
 
     /// <summary>Search a work item's uploaded file for lines matching a pattern.</summary>
