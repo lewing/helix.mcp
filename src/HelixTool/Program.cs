@@ -1330,12 +1330,26 @@ public class AzdoCommands
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
     /// <param name="pattern">Text pattern to search for in record names and issue messages (case-insensitive).</param>
     /// <param name="type">Filter by record type: Stage, Job, or Task.</param>
-    /// <param name="result">Result filter: 'failed' (default) or 'all'.</param>
+    /// <param name="result">Result filter: 'failed' (default — includes non-succeeded records or records with timeline issues, same as 'azdo timeline') or 'all'.</param>
     /// <param name="json">Output as structured JSON.</param>
     [Command("azdo search-timeline")]
     public async Task SearchTimeline([Argument] string buildId, [Argument] string pattern,
         string? type = null, string result = "failed", bool json = false)
     {
+        if (type is not null &&
+            !type.Equals("Stage", StringComparison.OrdinalIgnoreCase) &&
+            !type.Equals("Job", StringComparison.OrdinalIgnoreCase) &&
+            !type.Equals("Task", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"Invalid type '{type}'. Must be 'Stage', 'Job', or 'Task'.", nameof(type));
+        }
+
+        if (!result.Equals("failed", StringComparison.OrdinalIgnoreCase) &&
+            !result.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"Invalid result '{result}'. Must be 'failed' or 'all'.", nameof(result));
+        }
+
         var searchResult = await _svc.SearchTimelineAsync(buildId, pattern, type, result);
 
         if (json)
