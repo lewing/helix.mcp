@@ -94,3 +94,28 @@ If we later need to reshape AzDO output differently from the API models, we'd ad
 
 📌 Team update (2026-03-08): `IsFileSearchDisabled` promoted from internal to public on `HelixService` — needed for MCP tools extraction to separate assembly. Consistent with existing public statics `MatchesPattern` and `IsTestResultFile`. — decided by Ripley
 📌 Team update (2026-03-08): AzDO search gap analysis consolidated — P0 `azdo_search_log` implemented (PR #10). CI-analysis skill study validated priorities. New P1 candidates: `azdo_search_timeline`, multi-step log search. — analyzed by Ash
+
+### 2026-03-09: azdo_search_log_across_steps design spec
+
+**Design spec produced:** `.ai-team/decisions/inbox/dallas-azdo-search-across-steps.md`
+
+**Architecture decisions:**
+- **Complement, not replace** `azdo_search_log`. The existing single-log tool remains for targeted searches when the caller already has a log ID. The new tool automates the "scan everything" workflow.
+- **Two-phase metadata + incremental search.** Phase 1 fetches timeline + logs list (2 cheap API calls, parallelizable). Phase 2 downloads and searches logs one at a time with early termination. No parallel downloads in Phase 1 — sequential is simpler and `maxLogsToSearch=30` caps total work.
+- **Ranking by failure likelihood** (4 buckets): failed → has issues → succeededWithIssues → succeeded. Within buckets, sort by lineCount descending. Orphan logs (not in timeline) go to Bucket 4.
+- **`AzdoBuildLogEntry` model** for the logs list API response. The `lineCount` field from `GET _apis/build/builds/{id}/logs` is the key metadata — enables filtering tiny logs without downloading.
+- **New `IAzdoApiClient.GetBuildLogsListAsync` method** needed. Returns log metadata (id, lineCount) without content. Cacheable with standard dynamic TTL rules.
+- **`NormalizeAndSplit` extraction.** Both `SearchBuildLogAsync` and the new method share identical `\r\n`/`\r` normalization. Extract to private static helper in `AzdoService`.
+- **Result types stay in Core** (`CrossStepSearchResult`, `StepSearchResult`). Not reshaping API output, so no separate MCP result type needed — same pattern as `TimelineSearchResult`.
+- **Safety guards:** `maxLogsToSearch=30` caps API calls, `minLogLines=5` filters boilerplate (~60% of logs), `maxMatches=50` caps total output. `remainingMatches` decremented per-log ensures early exit is exact.
+
+**Key file paths:**
+- `IAzdoApiClient.cs` — needs `GetBuildLogsListAsync` method added
+- `AzdoApiClient.cs` — HTTP implementation for logs list endpoint
+- `AzdoModels.cs` — `AzdoBuildLogEntry`, `StepSearchResult`, `CrossStepSearchResult` types
+- `AzdoService.cs` — `SearchBuildLogAcrossStepsAsync` method (ranking + incremental search)
+- `AzdoMcpTools.cs` — `azdo_search_log_across_steps` MCP tool wrapper
+- `McpToolResults.cs` — no changes needed (result types in Core)
+- `Program.cs` — `hlx azdo search-log-all` CLI command
+
+**Estimated test surface:** 19 tests (11 unit, 6 validation, 5 MCP, 3 integration-level). Documented for Lambert.

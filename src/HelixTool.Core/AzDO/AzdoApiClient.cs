@@ -117,6 +117,12 @@ public sealed class AzdoApiClient : IAzdoApiClient
         return await GetListAsync<AzdoTestAttachment>(url, ct);
     }
 
+    public async Task<IReadOnlyList<AzdoBuildLogEntry>> GetBuildLogsListAsync(string org, string project, int buildId, CancellationToken ct = default)
+    {
+        var url = BuildUrl(org, project, $"build/builds/{buildId}/logs");
+        return await GetListAsync<AzdoBuildLogEntry>(url, ct);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
 
     private static string BuildUrl(string org, string project, string path)

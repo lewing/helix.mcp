@@ -155,14 +155,7 @@ public class AzdoService
         if (content is null)
             throw new InvalidOperationException($"Log {logId} not found for build '{buildIdOrUrl}'.");
 
-        var normalized = content
-            .Replace("\r\n", "\n", StringComparison.Ordinal)
-            .Replace("\r", "\n", StringComparison.Ordinal);
-        var lines = normalized.Split('\n');
-        if (normalized.EndsWith("\n", StringComparison.Ordinal) && lines.Length > 0)
-        {
-            Array.Resize(ref lines, lines.Length - 1);
-        }
+        var lines = NormalizeAndSplit(content);
         return TextSearchHelper.SearchLines($"log:{logId}", lines, pattern, contextLines, maxMatches);
     }
 
@@ -277,6 +270,182 @@ public class AzdoService
             MatchCount = matches.Count,
             Matches = matches
         };
+    }
+
+    /// <summary>
+    /// Search all log steps in a build for a pattern, ranked by failure likelihood with early termination.
+    /// Fetches timeline and logs list metadata in parallel, builds a ranked queue (failed → issues →
+    /// succeededWithIssues → succeeded → orphans), then searches sequentially until maxMatches is reached.
+    /// </summary>
+    public async Task<CrossStepSearchResult> SearchBuildLogAcrossStepsAsync(
+        string buildIdOrUrl, string pattern,
+        int contextLines = 2, int maxMatches = 50,
+        int maxLogsToSearch = 30, int minLogLines = 5,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
+        ArgumentOutOfRangeException.ThrowIfNegative(contextLines);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(maxMatches, 0);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(maxLogsToSearch, 0);
+        ArgumentOutOfRangeException.ThrowIfNegative(minLogLines);
+
+        if (HelixService.IsFileSearchDisabled)
+            throw new InvalidOperationException("File content search is disabled by configuration.");
+
+        var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
+
+        // Phase 1: Parallel metadata fetch
+        var timelineTask = _client.GetTimelineAsync(org, project, buildId, ct);
+        var logsListTask = _client.GetBuildLogsListAsync(org, project, buildId, ct);
+        await Task.WhenAll(timelineTask, logsListTask);
+
+        var timeline = await timelineTask;
+        var logsList = await logsListTask;
+
+        // Build lookup: logEntry.Id → logEntry
+        var logEntryById = new Dictionary<int, AzdoBuildLogEntry>();
+        foreach (var entry in logsList)
+            logEntryById[entry.Id] = entry;
+
+        // Build lookup: recordById for parent resolution
+        var records = timeline?.Records ?? [];
+        var recordById = records
+            .Where(r => r.Id is not null)
+            .ToDictionary(r => r.Id!, StringComparer.OrdinalIgnoreCase);
+
+        // Phase 2: Build ranked log queue
+        var referencedLogIds = new HashSet<int>();
+        var buckets = new List<(int bucket, long lineCount, int logId, AzdoTimelineRecord record)>();
+
+        foreach (var r in records)
+        {
+            if (r.Log is null) continue;
+            var logId = r.Log.Id;
+            referencedLogIds.Add(logId);
+
+            if (!logEntryById.TryGetValue(logId, out var logEntry))
+                continue;
+
+            if (logEntry.LineCount < minLogLines)
+                continue;
+
+            int bucket;
+            if (r.Result is not null &&
+                (r.Result.Equals("failed", StringComparison.OrdinalIgnoreCase) ||
+                 r.Result.Equals("canceled", StringComparison.OrdinalIgnoreCase)))
+            {
+                bucket = 0;
+            }
+            else if (r.Issues is { Count: > 0 })
+            {
+                bucket = 1;
+            }
+            else if (r.Result is not null &&
+                     r.Result.Equals("succeededWithIssues", StringComparison.OrdinalIgnoreCase))
+            {
+                bucket = 2;
+            }
+            else
+            {
+                bucket = 3;
+            }
+
+            buckets.Add((bucket, logEntry.LineCount, logId, r));
+        }
+
+        // Orphan logs (Bucket 4): in logs list but not referenced by any timeline record
+        foreach (var entry in logsList)
+        {
+            if (referencedLogIds.Contains(entry.Id))
+                continue;
+            if (entry.LineCount < minLogLines)
+                continue;
+            // Create a synthetic entry — no timeline record available
+            buckets.Add((4, entry.LineCount, entry.Id, new AzdoTimelineRecord { Name = $"log:{entry.Id}" }));
+        }
+
+        // Sort: by bucket ascending, then by lineCount descending within bucket
+        buckets.Sort((a, b) =>
+        {
+            int cmp = a.bucket.CompareTo(b.bucket);
+            if (cmp != 0) return cmp;
+            return b.lineCount.CompareTo(a.lineCount);
+        });
+
+        // Phase 3: Incremental search with early termination
+        var remainingMatches = maxMatches;
+        var logsSearched = 0;
+        var steps = new List<StepSearchResult>();
+
+        foreach (var (_, lineCount, logId, record) in buckets)
+        {
+            if (remainingMatches <= 0 || logsSearched >= maxLogsToSearch)
+                break;
+
+            var content = await _client.GetBuildLogAsync(org, project, buildId, logId, ct);
+
+            if (content is null)
+                continue;
+
+            logsSearched++;
+
+            var lines = NormalizeAndSplit(content);
+            var searchResult = TextSearchHelper.SearchLines(
+                identifier: $"log:{logId}",
+                lines: lines,
+                pattern: pattern,
+                contextLines: contextLines,
+                maxMatches: remainingMatches);
+
+            if (searchResult.Matches.Count > 0)
+            {
+                // Resolve parent name
+                string? parentName = null;
+                if (record.ParentId is not null && recordById.TryGetValue(record.ParentId, out var parent))
+                    parentName = parent.Name;
+
+                steps.Add(new StepSearchResult
+                {
+                    LogId = logId,
+                    StepName = record.Name ?? $"log:{logId}",
+                    StepType = record.Type,
+                    StepResult = record.Result,
+                    ParentName = parentName,
+                    LineCount = lineCount,
+                    MatchCount = searchResult.Matches.Count,
+                    Matches = searchResult.Matches
+                });
+
+                remainingMatches -= searchResult.Matches.Count;
+            }
+        }
+
+        var totalEligible = buckets.Count;
+        var totalMatchCount = steps.Sum(s => s.MatchCount);
+        var stoppedEarly = remainingMatches <= 0 || (logsSearched >= maxLogsToSearch && logsSearched < totalEligible);
+
+        return new CrossStepSearchResult
+        {
+            Build = buildIdOrUrl,
+            Pattern = pattern,
+            TotalLogsInBuild = logsList.Count,
+            LogsSearched = logsSearched,
+            LogsSkipped = totalEligible - logsSearched,
+            TotalMatchCount = totalMatchCount,
+            StoppedEarly = stoppedEarly,
+            Steps = steps
+        };
+    }
+
+    private static string[] NormalizeAndSplit(string content)
+    {
+        var normalized = content
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal);
+        var lines = normalized.Split('\n');
+        if (normalized.EndsWith("\n", StringComparison.Ordinal) && lines.Length > 0)
+            Array.Resize(ref lines, lines.Length - 1);
+        return lines;
     }
 
     private static string FormatDuration(TimeSpan duration)

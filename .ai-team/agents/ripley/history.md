@@ -75,3 +75,13 @@
 
 - **CLI-side validation before service calls:** When CLI option names differ from service parameter names (e.g., `--type` vs `recordType`, `--result` vs `resultFilter`), add validation at the CLI layer so error messages reference CLI option names. Follow the `azdo timeline` command's `filter` validation pattern: check valid values with `string.Equals(OrdinalIgnoreCase)` and throw `ArgumentException` with `nameof(cliParam)`.
 - **Doc accuracy for 'failed' filter semantics:** The `result="failed"` filter in `search-timeline` doesn't just mean "result=failed" — it means "non-succeeded OR has timeline issues", same semantics as the `azdo timeline` command's `filter="failed"`. XML docs must reflect this broader behavior.
+
+## Learnings (azdo_search_log_across_steps implementation)
+
+- **NormalizeAndSplit extraction:** Extracted `\r\n` → `\n` normalization + split + trailing-empty-trim into `NormalizeAndSplit()` private static method in `AzdoService`. Both `SearchBuildLogAsync` and `SearchBuildLogAcrossStepsAsync` share this. Pattern: when two methods share identical preprocessing, extract immediately rather than let copy-paste drift.
+- **4-bucket ranking algorithm:** Logs ranked by failure likelihood: Bucket 0 (failed/canceled) → Bucket 1 (has issues) → Bucket 2 (succeededWithIssues) → Bucket 3 (succeeded) → Bucket 4 (orphans). Within each bucket, sorted by lineCount descending. This matches how a human would scan — check failed steps first, bigger logs more likely to contain errors.
+- **Orphan log detection:** Logs in the logs list but not referenced by any timeline record go into Bucket 4. These are rare but occur in retried builds. Synthetic `AzdoTimelineRecord` created with `Name = $"log:{entry.Id}"` since there's no real timeline data.
+- **Early termination has two triggers:** (1) `remainingMatches <= 0` — found enough matches, and (2) `logsSearched >= maxLogsToSearch` — API call budget exhausted. `StoppedEarly` is true if either triggers before exhausting the eligible log queue.
+- **Task.WhenAll for metadata:** Timeline and logs list are independent API calls. `Task.WhenAll` fetches both concurrently. Must `await` individual tasks after `WhenAll` to unwrap results (not just use `.Result` which can deadlock in some contexts).
+- **CrossStepSearchResult types live in Core AzdoModels.cs:** Same pattern as `TimelineSearchResult` — domain types in Core, MCP tools return them directly. No wrapper DTO needed in McpToolResults.cs.
+- **CachingAzdoApiClient dynamic TTL for logs list:** `GetBuildLogsListAsync` uses completed build → 4h, in-progress → 15s, matching the existing pattern for timeline caching (check build completion status first).
