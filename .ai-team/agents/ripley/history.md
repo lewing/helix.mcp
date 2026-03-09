@@ -68,3 +68,11 @@
 📌 Team update (2025-07-18): Perf review (17 issues) + 8 fixes implemented (3 P0, 5 P1), all 864 tests passing — decided/implemented by Ripley
 
 📌 Team update (2026-03-09): 3 perf decisions merged — raw: cache prefix, SearchConsoleLog decoupling, shared StringHelpers — decided by Ripley
+
+## Learnings (PR #14 review fixes, 2025-07-18)
+
+- **CRLF in streamed content:** When bypassing `File.ReadAllLinesAsync` and splitting raw content, always normalize `\r\n`/`\r` to `\n` before splitting — otherwise `\r` leaks into line strings and breaks pattern matching.
+- **Trailing empty element on split:** `"content\n".Split('\n')` yields a trailing empty string. Drop it only when `lines.Count > 1` to preserve semantics for single-newline inputs like `"\n"` → `[""]`.
+- **Cache sentinel collision:** Plain-text prefixes like `"raw:"` can collide with legitimate log content. Use NUL byte prefixes (`"\0raw\n"`) — NUL can't appear in valid log text, making collision impossible.
+
+📌 Team update (2025-07-18): Fixed 3 PR #14 review comments — CRLF handling in SearchConsoleLogAsync, NormalizeAndSplit edge case for single-newline, cache sentinel collision via NUL prefix — implemented by Ripley
