@@ -57,7 +57,7 @@ public class SearchBuildLogAcrossStepsTests
             .Returns(Task.FromResult<IReadOnlyList<AzdoBuildLogEntry>>(entries.ToList()));
 
     private void SetupLogContent(int logId, string content) =>
-        _client.GetBuildLogAsync(Org, Project, BuildId, logId, Arg.Any<CancellationToken>())
+        _client.GetBuildLogAsync(Org, Project, BuildId, logId, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<string?>(content));
 
     /// <summary>Generate a log with N lines, with an optional error line at a specific position.</summary>
@@ -212,7 +212,7 @@ public class SearchBuildLogAcrossStepsTests
         Assert.Equal(5, result.LogsSearched);
         // Verify only 5 GetBuildLogAsync calls were made
         await _client.ReceivedWithAnyArgs(5).GetBuildLogAsync(
-            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>());
     }
 
     // ── T-7: Orphan logs (no timeline record) → Bucket 4 ───────────

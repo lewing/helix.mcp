@@ -96,21 +96,80 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         return result;
     }
 
-    public async Task<string?> GetBuildLogAsync(string org, string project, int buildId, int logId, CancellationToken ct = default)
+    public async Task<string?> GetBuildLogAsync(string org, string project, int buildId, int logId, int? startLine = null, int? endLine = null, CancellationToken ct = default)
     {
-        if (!_enabled) return await _inner.GetBuildLogAsync(org, project, buildId, logId, ct);
+        if (!_enabled)
+            return await _inner.GetBuildLogAsync(org, project, buildId, logId, startLine, endLine, ct);
 
-        var key = BuildCacheKey(org, project, $"log:{buildId}:{logId}");
-        var cached = await _cache.GetMetadataAsync(key, ct);
-        if (cached is not null)
-            return JsonSerializer.Deserialize<string>(cached);
+        var contentKey = BuildCacheKey(org, project, $"log:{buildId}:{logId}");
+        var freshKey = BuildCacheKey(org, project, $"log-fresh:{buildId}:{logId}");
 
-        var result = await _inner.GetBuildLogAsync(org, project, buildId, logId, ct);
-        if (result is null)
-            return null;
+        var cachedJson = await _cache.GetMetadataAsync(contentKey, ct);
+        string? fullContent = cachedJson is not null
+            ? JsonSerializer.Deserialize<string>(cachedJson)
+            : null;
 
-        // Logs are immutable once written
-        await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), ImmutableTtl, ct);
+        if (fullContent is not null)
+        {
+            // Check freshness — stale means the 15s marker expired
+            var isFresh = await _cache.GetMetadataAsync(freshKey, ct) is not null;
+
+            if (!isFresh)
+            {
+                // Stale: delta-append instead of full re-download
+                var isCompleted = await IsBuildCompletedAsync(org, project, buildId, ct);
+                var cachedLineCount = CountLines(fullContent);
+                var delta = await _inner.GetBuildLogAsync(
+                    org, project, buildId, logId, startLine: cachedLineCount, ct: ct);
+
+                if (!string.IsNullOrEmpty(delta))
+                {
+                    // Ensure newline separator so delta doesn't merge with last cached line
+                    if (fullContent.Length > 0 && !fullContent.EndsWith('\n'))
+                        fullContent += '\n';
+                    fullContent += delta;
+                    // Only write back if our appended result is at least as long as what's
+                    // currently cached (guards against concurrent refresh losing lines)
+                    var currentJson = await _cache.GetMetadataAsync(contentKey, ct);
+                    var currentContent = currentJson is not null
+                        ? JsonSerializer.Deserialize<string>(currentJson)
+                        : null;
+                    if (currentContent is null || fullContent.Length >= currentContent.Length)
+                    {
+                        await _cache.SetMetadataAsync(contentKey,
+                            JsonSerializer.Serialize(fullContent), ImmutableTtl, ct);
+                    }
+                }
+
+                if (!isCompleted)
+                    await _cache.SetMetadataAsync(freshKey, "\"1\"", InProgressTtl, ct);
+                else
+                    await _cache.SetMetadataAsync(freshKey, "\"1\"", ImmutableTtl, ct);
+            }
+
+            // Serve full or range from (possibly refreshed) cached content
+            if (startLine is null && endLine is null)
+                return fullContent;
+
+            return ExtractRange(fullContent, startLine, endLine);
+        }
+
+        // Not cached — range request with no cached full log: pass through, don't cache partial
+        if (startLine is not null || endLine is not null)
+            return await _inner.GetBuildLogAsync(org, project, buildId, logId, startLine, endLine, ct);
+
+        // Full log first fetch
+        var result = await _inner.GetBuildLogAsync(org, project, buildId, logId, ct: ct);
+        if (result is null) return null;
+
+        var completed = await IsBuildCompletedAsync(org, project, buildId, ct);
+        await _cache.SetMetadataAsync(contentKey, JsonSerializer.Serialize(result), ImmutableTtl, ct);
+
+        if (!completed)
+            await _cache.SetMetadataAsync(freshKey, "\"1\"", InProgressTtl, ct);
+        else
+            await _cache.SetMetadataAsync(freshKey, "\"1\"", ImmutableTtl, ct);
+
         return result;
     }
 
@@ -239,5 +298,60 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         var raw = $"{filter.PrNumber}|{filter.Branch}|{filter.DefinitionId}|{filter.Top}|{filter.StatusFilter}";
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(raw));
         return Convert.ToHexString(hash)[..12].ToLowerInvariant();
+    }
+
+    internal static int CountLines(string content)
+    {
+        if (string.IsNullOrEmpty(content)) return 0;
+        var count = content.AsSpan().Count('\n');
+        // When content doesn't end with '\n', there's one more line after the last '\n'
+        if (!content.EndsWith('\n')) count++;
+        return count;
+    }
+
+    internal static string? ExtractRange(string content, int? startLine, int? endLine)
+    {
+        var span = content.AsSpan();
+        var totalLines = CountLines(content);
+        if (totalLines == 0) return null;
+
+        var start = startLine ?? 0;
+        var end = endLine ?? (totalLines - 1);
+
+        if (start >= totalLines || start < 0)
+            return null;
+
+        end = Math.Min(end, totalLines - 1);
+        if (end < start)
+            return null;
+
+        // Find the character offset of the start line
+        var startOffset = 0;
+        for (var i = 0; i < start; i++)
+        {
+            var nl = span[startOffset..].IndexOf('\n');
+            if (nl < 0) return null;
+            startOffset += nl + 1;
+        }
+
+        // Find the character offset just past the end line's '\n'
+        var endOffset = startOffset;
+        for (var i = start; i <= end; i++)
+        {
+            var nl = span[endOffset..].IndexOf('\n');
+            if (nl < 0)
+            {
+                // Last line has no trailing newline
+                endOffset = span.Length;
+                break;
+            }
+            endOffset += nl + 1;
+        }
+
+        // Trim trailing '\n' from the result to match original Join behavior
+        if (endOffset > startOffset && span[endOffset - 1] == '\n')
+            endOffset--;
+
+        return content[startOffset..endOffset];
     }
 }

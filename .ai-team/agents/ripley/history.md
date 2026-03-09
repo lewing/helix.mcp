@@ -9,9 +9,9 @@
 - **HelixIdResolver:** Handles bare GUIDs, full Helix URLs, and `TryResolveJobAndWorkItem` for URL-based jobId+workItem extraction
 - **MatchesPattern:** Simple glob — `*` matches all, `*.ext` matches suffix, else substring match
 
-## Core Context (summarized through 2026-03-08)
+## Core Context (summarized through 2026-03-09)
 
-> Older history archived to history-archive.md on 2026-03-08.
+> Older history archived to history-archive.md on 2026-03-09.
 
 **Architecture & DI:** IHelixApiClient with projection interfaces (IJobDetails, IWorkItemSummary, IWorkItemDetails, IWorkItemFile). Constructor injection on HelixService. DI: CLI via `ConsoleApp.ServiceProvider`, MCP via `builder.Services.AddSingleton<>()`. Two DI containers in CLI (commands + `hlx mcp`). Program.cs has UTF-8 BOM.
 
@@ -31,50 +31,17 @@
 
 **AzDO CLI (2026-03-08):** 9 commands mirroring MCP tools. IHttpClientFactory via DI (named clients "HelixDownload" + "AzDO", 5-min timeout). `HttpCompletionOption.ResponseHeadersRead` for streaming.
 
+**Mcp.Tools extraction (2026-03-08):** Separate `HelixTool.Mcp.Tools` project for MCP tool definitions + DTOs. ModelContextProtocol dependency removed from Core. `WithToolsFromAssembly(typeof(HelixMcpTools).Assembly)`. Internal→public promotions for cross-assembly access. `git mv` for history preservation. Test project references Core, Mcp, and Mcp.Tools.
+
+**AzDO search & timeline tools (2026-03-08–09):** `TextSearchHelper` extracted to Core (shared Helix/AzDO search). Domain types (TimelineSearchMatch, TimelineSearchResult, CrossStepSearchResult) in Core AzdoModels.cs, returned directly by MCP tools. `[JsonIgnore]` for raw record access. CRLF normalization (`\r\n`→`\n`) before Split('\n'). `IsFileSearchDisabled` dual-check: MCP→McpException, service→InvalidOperationException. CLI-side validation references CLI option names in errors. MCP result fields named for broader type (e.g., `Build` not `BuildId`). McpException wrapping for service exceptions. `result="failed"` filter means non-succeeded OR has issues.
+
 **Key patterns:**
 - `File.Move(overwrite: true)` on Windows: catch both `IOException` and `UnauthorizedAccessException`
 - Per-invocation `Guid.NewGuid()` temp dirs to prevent cross-process races
 - `WithToolsFromAssembly()` needs explicit assembly arg for referenced libs
 - MCP descriptions should expose behavioral contracts, not implementation mechanics
-
-## Learnings (HelixTool.Mcp.Tools extraction)
-
-- **HelixTool.Mcp.Tools project:** New class library at `src/HelixTool.Mcp.Tools/` containing MCP tool definitions (HelixMcpTools, AzdoMcpTools) and MCP result DTOs (McpToolResults.cs). No NuGet packaging metadata — Larry doesn't want library packages published yet.
-- **Namespace: `HelixTool.Mcp.Tools`:** All three moved files use this namespace. AzdoMcpTools was previously `HelixTool.Core.AzDO`, now unified under `HelixTool.Mcp.Tools`. AzDO model/service types (`AzdoBuildSummary`, `AzdoService`, etc.) remain in `HelixTool.Core.AzDO`.
-- **ModelContextProtocol package removed from Core:** Core no longer references `ModelContextProtocol` — that dependency now lives in `HelixTool.Mcp.Tools`. Core is purely business logic + API client + caching.
-- **`IsFileSearchDisabled` promoted to public:** Was `internal static` on `HelixService`, had to become `public` because `HelixMcpTools` moved to a separate assembly. Same visibility pattern as `MatchesPattern` and `IsTestResultFile`.
-- **`WithToolsFromAssembly` assembly reference:** Both CLI and HTTP server use `typeof(HelixMcpTools).Assembly` — since HelixMcpTools moved to `HelixTool.Mcp.Tools` assembly, this automatically picks up the right assembly. No code change needed.
-- **Test project references all three:** `HelixTool.Tests.csproj` now references Core, Mcp, and Mcp.Tools projects. Six test files needed `using HelixTool.Mcp.Tools;` added.
-- **git mv preserves history:** Used `git mv` for all three file moves to maintain blame/log continuity.
-
-## Learnings (azdo_search_log implementation)
-
-- **TextSearchHelper extraction:** `SearchLines()` moved from `HelixService` (private static) to `TextSearchHelper` (public static) in `HelixTool.Core`. The three record types (`LogMatch`, `LogSearchResult`, `FileContentSearchResult`) also promoted to top-level in the `HelixTool.Core` namespace since they're now shared between Helix and AzDO code paths.
-- **Default parameter values matter:** Added `contextLines = 0, maxMatches = 50` defaults to `TextSearchHelper.SearchLines()` — existing tests relied on calling with fewer args. When extracting methods to public APIs, always check test call sites for implicit parameter expectations.
-- **AzDO log fetching already supports full content:** `AzdoApiClient.GetBuildLogAsync` returns the complete log; `AzdoService.GetBuildLogAsync` adds optional `tailLines` truncation. For search, pass `tailLines: null` to get full content.
-- **IsFileSearchDisabled dual-check pattern:** Both the MCP tool layer (throws `McpException`) and the service layer (throws `InvalidOperationException`) check `IsFileSearchDisabled`. The MCP check provides user-friendly errors; the service check is defense-in-depth for CLI consumers.
-- **CLI search output pattern:** Context lines displayed with `>>>` prefix for the matching line and `   ` prefix for context. Line numbers right-aligned in a 6-char column.
-📌 Team update (2026-03-08): AzDO search gap analysis consolidated — CI-analysis skill study validated `azdo_search_log` as P0, confirmed `SearchLines()` extraction approach. New P1 ideas: `azdo_search_timeline`, `azdo_search_log_across_steps`. — analyzed by Ash
-
-## Learnings (PR #10 review fixes)
-
-- **CLI line-number calculation:** When displaying context blocks, derive `startLine` from `m.LineNumber - contextLines` (clamped to 0) instead of using `TakeWhile(c => c != m.Line).Count()`. The TakeWhile approach breaks when duplicate line text appears earlier in the context window.
-- **CRLF normalization in AzDO logs:** AzDO logs may use `\r\n` line endings. Must normalize (`\r\n` → `\n`, `\r` → `\n`) before `Split('\n')`, and trim trailing empty entry to match `File.ReadAllLines` semantics used by Helix search paths.
-- **MCP result field naming honesty:** When a field can contain either an ID or a URL (because the tool accepts both), name the property to reflect the broader type (e.g., `Build` not `BuildId`). The `[JsonPropertyName]` attribute controls wire format independently.
-- **McpException wrapping pattern:** Service calls in MCP tool handlers should be wrapped in `try/catch` for expected exceptions (`InvalidOperationException`, `HttpRequestException`) and rethrown as `McpException` with the original message. This matches the `HelixException → McpException` pattern in `HelixMcpTools`.
-
-## Learnings (azdo_search_timeline implementation)
-
-- **Domain types in Core, not MCP.Tools:** `TimelineSearchMatch` and `TimelineSearchResult` live in `HelixTool.Core.AzDO` (AzdoModels.cs), not McpToolResults.cs. Core can't reference Mcp.Tools. MCP tools return Core types directly (same pattern as `AzdoBuildSummary`).
-- **`[JsonIgnore]` for raw record access:** `TimelineSearchMatch.Record` exposes the underlying `AzdoTimelineRecord` with `[JsonIgnore]` — keeps MCP JSON output flat while giving tests/service consumers raw access to the timeline record.
-- **Duration formatting in service layer:** Service computes formatted duration strings (e.g., "5m 30s") from `StartTime`/`FinishTime` and includes them in the DTO. Avoids duplicating formatting logic in MCP tool and CLI layers. `FormatDuration` is private to `AzdoService`.
-- **Null timeline → InvalidOperationException:** When timeline is null (build not found or no timeline available), the service throws `InvalidOperationException` rather than returning empty results. MCP layer catches and wraps as `McpException`.
-- **Pre-existing tests drove API shape:** Tests were pre-written expecting specific DTO properties (`Record`, `MatchedIssues`, `Duration`, `LogId`, `ParentName`). Aligning the service return type to match test expectations rather than fighting them.
-
-## Learnings (PR #11 review fixes)
-
-- **CLI-side validation before service calls:** When CLI option names differ from service parameter names (e.g., `--type` vs `recordType`, `--result` vs `resultFilter`), add validation at the CLI layer so error messages reference CLI option names. Follow the `azdo timeline` command's `filter` validation pattern: check valid values with `string.Equals(OrdinalIgnoreCase)` and throw `ArgumentException` with `nameof(cliParam)`.
-- **Doc accuracy for 'failed' filter semantics:** The `result="failed"` filter in `search-timeline` doesn't just mean "result=failed" — it means "non-succeeded OR has timeline issues", same semantics as the `azdo timeline` command's `filter="failed"`. XML docs must reflect this broader behavior.
+- Default parameter values: check test call sites when extracting methods to public APIs
+- CLI context line-numbers: use `m.LineNumber - contextLines`, not TakeWhile (breaks with duplicate lines)
 
 ## Learnings (azdo_search_log_across_steps implementation)
 
@@ -85,3 +52,14 @@
 - **Task.WhenAll for metadata:** Timeline and logs list are independent API calls. `Task.WhenAll` fetches both concurrently. Must `await` individual tasks after `WhenAll` to unwrap results (not just use `.Result` which can deadlock in some contexts).
 - **CrossStepSearchResult types live in Core AzdoModels.cs:** Same pattern as `TimelineSearchResult` — domain types in Core, MCP tools return them directly. No wrapper DTO needed in McpToolResults.cs.
 - **CachingAzdoApiClient dynamic TTL for logs list:** `GetBuildLogsListAsync` uses completed build → 4h, in-progress → 15s, matching the existing pattern for timeline caching (check build completion status first).
+
+📌 Team update (2026-03-08): AzDO search gap analysis consolidated — CI-analysis skill study validated `azdo_search_log` as P0, confirmed `SearchLines()` extraction approach. New P1 ideas: `azdo_search_timeline`, `azdo_search_log_across_steps`. — analyzed by Ash
+📌 Team update (2026-03-09): Incremental log fetching full design spec merged — API range support (startLine/endLine), append-on-expire caching (two-key pattern), tail optimization. P0 CountLines off-by-one fixed. 864/864 tests passing. PR #13 opened. — decided by Dallas
+📌 Team update (2026-03-09): P0 CountLines off-by-one fix — Split('\n') overcounts by 1 for trailing newline content. Fix: subtract 1 when content ends with '\n'. Affects delta-fetch startLine computation. — decided by Dallas
+📌 Team update (2026-03-09): azdo_search_log_across_steps full design spec merged — 4-bucket ranking, early termination, GetBuildLogsListAsync, NormalizeAndSplit extraction. 19 estimated tests. — decided by Dallas
+
+## Learnings (PR #13 review fixes)
+
+- **Integer overflow in tail optimization:** `tailLines.Value * 2` computed as `int` can overflow for large user-controlled values. Fix: cast to `(long)tailLines.Value * 2` for the comparison, and guard `startLine` arithmetic with bounds check (`> 0 && <= int.MaxValue`) before the `(int)` cast. Falls back to full fetch if values don't fit. Lesson: always consider overflow on user-controlled arithmetic, especially before narrowing casts.
+- **ExtractRange clamping vs server semantics:** The original `ExtractRange` clamped out-of-bounds `startLine` to the last line, which differs from AzDO API behavior (returns empty/404 for out-of-range). Fix: return `null` when `start >= lines.Length`, `start < 0`, or `end < start`. Lesson: cache-layer range extraction must match server semantics to avoid behavioral divergence between cached and uncached paths.
+- **Allocation-free string line operations:** Replace `string.Split('\n')` with span-based approaches for hot-path methods. `CountLines`: use `content.AsSpan().Count('\n')` (MemoryExtensions.Count) — zero allocation. `ExtractRange`: scan for Nth newline via `IndexOf('\n')` in a loop to find character offsets, then slice with `content[start..end]` — avoids allocating an array of all lines just to extract a small range. Critical for large AzDO logs on delta-refresh paths. Note: must handle content without trailing `\n` (add +1 to count).

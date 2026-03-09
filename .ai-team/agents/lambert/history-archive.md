@@ -205,3 +205,50 @@
 - **ParseTrxResultsAsync auto-discovery:** Production code now tries `*.trx` first, falls back to `*.xml`, then throws `HelixException` with work-item name in the message. Two error paths: "No test result files found" (no files at all) and "Found XML files but none were in a recognized format" (files found but unrecognizable).
 - **SetupMultipleFiles mock pitfall:** Files with `null` content don't configure `GetFileAsync`. If `DownloadFilesAsync` matches them by pattern, the null stream causes `NullReferenceException`. Always use non-matching extensions (`.binlog`, `.log`) for "no files found" tests, or provide actual content for downloadable files.
 - **MCP error surfacing pattern:** `HelixMcpTools.TestResults` currently lets `HelixException` propagate uncaught. Use `Record.ExceptionAsync` + message assertions (not exception type) to write tests that pass both before and after a try/catch wrapper is added. Comment out `Assert.IsType<McpException>` as a contract marker.
+
+
+## Archived from history.md (2026-03-09)
+
+### 2026-03-07: AzDO Security Tests (63 tests)
+- **AzdoSecurityTests** in `src/HelixTool.Tests/AzDO/AzdoSecurityTests.cs` — 63 tests across 5 categories:
+  - AzdoIdResolver malicious URL inputs (embedded credentials, non-AzDO hosts/SSRF, path traversal, query injection, unicode, long URLs, scheme attacks, integer overflow)
+  - AzCliAzdoTokenAccessor command injection safety (no shell execute, env var passthrough, CLI failure resilience)
+  - AzdoApiClient request construction (SSRF prevention via host assertion, token leakage in errors, special chars in org/project, null/empty token)
+  - CachingAzdoApiClient cache isolation (org/project key separation, azdo: prefix, no tokens in cached data, cache key poisoning via path traversal/colons, disabled cache)
+  - AzdoService end-to-end (malicious URLs rejected before API call, null/empty/invalid inputs)
+- **Security test patterns:** Token leakage (DoesNotContain on error), SSRF (host assertion), Cache isolation (different keys for org/project), No-API-call guard (DidNotReceive after rejection)
+- **Edge cases:** HttpUtility.ParseQueryString comma concat safe via int.TryParse, Uri credential parsing safe (Host/Path only), Uri normalizes traversal, long.MaxValue fails int.TryParse safely, newlines in AZDO_TOKEN mitigated by AuthenticationHeaderValue
+- **Total:** 594 tests (531 + 63 new).
+
+### 2026-03-08: AzDO Artifact & Attachment Tests (33 tests)
+- **AzdoArtifactTests** in `src/HelixTool.Tests/AzDO/AzdoArtifactTests.cs` — 33 tests: API Client (artifacts/attachments), Service Layer (URL resolution, top param), Caching (miss/hit, TTL 4h artifacts/1h attachments, azdo: prefix), MCP Tools (list/URL/empty), Edge Cases (invalid input, 2GB file, JSON round-trip)
+- CamelCase JSON: `root.GetProperty("camelCaseName").GetXxx()` avoids xUnit2002
+- Artifacts use ImmutableTtl (4h), TestAttachments use TestTtl (1h)
+- **Total:** 700 tests (667 + 33 new).
+
+### 2026-03-08: Proactive Tests for SEC-2/3/4 and AzDO CLI (53 tests)
+- **HttpClientConfigurationTests** (13): null-guard, timeout range validation, timeout vs cancellation behavior, IHttpClientFactory pattern
+- **StreamingBehaviorTests** (18): empty/large streams, tailLines edges, connection errors, stream disposal, special chars, input validation
+- **AzdoCliCommandTests** (22): build summary, timeline, build log, changes, test runs/results, list builds, artifacts
+- NSubstitute: `.Returns<Stream>(_ => throw new Ex())` for exception testing; init-only properties need object initializer
+- AzdoBuildChange.Author is AzdoChangeAuthor (not AzdoIdentityRef)
+- **Total:** 753 tests (700 + 53 new).
+
+### 2026-03-08: AzDO Search Log & TextSearchHelper Tests (41 tests)
+- **TextSearchHelperTests** (20): basic matching, context lines, case insensitivity (Theory), edge cases, max matches, overlapping context, large content (10K lines), special chars (literal not regex)
+- **AzdoSearchLogTests** (21): happy path, no matches, context, max matches, large log, special chars, URL resolution, case insensitivity, input validation, null log, search disabled env var, result identifier
+- TextSearchHelper: pure static class, 5 required params, no defaults
+- AzdoService.SearchBuildLogAsync delegates to TextSearchHelper, uses IsFileSearchDisabled guard
+- Env var test pattern: save/set/try-finally-restore for HLX_DISABLE_FILE_SEARCH
+- **Total:** 791 tests (750 + 41 new).
+
+### PR #10 Review Fix: Test Parallelism for Env Var Tests
+- Added `[Collection("FileSearchConfig")]` to AzdoSearchLogTests for env var mutation safety
+- Added FileSearchConfigCollection.cs with `[CollectionDefinition("FileSearchConfig", DisableParallelization = true)]`
+- Convention: all classes mutating HLX_DISABLE_FILE_SEARCH must use this collection
+
+### AzDO Search Timeline Tests (19 tests)
+- **AzdoSearchTimelineTests** (19): name/issue matching, record type filtering, result filtering (all/failed/default), empty/null handling, input validation, parent name resolution, duration formatting, edge cases
+- SearchTimelineAsync returns TimelineSearchResult (in AzdoModels.cs), null timeline throws InvalidOperationException
+- Default resultFilter is "failed"; FormatDuration: >1h "Xh Ym", >1m "Xm Ys", else "Xs"
+- Tests written in parallel with Ripley's implementation, adapted from tuple to final TimelineSearchResult class

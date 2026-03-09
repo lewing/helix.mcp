@@ -7,9 +7,11 @@
 - **Structure:** Three projects — HelixTool.Core (shared library), HelixTool (CLI), HelixTool.Mcp (HTTP MCP server)
 - **Key files:** HelixService.cs (core ops), HelixIdResolver.cs (GUID/URL parsing), HelixMcpTools.cs (MCP tool definitions), Program.cs (CLI commands)
 
-## Core Context (summarized through 2026-02-15)
+## Core Context (summarized through 2026-03-09)
 
-**Architecture reviews produced:** Initial code review (namespace collision, god class, no DI/tests), P0 foundation design (IHelixApiClient, DI, HelixException, CancellationToken), stdio MCP transport (Option B — `hlx mcp` subcommand), US-4 auth design (HELIX_ACCESS_TOKEN env var), multi-auth analysis (deferred), cache design (SQLite-backed, decorator pattern, WAL mode), HTTP/SSE multi-client auth (IHttpContextAccessor + scoped DI).
+> Older history archived to history-archive.md on 2026-03-09.
+
+**Architecture reviews produced:** Initial code review, P0 foundation design (IHelixApiClient, DI, HelixException, CancellationToken), stdio MCP transport (`hlx mcp` subcommand), US-4 auth (HELIX_ACCESS_TOKEN env var), cache design (SQLite, decorator pattern, WAL), HTTP/SSE multi-client auth (IHttpContextAccessor + scoped DI).
 
 **Key design patterns established:**
 - Decorator pattern for caching (CachingHelixApiClient wrapping IHelixApiClient)
@@ -18,22 +20,22 @@
 - Cache isolation by auth token hash (SHA256) → separate SQLite DBs
 - `IHelixTokenAccessor` abstraction: env var for stdio, HttpContext for HTTP
 - MCP tools are thin wrappers over HelixService — business logic stays in HelixService
-- MCP tool naming: `hlx_{verb}` or `hlx_{noun}` pattern with `_` separators
-- MCP descriptions: expose behavioral contracts (what/inputs/outputs), NOT implementation mechanics
-- For file scanning: one generic tool + one convenience alias (not per-type tool sprawl)
+- MCP tool naming: `hlx_{verb}`/`hlx_{noun}` with `_` separators; descriptions expose behavioral contracts, not implementation
+- File scanning: one generic tool + one convenience alias (not per-type sprawl)
 
-**MCP API review findings (2026-02-13):**
-- No `hlx_list_work_items` — consumers must use hlx_status for navigation (N+1 problem)
-- URL resolution boilerplate shared across 5 of 9 tools — tolerable at current scale
-- `hlx_status` description should mention `failureCategory` as completeness fix
+**MCP API review (2026-02-13):** No `hlx_list_work_items` (N+1 via hlx_status). URL resolution boilerplate across 5/9 tools — tolerable. `hlx_status` should mention `failureCategory`.
 
-**Threat model review (2025-07-23):** Approved Ash's STRIDE analysis. All 10 MCP tools, both transports, cache, filesystem covered. Minor gap: TryResolveJobAndWorkItem can't handle `%2F` in work item names (correctness bug, not security).
+**Threat model (2025-07-23):** STRIDE approved. All 10 tools, both transports, cache, filesystem covered. Minor: `%2F` in work item names (correctness, not security).
 
-**Remote search design (2026-02-13):** download-search-delete pattern. No regex (ReDoS risk). TRX parsing requires XXE protection. US-31 (search file), US-32 (TRX parsing) created. Structured console log parsing (US-22 partial) deferred.
+**Remote search (2026-02-13):** download-search-delete. No regex (ReDoS). TRX needs XXE protection. US-31/32 created.
 
-**Value-add analysis (2025-07-23):** 12 enhancements cataloged — 5 major (cache, TTL, failure classification, TRX parsing, remote search), 3 significant (URL parsing, file discovery, batch status), 3 moderate, 1 minor.
+**Value-add (2025-07-23):** 12 enhancements — 5 major, 3 significant, 3 moderate, 1 minor.
 
-**UseStructuredContent review (2025-07-24):** APPROVED. Clean migration from Task<string> to typed returns. Wire-compatible (all [JsonPropertyName] camelCase preserved). FileInfo_ trailing underscore acceptable but HelixFileInfo cleaner. hlx_logs correctly excluded. Error handling: McpException for tool errors, ArgumentException for param validation. Skill extracted to `.ai-team/skills/mcp-structured-content/SKILL.md`.
+**UseStructuredContent (2025-07-24):** APPROVED. Task<string> → typed returns. Wire-compatible. hlx_logs excluded. Skill at `.ai-team/skills/mcp-structured-content/SKILL.md`.
+
+**AzDO MCP tools design (2026-03-07):** MCP tools return AzDO model types directly — no DTO wrapper layer. Wrapper types deferred until reshaping is needed.
+
+**AzDO security review (2026-03-08):** 5 findings — (1) type-validate or `Uri.EscapeDataString` all user inputs in URLs, (2) `BuildUrl` hardcodes `https://dev.azure.com/` (SSRF-proof), (3) singleton token accessor doesn't handle expiry (fails closed — operational gap), (4) `CacheSecurity.SanitizeCacheKeySegment` required for all subsystems, (5) security review convention: 7 focus areas, SEC-{N} IDs. Full details in history-archive.md.
 
 📌 Team update (2026-02-11): MatchesPattern internal static — decided by Lambert
 📌 Team update (2026-02-11): Documentation audit — decided by Kane
@@ -52,10 +54,9 @@
 📌 Team update (2026-02-13): Status filter changed — decided by Larry/Ripley
 📌 Team update (2026-02-15): Per-invocation temp dirs — decided by Ripley
 📌 Team update (2026-02-15): CI version validation — decided by Ripley
-📌 Team update (2026-03-01): UseStructuredContent refactor approved — typed return objects with UseStructuredContent=true for all 12 MCP tools (hlx_logs excepted). FileInfo_ naming noted as non-blocking. No breaking wire-format changes. — decided by Dallas
-📌 Team update (2026-03-03): Phase 1 auth UX architecture approved — `hlx login`/`logout`/`auth status` commands, `git credential` storage (Option A), `ChainedHelixTokenAccessor` with env var > stored > null precedence. 7 work items for Ripley. ICredentialStore + GitCredentialStore in Core, commands in CLI. No new NuGet deps required. — decided by Dallas
-
-📌 Team update (2026-03-07): AzDO pipeline architecture design — produced comprehensive design document for adding Azure DevOps pipeline wrapping to helix.mcp. Key decisions: add as `AzDO/` folder in HelixTool.Core (not separate project), use HttpClient + System.Text.Json (not TFS SDK — avoids 40+ transitive deps), use Azure.Identity for auth (AzureDeveloperCliCredential), 7 MCP tools with `azdo_` prefix, reuse existing SqliteCacheStore with `azdo:` key prefix, no CLI commands Phase 1. Document at `.ai-team/decisions/inbox/dallas-azdo-architecture.md`. — decided by Dallas, awaiting Larry's review
+📌 Team update (2026-03-01): UseStructuredContent refactor approved — typed returns for all 12 MCP tools (hlx_logs excepted). No breaking wire-format changes. — decided by Dallas
+📌 Team update (2026-03-03): Phase 1 auth UX approved — `hlx login`/`logout`/`auth status`, `git credential` storage, `ChainedHelixTokenAccessor` (env var > stored > null). — decided by Dallas
+📌 Team update (2026-03-07): AzDO pipeline architecture — `AzDO/` folder in Core, HttpClient + System.Text.Json, Azure.Identity auth, 7 `azdo_` MCP tools, reuse SqliteCacheStore. Doc at `.ai-team/decisions/inbox/dallas-azdo-architecture.md`. — decided by Dallas
 
 ## Learnings
 
@@ -69,53 +70,41 @@
 - **IHelixTokenAccessor.GetAccessToken() is synchronous.** Changing to async would be a cross-cutting change affecting all 3 projects. For Phase 1, sync-over-async (.GetAwaiter().GetResult()) on the git credential call is acceptable — it runs once at startup and completes in <100ms.
 - **Token resolution precedence: env var > stored credential.** Env var must win for backward compat and CI/CD override semantics. Never prompt during DI container setup.
 - **HelixService.cs has 7 identical error message strings** for 401 handling. These should be extracted to a constant when updating the message text.
+- **AzDO build logs are append-only.** Once a line is written to a build log, it never changes. This is a structural property of the AzDO logging pipeline, not just an observed behavior. Cached log content is always a valid prefix of the current log — only new lines get added at the end.
+- **`ICacheStore` deletes expired entries — no stale reads.** `GetMetadataAsync` returns `null` for expired keys, not stale data. Any "keep-but-refresh" pattern must use long TTLs + separate freshness markers, not short TTLs on the content itself.
+- **Freshness marker pattern for delta caching.** Two cache keys: content (long TTL) + freshness sentinel (short TTL). When sentinel expires, delta-fetch new data, append to content, reset sentinel. Avoids extending `ICacheStore` for stale-while-revalidate semantics. Applicable to any append-only data source.
+- **`CountLines` must account for trailing newlines in AzDO log content.** `string.Split('\n').Length` overcounts by 1 when content ends with `\n` (common for AzDO logs). The correct count is the number of `\n` characters (for newline-terminated content) or `Split` count minus 1 when trailing `\n` exists. This matters for delta-fetch `startLine` computation — an off-by-one causes a missed boundary line on every delta cycle. P0 fix required.
+- **Existing tests survive interface changes via `Arg.Any<T>()` for new optional params.** When adding optional parameters to an interface method (like `int? startLine = null`), all existing mock setups need `Arg.Any<int?>()` for the new params. NSubstitute won't match if the arg matchers don't cover the full signature.
 
 📌 Team update (2026-03-07): Test result file discovery consolidated — ParseTrxResultsAsync uses TestResultFilePatterns array, supports TRX + xUnit XML, auto-detection via DetectTestFileFormat. — decided by Ripley
 📌 Team update (2026-03-07): CacheStoreFactory uses Lazy<T> wrapping — standard .NET pattern for ConcurrentDictionary.GetOrAdd with side effects. — decided by Ripley
 📌 Team update (2026-03-07): AzDO test patterns documented — Lambert identified edge cases in AzdoIdResolver (negative buildIds, TryResolve defaults, thread safety). — documented by Lambert
-
 📌 Team update (2026-03-07): AzDO caching strategy — dynamic TTL (completed 4h, in-progress 15s, timelines never while running). No DTO layer needed for AzDO models. — decided by Ripley
-
-### 2026-03-07: Decision — AzdoMcpTools returns model types directly
-If we later need to reshape AzDO output differently from the API models, we'd add wrapper types then. For now, direct return is simpler and correct.
-
-### 2026-03-08: AzDO Security Review — Learnings
-- **Query parameter injection is easy to miss.** `prNumber` was not escaped or validated as an integer while `branch` and `statusFilter` were properly escaped with `Uri.EscapeDataString`. Enforce convention: all user-provided string values interpolated into URLs must be either type-validated (e.g., `int.TryParse` for numeric IDs) or `Uri.EscapeDataString`-escaped. No exceptions.
-- **`BuildUrl` hardcoding `https://dev.azure.com/` is the right SSRF mitigation.** Combined with `Uri.EscapeDataString` on org/project, this makes SSRF structurally impossible regardless of input. This pattern should be preserved — never allow user input to influence the URL base/authority.
-- **Singleton `AzCliAzdoTokenAccessor` with `_resolved` flag doesn't handle token expiry.** For long-running MCP servers, az CLI tokens (~1h lifetime) will expire. Not a security bug (fails closed with 401), but an operational gap. Future work: track JWT expiry or use `AZDO_TOKEN` with external rotation.
-- **`CacheSecurity.SanitizeCacheKeySegment` is the established pattern for cache key hygiene.** AzDO caching correctly reuses it. Any new cacheable subsystem must use it too.
-- **Security review convention established:** For new API integrations, review all 7 focus areas (command injection, SSRF, token leakage, input validation, cache isolation, HTTP security, pattern consistency). Use SEC-{N} IDs with severity levels.
-
-📌 Team update (2026-03-08): AzDO context-limiting defaults — safe output-size defaults added to all AzDO MCP tools, matching Helix patterns. Defaults in method signatures, cache keys include limit params. — decided by Ripley
-
-📌 Team update (2026-03-08): AzDO artifact/attachment test patterns — artifact caching ImmutableTtl (4h), attachment caching TestTtl (1h). Service-layer limiting for attachments. 700 total tests. — documented by Lambert
-
-📌 Team update (2026-03-08): AzDO docs use subsections within existing README structure — new API domains should follow this pattern (### under ## MCP Tools, ## Authentication, ## Caching). llmstxt updated with AzDO tools subsection. — decided by Kane
-
-📌 Team update (2026-03-08): `IsFileSearchDisabled` promoted from internal to public on `HelixService` — needed for MCP tools extraction to separate assembly. Consistent with existing public statics `MatchesPattern` and `IsTestResultFile`. — decided by Ripley
-📌 Team update (2026-03-08): AzDO search gap analysis consolidated — P0 `azdo_search_log` implemented (PR #10). CI-analysis skill study validated priorities. New P1 candidates: `azdo_search_timeline`, multi-step log search. — analyzed by Ash
+📌 Team update (2026-03-08): AzDO context-limiting defaults — safe output-size defaults added to all AzDO MCP tools, matching Helix patterns. — decided by Ripley
+📌 Team update (2026-03-08): AzDO artifact/attachment test patterns — artifact caching ImmutableTtl (4h), attachment caching TestTtl (1h). 700 total tests. — documented by Lambert
+📌 Team update (2026-03-08): AzDO docs use subsections within existing README structure — decided by Kane
+📌 Team update (2026-03-08): `IsFileSearchDisabled` promoted to public on `HelixService` — needed for MCP tools extraction. — decided by Ripley
+📌 Team update (2026-03-08): AzDO search gap analysis — P0 `azdo_search_log` (PR #10). P1 candidates: `azdo_search_timeline`, multi-step log search. — analyzed by Ash
 
 ### 2026-03-09: azdo_search_log_across_steps design spec
 
-**Design spec produced:** `.ai-team/decisions/inbox/dallas-azdo-search-across-steps.md`
+**Spec:** `.ai-team/decisions/inbox/dallas-azdo-search-across-steps.md`
 
-**Architecture decisions:**
-- **Complement, not replace** `azdo_search_log`. The existing single-log tool remains for targeted searches when the caller already has a log ID. The new tool automates the "scan everything" workflow.
-- **Two-phase metadata + incremental search.** Phase 1 fetches timeline + logs list (2 cheap API calls, parallelizable). Phase 2 downloads and searches logs one at a time with early termination. No parallel downloads in Phase 1 — sequential is simpler and `maxLogsToSearch=30` caps total work.
-- **Ranking by failure likelihood** (4 buckets): failed → has issues → succeededWithIssues → succeeded. Within buckets, sort by lineCount descending. Orphan logs (not in timeline) go to Bucket 4.
-- **`AzdoBuildLogEntry` model** for the logs list API response. The `lineCount` field from `GET _apis/build/builds/{id}/logs` is the key metadata — enables filtering tiny logs without downloading.
-- **New `IAzdoApiClient.GetBuildLogsListAsync` method** needed. Returns log metadata (id, lineCount) without content. Cacheable with standard dynamic TTL rules.
-- **`NormalizeAndSplit` extraction.** Both `SearchBuildLogAsync` and the new method share identical `\r\n`/`\r` normalization. Extract to private static helper in `AzdoService`.
-- **Result types stay in Core** (`CrossStepSearchResult`, `StepSearchResult`). Not reshaping API output, so no separate MCP result type needed — same pattern as `TimelineSearchResult`.
-- **Safety guards:** `maxLogsToSearch=30` caps API calls, `minLogLines=5` filters boilerplate (~60% of logs), `maxMatches=50` caps total output. `remainingMatches` decremented per-log ensures early exit is exact.
+Complements `azdo_search_log`. Two-phase: metadata → incremental search with early termination. Ranking by failure likelihood (4 buckets). New `GetBuildLogsListAsync` on `IAzdoApiClient`. `NormalizeAndSplit` extracted. Result types in Core. Safety: maxLogs=30, minLines=5, maxMatches=50. ~19 tests.
 
-**Key file paths:**
-- `IAzdoApiClient.cs` — needs `GetBuildLogsListAsync` method added
-- `AzdoApiClient.cs` — HTTP implementation for logs list endpoint
-- `AzdoModels.cs` — `AzdoBuildLogEntry`, `StepSearchResult`, `CrossStepSearchResult` types
-- `AzdoService.cs` — `SearchBuildLogAcrossStepsAsync` method (ranking + incremental search)
-- `AzdoMcpTools.cs` — `azdo_search_log_across_steps` MCP tool wrapper
-- `McpToolResults.cs` — no changes needed (result types in Core)
-- `Program.cs` — `hlx azdo search-log-all` CLI command
+Key files: IAzdoApiClient.cs, AzdoApiClient.cs, AzdoModels.cs, AzdoService.cs, AzdoMcpTools.cs, Program.cs.
 
-**Estimated test surface:** 19 tests (11 unit, 6 validation, 5 MCP, 3 integration-level). Documented for Lambert.
+### 2026-03-09: Append-on-expire caching (D-6)
+
+**Spec:** `.ai-team/decisions/inbox/dallas-incremental-log-fetching.md`
+
+Freshness marker pattern: content key (4h) + sentinel (15s). Delta-append via CountLines. Uses `IsBuildCompletedAsync` (Option B). Range requests on stale caches delta-refresh first. 12 new tests (C-10–C-21).
+
+### 2026-03-09: Code review — Incremental log fetching (Phase 1 + Phase 2)
+
+**APPROVED** with P0 follow-up. All spec items D-1–D-6 verified correct. 32 tests passing (A-1..A-5, C-1..C-21, S-1..S-6).
+
+**P0 — CountLines off-by-one:** `Split('\n').Length` overcounts by 1 with trailing `\n`. Fix: subtract 1 when content ends with `\n`. Ripley: fix. Lambert: update C-18, C-19, delta tests.
+
+📌 Team update (2026-03-09): Incremental log fetching Phase 1+2 approved — API range support, dual-key append-on-expire caching, tail optimization. 863/863 tests, 32 new. P0: CountLines off-by-one. — reviewed by Dallas
+📌 Team update (2026-03-09): Timeline search result types live in Core — TimelineSearchMatch/TimelineSearchResult in AzdoModels.cs. MCP tools return Core types directly. [JsonIgnore] on Record for flat JSON. — decided by Ripley

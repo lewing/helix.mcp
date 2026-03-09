@@ -1,6 +1,6 @@
 # helix.mcp — MCP server and CLI for investigating .NET CI failures (Helix + Azure DevOps)
 
-An MCP server that exposes [.NET Helix](https://helix.dot.net) and [Azure DevOps](https://dev.azure.com) APIs as 20 structured tools with cross-process local caching — purpose-built for AI agents diagnosing CI failures in dotnet repos (runtime, sdk, aspnetcore, etc.). Also works as a standalone CLI for humans.
+An MCP server that exposes [.NET Helix](https://helix.dot.net) and [Azure DevOps](https://dev.azure.com) APIs as 23 structured tools with cross-process local caching — purpose-built for AI agents diagnosing CI failures in dotnet repos (runtime, sdk, aspnetcore, etc.). Also works as a standalone CLI for humans.
 
 Built with [Squad](https://github.com/bradygaster/squad) — [meet the squad](.ai-team/SQUAD.md).
 
@@ -149,6 +149,9 @@ hlx azdo test-results 12345678 98765
 # Search a build log for a pattern
 hlx azdo search-log 12345678 42 "error CS"
 
+# Search ALL build logs for a pattern (ranked by failure likelihood)
+hlx azdo search-log-all 12345678 --pattern "error CS"
+
 # Search timeline records for a pattern
 hlx azdo search-timeline 12345678 "test"
 
@@ -258,6 +261,7 @@ Add the following to your MCP client config. The `--yes` flag ensures `dnx` does
 | `azdo_artifacts` | List artifacts produced by a build. Returns artifact names, resource types, and download URLs. Supports pattern filtering (e.g., `*.binlog`, `*.trx`). Default top: 50. |
 | `azdo_search_log` | Search a build log for lines matching a pattern. Returns matching lines with context. Use after `azdo_timeline` to search a specific log by its log ID. Supports `contextLines` and `maxMatches` parameters. |
 | `azdo_search_timeline` | Search build timeline records by name or issue message pattern. Returns matching records with timing, result, parent context, and issues. Filter by record type (`Stage`/`Job`/`Task`) and result (`failed` default, or `all`). |
+| `azdo_search_log_across_steps` | Search ALL log steps in a build for lines matching a pattern. Automatically ranks logs by failure likelihood (failed tasks first, then tasks with issues, then large succeeded logs). Stops early when `maxMatches` is reached. Use instead of manually iterating `azdo_search_log` across many log IDs. |
 | `azdo_test_attachments` | List attachments for a specific test result (screenshots, logs, dumps). Requires run ID and result ID from previous tool output. Default top: 50. |
 
 ## CLI Commands
@@ -296,6 +300,7 @@ Add the following to your MCP client config. The `--yes` flag ensures `dnx` does
 | `hlx azdo test-results <buildId> <runId> [--top N]` | Get test results for a specific test run. Defaults to failed tests (top 200). |
 | `hlx azdo artifacts <buildId> [--pattern PAT] [--top N]` | List build artifacts. Supports glob-style filtering (e.g., `*.binlog`). |
 | `hlx azdo search-log <buildId> <logId> <pattern> [--context-lines N] [--max-matches N]` | Search a build log for a pattern. |
+| `hlx azdo search-log-all <buildId> [--pattern P] [--context-lines N] [--max-matches N] [--max-logs N] [--min-lines N]` | Search all build log steps for a pattern, ranked by failure priority. |
 | `hlx azdo search-timeline <buildId> <pattern> [--type Stage\|Job\|Task] [--result failed\|all]` | Search timeline records by name or issue pattern. |
 | `hlx azdo test-attachments <runId> <resultId> [--top N]` | List attachments for a test result (screenshots, logs, dumps). |
 
@@ -536,7 +541,7 @@ flowchart LR
 
 **TTL policy — Helix:** Running jobs use short TTLs (15–30s). Completed jobs cache for 1–4h. Console logs are never cached while a job is still running.
 
-**TTL policy — AzDO:** Completed builds cache for 4h. In-progress builds cache for 15s. Build logs cache for 4h (immutable after creation). Test results cache for 1h.
+**TTL policy — AzDO:** Completed builds cache for 4h. In-progress builds cache for 15s. Build logs cache for 4h (immutable after creation). Test results cache for 1h. **Incremental log fetching:** In-progress build logs use dual-key freshness — when the 15s freshness marker expires, only new lines are fetched (delta-append) rather than re-downloading the entire log.
 
 **Auth isolation:** Each unique token gets its own cache directory (`cache-{hash}`). Unauthenticated requests use `public/`. The HTTP MCP server isolates per-request tokens automatically.
 
@@ -552,7 +557,7 @@ hlx cache clear    # Wipe all cached data (all auth contexts)
 - **Safe XML parsing:** TRX files are parsed with `DtdProcessing.Prohibit`, `XmlResolver = null`, and a 50 MB character limit to prevent XXE and billion-laughs attacks.
 - **Path traversal protection:** All cache paths and download file names are sanitized via `CacheSecurity` — directory separators are replaced and `..` sequences are stripped. Resolved paths are validated to stay within their designated root.
 - **URL scheme validation:** `helix_download_url` only accepts HTTP/HTTPS URLs; other schemes are rejected.
-- **File search toggle:** Set `HLX_DISABLE_FILE_SEARCH=true` to disable `helix_search_file`, `helix_search_log`, `azdo_search_log`, and `helix_test_results`. Useful for locked-down deployments where file content inspection is not desired.
+- **File search toggle:** Set `HLX_DISABLE_FILE_SEARCH=true` to disable `helix_search_file`, `helix_search_log`, `azdo_search_log`, `azdo_search_log_across_steps`, and `helix_test_results`. Useful for locked-down deployments where file content inspection is not desired.
 - **Input validation:** Job IDs are resolved through `HelixIdResolver` (GUIDs and URLs). Batch operations are capped at 50 jobs per request. File search is limited to 50 MB files.
 - **Credential storage:** Tokens stored via `hlx login` are managed by the OS keychain through `git credential` (macOS Keychain, Windows Credential Manager, or libsecret on Linux). hlx never stores tokens in plaintext files.
 

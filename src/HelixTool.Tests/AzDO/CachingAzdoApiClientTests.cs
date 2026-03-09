@@ -226,7 +226,7 @@ public class CachingAzdoApiClientTests
         _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns((string?)null);
 
-        _inner.GetBuildLogAsync("org", "proj", 1, 5, Arg.Any<CancellationToken>())
+        _inner.GetBuildLogAsync("org", "proj", 1, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns("log content");
 
         var result = await _sut.GetBuildLogAsync("org", "proj", 1, 5);
@@ -248,7 +248,7 @@ public class CachingAzdoApiClientTests
         var result = await _sut.GetBuildLogAsync("org", "proj", 1, 5);
 
         Assert.Equal("cached log", result);
-        await _inner.DidNotReceive().GetBuildLogAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
+        await _inner.DidNotReceive().GetBuildLogAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -257,7 +257,7 @@ public class CachingAzdoApiClientTests
         _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns((string?)null);
 
-        _inner.GetBuildLogAsync("org", "proj", 1, 5, Arg.Any<CancellationToken>())
+        _inner.GetBuildLogAsync("org", "proj", 1, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns((string?)null);
 
         var result = await _sut.GetBuildLogAsync("org", "proj", 1, 5);
@@ -414,7 +414,7 @@ public class CachingAzdoApiClientTests
         var opts = new CacheOptions { MaxSizeBytes = 0 };
         var sut = new CachingAzdoApiClient(_inner, disabledCache, opts);
 
-        _inner.GetBuildLogAsync("org", "proj", 1, 5, Arg.Any<CancellationToken>())
+        _inner.GetBuildLogAsync("org", "proj", 1, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns("log text");
 
         var result = await sut.GetBuildLogAsync("org", "proj", 1, 5);

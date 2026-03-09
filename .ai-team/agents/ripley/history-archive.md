@@ -92,3 +92,43 @@
 - US-32 hlx_test_results: TRX parsing with secure XmlReaderSettings (DtdProcessing.Prohibit), ParseTrxResultsAsync, auto-discovery of .trx files, MCP tool + CLI command
 - Status filter refactor: bool includePassed → string filter (failed|passed|all), case-insensitive, breaking change
 - CI version validation: publish workflow validates csproj+server.json match git tag, /p:Version= override
+
+## Archived 2026-03-09: Learnings (HelixTool.Mcp.Tools extraction)
+
+- **HelixTool.Mcp.Tools project:** New class library at `src/HelixTool.Mcp.Tools/` containing MCP tool definitions (HelixMcpTools, AzdoMcpTools) and MCP result DTOs (McpToolResults.cs). No NuGet packaging metadata.
+- **Namespace: `HelixTool.Mcp.Tools`:** All three moved files use this namespace. AzdoMcpTools was previously `HelixTool.Core.AzDO`.
+- **ModelContextProtocol package removed from Core:** Core no longer references `ModelContextProtocol` — that dependency now lives in `HelixTool.Mcp.Tools`.
+- **`IsFileSearchDisabled` promoted to public:** Was `internal static` on `HelixService`, had to become `public` for separate assembly.
+- **`WithToolsFromAssembly` assembly reference:** Both CLI and HTTP server use `typeof(HelixMcpTools).Assembly`.
+- **Test project references all three:** `HelixTool.Tests.csproj` now references Core, Mcp, and Mcp.Tools projects. Six test files needed `using HelixTool.Mcp.Tools;`.
+- **git mv preserves history:** Used `git mv` for all three file moves.
+
+## Archived 2026-03-09: Learnings (azdo_search_log implementation)
+
+- **TextSearchHelper extraction:** `SearchLines()` moved from `HelixService` (private static) to `TextSearchHelper` (public static) in `HelixTool.Core`. Records (LogMatch, LogSearchResult, FileContentSearchResult) promoted to top-level in Core namespace.
+- **Default parameter values matter:** Added `contextLines = 0, maxMatches = 50` defaults to `TextSearchHelper.SearchLines()` — existing tests relied on calling with fewer args.
+- **AzDO log fetching already supports full content:** `AzdoApiClient.GetBuildLogAsync` returns the complete log; for search, pass `tailLines: null` to get full content.
+- **IsFileSearchDisabled dual-check pattern:** MCP tool layer (throws McpException) and service layer (throws InvalidOperationException) both check.
+- **CLI search output pattern:** Context lines displayed with `>>>` prefix for matching line and `   ` prefix for context. Line numbers right-aligned in 6-char column.
+
+📌 Team update (2026-03-08): AzDO search gap analysis consolidated — CI-analysis skill study validated `azdo_search_log` as P0, confirmed `SearchLines()` extraction approach. New P1 ideas: `azdo_search_timeline`, `azdo_search_log_across_steps`. — analyzed by Ash
+
+## Archived 2026-03-09: Learnings (PR #10 review fixes)
+
+- **CLI line-number calculation:** Derive `startLine` from `m.LineNumber - contextLines` (clamped to 0) instead of TakeWhile. TakeWhile breaks with duplicate line text.
+- **CRLF normalization in AzDO logs:** Normalize `\r\n` → `\n`, `\r` → `\n` before `Split('\n')`, trim trailing empty entry.
+- **MCP result field naming honesty:** Name property to reflect broader type when field accepts ID or URL.
+- **McpException wrapping pattern:** Wrap service calls for expected exceptions (InvalidOperationException, HttpRequestException) and rethrow as McpException.
+
+## Archived 2026-03-09: Learnings (azdo_search_timeline implementation)
+
+- **Domain types in Core, not MCP.Tools:** `TimelineSearchMatch` and `TimelineSearchResult` live in `HelixTool.Core.AzDO` (AzdoModels.cs). MCP tools return Core types directly.
+- **`[JsonIgnore]` for raw record access:** `TimelineSearchMatch.Record` exposes underlying `AzdoTimelineRecord` with `[JsonIgnore]`.
+- **Duration formatting in service layer:** Service computes formatted duration strings. `FormatDuration` is private to `AzdoService`.
+- **Null timeline → InvalidOperationException:** MCP layer catches and wraps as McpException.
+- **Pre-existing tests drove API shape:** Aligning service return type to match test expectations.
+
+## Archived 2026-03-09: Learnings (PR #11 review fixes)
+
+- **CLI-side validation before service calls:** Validate at CLI layer so error messages reference CLI option names. Check valid values with `string.Equals(OrdinalIgnoreCase)`, throw `ArgumentException` with `nameof(cliParam)`.
+- **Doc accuracy for 'failed' filter semantics:** `result="failed"` means "non-succeeded OR has timeline issues", not just result=failed.

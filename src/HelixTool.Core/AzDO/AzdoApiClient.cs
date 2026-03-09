@@ -65,9 +65,15 @@ public sealed class AzdoApiClient : IAzdoApiClient
         return await GetAsync<AzdoTimeline>(url, ct);
     }
 
-    public async Task<string?> GetBuildLogAsync(string org, string project, int buildId, int logId, CancellationToken ct = default)
+    public async Task<string?> GetBuildLogAsync(string org, string project, int buildId, int logId, int? startLine = null, int? endLine = null, CancellationToken ct = default)
     {
-        var url = BuildUrl(org, project, $"build/builds/{buildId}/logs/{logId}");
+        var path = $"build/builds/{buildId}/logs/{logId}";
+        var queryParts = new List<string>();
+        if (startLine is not null) queryParts.Add($"startLine={startLine.Value}");
+        if (endLine is not null) queryParts.Add($"endLine={endLine.Value}");
+        if (queryParts.Count > 0)
+            path += "?" + string.Join("&", queryParts);
+        var url = BuildUrl(org, project, path);
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         await ApplyAuthAsync(request, ct);
 

@@ -3138,21 +3138,9 @@ Add `testNameFilter` parameter to the existing `azdo_test_results` tool.
 
 ## 4. NEW Tool Ideas from Studying the Skill
 
-### NEW P1: `azdo_search_log_across_steps` — Multi-step log search
+### NEW P1: `azdo_search_log_across_steps` — Multi-step log search *(superseded by 2026-03-09 full design spec below)*
 
-**Evidence:** The script's `Extract-HelixUrls` function normalizes content across line breaks to find Helix URLs. The build-progression pattern searches multiple steps' logs for different patterns. Currently, agents must know which log ID to search.
-
-**Interface:**
-```
-azdo_search_log_across_steps(
-    buildId: int,
-    pattern: string,
-    stepNameFilter: string = null,  // Only search steps matching this name
-    maxMatches: int = 20
-)
-```
-
-This would search across all steps in a build (or filtered steps) for a pattern — like `hlx_find_files` scans multiple work items. High value for "find which step contains this error" scenarios.
+Superseded. See `### 2026-03-09: azdo_search_log_across_steps design spec` for the full implementation design.
 
 ### NEW P2: `azdo_build_summary` — Structured build failure summary
 
@@ -3239,3 +3227,912 @@ Extracted `LogMatch`, `LogSearchResult`, and `FileContentSearchResult` record ty
 - Tests already had `TextSearchHelperTests.cs` anticipating this extraction
 - No breaking changes to MCP tool DTOs (those use their own `SearchMatch`/`SearchLogResult` types in `HelixTool.Mcp.Tools`)
 
+
+### 2025-07-14: Incremental log fetching for AzDO build logs
+**By:** Dallas
+**What:** Add `startLine`/`endLine` range support to the AzDO API client so callers can fetch partial logs — enabling server-side tail, incremental polling, and chunked search without downloading entire logs.
+**Why:** Today, `GetBuildLogAsync` always downloads the full log. `AzdoService.GetBuildLogAsync` with `tailLines` downloads 50K+ lines only to keep the last 500. `SearchBuildLogAcrossStepsAsync` downloads entire logs sequentially when errors are nearly always in the last few hundred lines. The AzDO REST API already supports `startLine`/`endLine` query params on `GET _apis/build/builds/{buildId}/logs/{logId}` — we're leaving free optimization on the table.
+
+---
+
+## 1. Problem Statement
+
+Three concrete waste patterns exist today:
+
+| Pattern | Waste | Frequency |
+|---------|-------|-----------|
+| **Tail fetch**: `GetBuildLogAsync(url, logId, tailLines: 500)` on a 50K-line log | Downloads 50K lines, discards 49.5K | Every `azdo_get_log` call with `tailLines` |
+| **Cross-step search**: `SearchBuildLogAcrossStepsAsync` downloads full log per step | Downloads 30 full logs; errors are in the last ~200 lines of failed steps | Every `azdo_search_log_across_steps` call |
+| **Live monitoring**: No way to poll only new lines since last check | Must re-download entire log each poll | Future use case (build monitoring) |
+
+The AzDO REST API supports range fetching natively:
+```
+GET _apis/build/builds/{buildId}/logs/{logId}?startLine={N}&endLine={M}&api-version=7.0
+```
+where `startLine` and `endLine` are **0-indexed** line numbers. Omitting either fetches from the beginning or to the end respectively.
+
+We already have `AzdoBuildLogEntry.LineCount` from the logs list metadata endpoint, which gives us total line count without downloading content. This is the key to computing range offsets for tail fetches.
+
+## 2. Design Decisions
+
+### D-1: Extend existing interface method vs. new method
+
+**Decision: Add optional parameters to `IAzdoApiClient.GetBuildLogAsync`.**
+
+```csharp
+Task<string?> GetBuildLogAsync(
+    string org, string project, int buildId, int logId,
+    int? startLine = null, int? endLine = null,
+    CancellationToken ct = default);
+```
+
+**Rationale:**
+- Backward compatible — existing callers pass neither param and get full-log behavior
+- Avoids proliferating method overloads (`GetBuildLogRangeAsync`, `GetBuildLogTailAsync`, etc.)
+- Mirrors the REST API surface 1:1 (same endpoint, same optional query params)
+- The return type stays `string?` — the caller already knows what offset they requested and can compute global line numbers from `startLine`
+
+**Rejected alternative:** A new `GetBuildLogRangeAsync` returning a richer type like `LogChunk { Content, StartLine, EndLine, TotalLines }`. This adds a parallel code path, a new type, and new caching logic for minimal benefit. The caller already has `startLine` (they passed it) and can get `totalLines` from `GetBuildLogsListAsync`. YAGNI.
+
+### D-2: Caching strategy for ranges
+
+**Decision: Hybrid approach (Option C) — serve ranges from cached full log when available; pass range through to API when not cached; never cache partial results.**
+
+Cache behavior matrix:
+
+| Scenario | Full log cached? | Range requested? | Behavior |
+|----------|-----------------|-------------------|----------|
+| Full fetch, not cached | No | No | Fetch full log from API, cache it |
+| Full fetch, cached | Yes | No | Return from cache |
+| Range fetch, full cached | Yes | Any | Extract range from cached full log |
+| Range fetch, not cached | No | Yes | **Pass range to API, do NOT cache result** |
+| Range fetch populates later full | — | — | No — range results are transient |
+
+**Rationale:**
+- Simple: no cache fragmentation, no partial-entry merging
+- Correct: a range response is a *view* into data, not a cacheable unit
+- Efficient for the hot path: once a full log is cached (common in search-across-steps where multiple searches hit the same log), subsequent range requests are free substring operations
+- The only "wasted" download is the first full-log fetch, which is the same cost as today
+
+**Cache key stays the same:** `azdo:{org}:{project}:log:{buildId}:{logId}` always refers to the full log. Range requests against a cached full log do string splitting locally.
+
+**Implementation detail in `CachingAzdoApiClient.GetBuildLogAsync`:**
+```
+if full log is cached:
+    if range requested: extract and return substring
+    else: return full cached content
+else:
+    if range requested: pass through to inner client (no caching)
+    else: fetch full log, cache it, return it
+```
+
+### D-3: Service-layer tail optimization using lineCount
+
+**Decision: Yes — `AzdoService.GetBuildLogAsync` should use `GetBuildLogsListAsync` metadata to compute `startLine` for tail fetches, but only when the optimization is worthwhile.**
+
+Threshold: only optimize when `lineCount > tailLines * 2`. For small logs, the metadata round-trip costs more than just downloading the log.
+
+**Flow:**
+```
+GetBuildLogAsync(buildIdOrUrl, logId, tailLines: 500):
+    1. Fetch log metadata: logEntry = GetBuildLogsListAsync(org, project, buildId)
+    2. Find logEntry by logId → get lineCount
+    3. If lineCount > tailLines * 2:
+         startLine = lineCount - tailLines   (0-indexed)
+         content = _client.GetBuildLogAsync(org, project, buildId, logId, startLine: startLine)
+         return content  // already the tail, no trimming needed
+    4. Else:
+         content = _client.GetBuildLogAsync(org, project, buildId, logId)
+         return last tailLines lines (existing behavior)
+```
+
+**Why `tailLines * 2` threshold?** The metadata call (`GetBuildLogsListAsync`) is cheap and usually cached, but for a 100-line log with `tailLines=500`, the optimization saves nothing. The 2x multiplier ensures we only pay the metadata cost when the savings are significant.
+
+**Note:** The metadata call is itself cached (15s for in-progress, 4h for completed builds), so repeated tail fetches on different logs of the same build share one metadata response.
+
+### D-4: Search-from-end optimization for cross-step search
+
+**Decision: Defer to Phase 2.** The current cross-step search already prioritizes failed steps (which are typically small logs). The main bandwidth waste is in succeeded logs at Bucket 3/4, which are rarely searched in practice due to early termination.
+
+A future Phase 2 could add a "search tail first" strategy for large logs:
+1. Fetch last 500 lines of a log
+2. Search those lines
+3. If matches found, report them (with correct global line numbers using `lineCount - 500 + localLineNumber`)
+4. If no matches and the caller needs exhaustive search, fetch remaining lines
+
+This is more complex (two API calls per log, line number arithmetic) and the current early-termination strategy makes it low priority.
+
+### D-5: Line indexing convention
+
+**Decision: The `IAzdoApiClient` uses 0-indexed line numbers (matching the AzDO REST API). The service layer is responsible for translating to 1-indexed `LogMatch.LineNumber` values.**
+
+| Layer | Indexing | Rationale |
+|-------|----------|-----------|
+| `IAzdoApiClient.GetBuildLogAsync(startLine, endLine)` | 0-based | Matches AzDO REST API. API clients should mirror the upstream API contract. |
+| `LogMatch.LineNumber` | 1-based | Already established convention. User-facing line numbers are 1-based. |
+| `AzdoService` (orchestration) | Translates | Computes `startLine = lineCount - tailLines` (0-based for API), adds offset when constructing `LogMatch` for search results. |
+
+When a range fetch is used for search, the caller must offset `LineNumber` values:
+```csharp
+// After fetching lines startLine..endLine (0-indexed):
+// TextSearchHelper returns 1-based line numbers relative to the fetched chunk
+// Global line number = startLine + localLineNumber
+// (localLineNumber is already 1-based from TextSearchHelper, startLine is 0-based → correct)
+```
+
+### D-6: Append-on-expire caching for in-progress build logs
+
+**Decision: Use delta-append with a freshness marker pattern instead of full re-download on TTL expiry for in-progress build logs.**
+
+AzDO build logs are append-only — once a line is written, it never changes. The current approach (15s TTL → full re-download on expiry) wastes bandwidth on large in-progress logs. Instead, keep the cached content across TTL boundaries and fetch only the new lines (delta).
+
+**Mechanism — two cache keys per in-progress log:**
+
+| Key | TTL | Purpose |
+|-----|-----|---------|
+| `azdo:{org}:{project}:log:{buildId}:{logId}` | 4h | Log content (long-lived to survive refresh cycles) |
+| `azdo:{org}:{project}:log-fresh:{buildId}:{logId}` | 15s | Freshness marker (controls re-fetch cadence) |
+
+**Why two keys instead of extending `ICacheStore`?**
+`ICacheStore.GetMetadataAsync` returns `null` for expired entries — the data is deleted. With a single 15s TTL, the entire cached log content would be destroyed every 15 seconds, defeating the append purpose. The freshness marker pattern uses existing `ICacheStore` primitives — no new methods, no schema changes, no migration. The content key uses a long TTL (4h) so it survives freshness cycles. The freshness key is the timer.
+
+**Flow:**
+```
+GetBuildLogAsync(org, project, buildId, logId):
+  contentKey = "log:{buildId}:{logId}"
+  freshKey   = "log-fresh:{buildId}:{logId}"
+
+  cachedContent = cache.GetMetadata(contentKey)
+
+  if cachedContent is not null:
+      isFresh = cache.GetMetadata(freshKey) is not null
+      if isFresh:
+          return cachedContent                          // fast path — no API call
+
+      // Stale — delta fetch
+      isCompleted = IsBuildCompletedAsync(...)
+      cachedLineCount = CountLines(cachedContent)
+      delta = inner.GetBuildLogAsync(..., startLine: cachedLineCount)
+
+      if delta is not empty:
+          cachedContent = cachedContent + delta
+          cache.SetMetadata(contentKey, cachedContent, 4h)   // update content
+
+      if not isCompleted:
+          cache.SetMetadata(freshKey, "1", 15s)              // reset freshness
+      else:
+          cache.SetMetadata(freshKey, "1", 4h)               // completed: long freshness, no more deltas
+
+      return cachedContent
+
+  // Cache miss — first fetch
+  content = inner.GetBuildLogAsync(org, project, buildId, logId)
+  isCompleted = IsBuildCompletedAsync(...)
+  cache.SetMetadata(contentKey, content, 4h)
+  if not isCompleted:
+      cache.SetMetadata(freshKey, "1", 15s)
+  else:
+      cache.SetMetadata(freshKey, "1", 4h)
+  return content
+```
+
+**How the caching layer knows build status (Option B — query internally):**
+`IsBuildCompletedAsync` already exists in `CachingAzdoApiClient` — used by `GetTimelineAsync` and `GetBuildLogsListAsync`. It queries cached build state (15s TTL for in-progress). No new mechanism needed. This is consistent with the established pattern in this class.
+
+**Rejected alternatives:**
+- **Option A (caller passes `bool isInProgress`):** Forces every caller to track build state. The caching decorator already manages this concern — pushing it outward couples unrelated layers.
+- **Option C (different TTLs, caller decides):** Leaky abstraction. The caching strategy is an implementation detail of the decorator, not a caller concern.
+
+**In-progress → completed transition:**
+1. Build completes between refreshes
+2. Freshness marker expires (15s)
+3. Next request: `IsBuildCompletedAsync` returns `true`
+4. Delta fetch retrieves any final lines (or empty delta — harmless)
+5. Freshness marker set with 4h TTL → no more delta fetches for the content's lifetime
+6. All subsequent requests are served from cache — identical to completed-build behavior
+
+**Interaction with D-2 (range caching):**
+When a range request hits a stale cache (freshness expired), the delta fetch + append happens first to update the full cached content, then the range is extracted from the refreshed content. Both full and range requests trigger freshness-driven refreshes.
+
+## 3. API Changes
+
+### `IAzdoApiClient` — updated signature
+
+```csharp
+/// <summary>
+/// Get build log content. Optionally fetch a line range (0-indexed, inclusive).
+/// When startLine/endLine are null, fetches the entire log.
+/// </summary>
+Task<string?> GetBuildLogAsync(
+    string org, string project, int buildId, int logId,
+    int? startLine = null, int? endLine = null,
+    CancellationToken ct = default);
+```
+
+### `AzdoApiClient` — updated implementation
+
+```csharp
+public async Task<string?> GetBuildLogAsync(
+    string org, string project, int buildId, int logId,
+    int? startLine = null, int? endLine = null,
+    CancellationToken ct = default)
+{
+    var path = $"build/builds/{buildId}/logs/{logId}";
+
+    // Append range query params if specified
+    var rangeParams = new List<string>();
+    if (startLine.HasValue)
+        rangeParams.Add($"startLine={startLine.Value}");
+    if (endLine.HasValue)
+        rangeParams.Add($"endLine={endLine.Value}");
+
+    if (rangeParams.Count > 0)
+        path += "?" + string.Join("&", rangeParams);
+
+    var url = BuildUrl(org, project, path);
+    // ... rest unchanged (request, auth, stream read)
+}
+```
+
+### `CachingAzdoApiClient` — updated wrapper (with append-on-expire)
+
+```csharp
+public async Task<string?> GetBuildLogAsync(
+    string org, string project, int buildId, int logId,
+    int? startLine = null, int? endLine = null,
+    CancellationToken ct = default)
+{
+    if (!_enabled)
+        return await _inner.GetBuildLogAsync(org, project, buildId, logId, startLine, endLine, ct);
+
+    var contentKey = BuildCacheKey(org, project, $"log:{buildId}:{logId}");
+    var freshKey = BuildCacheKey(org, project, $"log-fresh:{buildId}:{logId}");
+
+    var cachedJson = await _cache.GetMetadataAsync(contentKey, ct);
+    string? fullContent = cachedJson is not null
+        ? JsonSerializer.Deserialize<string>(cachedJson)
+        : null;
+
+    if (fullContent is not null)
+    {
+        // Check freshness — stale means the 15s marker expired
+        var isFresh = await _cache.GetMetadataAsync(freshKey, ct) is not null;
+
+        if (!isFresh)
+        {
+            // Stale: delta-append instead of full re-download
+            var isCompleted = await IsBuildCompletedAsync(org, project, buildId, ct);
+            var cachedLineCount = CountLines(fullContent);
+            var delta = await _inner.GetBuildLogAsync(
+                org, project, buildId, logId, startLine: cachedLineCount, ct: ct);
+
+            if (!string.IsNullOrEmpty(delta))
+            {
+                fullContent += delta;
+                await _cache.SetMetadataAsync(contentKey,
+                    JsonSerializer.Serialize(fullContent), ImmutableTtl, ct);
+            }
+
+            if (!isCompleted)
+                await _cache.SetMetadataAsync(freshKey, "\"1\"", InProgressTtl, ct);
+            else
+                await _cache.SetMetadataAsync(freshKey, "\"1\"", ImmutableTtl, ct);
+            // Completed: long freshness TTL prevents further delta fetches
+        }
+
+        // Serve full or range from (possibly refreshed) cached content
+        if (startLine is null && endLine is null)
+            return fullContent;
+
+        return ExtractRange(fullContent, startLine, endLine);
+    }
+
+    // Not cached — range request with no cached full log: pass through, don't cache partial
+    if (startLine is not null || endLine is not null)
+        return await _inner.GetBuildLogAsync(org, project, buildId, logId, startLine, endLine, ct);
+
+    // Full log first fetch
+    var result = await _inner.GetBuildLogAsync(org, project, buildId, logId, ct: ct);
+    if (result is null) return null;
+
+    var completed = await IsBuildCompletedAsync(org, project, buildId, ct);
+    await _cache.SetMetadataAsync(contentKey, JsonSerializer.Serialize(result), ImmutableTtl, ct);
+
+    if (!completed)
+        await _cache.SetMetadataAsync(freshKey, "\"1\"", InProgressTtl, ct);
+    else
+        await _cache.SetMetadataAsync(freshKey, "\"1\"", ImmutableTtl, ct);
+
+    return result;
+}
+
+private static int CountLines(string content)
+    => content.Split('\n').Length;
+
+private static string? ExtractRange(string content, int? startLine, int? endLine)
+{
+    var lines = content.Split('\n');
+    var start = startLine ?? 0;
+    var end = endLine ?? (lines.Length - 1);
+
+    start = Math.Max(0, Math.Min(start, lines.Length - 1));
+    end = Math.Max(start, Math.Min(end, lines.Length - 1));
+
+    return string.Join('\n', lines[start..(end + 1)]);
+}
+```
+
+### `AzdoService.GetBuildLogAsync` — optimized tail
+
+```csharp
+public async Task<string?> GetBuildLogAsync(
+    string buildIdOrUrl, int logId, int? tailLines = null, CancellationToken ct = default)
+{
+    var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
+
+    // Optimization: use lineCount metadata to fetch only the tail
+    if (tailLines is > 0)
+    {
+        var logsList = await _client.GetBuildLogsListAsync(org, project, buildId, ct);
+        var logEntry = logsList.FirstOrDefault(e => e.Id == logId);
+
+        if (logEntry is not null && logEntry.LineCount > tailLines.Value * 2)
+        {
+            var startLine = (int)(logEntry.LineCount - tailLines.Value);
+            return await _client.GetBuildLogAsync(org, project, buildId, logId,
+                startLine: startLine, ct: ct);
+        }
+    }
+
+    // Fallback: fetch full log, trim client-side
+    var content = await _client.GetBuildLogAsync(org, project, buildId, logId, ct: ct);
+
+    if (content is null || tailLines is null or <= 0)
+        return content;
+
+    var lines = content.Split('\n');
+    if (lines.Length <= tailLines.Value)
+        return content;
+
+    return string.Join('\n', lines[^tailLines.Value..]);
+}
+```
+
+## 4. Caching Strategy Summary
+
+| Request type | Build state | Cache state | Behavior | Cache write? |
+|-------------|-------------|-------------|----------|--------------|
+| Full log | Completed | Hit | Return cached | No (already cached) |
+| Full log | Completed | Miss | Fetch full, cache (4h), return | **Yes** (content key, 4h) |
+| Full log | In-progress | Hit + fresh | Return cached | No |
+| Full log | In-progress | Hit + stale | Delta fetch, append, reset freshness, return | **Yes** (content + freshness keys) |
+| Full log | In-progress | Miss | Fetch full, cache content (4h) + freshness (15s) | **Yes** (both keys) |
+| Range | Any | Full cached (fresh) | Extract range from cache | No |
+| Range | Any | Full cached (stale) | Delta first, then extract range | **Yes** (content + freshness) |
+| Range | Any | Not cached | Pass range to API | **No** (partial data) |
+
+**Key invariant:** The cache key `azdo:{org}:{project}:log:{buildId}:{logId}` always maps to the **full** log content. Range parameters never appear in cache keys. This avoids cache fragmentation entirely.
+
+**Freshness marker pattern:** The key `azdo:{org}:{project}:log-fresh:{buildId}:{logId}` is a lightweight sentinel (value `"1"`, TTL 15s) that controls re-fetch cadence for in-progress logs. When it expires, the next request triggers a delta-append — not a full re-download. Completed builds never set a freshness marker; their content key's 4h TTL is sufficient.
+
+**Why not cache ranges?** Cache fragmentation creates correctness risks (overlapping ranges, stale partials) and operational complexity (cache eviction of fragments). The full-log cache is simple, correct, and effective — once warm, all range requests are free.
+
+## 5. Implementation Plan
+
+### Phase 1: API client range support + append-on-expire caching (Ripley)
+
+**Goal:** Wire `startLine`/`endLine` through all three client layers, and implement delta-append caching for in-progress build logs.
+
+1. Update `IAzdoApiClient.GetBuildLogAsync` signature (add optional params)
+2. Update `AzdoApiClient.GetBuildLogAsync` to append query params to URL
+3. Update `CachingAzdoApiClient.GetBuildLogAsync` with:
+   a. Hybrid range cache logic (D-2)
+   b. Two-key freshness marker pattern for in-progress logs (D-6)
+   c. Delta-append on freshness expiry using `startLine = CountLines(cached)`
+   d. `IsBuildCompletedAsync` integration to distinguish in-progress vs completed
+4. Add `ExtractRange` and `CountLines` helpers to `CachingAzdoApiClient`
+5. Verify all existing callers compile without changes (backward compat)
+
+**Risk:** Low–medium. The freshness marker pattern uses existing `ICacheStore` primitives but adds a second cache key per in-progress log. The delta-append logic requires careful sequencing (fetch delta → append → update content → reset freshness).
+
+### Phase 2: Service-layer tail optimization (Ripley)
+
+**Goal:** `AzdoService.GetBuildLogAsync` uses `lineCount` to skip downloading full logs for tail requests.
+
+1. Update `AzdoService.GetBuildLogAsync` to fetch logs list metadata
+2. Compute `startLine` from `lineCount - tailLines` when threshold met
+3. Pass `startLine` to `_client.GetBuildLogAsync`
+4. Keep fallback path for small logs and missing metadata
+
+**Dependency:** Phase 1 complete.
+
+### Phase 3: MCP tool integration (Ripley)
+
+**Goal:** MCP `azdo_get_log` tool benefits from tail optimization transparently (no tool signature change needed — `tailLines` already exists).
+
+1. Verify `azdo_get_log` with `tailLines` uses the optimized path
+2. Update tool description to note the optimization (optional — user doesn't need to know)
+
+### Phase 4 (Future): Incremental search from tail
+
+**Goal:** `SearchBuildLogAcrossStepsAsync` fetches only the tail of large logs for initial search pass.
+
+1. For logs in Bucket 3+ with `lineCount > 10000`:
+   - Fetch last 1000 lines using `startLine`
+   - Search those lines (with adjusted global line numbers)
+   - If matches found, use them; if not, optionally fetch rest
+2. This is a perf optimization, not a correctness change — defer until profiling shows it's needed
+
+### Phase 5 (Future): Live tail / polling
+
+**Goal:** Enable "follow" mode for in-progress build logs.
+
+1. Track `lastLineCount` per log between polls
+2. On poll: fetch `startLine=lastLineCount` to get only new lines
+3. ~~Requires client-side state management (not in current scope)~~ **Partially addressed by D-6** — the cache itself now tracks accumulated content. A "follow" UX would repeatedly call `GetBuildLogAsync`, which triggers delta-appends automatically via the freshness marker. The remaining work is a CLI/MCP presentation layer that streams only the *new* lines to the user, not the full accumulated content.
+
+## 6. Test Surface (for Lambert)
+
+### Unit Tests — `AzdoApiClient`
+
+| ID | Test | Notes |
+|----|------|-------|
+| A-1 | `GetBuildLogAsync` with no range params → URL has no startLine/endLine | Backward compat |
+| A-2 | `GetBuildLogAsync` with `startLine=100` → URL includes `startLine=100` | Query param construction |
+| A-3 | `GetBuildLogAsync` with `endLine=200` → URL includes `endLine=200` | Query param construction |
+| A-4 | `GetBuildLogAsync` with both → URL includes both params | Combined params |
+| A-5 | `GetBuildLogAsync` range request returns 404 → returns null | Same null behavior |
+
+### Unit Tests — `CachingAzdoApiClient`
+
+| ID | Test | Notes |
+|----|------|-------|
+| C-1 | Full fetch, not cached → fetches from inner, caches result | Existing behavior preserved |
+| C-2 | Full fetch, cached → returns from cache, no inner call | Existing behavior preserved |
+| C-3 | Range fetch, full log cached → returns extracted range, no inner call | Key optimization |
+| C-4 | Range fetch, not cached → passes range to inner, does NOT cache | No partial caching |
+| C-5 | `ExtractRange` with `startLine=0, endLine=2` on 5-line content → first 3 lines | Boundary correctness |
+| C-6 | `ExtractRange` with `startLine=3, endLine=null` → last 2 lines of 5 | Open-ended range |
+| C-7 | `ExtractRange` with out-of-bounds endLine → clamps to last line | Defensive bounds |
+| C-8 | Range fetch after full fetch → uses cache (warm cache path) | Sequence test |
+| C-9 | Cache disabled → all range requests pass through | `_enabled=false` path |
+
+### Unit Tests — `CachingAzdoApiClient` append-on-expire (D-6)
+
+| ID | Test | Notes |
+|----|------|-------|
+| C-10 | In-progress first fetch → sets content key (4h TTL) AND freshness key (15s TTL) | Two-key pattern bootstrap |
+| C-11 | Completed first fetch → sets content key only, no freshness key | No delta machinery for completed |
+| C-12 | In-progress, cached + fresh → returns cached content, no inner API call | Fast path — freshness marker present |
+| C-13 | In-progress, cached + stale → inner called with `startLine=cachedLineCount` | Delta fetch fires on freshness expiry |
+| C-14 | Delta returns new lines → appended to cached content, content key updated, freshness reset | Content growth path |
+| C-15 | Delta returns empty string → cached content unchanged, freshness still reset | No new lines edge case |
+| C-16 | Build transitions in-progress → completed → no freshness marker set after delta | State transition: stops refresh cycle |
+| C-17 | Range request on stale cache → delta fetch first, then range extracted from updated content | Range + stale interaction |
+| C-18 | `CountLines` on content with trailing newline → correct count | Helper boundary: `"a\nb\n"` = 3 lines |
+| C-19 | `CountLines` on empty string → returns 1 (single empty line) | Helper boundary: split on empty = `[""]` |
+| C-20 | Completed log hit with freshness key (4h TTL) → returns content, no delta fetch | Completed path: long freshness prevents stale path |
+| C-21 | Multiple stale refreshes accumulate content correctly | Sequence: 100 lines → delta 50 → delta 30 = 180 lines |
+
+### Unit Tests — `AzdoService.GetBuildLogAsync` tail optimization
+
+| ID | Test | Notes |
+|----|------|-------|
+| S-1 | `tailLines=500`, `lineCount=50000` → calls API with `startLine=49500` | Optimization fires |
+| S-2 | `tailLines=500`, `lineCount=600` → fetches full log, trims client-side | Below 2x threshold |
+| S-3 | `tailLines=null` → fetches full log, no metadata call | No optimization needed |
+| S-4 | `logId` not in logs list metadata → falls back to full fetch | Missing metadata graceful |
+| S-5 | `tailLines=500`, `lineCount=500` → fetches full log (exact match, below threshold) | Edge case |
+| S-6 | `tailLines=500`, `lineCount=1001` → calls with `startLine=501` | Exactly at 2x+1 threshold |
+
+### Integration Tests — Line number correctness
+
+| ID | Test | Notes |
+|----|------|-------|
+| L-1 | Tail-fetched content has correct line content (matches full fetch tail) | Content correctness |
+| L-2 | Range `startLine=10, endLine=20` returns exactly 11 lines | Inclusive range semantics |
+| L-3 | `startLine` past end of log → returns empty or last line | API edge case |
+
+### Validation Tests
+
+| ID | Test | Notes |
+|----|------|-------|
+| V-1 | `startLine` negative → passed to API as-is (API decides) | We don't validate; API is authoritative |
+| V-2 | `startLine > endLine` → passed to API as-is | Same rationale |
+
+**Estimated total: ~34 tests.** Focused on the caching hybrid logic, append-on-expire behavior, and tail optimization, which are the three areas with the most behavioral surface.
+
+## 7. Open Questions
+
+### Q-1: Should the `lineCount` from metadata be trusted for in-progress logs?
+
+For in-progress builds, `lineCount` may increase between the metadata call and the log fetch. This means a tail fetch might miss the newest lines. **Acceptable trade-off:** the next poll will pick them up, and the alternative (no optimization) downloads everything every time. **Note:** D-6's append-on-expire caching makes this even less of a concern — the delta-append pattern naturally catches up on each 15s refresh cycle.
+
+### Q-2: Does the AzDO API's `endLine` parameter use inclusive or exclusive semantics?
+
+The REST API documentation says 0-indexed but is ambiguous on inclusive/exclusive. **Mitigation:** Test empirically with a known log. If exclusive, adjust the `ExtractRange` helper to match. The API client should match whatever the upstream API does; the cache extraction helper must match the same convention.
+
+### Q-3: Should we pre-warm the full-log cache for completed builds?
+
+When a tail fetch is the first request for a completed build's log, we could speculatively fetch the full log instead (caching it for 4h) since subsequent requests will likely need it. **Decision: No.** Speculative fetching defeats the purpose of range support. If callers need the full log later, they'll fetch it and it'll be cached then.
+
+### P0 Follow-up: CountLines off-by-one for trailing newlines
+**By:** Dallas
+**Priority:** P0 — correctness bug in delta-fetch path
+**Affects:** `CachingAzdoApiClient.CountLines` and dependent delta-append logic
+
+**Problem:**
+`CountLines("a\nb\n")` returns 3 (`Split('\n').Length`), but the AzDO API considers this content as 2 lines (indices 0–1). When delta-fetching with `startLine=3`, the API skips line 2, permanently losing that line from the cached view.
+
+**Root cause:** `Split('\n')` on content ending with `\n` produces a trailing empty string element, inflating the count by 1.
+
+**Fix (Ripley):**
+```csharp
+internal static int CountLines(string content)
+{
+    if (string.IsNullOrEmpty(content)) return 0;
+    var count = content.Split('\n').Length;
+    if (content.EndsWith('\n')) count--;
+    return count;
+}
+```
+
+**Test updates (Lambert):**
+- C-18: `CountLines("a\nb\n")` should equal 2 (not 3)
+- C-19: `CountLines("")` should equal 0 (not 1)
+- C-13, C-14, C-17, C-21: Update `cachedLineCount` expectations to match corrected CountLines
+- Add new test: `CountLines("a\nb")` (no trailing newline) should equal 2
+
+**Impact without fix:** In-progress build logs lose one boundary line per delta-fetch cycle. The line is never recovered until the 4h content TTL expires. Completed builds are unaffected (no delta path).
+
+### 2026-03-09: azdo_search_log_across_steps design spec
+**By:** Dallas
+**What:** Incremental search across ALL log steps in an AzDO build, ranked by failure likelihood, with early termination.
+**Why:** The existing `azdo_search_log` requires the caller to already know *which* log ID to search. In a build with 160–380 timeline records, an AI agent must make dozens of sequential tool calls to find the needle. This tool automates the scan-and-rank pattern that a human would follow: check failed steps first, skip boilerplate, stop when enough matches are found.
+
+---
+
+## 1. Tool Identity
+
+| Surface | Name | Description |
+|---------|------|-------------|
+| MCP | `azdo_search_log_across_steps` | Search ALL log steps in an Azure DevOps build for lines matching a pattern. Automatically ranks logs by failure likelihood (failed tasks first, then tasks with issues, then large succeeded logs) and returns matches incrementally. Stops early when maxMatches is reached. Use instead of manually iterating azdo_search_log across many log IDs. |
+| CLI | `hlx azdo search-log-all` | Search all build log steps for a pattern, ranked by failure priority. |
+
+The name uses `across_steps` rather than `across_logs` because MCP consumers think in pipeline terms (stages/jobs/steps), not log IDs.
+
+## 2. Parameters
+
+### MCP Tool Signature
+
+```csharp
+[McpServerTool(Name = "azdo_search_log_across_steps",
+               Title = "Search All AzDO Build Logs",
+               ReadOnly = true,
+               UseStructuredContent = true)]
+public async Task<CrossStepSearchResult> SearchLogAcrossSteps(
+    [Description("AzDO build ID (integer) or full AzDO build URL")]
+    string buildIdOrUrl,
+
+    [Description("Text pattern to search for (case-insensitive substring match)")]
+    string pattern = "error",
+
+    [Description("Lines of context before and after each match (default: 2)")]
+    int contextLines = 2,
+
+    [Description("Maximum total matches across all logs (default: 50). Search stops early once reached.")]
+    int maxMatches = 50,
+
+    [Description("Maximum number of individual log steps to download and search (default: 30). Limits API calls for very large builds.")]
+    int maxLogsToSearch = 30,
+
+    [Description("Minimum line count to include a log in the search (default: 5). Filters out tiny boilerplate logs.")]
+    int minLogLines = 5)
+```
+
+### CLI Signature
+
+```
+hlx azdo search-log-all <buildId> [--pattern P] [--context-lines N] [--max-matches N] [--max-logs N] [--min-lines N] [--json]
+```
+
+### Validation Rules
+
+| Parameter | Rule | Exception |
+|-----------|------|-----------|
+| `pattern` | `ArgumentException.ThrowIfNullOrWhiteSpace` | `ArgumentException` |
+| `contextLines` | `ArgumentOutOfRangeException.ThrowIfNegative` | `ArgumentOutOfRangeException` |
+| `maxMatches` | `ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_, 0)` | `ArgumentOutOfRangeException` |
+| `maxLogsToSearch` | `ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_, 0)` | `ArgumentOutOfRangeException` |
+| `minLogLines` | `ArgumentOutOfRangeException.ThrowIfNegative` | `ArgumentOutOfRangeException` |
+| env check | `HelixService.IsFileSearchDisabled` | `InvalidOperationException` / `McpException` |
+
+No regex. Substring match only (`string.Contains(pattern, OrdinalIgnoreCase)`).
+
+## 3. Return Types
+
+### New types in `AzdoModels.cs` (Core layer)
+
+```csharp
+/// <summary>A log entry from the AzDO Build Logs List API (GET _apis/build/builds/{id}/logs).</summary>
+public sealed record AzdoBuildLogEntry
+{
+    [JsonPropertyName("id")]
+    public int Id { get; init; }
+
+    [JsonPropertyName("lineCount")]
+    public long LineCount { get; init; }
+
+    [JsonPropertyName("createdOn")]
+    public DateTimeOffset? CreatedOn { get; init; }
+
+    [JsonPropertyName("type")]
+    public string? Type { get; init; }
+
+    [JsonPropertyName("url")]
+    public string? Url { get; init; }
+}
+
+/// <summary>Matches found in a single log step during a cross-step search.</summary>
+public sealed class StepSearchResult
+{
+    [JsonPropertyName("logId")] public int LogId { get; init; }
+    [JsonPropertyName("stepName")] public string StepName { get; init; } = "";
+    [JsonPropertyName("stepType")] public string? StepType { get; init; }
+    [JsonPropertyName("stepResult")] public string? StepResult { get; init; }
+    [JsonPropertyName("parentName")] public string? ParentName { get; init; }
+    [JsonPropertyName("lineCount")] public long LineCount { get; init; }
+    [JsonPropertyName("matchCount")] public int MatchCount { get; init; }
+    [JsonPropertyName("matches")] public List<LogMatch> Matches { get; init; } = [];
+}
+
+/// <summary>Result of searching across all log steps in a build.</summary>
+public sealed class CrossStepSearchResult
+{
+    [JsonPropertyName("build")] public string Build { get; init; } = "";
+    [JsonPropertyName("pattern")] public string Pattern { get; init; } = "";
+    [JsonPropertyName("totalLogsInBuild")] public int TotalLogsInBuild { get; init; }
+    [JsonPropertyName("logsSearched")] public int LogsSearched { get; init; }
+    [JsonPropertyName("logsSkipped")] public int LogsSkipped { get; init; }
+    [JsonPropertyName("totalMatchCount")] public int TotalMatchCount { get; init; }
+    [JsonPropertyName("stoppedEarly")] public bool StoppedEarly { get; init; }
+    [JsonPropertyName("steps")] public List<StepSearchResult> Steps { get; init; } = [];
+}
+```
+
+### New MCP result type in `McpToolResults.cs`
+
+Not needed. `CrossStepSearchResult` already uses `[JsonPropertyName]` on all properties and `LogMatch` is already in `TextSearchHelper.cs`. The result type can live in Core because it's not reshaping — it IS the domain result. Same pattern as `TimelineSearchResult`.
+
+## 4. Algorithm
+
+### Phase 1: Metadata Collection (2 cheap API calls, parallelizable)
+
+```
+1. Resolve buildIdOrUrl → (org, project, buildId)
+2. Parallel:
+   a. GET _apis/build/builds/{buildId}/logs → List<AzdoBuildLogEntry>  (line counts, no content)
+   b. GET _apis/build/builds/{buildId}/timeline → AzdoTimeline          (record states, log refs)
+```
+
+### Phase 2: Build Ranked Log Queue
+
+Join timeline records to log entries by `record.Log.Id == logEntry.Id`:
+
+```
+For each timeline record with a log reference:
+  - Lookup logEntry to get lineCount
+  - Skip if lineCount < minLogLines (tiny boilerplate)
+  - Assign priority bucket:
+    Bucket 0: record.Result is "failed" or "canceled"
+    Bucket 1: record.Issues is non-empty (warnings/errors attached)
+    Bucket 2: record.Result is "succeededWithIssues"
+    Bucket 3: record.Result is "succeeded" or null, lineCount >= minLogLines
+  - Within each bucket: sort by lineCount descending (larger logs more likely to contain errors)
+```
+
+Orphan logs (logEntry.Id not referenced by any timeline record): appended at end (Bucket 4), sorted by lineCount desc. These are rare but possible in retried builds.
+
+### Phase 3: Incremental Search (sequential downloads, early exit)
+
+```
+remainingMatches = maxMatches
+logsSearched = 0
+
+for each log in ranked queue (up to maxLogsToSearch):
+  if remainingMatches <= 0: break (early exit)
+
+  content = await GetBuildLogAsync(org, project, buildId, log.Id, ct)
+  // Normalize line endings, split, search (reuse TextSearchHelper.SearchLines)
+  searchResult = TextSearchHelper.SearchLines(
+      identifier: $"log:{log.Id}",
+      lines: normalizedLines,
+      pattern: pattern,
+      contextLines: contextLines,
+      maxMatches: remainingMatches   // ← pass REMAINING, not total
+  )
+
+  if searchResult.Matches.Count > 0:
+    add StepSearchResult with step metadata + matches
+    remainingMatches -= searchResult.Matches.Count
+
+  logsSearched++
+```
+
+### Normalization
+
+Same `\r\n` → `\n`, `\r` → `\n` normalization as `SearchBuildLogAsync`. Extract into a private helper `NormalizeAndSplit(string content)` to DRY up.
+
+## 5. Safety Guards & Limits
+
+| Guard | Default | Rationale |
+|-------|---------|-----------|
+| `maxMatches` | 50 | Caps total matches across all logs. Primary context-overflow protection. |
+| `maxLogsToSearch` | 30 | Caps API calls. A 380-log SDK build would need 380 HTTP requests without this. 30 covers all failures + the largest succeeded logs in typical builds. |
+| `minLogLines` | 5 | Filters out ~60% of logs in a typical build (setup/teardown boilerplate with 1–4 lines). |
+| No parallel downloads | — | Sequential downloads avoid hammering AzDO API. If we later add parallelism, limit to 3–5 concurrent. |
+| `IsFileSearchDisabled` | env check | Same kill switch as all search tools. |
+| No download size limit needed | — | `GetBuildLogAsync` already streams the response. Individual logs in AzDO builds rarely exceed 2MB. The `maxLogsToSearch` cap provides aggregate protection. |
+
+### What about in-progress builds?
+
+In-progress builds will have a partial timeline. The tool should work correctly — it just searches whatever logs exist. The timeline fetch is not cached for in-progress builds (established caching rule), so re-running the tool shows fresh results.
+
+## 6. Relationship to `azdo_search_log`
+
+**Complement, not replace.**
+
+| Tool | Use case |
+|------|----------|
+| `azdo_search_log` | "Search log 47 for 'OutOfMemory'" — caller already knows the log ID (from timeline, from a previous search, from a URL). Fast, single API call. |
+| `azdo_search_log_across_steps` | "Find 'error CS' anywhere in this build" — caller doesn't know which log(s) contain the pattern. Automated ranking + early exit. |
+
+The `azdo_search_log_across_steps` description should mention `azdo_search_log` for targeted follow-up: "For targeted search of a specific log step, use azdo_search_log instead."
+
+`azdo_search_log` remains the right tool when the caller has a specific log ID (common after `azdo_timeline`). The new tool is for the "I don't know where to look" workflow.
+
+## 7. Interface & Client Changes
+
+### `IAzdoApiClient` — new method
+
+```csharp
+/// <summary>List all build logs with metadata (line counts) without downloading content.</summary>
+Task<IReadOnlyList<AzdoBuildLogEntry>> GetBuildLogsListAsync(
+    string org, string project, int buildId, CancellationToken ct = default);
+```
+
+### `AzdoApiClient` — implementation
+
+```csharp
+public async Task<IReadOnlyList<AzdoBuildLogEntry>> GetBuildLogsListAsync(
+    string org, string project, int buildId, CancellationToken ct = default)
+{
+    var url = BuildUrl(org, project, $"build/builds/{buildId}/logs");
+    return await GetListAsync<AzdoBuildLogEntry>(url, ct);
+}
+```
+
+### `CachingAzdoApiClient` — caching wrapper
+
+Cache with same dynamic TTL rules (completed build → 4h, in-progress → 15s). The logs list is immutable once a build completes.
+
+### `AzdoService` — new method
+
+```csharp
+public async Task<CrossStepSearchResult> SearchBuildLogAcrossStepsAsync(
+    string buildIdOrUrl, string pattern,
+    int contextLines = 2, int maxMatches = 50,
+    int maxLogsToSearch = 30, int minLogLines = 5,
+    CancellationToken ct = default)
+```
+
+This is where the ranking algorithm, incremental search, and early termination live. Follows existing pattern: MCP tool is thin wrapper, business logic in `AzdoService`.
+
+## 8. Estimated Test Surface for Lambert
+
+### Unit Tests (AzdoService layer)
+
+| ID | Test | Notes |
+|----|------|-------|
+| T-1 | Empty build (no logs, no timeline) | Returns 0 matches, logsSearched=0 |
+| T-2 | All logs below minLogLines | Returns 0 matches, all skipped |
+| T-3 | Single failed log with matches | Bucket 0 prioritization, correct StepSearchResult |
+| T-4 | Ranking order: failed → issues → succeededWithIssues → succeeded | Verify download order via mock call sequence |
+| T-5 | Early termination at maxMatches | Set maxMatches=3, provide 5 matches across 2 logs, verify stoppedEarly=true and exactly 3 matches |
+| T-6 | maxLogsToSearch limit | 50 eligible logs, maxLogsToSearch=5, verify only 5 downloaded |
+| T-7 | Orphan logs (no timeline record) | Log in logs list but not in timeline → Bucket 4 |
+| T-8 | Pattern not found in any log | Returns 0 matches, stoppedEarly=false |
+| T-9 | Timeline record with no log reference | Skipped (no log to download) |
+| T-10 | Context lines propagation | Verify contextLines flows to TextSearchHelper |
+| T-11 | Line ending normalization | `\r\n` and `\r` normalized before search |
+
+### Validation Tests
+
+| ID | Test | Notes |
+|----|------|-------|
+| V-1 | Null/empty pattern | ArgumentException |
+| V-2 | Negative contextLines | ArgumentOutOfRangeException |
+| V-3 | Zero maxMatches | ArgumentOutOfRangeException |
+| V-4 | Zero maxLogsToSearch | ArgumentOutOfRangeException |
+| V-5 | Negative minLogLines | ArgumentOutOfRangeException |
+| V-6 | IsFileSearchDisabled=true | InvalidOperationException |
+
+### MCP Tool Tests
+
+| ID | Test | Notes |
+|----|------|-------|
+| M-1 | Successful search returns CrossStepSearchResult | UseStructuredContent=true, verify JSON shape |
+| M-2 | IsFileSearchDisabled → McpException | Not InvalidOperationException |
+| M-3 | Service throws InvalidOperationException → McpException | Exception remapping |
+| M-4 | Service throws HttpRequestException → McpException | Exception remapping |
+| M-5 | Service throws ArgumentException → McpException | Exception remapping |
+
+### Integration-level Tests (IAzdoApiClient mock)
+
+| ID | Test | Notes |
+|----|------|-------|
+| I-1 | GetBuildLogsListAsync returns correct AzdoBuildLogEntry list | Deserialization from AzDO format |
+| I-2 | Caching: completed build logs list cached at 4h TTL | CachingAzdoApiClient test |
+| I-3 | Caching: in-progress build logs list cached at 15s TTL | Dynamic TTL |
+
+**Estimated total: ~19 tests.** Aligns with the ~700 existing test count.
+
+## 9. Implementation Notes
+
+### Extract `NormalizeAndSplit`
+
+Both `SearchBuildLogAsync` and `SearchBuildLogAcrossStepsAsync` need the same line normalization. Extract to a private static method:
+
+```csharp
+private static string[] NormalizeAndSplit(string content)
+{
+    var normalized = content
+        .Replace("\r\n", "\n", StringComparison.Ordinal)
+        .Replace("\r", "\n", StringComparison.Ordinal);
+    var lines = normalized.Split('\n');
+    if (normalized.EndsWith("\n", StringComparison.Ordinal) && lines.Length > 0)
+        Array.Resize(ref lines, lines.Length - 1);
+    return lines;
+}
+```
+
+`SearchBuildLogAsync` should be updated to use this helper (minor refactor, not breaking).
+
+### Timeline + Logs List Join
+
+The join is by `timelineRecord.Log.Id == logEntry.Id`. Timeline records of type "Stage" and "Phase" rarely have logs, but if they do, include them. Records with `Log == null` are skipped (no downloadable log).
+
+### Parallel Metadata Fetch
+
+The timeline and logs list are independent API calls. Use `Task.WhenAll` to fetch both concurrently:
+
+```csharp
+var timelineTask = _client.GetTimelineAsync(org, project, buildId, ct);
+var logsListTask = _client.GetBuildLogsListAsync(org, project, buildId, ct);
+await Task.WhenAll(timelineTask, logsListTask);
+```
+
+### Future Optimization: Parallel Log Downloads
+
+Deferred. Sequential downloads are simpler and sufficient for Phase 1. If performance is a problem (unlikely with `maxLogsToSearch=30`), add a `SemaphoreSlim(3)` bounded parallel download later.
+
+# Decision: Timeline search result types live in Core
+
+**By:** Ripley
+**Date:** 2025-07-19
+**Context:** azdo_search_timeline implementation
+
+## Decision
+
+`TimelineSearchMatch` and `TimelineSearchResult` are defined in `HelixTool.Core.AzDO` (AzdoModels.cs), not in `McpToolResults.cs`. The MCP tool returns the Core types directly.
+
+## Rationale
+
+- Core can't reference Mcp.Tools (dependency direction: Mcp.Tools → Core, not reverse).
+- Same pattern as `AzdoBuildSummary` — domain types in Core, MCP tools return them directly.
+- `[JsonIgnore]` on `TimelineSearchMatch.Record` keeps MCP JSON flat while exposing the raw `AzdoTimelineRecord` for programmatic consumers and tests.
+
+## Impact
+
+- Future search-style features in Core should follow this pattern: define result DTOs with `[JsonPropertyName]` in Core, add `[JsonIgnore]` for any raw-data properties that shouldn't serialize.
+- `McpToolResults.cs` is for MCP-specific wrapper types that don't map 1:1 to service returns (like `SearchBuildLogResult` which reshapes `LogSearchResult`).
