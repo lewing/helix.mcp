@@ -71,7 +71,7 @@ var cached = cache.Get(contentKey);       // 4h TTL — survives refreshes
 var isFresh = cache.Get(freshKey) != null; // 15s TTL — controls cadence
 
 if (cached != null && !isFresh) {
-    var lineCount = cached.Split('\n').Length;
+    var lineCount = cached.AsSpan().Count('\n') + (cached.Length > 0 && !cached.EndsWith('\n') ? 1 : 0);
     var delta = api.GetLog(buildId, logId, startLine: lineCount);
     if (!string.IsNullOrEmpty(delta))
         cached += delta;

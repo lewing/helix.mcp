@@ -125,8 +125,17 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
                 if (!string.IsNullOrEmpty(delta))
                 {
                     fullContent += delta;
-                    await _cache.SetMetadataAsync(contentKey,
-                        JsonSerializer.Serialize(fullContent), ImmutableTtl, ct);
+                    // Only write back if our appended result is at least as long as what's
+                    // currently cached (guards against concurrent refresh losing lines)
+                    var currentJson = await _cache.GetMetadataAsync(contentKey, ct);
+                    var currentContent = currentJson is not null
+                        ? JsonSerializer.Deserialize<string>(currentJson)
+                        : null;
+                    if (currentContent is null || fullContent.Length >= currentContent.Length)
+                    {
+                        await _cache.SetMetadataAsync(contentKey,
+                            JsonSerializer.Serialize(fullContent), ImmutableTtl, ct);
+                    }
                 }
 
                 if (!isCompleted)

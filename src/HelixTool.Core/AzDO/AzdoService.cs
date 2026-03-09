@@ -97,7 +97,9 @@ public class AzdoService
         if (content is null || tailLines is null or <= 0)
             return content;
 
-        var lines = content.Split('\n');
+        // Trim trailing newline before splitting to avoid a phantom empty last element
+        var trimmed = content.EndsWith('\n') ? content[..^1] : content;
+        var lines = trimmed.Split('\n');
         if (lines.Length <= tailLines.Value)
             return content;
 
