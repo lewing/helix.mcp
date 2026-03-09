@@ -79,3 +79,10 @@ Tests for AzdoMcpTools should assert against the model types' `[JsonPropertyName
 📌 Team update (2025-07-18): Perf review identified 17 allocation issues — decided by Ripley
 
 📌 Team update (2026-03-09): Cache format changed to raw: prefix (backward-compatible sentinel), SearchConsoleLogAsync decoupled from disk download, StringHelpers.TailLines shared in Core — decided by Ripley
+
+### Redundant test cleanup (PR #15)
+- **Deleted `AzdoCliCommandTests.cs`** (22 tests → 19 removed, 3 rescued): The file was written proactively for CLI subcommands that were never implemented. 19 of 22 tests were near-identical duplicates of `AzdoServiceTests` — same mock setup, same assertions, just different variable names. Rescued 3 unique tests (artifact default/pattern filtering, changes with top parameter) into `AzdoServiceTests.cs`.
+- **Removed 3 "ImplementsInterface" / "Constructor_Accepts" tests**: `HelixApiClientFactoryTests.ImplementsIHelixApiClientFactory`, `HttpContextHelixTokenAccessorTests.ImplementsIHelixTokenAccessor`, `HelixMcpToolsTests.Constructor_AcceptsHelixService`. These are compile-time guarantees — if the class doesn't implement the interface, the project won't build.
+- **Merged 2 overlapping filter tests** in `HelixMcpToolsTests`: `Status_FilterFailed_PassedIsNull` and `Status_DefaultFilter_ShowsOnlyFailed` tested the same behavior (default filter is "failed"). Combined into one test that verifies both the default and explicit "failed" filter.
+- **Pattern observed**: Proactive test files written before production code tends to produce near-duplicates of the actual test file once it lands. Worth catching during PR review.
+- **Test count**: 864 → 844 (net -20 tests removed). All 844 pass.
