@@ -75,3 +75,13 @@
 - **Static array allocations on every call:** `knownTrailingSegments` in `HelixIdResolver.TryResolveJobAndWorkItem` allocates `string[]` per invocation. Should be `static readonly`.
 
 📌 Team update (2025-07-18): Perf review identified 17 allocation issues — decided by Ripley
+
+## Learnings (performance fixes implementation, 2025-07-18)
+
+- **SearchValues<char> for line-break scanning:** `SearchValues.Create("\r\n")` + `IndexOfAny` is the cleanest .NET 10 approach for single-pass line splitting. Handles `\r\n`, `\r`, `\n` without pre-normalizing the string. The key insight: check for `\r\n` pair *after* finding the first `\r`, not before.
+- **Shared StringHelpers.TailLines:** Extracted reverse-scan tail helper to `HelixTool.Core.StringHelpers` (internal static) for reuse across AzdoService and HelixService. Pattern: `LastIndexOf('\n')` in a loop counting backward, then slice. Must guard empty string input (pos+1 exceeds length).
+- **SearchConsoleLogAsync refactor was safe:** The download-to-disk path (`DownloadConsoleLogAsync`) is only used by the actual download feature and `SearchFileAsync`. `SearchConsoleLogAsync` could safely switch to `GetConsoleLogContentAsync` (stream→memory) since both call the same `_api.GetConsoleLogAsync`. No shared state or side effects to worry about.
+- **Cache format migration via sentinel prefix:** Using `raw:` prefix for plain-text cache entries with fallback to `JsonSerializer.Deserialize<string>()` for legacy JSON entries gives zero-downtime migration. Old cache entries are read correctly; new writes use the efficient format. No explicit migration step needed — natural TTL expiry handles the transition.
+- **Test assertions must match serialization format:** When changing how data is stored in cache, tests that assert on the exact stored value (like C14_DeltaReturnsNewLines) need updating. Tests using `Arg.Any<string>()` are naturally resilient to format changes.
+
+📌 Team update (2025-07-18): 8 perf fixes implemented (1 P0, 7 P1), all 864 tests passing — implemented by Ripley
