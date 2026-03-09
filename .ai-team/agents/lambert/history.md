@@ -77,3 +77,5 @@ Tests for AzdoMcpTools should assert against the model types' `[JsonPropertyName
 📌 Team update (2026-03-09): Timeline search result types live in Core — TimelineSearchMatch/TimelineSearchResult in AzdoModels.cs, not McpToolResults.cs. MCP tools return Core types directly. [JsonIgnore] on Record for flat JSON. — decided by Ripley
 
 📌 Team update (2025-07-18): Perf review identified 17 allocation issues — decided by Ripley
+
+📌 Team update (2026-03-09): Cache format changed to raw: prefix (backward-compatible sentinel), SearchConsoleLogAsync decoupled from disk download, StringHelpers.TailLines shared in Core — decided by Ripley

@@ -37,26 +37,7 @@
 
 **AzDO security review (2026-03-08):** 5 findings — (1) type-validate or `Uri.EscapeDataString` all user inputs in URLs, (2) `BuildUrl` hardcodes `https://dev.azure.com/` (SSRF-proof), (3) singleton token accessor doesn't handle expiry (fails closed — operational gap), (4) `CacheSecurity.SanitizeCacheKeySegment` required for all subsystems, (5) security review convention: 7 focus areas, SEC-{N} IDs. Full details in history-archive.md.
 
-📌 Team update (2026-02-11): MatchesPattern internal static — decided by Lambert
-📌 Team update (2026-02-11): Documentation audit — decided by Kane
-📌 Team update (2026-02-11): P0 Foundation design review — decided by Dallas
-📌 Team update (2026-02-11): Requirements backlog (30 US) — decided by Ash
-📌 Team update (2026-02-11): US-17/US-24/US-30/US-29/US-10/US-23/US-21/US-18/US-11 implemented — decided by Ripley
-📌 Team update (2025-02-12): PackageId renamed to lewing.helix.mcp — decided by Ripley/Larry
-📌 Team update (2025-02-12): NuGet Trusted Publishing workflow — decided by Ripley
-📌 Team update (2026-02-13): HTTP/SSE auth tests (L-HTTP-1–5) — decided by Lambert
-📌 Team update (2026-02-13): US-9 script removability — decided by Ash
-📌 Team update (2026-02-13): US-6 download E2E — decided by Lambert
-📌 Team update (2026-02-13): Requirements audit — audited by Ash
-📌 Team update (2026-02-13): P1 security fixes E1+D1 — decided by Ripley
-📌 Team update (2026-02-13): Security validation tests — decided by Lambert
-📌 Team update (2026-02-13): Remote search design — decided by Dallas
-📌 Team update (2026-02-13): Status filter changed — decided by Larry/Ripley
-📌 Team update (2026-02-15): Per-invocation temp dirs — decided by Ripley
-📌 Team update (2026-02-15): CI version validation — decided by Ripley
-📌 Team update (2026-03-01): UseStructuredContent refactor approved — typed returns for all 12 MCP tools (hlx_logs excepted). No breaking wire-format changes. — decided by Dallas
-📌 Team update (2026-03-03): Phase 1 auth UX approved — `hlx login`/`logout`/`auth status`, `git credential` storage, `ChainedHelixTokenAccessor` (env var > stored > null). — decided by Dallas
-📌 Team update (2026-03-07): AzDO pipeline architecture — `AzDO/` folder in Core, HttpClient + System.Text.Json, Azure.Identity auth, 7 `azdo_` MCP tools, reuse SqliteCacheStore. Doc at `.ai-team/decisions/inbox/dallas-azdo-architecture.md`. — decided by Dallas
+📌 Team updates (2026-02-11 – 2026-03-07 summary): P0 foundation, requirements backlog (30 US), 9 US implemented, PackageId rename, NuGet publishing, HTTP/SSE auth tests, security fixes/tests, remote search design, status filter, UseStructuredContent refactor, Phase 1 auth UX, AzDO pipeline architecture. Decided by: Lambert, Kane, Dallas, Ash, Ripley, Larry.
 
 ## Learnings
 
@@ -110,3 +91,5 @@ Freshness marker pattern: content key (4h) + sentinel (15s). Delta-append via Co
 📌 Team update (2026-03-09): Timeline search result types live in Core — TimelineSearchMatch/TimelineSearchResult in AzdoModels.cs. MCP tools return Core types directly. [JsonIgnore] on Record for flat JSON. — decided by Ripley
 
 📌 Team update (2025-07-18): Perf review identified 17 allocation issues — decided by Ripley
+
+📌 Team update (2026-03-09): Cache format changed to raw: prefix with sentinel detection, SearchConsoleLogAsync decoupled from disk, shared StringHelpers in Core — decided by Ripley

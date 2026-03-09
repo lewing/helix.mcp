@@ -4046,17 +4046,6 @@ This is where the ranking algorithm, incremental search, and early termination l
 | T-10 | Context lines propagation | Verify contextLines flows to TextSearchHelper |
 | T-11 | Line ending normalization | `\r\n` and `\r` normalized before search |
 
-### Validation Tests
-
-| ID | Test | Notes |
-|----|------|-------|
-| V-1 | Null/empty pattern | ArgumentException |
-| V-2 | Negative contextLines | ArgumentOutOfRangeException |
-| V-3 | Zero maxMatches | ArgumentOutOfRangeException |
-| V-4 | Zero maxLogsToSearch | ArgumentOutOfRangeException |
-| V-5 | Negative minLogLines | ArgumentOutOfRangeException |
-| V-6 | IsFileSearchDisabled=true | InvalidOperationException |
-
 ### MCP Tool Tests
 
 | ID | Test | Notes |
@@ -4172,3 +4161,33 @@ Deferred. Sequential downloads are simpler and sufficient for Phase 1. If perfor
 | 15 | SqliteCacheStore.cs | 118,173,etc | `DateTimeOffset.ToString()` repeated with same value | Cache formatted string in local var (already done in some methods) |
 | 16 | AzdoService.cs | 151-156 | `GetBuildArtifactsAsync` does `.Where().ToList()` then `.Take().ToList()` — two materializations | `.Where().Take().ToList()` single pass |
 | 17 | AzdoApiClient.cs | 35-57 | `List<string>` + `string.Join` for query params | `StringBuilder`; once per API call |
+
+### 2026-03-09: Cache format change — raw: prefix (Ripley perf fixes)
+
+**By:** Ripley
+
+**Context:** CachingAzdoApiClient stored log content via `JsonSerializer.Serialize<string>()`, double-escaping multi-MB strings. Changed to plain text with `raw:` sentinel prefix.
+
+**Decision:** Backward-compatible migration via sentinel detection. `DeserializeLogContent` checks for `raw:` prefix first, falls back to JSON deserialization for legacy entries. No explicit migration step — natural TTL expiry handles transition.
+
+**Risk:** Low. Legacy entries are still readable. New entries are written in the efficient format. Cache key structure is unchanged, so there's no key collision.
+
+**For Dallas to review:** Is the `raw:` prefix approach acceptable long-term, or should we consider a versioned cache format? The prefix relies on log content never starting with `raw:` literally — extremely unlikely for AzDO build logs but worth noting.
+
+### 2026-03-09: SearchConsoleLogAsync decoupled from disk download (Ripley perf fixes)
+
+**By:** Ripley
+
+**Context:** `SearchConsoleLogAsync` used `DownloadConsoleLogAsync` (stream→disk) then `File.ReadAllLinesAsync` (disk→memory). Changed to use `GetConsoleLogContentAsync` (stream→memory directly).
+
+**Decision:** Safe to decouple because `DownloadConsoleLogAsync` is only used by the CLI download command and `SearchFileAsync` (which needs disk for binary detection). Search doesn't need disk presence.
+
+**Risk:** None observed — 864/864 tests pass. If a future change adds caching or rate-limiting at the download layer, search would bypass it. Worth noting but not a current concern.
+
+### 2026-03-09: Shared StringHelpers in Core (Ripley perf fixes)
+
+**By:** Ripley
+
+**Context:** Both AzdoService and HelixService had identical tail-trimming patterns. Extracted to `HelixTool.Core.StringHelpers` (internal static class).
+
+**Decision:** `internal` visibility is sufficient — only Core code needs it. If CLI or MCP projects need it in the future, promote to `public`.
