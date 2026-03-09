@@ -12,7 +12,7 @@ hlx solves this by wrapping the Helix API as MCP tools that return structured, p
 
 - **Structured output** — `helix_status` returns categorized failure summaries as JSON; `helix_test_results` parses TRX files and returns test names, outcomes, and error messages directly. No raw text parsing needed.
 - **Cross-process caching** — API responses and downloaded artifacts are cached in a local SQLite database. Different MCP server instances (one per IDE/agent) share the same cache, so the second agent to inspect a job gets instant results. TTLs are smart — running jobs cache briefly (15–30s), completed jobs cache for hours.
-- **Context-efficient** — `helix_search_log` and `helix_search_file` search in place and return matching lines with context, so agents never need to download a full log. `helix_find_files` locates artifacts across work items without listing every file.
+- **Context-efficient** — `helix_search_log`, `helix_search_file`, `azdo_search_log`, and `azdo_search_timeline` search in place and return matching lines with context, so agents never need to download a full log. `helix_find_files` locates artifacts across work items without listing every file.
 - **Zero config** — public dotnet CI jobs work out of the box. Install and go.
 
 > **ci-analysis replacement:** hlx provides 100% coverage of the Helix API surface used by the `ci-analysis` skill's ~150 lines of PowerShell, with structured caching, failure categorization, and MCP tool support on top.
@@ -146,6 +146,12 @@ hlx azdo test-runs 12345678
 # Get test results for a specific test run
 hlx azdo test-results 12345678 98765
 
+# Search a build log for a pattern
+hlx azdo search-log 12345678 42 "error CS"
+
+# Search timeline records for a pattern
+hlx azdo search-timeline 12345678 "test"
+
 # List build artifacts
 hlx azdo artifacts 12345678
 
@@ -250,6 +256,8 @@ Add the following to your MCP client config. The `--yes` flag ensures `dnx` does
 | `azdo_test_runs` | List test runs for a build. Returns test run summaries with total, passed, and failed counts. Use before `azdo_test_results` to get run IDs. |
 | `azdo_test_results` | Get test results for a specific test run. Returns individual test case outcomes, durations, and error details. Defaults to showing only failed tests (top 200). |
 | `azdo_artifacts` | List artifacts produced by a build. Returns artifact names, resource types, and download URLs. Supports pattern filtering (e.g., `*.binlog`, `*.trx`). Default top: 50. |
+| `azdo_search_log` | Search a build log for lines matching a pattern. Returns matching lines with context. Use after `azdo_timeline` to search a specific log by its log ID. Supports `contextLines` and `maxMatches` parameters. |
+| `azdo_search_timeline` | Search build timeline records by name or issue message pattern. Returns matching records with timing, result, parent context, and issues. Filter by record type (`Stage`/`Job`/`Task`) and result (`failed` default, or `all`). |
 | `azdo_test_attachments` | List attachments for a specific test result (screenshots, logs, dumps). Requires run ID and result ID from previous tool output. Default top: 50. |
 
 ## CLI Commands
@@ -287,6 +295,8 @@ Add the following to your MCP client config. The `--yes` flag ensures `dnx` does
 | `hlx azdo test-runs <buildId> [--top N]` | List test runs for a build (total, passed, failed counts). |
 | `hlx azdo test-results <buildId> <runId> [--top N]` | Get test results for a specific test run. Defaults to failed tests (top 200). |
 | `hlx azdo artifacts <buildId> [--pattern PAT] [--top N]` | List build artifacts. Supports glob-style filtering (e.g., `*.binlog`). |
+| `hlx azdo search-log <buildId> <logId> <pattern> [--context-lines N] [--max-matches N]` | Search a build log for a pattern. |
+| `hlx azdo search-timeline <buildId> <pattern> [--type Stage\|Job\|Task] [--result failed\|all]` | Search timeline records by name or issue pattern. |
 | `hlx azdo test-attachments <runId> <resultId> [--top N]` | List attachments for a test result (screenshots, logs, dumps). |
 
 ## Failure Categorization
@@ -542,7 +552,7 @@ hlx cache clear    # Wipe all cached data (all auth contexts)
 - **Safe XML parsing:** TRX files are parsed with `DtdProcessing.Prohibit`, `XmlResolver = null`, and a 50 MB character limit to prevent XXE and billion-laughs attacks.
 - **Path traversal protection:** All cache paths and download file names are sanitized via `CacheSecurity` — directory separators are replaced and `..` sequences are stripped. Resolved paths are validated to stay within their designated root.
 - **URL scheme validation:** `helix_download_url` only accepts HTTP/HTTPS URLs; other schemes are rejected.
-- **File search toggle:** Set `HLX_DISABLE_FILE_SEARCH=true` to disable `helix_search_file`, `helix_search_log`, and `helix_test_results`. Useful for locked-down deployments where file content inspection is not desired.
+- **File search toggle:** Set `HLX_DISABLE_FILE_SEARCH=true` to disable `helix_search_file`, `helix_search_log`, `azdo_search_log`, and `helix_test_results`. Useful for locked-down deployments where file content inspection is not desired.
 - **Input validation:** Job IDs are resolved through `HelixIdResolver` (GUIDs and URLs). Batch operations are capped at 50 jobs per request. File search is limited to 50 MB files.
 - **Credential storage:** Tokens stored via `hlx login` are managed by the OS keychain through `git credential` (macOS Keychain, Windows Credential Manager, or libsecret on Linux). hlx never stores tokens in plaintext files.
 
