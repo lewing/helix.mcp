@@ -844,7 +844,7 @@ public class HelixService
     private static bool MatchesTestResultPattern(string fileName, string pattern)
     {
         if (pattern.StartsWith("*."))
-            return fileName.EndsWith(pattern[1..], StringComparison.OrdinalIgnoreCase);
+            return fileName.AsSpan().EndsWith(pattern.AsSpan(1), StringComparison.OrdinalIgnoreCase);
         return fileName.Equals(pattern, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -1020,7 +1020,7 @@ public class HelixService
     {
         if (pattern == "*") return true;
         if (pattern.StartsWith("*."))
-            return name.EndsWith(pattern[1..], StringComparison.OrdinalIgnoreCase);
+            return name.AsSpan().EndsWith(pattern.AsSpan(1), StringComparison.OrdinalIgnoreCase);
         return name.Contains(pattern, StringComparison.OrdinalIgnoreCase);
     }
 }
