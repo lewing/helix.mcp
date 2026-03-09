@@ -911,16 +911,44 @@ public class HelixService
                 return results;
         }
 
-        // Build a helpful error message listing what was searched and what files exist
+        // Build a helpful error message — filter out noise (hash-named .log files)
         var fileNames = allFiles.Select(f => f.Name).ToList();
         var patternsSearched = string.Join(", ", TestResultFilePatterns);
-        var availableFiles = fileNames.Count > 0
-            ? $" Available files: {string.Join(", ", fileNames.Take(10))}{(fileNames.Count > 10 ? $" (and {fileNames.Count - 10} more)" : "")}"
-            : " The work item has no uploaded files.";
 
-        throw new HelixException(
-            $"No test result files found in work item '{workItem}'. " +
-            $"Searched for: {patternsSearched}.{availableFiles}");
+        // Identify useful files vs noise
+        var crashArtifacts = fileNames.Where(f =>
+            f.StartsWith("core.", StringComparison.OrdinalIgnoreCase) ||
+            f.EndsWith(".dmp", StringComparison.OrdinalIgnoreCase) ||
+            f.Contains("crashdump", StringComparison.OrdinalIgnoreCase)).ToList();
+        var usefulFiles = fileNames.Where(f =>
+            f.EndsWith(".xml", StringComparison.OrdinalIgnoreCase) ||
+            (f.StartsWith("vstest.", StringComparison.OrdinalIgnoreCase) && f.EndsWith(".log", StringComparison.OrdinalIgnoreCase)) ||
+            f.EndsWith(".dmp", StringComparison.OrdinalIgnoreCase) ||
+            f.StartsWith("core.", StringComparison.OrdinalIgnoreCase) ||
+            f.Contains("crashdump", StringComparison.OrdinalIgnoreCase) ||
+            f.EndsWith(".binlog", StringComparison.OrdinalIgnoreCase) ||
+            f.EndsWith(".trx", StringComparison.OrdinalIgnoreCase)).ToList();
+
+        var message = $"No test result files found in work item '{workItem}'. Searched for: {patternsSearched}.";
+
+        if (crashArtifacts.Count > 0)
+        {
+            message += $" ⚠️ Crash artifacts detected: {string.Join(", ", crashArtifacts)}. The test host may have crashed. Try helix_search_log with pattern 'exit code' or 'SIGABRT'.";
+        }
+        else if (usefulFiles.Count > 0)
+        {
+            message += $" Available files: {string.Join(", ", usefulFiles)}.";
+        }
+        else if (fileNames.Count > 0)
+        {
+            message += $" {fileNames.Count} files found (all test .log output). Try helix_search_log with pattern '  Failed' (2 leading spaces) to find test failures in console output.";
+        }
+        else
+        {
+            message += " The work item has no uploaded files.";
+        }
+
+        throw new HelixException(message);
     }
 
     /// <summary>Download specific files from a work item's file list.</summary>
