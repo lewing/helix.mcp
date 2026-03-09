@@ -78,5 +78,10 @@
 - llmstxt raw string literal in Program.cs must stay flush-left — no indentation inside the `"""..."""` block
 - AzDO tools total 9 (not 7 as originally noted in earlier decision): azdo_build, azdo_builds, azdo_timeline, azdo_log, azdo_changes, azdo_test_runs, azdo_test_results, azdo_artifacts, azdo_test_attachments
 - Key AzDO source files: `src/HelixTool.Core/AzDO/AzdoMcpTools.cs` (tool definitions), `AzdoService.cs` (core logic), `AzdoIdResolver.cs` (URL/ID parsing), `CachingAzdoApiClient.cs` (cache wrapper)
+- AzDO MCP tool source moved from `src/HelixTool.Core/AzDO/AzdoMcpTools.cs` to `src/HelixTool.Mcp.Tools/AzdoMcpTools.cs` — must grep for actual location before editing
+- AzDO tools total is now 12 (was 9): added azdo_search_log, azdo_search_timeline, azdo_search_log_across_steps. Helix tools = 11. Grand total = 23.
+- `azdo_search_log_across_steps` MCP name maps to CLI command `hlx azdo search-log-all` — naming convention: MCP uses underscores, CLI uses kebab-case, and "across_steps" was shortened to "all" for CLI brevity
+- Incremental log fetching is documented in Caching section (TTL policy — AzDO paragraph), not as a standalone section — consistent with keeping caching details in one place
+- `azdo_search_log_across_steps` is gated by `HLX_DISABLE_FILE_SEARCH` same as other search tools — added to Security section's file search toggle list
 
 📌 Team update (2026-03-08): `IsFileSearchDisabled` promoted from internal to public on `HelixService` — needed for MCP tools extraction to separate assembly. Consistent with existing public statics `MatchesPattern` and `IsTestResultFile`. — decided by Ripley
