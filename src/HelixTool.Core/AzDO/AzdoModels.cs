@@ -368,3 +368,48 @@ public sealed class TimelineSearchResult
     [JsonPropertyName("matchCount")] public int MatchCount { get; init; }
     [JsonPropertyName("matches")] public List<TimelineSearchMatch> Matches { get; init; } = [];
 }
+
+/// <summary>A log entry from the AzDO Build Logs List API (GET _apis/build/builds/{id}/logs).</summary>
+public sealed record AzdoBuildLogEntry
+{
+    [JsonPropertyName("id")]
+    public int Id { get; init; }
+
+    [JsonPropertyName("lineCount")]
+    public long LineCount { get; init; }
+
+    [JsonPropertyName("createdOn")]
+    public DateTimeOffset? CreatedOn { get; init; }
+
+    [JsonPropertyName("type")]
+    public string? Type { get; init; }
+
+    [JsonPropertyName("url")]
+    public string? Url { get; init; }
+}
+
+/// <summary>Matches found in a single log step during a cross-step search.</summary>
+public sealed class StepSearchResult
+{
+    [JsonPropertyName("logId")] public int LogId { get; init; }
+    [JsonPropertyName("stepName")] public string StepName { get; init; } = "";
+    [JsonPropertyName("stepType")] public string? StepType { get; init; }
+    [JsonPropertyName("stepResult")] public string? StepResult { get; init; }
+    [JsonPropertyName("parentName")] public string? ParentName { get; init; }
+    [JsonPropertyName("lineCount")] public long LineCount { get; init; }
+    [JsonPropertyName("matchCount")] public int MatchCount { get; init; }
+    [JsonPropertyName("matches")] public List<LogMatch> Matches { get; init; } = [];
+}
+
+/// <summary>Result of searching across all log steps in a build.</summary>
+public sealed class CrossStepSearchResult
+{
+    [JsonPropertyName("build")] public string Build { get; init; } = "";
+    [JsonPropertyName("pattern")] public string Pattern { get; init; } = "";
+    [JsonPropertyName("totalLogsInBuild")] public int TotalLogsInBuild { get; init; }
+    [JsonPropertyName("logsSearched")] public int LogsSearched { get; init; }
+    [JsonPropertyName("logsSkipped")] public int LogsSkipped { get; init; }
+    [JsonPropertyName("totalMatchCount")] public int TotalMatchCount { get; init; }
+    [JsonPropertyName("stoppedEarly")] public bool StoppedEarly { get; init; }
+    [JsonPropertyName("steps")] public List<StepSearchResult> Steps { get; init; } = [];
+}

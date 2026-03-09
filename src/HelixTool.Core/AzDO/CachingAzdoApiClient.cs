@@ -190,6 +190,23 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         return result;
     }
 
+    public async Task<IReadOnlyList<AzdoBuildLogEntry>> GetBuildLogsListAsync(string org, string project, int buildId, CancellationToken ct = default)
+    {
+        if (!_enabled) return await _inner.GetBuildLogsListAsync(org, project, buildId, ct);
+
+        var isCompleted = await IsBuildCompletedAsync(org, project, buildId, ct);
+        var ttl = isCompleted ? CompletedTtl : InProgressTtl;
+        var key = BuildCacheKey(org, project, $"logslist:{buildId}");
+        var cached = await _cache.GetMetadataAsync(key, ct);
+        if (cached is not null)
+            return JsonSerializer.Deserialize<List<AzdoBuildLogEntry>>(cached) ?? [];
+
+        var result = await _inner.GetBuildLogsListAsync(org, project, buildId, ct);
+        await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), ttl, ct);
+
+        return result;
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
 
     private static string BuildCacheKey(string org, string project, string suffix)

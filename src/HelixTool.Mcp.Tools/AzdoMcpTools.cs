@@ -212,4 +212,31 @@ public sealed class AzdoMcpTools
     {
         return await _svc.GetTestAttachmentsAsync(org, project, runId, resultId, top);
     }
+
+    [McpServerTool(Name = "azdo_search_log_across_steps",
+                   Title = "Search All AzDO Build Logs",
+                   ReadOnly = true,
+                   UseStructuredContent = true),
+     Description("Search ALL log steps in an Azure DevOps build for lines matching a pattern. Automatically ranks logs by failure likelihood (failed tasks first, then tasks with issues, then large succeeded logs) and returns matches incrementally. Stops early when maxMatches is reached. Use instead of manually iterating azdo_search_log across many log IDs. For targeted search of a specific log step, use azdo_search_log instead.")]
+    public async Task<CrossStepSearchResult> SearchLogAcrossSteps(
+        [Description("AzDO build ID (integer) or full AzDO build URL")] string buildIdOrUrl,
+        [Description("Text pattern to search for (case-insensitive substring match)")] string pattern = "error",
+        [Description("Lines of context before and after each match (default: 2)")] int contextLines = 2,
+        [Description("Maximum total matches across all logs (default: 50). Search stops early once reached.")] int maxMatches = 50,
+        [Description("Maximum number of individual log steps to download and search (default: 30). Limits API calls for very large builds.")] int maxLogsToSearch = 30,
+        [Description("Minimum line count to include a log in the search (default: 5). Filters out tiny boilerplate logs.")] int minLogLines = 5)
+    {
+        if (HelixService.IsFileSearchDisabled)
+            throw new McpException("File content search is disabled by configuration.");
+
+        try
+        {
+            return await _svc.SearchBuildLogAcrossStepsAsync(
+                buildIdOrUrl, pattern, contextLines, maxMatches, maxLogsToSearch, minLogLines);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
+        {
+            throw new McpException(ex.Message);
+        }
+    }
 }

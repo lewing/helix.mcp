@@ -538,6 +538,7 @@ public class Commands
 - `hlx azdo log <buildId> <logId> [--tail-lines N]` — Get build log content (last N lines, default 500)
 - `hlx azdo search-log <buildId> <logId> [--pattern P] [--context-lines N] [--max-matches N] [--json]` — Search build log for pattern matches
 - `hlx azdo search-timeline <buildId> <pattern> [--type Stage|Job|Task] [--result failed|all] [--json]` — Search timeline records by name/issue pattern
+- `hlx azdo search-log-all <buildId> [--pattern P] [--context-lines N] [--max-matches N] [--max-logs N] [--min-lines N] [--json]` — Search all build log steps for a pattern, ranked by failure priority
 - `hlx azdo changes <buildId> [--top N] [--json]` — Commits/changes associated with a build
 - `hlx azdo test-runs <buildId> [--top N] [--json]` — List test runs for a build
 - `hlx azdo test-results <buildId> <runId> [--top N] [--json]` — Test results for a test run (defaults to failed)
@@ -1397,6 +1398,79 @@ public class AzdoCommands
                 Console.ForegroundColor = ConsoleColor.Yellow;
                 Console.WriteLine($"    ↳ {issue}");
                 Console.ResetColor();
+            }
+        }
+    }
+
+    /// <summary>Search all build log steps for a pattern, ranked by failure priority.</summary>
+    /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
+    /// <param name="pattern">Text pattern to search for (case-insensitive).</param>
+    /// <param name="contextLines">Lines of context before and after each match.</param>
+    /// <param name="maxMatches">Maximum total matches across all logs.</param>
+    /// <param name="maxLogs">Maximum number of log steps to download and search.</param>
+    /// <param name="minLines">Minimum line count to include a log in the search.</param>
+    /// <param name="json">Output as structured JSON.</param>
+    [Command("azdo search-log-all")]
+    public async Task SearchLogAll([Argument] string buildId,
+        string pattern = "error", int contextLines = 2, int maxMatches = 50,
+        int maxLogs = 30, int minLines = 5, bool json = false)
+    {
+        var result = await _svc.SearchBuildLogAcrossStepsAsync(
+            buildId, pattern, contextLines, maxMatches, maxLogs, minLines);
+
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(result, s_jsonOptions));
+            return;
+        }
+
+        Console.WriteLine($"Search: '{pattern}' across build — {result.TotalMatchCount} match(es) in {result.LogsSearched}/{result.TotalLogsInBuild} logs ({result.LogsSkipped} skipped)");
+        if (result.StoppedEarly)
+            Console.WriteLine("  (stopped early — increase --max-matches or --max-logs to see more)");
+        Console.WriteLine();
+
+        if (result.Steps.Count == 0)
+        {
+            Console.WriteLine("No matches found.");
+            return;
+        }
+
+        foreach (var step in result.Steps)
+        {
+            var resultStr = step.StepResult ?? "?";
+            if (resultStr.Equals("failed", StringComparison.OrdinalIgnoreCase))
+                Console.ForegroundColor = ConsoleColor.Red;
+            else if (resultStr.Equals("succeeded", StringComparison.OrdinalIgnoreCase))
+                Console.ForegroundColor = ConsoleColor.Green;
+            else
+                Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.Write($"  [{resultStr}]");
+            Console.ResetColor();
+
+            Console.Write($" {step.StepName} (log: {step.LogId}, {step.MatchCount} match(es))");
+
+            if (step.ParentName is not null)
+                Console.Write($" in {step.ParentName}");
+
+            Console.WriteLine();
+
+            foreach (var m in step.Matches)
+            {
+                if (m.Context is { Count: > 0 })
+                {
+                    int startLine = Math.Max(0, m.LineNumber - contextLines);
+                    foreach (var line in m.Context)
+                    {
+                        var prefix = line == m.Line ? ">>>" : "   ";
+                        Console.WriteLine($"    {prefix} {startLine,6}: {line}");
+                        startLine++;
+                    }
+                    Console.WriteLine();
+                }
+                else
+                {
+                    Console.WriteLine($"    >>> {m.LineNumber,6}: {m.Line}");
+                }
             }
         }
     }
