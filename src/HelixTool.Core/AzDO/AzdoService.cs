@@ -482,9 +482,9 @@ public class AzdoService
                 span = span[(idx + 1)..]; // skip \r or \n
         }
 
-        // Remove trailing empty element if content ends with a newline
-        // (matches original behavior)
-        if (lines.Count > 0 && content.Length > 0 &&
+        // Remove trailing empty element if content ends with a newline,
+        // but only when there is more than one line (preserves [""] for "\n" input)
+        if (lines.Count > 1 && content.Length > 0 &&
             (content[^1] == '\n' || content[^1] == '\r'))
         {
             if (lines[^1].Length == 0)

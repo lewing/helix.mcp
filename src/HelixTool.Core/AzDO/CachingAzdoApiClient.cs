@@ -25,7 +25,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
     private static readonly TimeSpan BuildStateCompletedTtl = TimeSpan.FromHours(4);
 
     /// <summary>Prefix for plain-text cache entries to avoid JSON wrapping overhead.</summary>
-    private const string RawTextPrefix = "raw:";
+    private const string RawTextPrefix = "\0raw\n";
 
     private readonly IAzdoApiClient _inner;
     private readonly ICacheStore _cache;

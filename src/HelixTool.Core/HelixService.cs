@@ -598,7 +598,10 @@ public class HelixService
 
         // Stream directly to memory instead of writing to disk then reading back
         var content = await GetConsoleLogContentAsync(jobId, workItem, tailLines: null, cancellationToken);
-        var allLines = content.Split('\n');
+        // Split handling CRLF/CR/LF, strip \r, and omit trailing empty element from final newline
+        var allLines = content.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        if (allLines.Length > 1 && allLines[^1].Length == 0)
+            allLines = allLines[..^1];
         return TextSearchHelper.SearchLines(workItem, allLines, pattern, contextLines, maxMatches);
     }
 
