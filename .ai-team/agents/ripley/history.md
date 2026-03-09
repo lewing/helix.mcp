@@ -91,3 +91,7 @@
 - **Static array allocations on every call:** `knownTrailingSegments` in `HelixIdResolver.TryResolveJobAndWorkItem` allocates `string[]` per invocation. Should be `static readonly`.
 
 📌 Team update (2025-07-18): Perf review identified 17 allocation issues — decided by Ripley
+
+## Learnings (version bump 0.3.0, 2025-07-18)
+
+- Version bump to 0.3.0 for the release containing AzDO integration, perf optimizations, and incremental log support
