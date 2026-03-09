@@ -54,13 +54,20 @@ public class HelixMcpToolsTests
     }
 
     [Fact]
-    public async Task Status_FilterFailed_PassedIsNull()
+    public async Task Status_DefaultFilter_ShowsOnlyFailed()
     {
         ArrangeJobWithWorkItems();
 
-        var result = await _tools.Status(ValidJobId, filter: "failed");
+        // Default filter is "failed" — passed items should be excluded
+        var result = await _tools.Status(ValidJobId);
 
         Assert.Null(result.Passed);
+        Assert.NotNull(result.Failed);
+        Assert.True(result.Failed.Count > 0);
+
+        // Explicit "failed" filter should behave identically
+        var explicitResult = await _tools.Status(ValidJobId, filter: "failed");
+        Assert.Null(explicitResult.Passed);
     }
 
     [Fact]
@@ -73,18 +80,6 @@ public class HelixMcpToolsTests
         Assert.NotNull(result.Passed);
         Assert.Single(result.Passed);
         Assert.Equal("workitem-ok", result.Passed[0].Name);
-    }
-
-    [Fact]
-    public async Task Status_DefaultFilter_ShowsOnlyFailed()
-    {
-        ArrangeJobWithWorkItems();
-
-        var result = await _tools.Status(ValidJobId);
-
-        Assert.Null(result.Passed);
-        Assert.NotNull(result.Failed);
-        Assert.True(result.Failed.Count > 0);
     }
 
     [Fact]
@@ -332,15 +327,6 @@ public class HelixMcpToolsTests
         var ex = await Assert.ThrowsAsync<McpException>(
             () => _tools.TestResults(ValidJobId, workItem: ""));
         Assert.Contains("Work item name is required", ex.Message);
-    }
-
-    // --- Constructor tests ---
-
-    [Fact]
-    public void Constructor_AcceptsHelixService()
-    {
-        var tools = new HelixMcpTools(_svc);
-        Assert.NotNull(tools);
     }
 
     // --- FindFiles tests ---

@@ -54,11 +54,4 @@ public class HelixApiClientFactoryTests
         Assert.NotSame(client1, client2);
     }
 
-    [Fact]
-    public void ImplementsIHelixApiClientFactory()
-    {
-        IHelixApiClientFactory factory = new HelixApiClientFactory();
-
-        Assert.NotNull(factory);
-    }
 }

@@ -93,3 +93,16 @@ Freshness marker pattern: content key (4h) + sentinel (15s). Delta-append via Co
 📌 Team update (2025-07-18): Perf review identified 17 allocation issues — decided by Ripley
 
 📌 Team update (2026-03-09): Cache format changed to raw: prefix with sentinel detection, SearchConsoleLogAsync decoupled from disk, shared StringHelpers in Core — decided by Ripley
+
+### 2025-07-24: Test Quality Review — Tautological Test Audit
+
+**Spec:** `.ai-team/decisions/inbox/dallas-test-quality-review.md`
+
+Reviewed all 776 tests across 50 files. Found ~40 problematic tests (5%), concentrated not systemic. Biggest issue: `AzdoCliCommandTests` is ~14 near-duplicate tests of `AzdoServiceTests` — same Service calls, same mock patterns, zero unique coverage. Also found 5 passthrough-only MCP tool tests, 3 redundant "ImplementsInterface" tests, and 2 overlapping filter tests. Recommended deleting ~17 tests (~350 lines) with zero coverage loss.
+
+**Key test quality patterns to watch for in future reviews:**
+- **Layer duplication anti-pattern:** When Service tests exist, CLI/MCP test files should NOT re-test the same Service methods. One test per behavior, at the lowest layer that exercises the logic.
+- **Passthrough methods need at most 1 smoke test**, not exhaustive variations. If a method is `return await _client.Foo(args)`, one delegation test is enough.
+- **Interface compliance tests are compile-time guarantees** — `Assert.NotNull(new Foo() as IFoo)` adds zero value.
+- **Gold standard test patterns** in this codebase: AzdoSecurityTests (adversarial inputs), AzdoIdResolverTests (pure functions), TextSearchHelperTests (algorithmic logic), CachingAzdoApiClientTests (decorator behavior), AzdoServiceTailTests (optimization paths + fallbacks).
+- **Setup-to-assertion ratio** is a smell: if 20 lines of setup produce `Assert.NotNull`, something is wrong.

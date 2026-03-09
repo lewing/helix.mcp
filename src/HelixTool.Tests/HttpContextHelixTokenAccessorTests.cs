@@ -231,16 +231,4 @@ public class HttpContextHelixTokenAccessorTests : IDisposable
         Assert.Equal("env-fallback", result);
     }
 
-    // --- Interface compliance ---
-
-    [Fact]
-    public void ImplementsIHelixTokenAccessor()
-    {
-        var context = new DefaultHttpContext();
-        _httpContextAccessor.HttpContext = context;
-
-        IHelixTokenAccessor accessor = CreateAccessor();
-
-        Assert.NotNull(accessor);
-    }
 }

@@ -429,6 +429,56 @@ public class AzdoServiceTests
         await _mockApi.Received(1).ListBuildsAsync("org", "proj", filter, Arg.Any<CancellationToken>());
     }
 
+    // ── Artifacts ────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task GetBuildArtifactsAsync_DefaultPattern_ReturnsAll()
+    {
+        var artifacts = new List<AzdoBuildArtifact>
+        {
+            new() { Name = "drop", Id = 1, Resource = new AzdoArtifactResource { Type = "Container" } },
+            new() { Name = "logs", Id = 2, Resource = new AzdoArtifactResource { Type = "Container" } }
+        };
+        _mockApi.GetBuildArtifactsAsync("dnceng-public", "public", 300, Arg.Any<CancellationToken>())
+            .Returns(artifacts);
+
+        var result = await _svc.GetBuildArtifactsAsync("300");
+
+        Assert.Equal(2, result.Count);
+    }
+
+    [Fact]
+    public async Task GetBuildArtifactsAsync_PatternFilter_FiltersResults()
+    {
+        var artifacts = new List<AzdoBuildArtifact>
+        {
+            new() { Name = "build.binlog", Id = 1, Resource = new AzdoArtifactResource { Type = "Container" } },
+            new() { Name = "test-results.trx", Id = 2, Resource = new AzdoArtifactResource { Type = "Container" } },
+            new() { Name = "restore.binlog", Id = 3, Resource = new AzdoArtifactResource { Type = "Container" } }
+        };
+        _mockApi.GetBuildArtifactsAsync("dnceng-public", "public", 300, Arg.Any<CancellationToken>())
+            .Returns(artifacts);
+
+        var result = await _svc.GetBuildArtifactsAsync("300", pattern: "*.binlog");
+
+        Assert.Equal(2, result.Count);
+        Assert.All(result, a => Assert.EndsWith(".binlog", a.Name!));
+    }
+
+    // ── Build changes with top ──────────────────────────────────────
+
+    [Fact]
+    public async Task GetBuildChangesAsync_WithTopParameter_PassesToClient()
+    {
+        _mockApi.GetBuildChangesAsync("dnceng-public", "public", 100, 5, Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuildChange>());
+
+        await _svc.GetBuildChangesAsync("100", top: 5);
+
+        await _mockApi.Received(1)
+            .GetBuildChangesAsync("dnceng-public", "public", 100, 5, Arg.Any<CancellationToken>());
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
 
     private static AzdoBuild MakeBuild(int id, string status = "completed") =>
