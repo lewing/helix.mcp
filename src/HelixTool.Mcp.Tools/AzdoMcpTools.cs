@@ -71,7 +71,7 @@ public sealed class AzdoMcpTools
         if (!filter.Equals("failed", StringComparison.OrdinalIgnoreCase) &&
             !filter.Equals("all", StringComparison.OrdinalIgnoreCase))
         {
-            throw new ArgumentException($"Invalid filter '{filter}'. Must be 'failed' or 'all'.", nameof(filter));
+            throw new McpException($"Invalid filter '{filter}'. Must be 'failed' or 'all'.");
         }
 
         AzdoTimeline? timeline;

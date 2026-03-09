@@ -124,11 +124,11 @@ public class HelixMcpToolsTests
     }
 
     [Fact]
-    public async Task Status_InvalidFilter_ThrowsArgumentException()
+    public async Task Status_InvalidFilter_ThrowsMcpException()
     {
         ArrangeJobWithWorkItems();
 
-        await Assert.ThrowsAsync<ArgumentException>(() => _tools.Status(ValidJobId, filter: "invalid"));
+        await Assert.ThrowsAsync<McpException>(() => _tools.Status(ValidJobId, filter: "invalid"));
     }
 
     // --- FormatDuration tested through Status output ---

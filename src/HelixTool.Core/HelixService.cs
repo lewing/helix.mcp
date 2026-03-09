@@ -921,13 +921,12 @@ public class HelixService
             f.EndsWith(".dmp", StringComparison.OrdinalIgnoreCase) ||
             f.Contains("crashdump", StringComparison.OrdinalIgnoreCase)).ToList();
         var usefulFiles = fileNames.Where(f =>
-            f.EndsWith(".xml", StringComparison.OrdinalIgnoreCase) ||
+            IsTestResultFile(f) ||
             (f.StartsWith("vstest.", StringComparison.OrdinalIgnoreCase) && f.EndsWith(".log", StringComparison.OrdinalIgnoreCase)) ||
             f.EndsWith(".dmp", StringComparison.OrdinalIgnoreCase) ||
             f.StartsWith("core.", StringComparison.OrdinalIgnoreCase) ||
             f.Contains("crashdump", StringComparison.OrdinalIgnoreCase) ||
-            f.EndsWith(".binlog", StringComparison.OrdinalIgnoreCase) ||
-            f.EndsWith(".trx", StringComparison.OrdinalIgnoreCase)).ToList();
+            f.EndsWith(".binlog", StringComparison.OrdinalIgnoreCase)).ToList();
 
         var message = $"No test result files found in work item '{workItem}'. Searched for: {patternsSearched}.";
 
@@ -941,7 +940,7 @@ public class HelixService
         }
         else if (fileNames.Count > 0)
         {
-            message += $" {fileNames.Count} files found (all test .log output). Try helix_search_log with pattern '  Failed' (2 leading spaces) to find test failures in console output.";
+            message += $" {fileNames.Count} files found. Test console output is often stored in .log files; try helix_search_log with pattern '  Failed' (2 leading spaces) to find test failures in console output.";
         }
         else
         {
