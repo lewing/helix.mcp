@@ -201,7 +201,7 @@ public class AzdoService
             .Where(r => r.Id is not null)
             .ToDictionary(r => r.Id!, StringComparer.OrdinalIgnoreCase);
 
-        // Default resultFilter to "failed" (non-succeeded)
+        // Default resultFilter to "failed": include non-succeeded records and succeeded records with issues
         resultFilter ??= "failed";
 
         var matches = new List<TimelineSearchMatch>();

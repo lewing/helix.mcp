@@ -70,3 +70,8 @@
 - **Duration formatting in service layer:** Service computes formatted duration strings (e.g., "5m 30s") from `StartTime`/`FinishTime` and includes them in the DTO. Avoids duplicating formatting logic in MCP tool and CLI layers. `FormatDuration` is private to `AzdoService`.
 - **Null timeline → InvalidOperationException:** When timeline is null (build not found or no timeline available), the service throws `InvalidOperationException` rather than returning empty results. MCP layer catches and wraps as `McpException`.
 - **Pre-existing tests drove API shape:** Tests were pre-written expecting specific DTO properties (`Record`, `MatchedIssues`, `Duration`, `LogId`, `ParentName`). Aligning the service return type to match test expectations rather than fighting them.
+
+## Learnings (PR #11 review fixes)
+
+- **CLI-side validation before service calls:** When CLI option names differ from service parameter names (e.g., `--type` vs `recordType`, `--result` vs `resultFilter`), add validation at the CLI layer so error messages reference CLI option names. Follow the `azdo timeline` command's `filter` validation pattern: check valid values with `string.Equals(OrdinalIgnoreCase)` and throw `ArgumentException` with `nameof(cliParam)`.
+- **Doc accuracy for 'failed' filter semantics:** The `result="failed"` filter in `search-timeline` doesn't just mean "result=failed" — it means "non-succeeded OR has timeline issues", same semantics as the `azdo timeline` command's `filter="failed"`. XML docs must reflect this broader behavior.

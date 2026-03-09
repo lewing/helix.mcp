@@ -150,7 +150,7 @@ Tests for AzdoMcpTools should assert against the model types' `[JsonPropertyName
 - **AzdoSearchTimelineTests** in `src/HelixTool.Tests/AzDO/AzdoSearchTimelineTests.cs` — 19 tests across 7 categories:
   - Name/Issue matching: match by record name, match by issue message, case-insensitive match
   - Record type filtering: filter by Task, filter by Stage
-  - Result filtering: resultFilter="all" (all results), resultFilter="failed" (non-succeeded only), default (null) defaults to "failed"
+  - Result filtering: resultFilter="all" (all results), resultFilter="failed" (failed and succeeded records with timeline issues; excludes succeeded records without issues), default (null) defaults to "failed"
   - No matches / empty / null: no matches returns empty, empty timeline returns empty, null timeline throws InvalidOperationException
   - Input validation: null/empty/whitespace pattern throws ArgumentException
   - Context/metadata: parent name resolution, duration calculation (FormatDuration: "5m 30s"), log ID inclusion
@@ -162,4 +162,4 @@ Tests for AzdoMcpTools should assert against the model types' `[JsonPropertyName
   - Default `resultFilter` is `"failed"` (excludes succeeded records without issues)
   - `FormatDuration` formats as: `>1h` → "Xh Ym", `>1m` → "Xm Ys", else "Xs"
   - Matches include `RecordId`, `Name`, `Type`, `State`, `Result`, `Duration` (formatted string), `LogId`, `MatchedIssues`, `ParentName`
-- **Parallel development pattern:** Tests written in parallel with Ripley's implementation. Initial version used value-tuple return type (Ripley's WIP); adapted to final `TimelineSearchResult` class after Ripley completed. The `HelixTool.Mcp.Tools.McpToolResults.cs` still has duplicate type definitions that need cleanup.
+- **Parallel development pattern:** Tests were written in parallel with Ripley's implementation. The initial version used a value-tuple return type (Ripley's WIP) and was later adapted to the final `TimelineSearchResult` class in `AzdoModels.cs` once that implementation was completed.
