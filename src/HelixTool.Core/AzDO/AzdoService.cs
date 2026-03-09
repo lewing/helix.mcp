@@ -1,3 +1,5 @@
+using System.Buffers;
+
 namespace HelixTool.Core.AzDO;
 
 /// <summary>
@@ -458,15 +460,44 @@ public class AzdoService
         };
     }
 
+    private static readonly SearchValues<char> s_lineBreakChars = SearchValues.Create("\r\n");
+
+    /// <summary>
+    /// Split content into lines handling \r\n, \r, and \n in a single pass with no
+    /// intermediate string copies. Uses SearchValues for fast scanning.
+    /// </summary>
     private static string[] NormalizeAndSplit(string content)
     {
-        var normalized = content
-            .Replace("\r\n", "\n", StringComparison.Ordinal)
-            .Replace("\r", "\n", StringComparison.Ordinal);
-        var lines = normalized.Split('\n');
-        if (normalized.EndsWith("\n", StringComparison.Ordinal) && lines.Length > 0)
-            Array.Resize(ref lines, lines.Length - 1);
-        return lines;
+        var span = content.AsSpan();
+        var lines = new List<string>();
+
+        while (span.Length > 0)
+        {
+            var idx = span.IndexOfAny(s_lineBreakChars);
+            if (idx < 0)
+            {
+                lines.Add(span.ToString());
+                break;
+            }
+
+            lines.Add(span[..idx].ToString());
+
+            if (idx < span.Length - 1 && span[idx] == '\r' && span[idx + 1] == '\n')
+                span = span[(idx + 2)..]; // skip \r\n
+            else
+                span = span[(idx + 1)..]; // skip \r or \n
+        }
+
+        // Remove trailing empty element if content ends with a newline
+        // (matches original behavior)
+        if (lines.Count > 0 && content.Length > 0 &&
+            (content[^1] == '\n' || content[^1] == '\r'))
+        {
+            if (lines[^1].Length == 0)
+                lines.RemoveAt(lines.Count - 1);
+        }
+
+        return [.. lines];
     }
 
     private static string FormatDuration(TimeSpan duration)
