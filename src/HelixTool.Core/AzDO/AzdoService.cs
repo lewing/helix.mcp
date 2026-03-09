@@ -80,11 +80,14 @@ public class AzdoService
             var logsList = await _client.GetBuildLogsListAsync(org, project, buildId, ct);
             var logEntry = logsList.FirstOrDefault(e => e.Id == logId);
 
-            if (logEntry is not null && logEntry.LineCount > tailLines.Value * 2)
+            if (logEntry is not null && logEntry.LineCount > (long)tailLines.Value * 2)
             {
-                var startLine = (int)(logEntry.LineCount - tailLines.Value);
-                return await _client.GetBuildLogAsync(org, project, buildId, logId,
-                    startLine: startLine, ct: ct);
+                var startLine = logEntry.LineCount - tailLines.Value;
+                if (startLine > 0 && startLine <= int.MaxValue)
+                {
+                    return await _client.GetBuildLogAsync(org, project, buildId, logId,
+                        startLine: (int)startLine, ct: ct);
+                }
             }
         }
 

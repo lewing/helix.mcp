@@ -302,8 +302,12 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         var start = startLine ?? 0;
         var end = endLine ?? (lines.Length - 1);
 
-        start = Math.Max(0, Math.Min(start, lines.Length - 1));
-        end = Math.Max(start, Math.Min(end, lines.Length - 1));
+        if (start >= lines.Length || start < 0)
+            return null;
+
+        end = Math.Min(end, lines.Length - 1);
+        if (end < start)
+            return null;
 
         return string.Join('\n', lines[start..(end + 1)]);
     }
