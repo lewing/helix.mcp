@@ -537,6 +537,7 @@ public class Commands
 - `hlx azdo timeline <buildId> [--filter failed|all] [--json]` — Build timeline (stages, jobs, tasks with log IDs)
 - `hlx azdo log <buildId> <logId> [--tail-lines N]` — Get build log content (last N lines, default 500)
 - `hlx azdo search-log <buildId> <logId> [--pattern P] [--context-lines N] [--max-matches N] [--json]` — Search build log for pattern matches
+- `hlx azdo search-timeline <buildId> <pattern> [--type Stage|Job|Task] [--result failed|all] [--json]` — Search timeline records by name/issue pattern
 - `hlx azdo changes <buildId> [--top N] [--json]` — Commits/changes associated with a build
 - `hlx azdo test-runs <buildId> [--top N] [--json]` — List test runs for a build
 - `hlx azdo test-results <buildId> <runId> [--top N] [--json]` — Test results for a test run (defaults to failed)
@@ -566,6 +567,7 @@ public class Commands
 - `azdo_timeline` — Get build timeline (stages, jobs, tasks) with optional filter ('failed' or 'all'). Returns log IDs for azdo_log
 - `azdo_log` — Get build log content (last N lines, default 500). Use log ID from azdo_timeline
 - `azdo_search_log` — Search a build log for lines matching a pattern (case-insensitive). Use log ID from azdo_timeline
+- `azdo_search_timeline` — Search build timeline records by name or issue message pattern. Find specific failed steps or errors
 - `azdo_changes` — Get commits/changes associated with a build
 - `azdo_test_runs` — List test runs for a build (total/passed/failed counts)
 - `azdo_test_results` — Get test results for a test run (outcome, duration, error details). Defaults to failed only (top 200)
@@ -1321,6 +1323,81 @@ public class AzdoCommands
             if (a.Resource?.Type is not null)
                 Console.Write($" [{a.Resource.Type}]");
             Console.WriteLine();
+        }
+    }
+
+    /// <summary>Search build timeline for records matching a pattern.</summary>
+    /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
+    /// <param name="pattern">Text pattern to search for in record names and issue messages (case-insensitive).</param>
+    /// <param name="type">Filter by record type: Stage, Job, or Task.</param>
+    /// <param name="result">Result filter: 'failed' (default — includes non-succeeded records or records with timeline issues, same as 'azdo timeline') or 'all'.</param>
+    /// <param name="json">Output as structured JSON.</param>
+    [Command("azdo search-timeline")]
+    public async Task SearchTimeline([Argument] string buildId, [Argument] string pattern,
+        string? type = null, string result = "failed", bool json = false)
+    {
+        if (type is not null &&
+            !type.Equals("Stage", StringComparison.OrdinalIgnoreCase) &&
+            !type.Equals("Job", StringComparison.OrdinalIgnoreCase) &&
+            !type.Equals("Task", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"Invalid type '{type}'. Must be 'Stage', 'Job', or 'Task'.", nameof(type));
+        }
+
+        if (!result.Equals("failed", StringComparison.OrdinalIgnoreCase) &&
+            !result.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"Invalid result '{result}'. Must be 'failed' or 'all'.", nameof(result));
+        }
+
+        var searchResult = await _svc.SearchTimelineAsync(buildId, pattern, type, result);
+
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(searchResult, s_jsonOptions));
+            return;
+        }
+
+        Console.WriteLine($"Search: '{pattern}' in timeline — {searchResult.MatchCount} match(es) in {searchResult.TotalRecords} records");
+        Console.WriteLine();
+
+        if (searchResult.MatchCount == 0)
+        {
+            Console.WriteLine("No matching records found.");
+            return;
+        }
+
+        foreach (var m in searchResult.Matches)
+        {
+            var resultStr = m.Result ?? m.State ?? "?";
+            if (resultStr.Equals("failed", StringComparison.OrdinalIgnoreCase))
+                Console.ForegroundColor = ConsoleColor.Red;
+            else if (resultStr.Equals("succeeded", StringComparison.OrdinalIgnoreCase))
+                Console.ForegroundColor = ConsoleColor.Green;
+            else
+                Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.Write($"  [{resultStr}]");
+            Console.ResetColor();
+
+            Console.Write($" {m.Name} ({m.Type})");
+
+            if (m.Duration is not null)
+                Console.Write($" {m.Duration}");
+
+            if (m.LogId is not null)
+                Console.Write($" (log: {m.LogId})");
+
+            if (m.ParentName is not null)
+                Console.Write($" in {m.ParentName}");
+
+            Console.WriteLine();
+
+            foreach (var issue in m.MatchedIssues)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"    ↳ {issue}");
+                Console.ResetColor();
+            }
         }
     }
 
