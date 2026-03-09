@@ -163,3 +163,20 @@ Tests for AzdoMcpTools should assert against the model types' `[JsonPropertyName
   - `FormatDuration` formats as: `>1h` → "Xh Ym", `>1m` → "Xm Ys", else "Xs"
   - Matches include `RecordId`, `Name`, `Type`, `State`, `Result`, `Duration` (formatted string), `LogId`, `MatchedIssues`, `ParentName`
 - **Parallel development pattern:** Tests were written in parallel with Ripley's implementation. The initial version used a value-tuple return type (Ripley's WIP) and was later adapted to the final `TimelineSearchResult` class in `AzdoModels.cs` once that implementation was completed.
+
+### SearchBuildLogAcrossSteps Tests (21 tests)
+- **SearchBuildLogAcrossStepsTests** in `src/HelixTool.Tests/AzDO/SearchBuildLogAcrossStepsTests.cs` — 21 tests across 3 categories:
+  - Unit Tests (T-1 through T-11): Empty build, minLogLines filtering, single failed match, ranking order verification (bucket 0→1→2→3), early termination (stoppedEarly=true), maxLogsToSearch limit (Received(5) assertion), orphan logs (Bucket 4), pattern not found, no-log-reference skip, context lines propagation, line ending normalization (\r\n and \r)
+  - Validation Tests (V-1 through V-6): null/empty/whitespace pattern → ArgumentException, negative contextLines → ArgumentOutOfRangeException, zero maxMatches/maxLogsToSearch → ArgumentOutOfRangeException, negative minLogLines → ArgumentOutOfRangeException, IsFileSearchDisabled → InvalidOperationException
+  - MCP Tests (M-1 through M-2): FileSearchDisabled → McpException (not InvalidOp), ArgumentException → McpException remapping
+- **Key patterns used:**
+  - Mock setup: `SetupTimeline()` / `SetupLogsList()` / `SetupLogContent()` helpers for clean arrange-act-assert
+  - `AzdoBuildLogEntry` constructed with `Id` and `LineCount` to control ranking behavior
+  - `[Collection("FileSearchConfig")]` for env var mutation tests (shared with existing search tests)
+  - `Received(N)` assertions to verify download count limits
+  - `GenerateLogContent()` helper creates N-line logs with optional error at specific line
+- **Implementation detail discovered:**
+  - `LogsSkipped` tracks eligible-but-not-searched logs (due to `maxLogsToSearch` cap), NOT logs filtered by `minLogLines`. Logs below `minLogLines` never enter the ranked queue, so `LogsSkipped=0` when all logs are too small.
+  - Orphan logs get synthetic `AzdoTimelineRecord` with `Name = "log:{id}"` — test verifies by `LogId` not `StepName`
+  - `stoppedEarly` is true when `remainingMatches <= 0` OR when `logsSearched >= maxLogsToSearch` but eligible logs remain
+- **Total test count after cross-step search tests:** 812 tests (791 + 21 new).
