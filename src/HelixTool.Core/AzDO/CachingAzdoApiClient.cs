@@ -24,6 +24,9 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
     private static readonly TimeSpan BuildStateTtl = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan BuildStateCompletedTtl = TimeSpan.FromHours(4);
 
+    /// <summary>Prefix for plain-text cache entries to avoid JSON wrapping overhead.</summary>
+    private const string RawTextPrefix = "\0raw\n";
+
     private readonly IAzdoApiClient _inner;
     private readonly ICacheStore _cache;
     private readonly bool _enabled;
@@ -104,10 +107,8 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         var contentKey = BuildCacheKey(org, project, $"log:{buildId}:{logId}");
         var freshKey = BuildCacheKey(org, project, $"log-fresh:{buildId}:{logId}");
 
-        var cachedJson = await _cache.GetMetadataAsync(contentKey, ct);
-        string? fullContent = cachedJson is not null
-            ? JsonSerializer.Deserialize<string>(cachedJson)
-            : null;
+        var cachedRaw = await _cache.GetMetadataAsync(contentKey, ct);
+        string? fullContent = DeserializeLogContent(cachedRaw);
 
         if (fullContent is not null)
         {
@@ -125,19 +126,17 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
                 if (!string.IsNullOrEmpty(delta))
                 {
                     // Ensure newline separator so delta doesn't merge with last cached line
-                    if (fullContent.Length > 0 && !fullContent.EndsWith('\n'))
-                        fullContent += '\n';
-                    fullContent += delta;
+                    fullContent = (fullContent.Length > 0 && !fullContent.EndsWith('\n'))
+                        ? string.Concat(fullContent, "\n", delta)
+                        : string.Concat(fullContent, delta);
                     // Only write back if our appended result is at least as long as what's
                     // currently cached (guards against concurrent refresh losing lines)
-                    var currentJson = await _cache.GetMetadataAsync(contentKey, ct);
-                    var currentContent = currentJson is not null
-                        ? JsonSerializer.Deserialize<string>(currentJson)
-                        : null;
+                    var currentRaw = await _cache.GetMetadataAsync(contentKey, ct);
+                    var currentContent = DeserializeLogContent(currentRaw);
                     if (currentContent is null || fullContent.Length >= currentContent.Length)
                     {
                         await _cache.SetMetadataAsync(contentKey,
-                            JsonSerializer.Serialize(fullContent), ImmutableTtl, ct);
+                            SerializeLogContent(fullContent), ImmutableTtl, ct);
                     }
                 }
 
@@ -163,7 +162,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         if (result is null) return null;
 
         var completed = await IsBuildCompletedAsync(org, project, buildId, ct);
-        await _cache.SetMetadataAsync(contentKey, JsonSerializer.Serialize(result), ImmutableTtl, ct);
+        await _cache.SetMetadataAsync(contentKey, SerializeLogContent(result), ImmutableTtl, ct);
 
         if (!completed)
             await _cache.SetMetadataAsync(freshKey, "\"1\"", InProgressTtl, ct);
@@ -280,6 +279,22 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
     private static bool IsCompletedStatus(string? status)
         => status?.Equals("completed", StringComparison.OrdinalIgnoreCase) == true;
+
+    /// <summary>Store log content as plain text with a prefix, avoiding JSON escaping overhead.</summary>
+    private static string SerializeLogContent(string content) => string.Concat(RawTextPrefix, content);
+
+    /// <summary>
+    /// Read log content from cache. Supports both raw: prefixed (new format) and
+    /// JSON-wrapped (legacy) entries for backward compatibility.
+    /// </summary>
+    private static string? DeserializeLogContent(string? cached)
+    {
+        if (cached is null) return null;
+        if (cached.StartsWith(RawTextPrefix, StringComparison.Ordinal))
+            return cached[RawTextPrefix.Length..];
+        // Legacy JSON-wrapped format — graceful migration
+        return JsonSerializer.Deserialize<string>(cached);
+    }
 
     private async Task<bool> IsBuildCompletedAsync(string org, string project, int buildId, CancellationToken ct)
     {

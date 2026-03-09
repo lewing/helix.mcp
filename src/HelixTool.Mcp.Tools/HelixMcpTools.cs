@@ -125,11 +125,25 @@ public sealed class HelixMcpTools
 
         var files = await _svc.GetWorkItemFilesAsync(jobId, workItem);
 
+        var binlogs = new List<FileInfo_>();
+        var testResults = new List<FileInfo_>();
+        var other = new List<FileInfo_>();
+        foreach (var f in files)
+        {
+            var info = new FileInfo_ { Name = f.Name, Uri = f.Uri };
+            if (HelixService.MatchesPattern(f.Name, "*.binlog"))
+                binlogs.Add(info);
+            else if (HelixService.IsTestResultFile(f.Name))
+                testResults.Add(info);
+            else
+                other.Add(info);
+        }
+
         return new FilesResult
         {
-            Binlogs = files.Where(f => HelixService.MatchesPattern(f.Name, "*.binlog")).Select(f => new FileInfo_ { Name = f.Name, Uri = f.Uri }).ToList(),
-            TestResults = files.Where(f => HelixService.IsTestResultFile(f.Name)).Select(f => new FileInfo_ { Name = f.Name, Uri = f.Uri }).ToList(),
-            Other = files.Where(f => !HelixService.MatchesPattern(f.Name, "*.binlog") && !HelixService.IsTestResultFile(f.Name)).Select(f => new FileInfo_ { Name = f.Name, Uri = f.Uri }).ToList()
+            Binlogs = binlogs,
+            TestResults = testResults,
+            Other = other
         };
     }
 

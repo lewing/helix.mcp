@@ -225,11 +225,8 @@ public class HelixService
             var content = await reader.ReadToEndAsync(cancellationToken);
 
             if (tailLines.HasValue)
-            {
-                var lines = content.Split('\n');
-                var start = Math.Max(0, lines.Length - tailLines.Value);
-                return string.Join('\n', lines[start..]);
-            }
+                return StringHelpers.TailLines(content, tailLines.Value);
+
             return content;
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
@@ -599,16 +596,13 @@ public class HelixService
         ArgumentException.ThrowIfNullOrWhiteSpace(workItem);
         ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
 
-        var path = await DownloadConsoleLogAsync(jobId, workItem, cancellationToken);
-        try
-        {
-            var allLines = await File.ReadAllLinesAsync(path, cancellationToken);
-            return TextSearchHelper.SearchLines(workItem, allLines, pattern, contextLines, maxMatches);
-        }
-        finally
-        {
-            try { File.Delete(path); } catch { }
-        }
+        // Stream directly to memory instead of writing to disk then reading back
+        var content = await GetConsoleLogContentAsync(jobId, workItem, tailLines: null, cancellationToken);
+        // Split handling CRLF/CR/LF, strip \r, and omit trailing empty element from final newline
+        var allLines = content.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        if (allLines.Length > 1 && allLines[^1].Length == 0)
+            allLines = allLines[..^1];
+        return TextSearchHelper.SearchLines(workItem, allLines, pattern, contextLines, maxMatches);
     }
 
     /// <summary>Search a work item's uploaded file for lines matching a pattern.</summary>
@@ -847,7 +841,7 @@ public class HelixService
     private static bool MatchesTestResultPattern(string fileName, string pattern)
     {
         if (pattern.StartsWith("*."))
-            return fileName.EndsWith(pattern[1..], StringComparison.OrdinalIgnoreCase);
+            return fileName.AsSpan().EndsWith(pattern.AsSpan(1), StringComparison.OrdinalIgnoreCase);
         return fileName.Equals(pattern, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -1023,7 +1017,7 @@ public class HelixService
     {
         if (pattern == "*") return true;
         if (pattern.StartsWith("*."))
-            return name.EndsWith(pattern[1..], StringComparison.OrdinalIgnoreCase);
+            return name.AsSpan().EndsWith(pattern.AsSpan(1), StringComparison.OrdinalIgnoreCase);
         return name.Contains(pattern, StringComparison.OrdinalIgnoreCase);
     }
 }

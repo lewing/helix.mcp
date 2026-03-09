@@ -45,21 +45,34 @@
 
 ## Learnings (azdo_search_log_across_steps implementation)
 
-- **NormalizeAndSplit extraction:** Extracted `\r\n` → `\n` normalization + split + trailing-empty-trim into `NormalizeAndSplit()` private static method in `AzdoService`. Both `SearchBuildLogAsync` and `SearchBuildLogAcrossStepsAsync` share this. Pattern: when two methods share identical preprocessing, extract immediately rather than let copy-paste drift.
-- **4-bucket ranking algorithm:** Logs ranked by failure likelihood: Bucket 0 (failed/canceled) → Bucket 1 (has issues) → Bucket 2 (succeededWithIssues) → Bucket 3 (succeeded) → Bucket 4 (orphans). Within each bucket, sorted by lineCount descending. This matches how a human would scan — check failed steps first, bigger logs more likely to contain errors.
-- **Orphan log detection:** Logs in the logs list but not referenced by any timeline record go into Bucket 4. These are rare but occur in retried builds. Synthetic `AzdoTimelineRecord` created with `Name = $"log:{entry.Id}"` since there's no real timeline data.
-- **Early termination has two triggers:** (1) `remainingMatches <= 0` — found enough matches, and (2) `logsSearched >= maxLogsToSearch` — API call budget exhausted. `StoppedEarly` is true if either triggers before exhausting the eligible log queue.
-- **Task.WhenAll for metadata:** Timeline and logs list are independent API calls. `Task.WhenAll` fetches both concurrently. Must `await` individual tasks after `WhenAll` to unwrap results (not just use `.Result` which can deadlock in some contexts).
-- **CrossStepSearchResult types live in Core AzdoModels.cs:** Same pattern as `TimelineSearchResult` — domain types in Core, MCP tools return them directly. No wrapper DTO needed in McpToolResults.cs.
-- **CachingAzdoApiClient dynamic TTL for logs list:** `GetBuildLogsListAsync` uses completed build → 4h, in-progress → 15s, matching the existing pattern for timeline caching (check build completion status first).
+- **NormalizeAndSplit extraction:** When two methods share identical preprocessing, extract immediately.
+- **4-bucket ranking:** Logs ranked by failure likelihood (failed → issues → succeededWithIssues → succeeded → orphans), largest first. Matches human scan order.
+- **Early termination:** Two triggers — match budget exhausted OR log search budget exhausted.
+- **Task.WhenAll for metadata:** Timeline + logs list fetched concurrently. Always `await` individual tasks after WhenAll.
+- **CachingAzdoApiClient dynamic TTL for logs list:** Completed → 4h, in-progress → 15s.
 
-📌 Team update (2026-03-08): AzDO search gap analysis consolidated — CI-analysis skill study validated `azdo_search_log` as P0, confirmed `SearchLines()` extraction approach. New P1 ideas: `azdo_search_timeline`, `azdo_search_log_across_steps`. — analyzed by Ash
-📌 Team update (2026-03-09): Incremental log fetching full design spec merged — API range support (startLine/endLine), append-on-expire caching (two-key pattern), tail optimization. P0 CountLines off-by-one fixed. 864/864 tests passing. PR #13 opened. — decided by Dallas
-📌 Team update (2026-03-09): P0 CountLines off-by-one fix — Split('\n') overcounts by 1 for trailing newline content. Fix: subtract 1 when content ends with '\n'. Affects delta-fetch startLine computation. — decided by Dallas
-📌 Team update (2026-03-09): azdo_search_log_across_steps full design spec merged — 4-bucket ranking, early termination, GetBuildLogsListAsync, NormalizeAndSplit extraction. 19 estimated tests. — decided by Dallas
+📌 Team updates (2026-03-08 – 2026-03-09 summary): AzDO search gap analysis, incremental log fetching (PR #13), CountLines off-by-one fix, azdo_search_log_across_steps spec. — decided by Ash/Dallas
 
-## Learnings (PR #13 review fixes)
+## Learnings (PR #13 review fixes + performance, 2025-07-18)
 
-- **Integer overflow in tail optimization:** `tailLines.Value * 2` computed as `int` can overflow for large user-controlled values. Fix: cast to `(long)tailLines.Value * 2` for the comparison, and guard `startLine` arithmetic with bounds check (`> 0 && <= int.MaxValue`) before the `(int)` cast. Falls back to full fetch if values don't fit. Lesson: always consider overflow on user-controlled arithmetic, especially before narrowing casts.
-- **ExtractRange clamping vs server semantics:** The original `ExtractRange` clamped out-of-bounds `startLine` to the last line, which differs from AzDO API behavior (returns empty/404 for out-of-range). Fix: return `null` when `start >= lines.Length`, `start < 0`, or `end < start`. Lesson: cache-layer range extraction must match server semantics to avoid behavioral divergence between cached and uncached paths.
-- **Allocation-free string line operations:** Replace `string.Split('\n')` with span-based approaches for hot-path methods. `CountLines`: use `content.AsSpan().Count('\n')` (MemoryExtensions.Count) — zero allocation. `ExtractRange`: scan for Nth newline via `IndexOf('\n')` in a loop to find character offsets, then slice with `content[start..end]` — avoids allocating an array of all lines just to extract a small range. Critical for large AzDO logs on delta-refresh paths. Note: must handle content without trailing `\n` (add +1 to count).
+- **Integer overflow guard:** Cast to `(long)` for user-controlled arithmetic before narrowing to `int`. Falls back to full fetch on overflow.
+- **Cache-layer range must match server semantics:** Return `null` for out-of-range, don't clamp.
+- **Allocation-free string line ops:** `content.AsSpan().Count('\n')` for CountLines; `IndexOf('\n')` loop + slice for ExtractRange. Critical for large log delta-refresh.
+- **SearchValues<char> for line-break scanning:** `SearchValues.Create("\r\n")` + `IndexOfAny` handles all line endings in one pass without pre-normalizing.
+- **Shared StringHelpers.TailLines:** Reverse-scan `LastIndexOf('\n')` in Core. Guard empty string (pos+1 exceeds length).
+- **SearchConsoleLogAsync refactor safe:** Only download feature and SearchFileAsync use disk path. Search can stream directly.
+- **Cache format migration via sentinel prefix:** `raw:` prefix with `JsonSerializer.Deserialize<string>()` fallback for legacy entries. Zero-downtime, natural TTL expiry handles transition.
+- **Test assertions must match serialization format:** Tests asserting exact stored values need updating on format changes; `Arg.Any<string>()` is resilient.
+- **Key perf anti-patterns:** Chained `.Replace()` (span enumerator instead), Split+Join for tail (reverse-scan slice), `pattern[1..]` substring in loops (span EndsWith), triple-iteration file categorization (single-pass), disk round-trip for search (stream directly), JSON-serialized log strings (plain text + marker).
+
+📌 Team update (2025-07-18): Perf review (17 issues) + 8 fixes implemented (3 P0, 5 P1), all 864 tests passing — decided/implemented by Ripley
+
+📌 Team update (2026-03-09): 3 perf decisions merged — raw: cache prefix, SearchConsoleLog decoupling, shared StringHelpers — decided by Ripley
+
+## Learnings (PR #14 review fixes, 2025-07-18)
+
+- **CRLF in streamed content:** When bypassing `File.ReadAllLinesAsync` and splitting raw content, always normalize `\r\n`/`\r` to `\n` before splitting — otherwise `\r` leaks into line strings and breaks pattern matching.
+- **Trailing empty element on split:** `"content\n".Split('\n')` yields a trailing empty string. Drop it only when `lines.Count > 1` to preserve semantics for single-newline inputs like `"\n"` → `[""]`.
+- **Cache sentinel collision:** Plain-text prefixes like `"raw:"` can collide with legitimate log content. Use NUL byte prefixes (`"\0raw\n"`) — NUL can't appear in valid log text, making collision impossible.
+
+📌 Team update (2025-07-18): Fixed 3 PR #14 review comments — CRLF handling in SearchConsoleLogAsync, NormalizeAndSplit edge case for single-newline, cache sentinel collision via NUL prefix — implemented by Ripley

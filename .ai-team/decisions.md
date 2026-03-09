@@ -4046,17 +4046,6 @@ This is where the ranking algorithm, incremental search, and early termination l
 | T-10 | Context lines propagation | Verify contextLines flows to TextSearchHelper |
 | T-11 | Line ending normalization | `\r\n` and `\r` normalized before search |
 
-### Validation Tests
-
-| ID | Test | Notes |
-|----|------|-------|
-| V-1 | Null/empty pattern | ArgumentException |
-| V-2 | Negative contextLines | ArgumentOutOfRangeException |
-| V-3 | Zero maxMatches | ArgumentOutOfRangeException |
-| V-4 | Zero maxLogsToSearch | ArgumentOutOfRangeException |
-| V-5 | Negative minLogLines | ArgumentOutOfRangeException |
-| V-6 | IsFileSearchDisabled=true | InvalidOperationException |
-
 ### MCP Tool Tests
 
 | ID | Test | Notes |
@@ -4136,3 +4125,69 @@ Deferred. Sequential downloads are simpler and sufficient for Phase 1. If perfor
 
 - Future search-style features in Core should follow this pattern: define result DTOs with `[JsonPropertyName]` in Core, add `[JsonIgnore]` for any raw-data properties that shouldn't serialize.
 - `McpToolResults.cs` is for MCP-specific wrapper types that don't map 1:1 to service returns (like `SearchBuildLogResult` which reshapes `LogSearchResult`).
+
+---
+
+### 2025-07-18: Performance review findings
+**By:** Ripley
+**What:** Comprehensive perf review of Core, AzDO, Cache, and MCP tool layers identified 17 findings across 8 files. Three patterns account for the majority of avoidable allocations: (1) chained `.Replace()` for line-ending normalization on hot search paths, (2) `Split('\n')` + `Join` for tail-trimming when a span-based reverse scan would be zero-alloc, and (3) substring allocations in `MatchesPattern` called per-file in loops.
+**Why:** The cross-step search path (`SearchBuildLogAcrossStepsAsync`) processes up to 30 multi-MB logs per request, making `NormalizeAndSplit` the single hottest allocation site. Tail-trimming in `GetBuildLogAsync` and `GetConsoleLogContentAsync` is called on every log view with a `tail` parameter. `MatchesPattern` is called N×M times (work items × files per item) in `FindFilesAsync` and the MCP `Files` tool. The JSON serialization of large log strings in `CachingAzdoApiClient` doubles memory usage on every cache hit. Fixing P0+P1 items would meaningfully reduce GC pressure for real-world usage patterns (CI log investigation).
+
+#### P0 — Fix now (hot path)
+| # | File | Line | Issue | Fix |
+|---|------|------|-------|-----|
+| 1 | AzdoService.cs | 461-469 | `NormalizeAndSplit` does `.Replace("\r\n","\n").Replace("\r","\n").Split('\n')` — 3 intermediate full-size strings per log, called up to 30× in cross-step search | Span-based line enumerator handling `\r\n`/`\r`/`\n` in single pass; or at minimum `string.Create` with single-pass normalization |
+
+#### P1 — Worth fixing
+| # | File | Line | Issue | Fix |
+|---|------|------|-------|-----|
+| 2 | AzdoService.cs | 101-106 | Tail-trimming: `Split('\n')` + `Join` allocates full string array just to get last N lines | Reverse-scan for Nth `\n` from end using span, then slice |
+| 3 | HelixService.cs | 229-231 | Same Split+Join tail pattern in `GetConsoleLogContentAsync` | Same fix |
+| 4 | HelixMcpTools.cs | 130-133 | `Files` tool iterates file list 3× with separate `.Where().Select().ToList()` for binlogs/testResults/other | Single-pass categorization loop |
+| 5 | HelixService.cs | 1026 | `MatchesPattern`: `pattern[1..]` allocates substring per call | `name.AsSpan().EndsWith(pattern.AsSpan(1), ...)` |
+| 6 | HelixService.cs | 850 | `MatchesTestResultPattern`: same `pattern[1..]` allocation | Same span fix |
+| 7 | HelixService.cs | 602-606 | `SearchConsoleLogAsync` downloads to disk then reads back — double I/O | Stream directly into memory (StreamReader on API stream) |
+| 8 | CachingAzdoApiClient.cs | 128-130 | `fullContent += '\n'; fullContent += delta;` — two string concats | `string.Concat(fullContent, "\n", delta)` — single allocation |
+| 9 | CachingAzdoApiClient.cs | 108-109,166 | Log content stored as JSON-serialized string; `Deserialize<string>()` re-parses multi-MB content on every cache hit | Store as plain text with metadata flag |
+
+#### P2 — Minor/cosmetic
+| # | File | Line | Issue | Fix |
+|---|------|------|-------|-----|
+| 10 | CacheSecurity.cs | 38-44, 58-62 | Chained `.Replace()` (3 calls) in `SanitizePathSegment`/`SanitizeCacheKeySegment` | `string.Create` with single pass; but strings are short, not hot path |
+| 11 | CachingAzdoApiClient.cs | 297-301 | `HashFilter` creates interpolated string + byte array + hex string + `.ToLowerInvariant()` | Stackalloc + span-based hex; once per cache lookup |
+| 12 | HelixMcpTools.cs | 372-376 | `SelectMany().Where().ToList()` + `GroupBy().ToDictionary()` in `BatchStatus` | Single loop; once per request |
+| 13 | AzdoService.cs | 245 | `new List<string>()` allocated for every timeline record with issues, even if no match | Lazy allocation on first match |
+| 14 | HelixIdResolver.cs | 74 | `knownTrailingSegments` array allocated per call | `static readonly` field |
+| 15 | SqliteCacheStore.cs | 118,173,etc | `DateTimeOffset.ToString()` repeated with same value | Cache formatted string in local var (already done in some methods) |
+| 16 | AzdoService.cs | 151-156 | `GetBuildArtifactsAsync` does `.Where().ToList()` then `.Take().ToList()` — two materializations | `.Where().Take().ToList()` single pass |
+| 17 | AzdoApiClient.cs | 35-57 | `List<string>` + `string.Join` for query params | `StringBuilder`; once per API call |
+
+### 2026-03-09: Cache format change — raw: prefix (Ripley perf fixes)
+
+**By:** Ripley
+
+**Context:** CachingAzdoApiClient stored log content via `JsonSerializer.Serialize<string>()`, double-escaping multi-MB strings. Changed to plain text with `raw:` sentinel prefix.
+
+**Decision:** Backward-compatible migration via sentinel detection. `DeserializeLogContent` checks for `raw:` prefix first, falls back to JSON deserialization for legacy entries. No explicit migration step — natural TTL expiry handles transition.
+
+**Risk:** Low. Legacy entries are still readable. New entries are written in the efficient format. Cache key structure is unchanged, so there's no key collision.
+
+**For Dallas to review:** Is the `raw:` prefix approach acceptable long-term, or should we consider a versioned cache format? The prefix relies on log content never starting with `raw:` literally — extremely unlikely for AzDO build logs but worth noting.
+
+### 2026-03-09: SearchConsoleLogAsync decoupled from disk download (Ripley perf fixes)
+
+**By:** Ripley
+
+**Context:** `SearchConsoleLogAsync` used `DownloadConsoleLogAsync` (stream→disk) then `File.ReadAllLinesAsync` (disk→memory). Changed to use `GetConsoleLogContentAsync` (stream→memory directly).
+
+**Decision:** Safe to decouple because `DownloadConsoleLogAsync` is only used by the CLI download command and `SearchFileAsync` (which needs disk for binary detection). Search doesn't need disk presence.
+
+**Risk:** None observed — 864/864 tests pass. If a future change adds caching or rate-limiting at the download layer, search would bypass it. Worth noting but not a current concern.
+
+### 2026-03-09: Shared StringHelpers in Core (Ripley perf fixes)
+
+**By:** Ripley
+
+**Context:** Both AzdoService and HelixService had identical tail-trimming patterns. Extracted to `HelixTool.Core.StringHelpers` (internal static class).
+
+**Decision:** `internal` visibility is sufficient — only Core code needs it. If CLI or MCP projects need it in the future, promote to `public`.

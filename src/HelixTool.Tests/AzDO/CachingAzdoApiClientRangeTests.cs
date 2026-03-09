@@ -326,10 +326,10 @@ public class CachingAzdoApiClientRangeTests
         var result = await _sut.GetBuildLogAsync("org", "proj", 1, 5);
 
         Assert.Equal("a\nb\nc\n", result);
-        // Content key should be updated with appended content
+        // Content key should be updated with appended content (\0raw\n prefix, no JSON wrapping)
         await _cache.Received().SetMetadataAsync(
             Arg.Is<string>(k => IsContentKey(k)),
-            JsonSerializer.Serialize("a\nb\nc\n"),
+            "\0raw\na\nb\nc\n",
             TimeSpan.FromHours(4),
             Arg.Any<CancellationToken>());
     }
