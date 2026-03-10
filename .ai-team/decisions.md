@@ -4840,3 +4840,30 @@ Executed Option A from Dallas's restructuring proposal. 59 files touched, 0 beha
 **What:** Treat the knowledgebase as a living document that should be updated from the latest file state rather than preserved as a static snapshot.
 **Why:** User request — captured for team memory
 
+
+# Dallas decisions inbox — Discoverability review (2026-03-10)
+
+1. **Do not add a new composite failure-investigation tool in this increment.**
+   Improve discoverability through existing surfaces: MCP tool descriptions, fallback/error messages, `helix_ci_guide`, README, and llmstxt/help output.
+
+2. **Make `helix_ci_guide(repo)` the recommended repo-specific entry point for workflow selection.**
+   Tool descriptions and failure messages should direct agents there when pattern choice or result-location expectations vary by repo.
+
+3. **Clarify the behavioral contract of `helix_test_results`.**
+   It should be described as structured Helix-hosted test-result parsing with existing fallback support, but not as the universal first choice across repos. Failure guidance must route callers to the correct next tool sequence.
+
+4. **Clarify the behavioral contract of `helix_search_log`.**
+   It should be positioned as the preferred remote-first console-log search path, with explicit note that search patterns vary by repo/test runner.
+
+5. **Keep discoverability surfaces synchronized.**
+   MCP descriptions, README, llmstxt/help output, and CI-guide wording must align on when to use `helix_test_results`, when to pivot to AzDO structured results, and when to use `helix_search_log`.
+
+### 2026-03-10: Keep discoverability docs as a short routing note
+**By:** Kane
+**What:** Updated the README and CLI reference to explain the investigation path in three steps: start with `helix_ci_guide(repo)` when repo workflow expectations vary, use `helix_test_results` only for Helix-hosted structured results, then pivot to AzDO structured results or `helix_search_log` as appropriate.
+**Why:** The design review called for better discoverability without turning docs into a manual. A compact routing note keeps the surfaces aligned with Dallas's decisions while preserving the README's concise, evaluator-friendly shape.
+
+### 2026-03-10: Prefer explicit fallback routing in CI investigation copy
+**By:** Ripley
+**What:** MCP descriptions, `helix_test_results` failure text, `helix_ci_guide`, and `Program.cs` help output should explicitly route callers between `helix_test_results`, `azdo_test_runs + azdo_test_results`, `helix_search_log`, and `helix_ci_guide(repo)` without adding a composite tool or new parameters.
+**Why:** Repo-specific CI workflows already exist, but vague warnings still cause wasted tool calls. Concise “use this when / otherwise go here next” wording improves discoverability while preserving the approved incremental surface.

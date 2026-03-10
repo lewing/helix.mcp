@@ -24,3 +24,9 @@
 - Merged 2 inbox decisions into `decisions.md` (Ash knowledgebase-refresh note, living-document directive)
 - Propagated a consolidated 2026-03-10 knowledgebase-refresh update to Ash, Dallas, Kane, Lambert, and Ripley
 - Checked agent history sizes; no summarization/archive action needed
+
+### 2026-03-10: Discoverability pass bookkeeping
+- Logged `2026-03-10-discoverability-pass` for Larry Ewing
+- Merged 3 inbox decisions into `decisions.md` (Dallas discoverability review, Kane discoverability docs note, Ripley fallback-routing note)
+- Propagated a consolidated 2026-03-10 discoverability-routing update to Dallas, Kane, Lambert, and Ripley histories
+- Checked agent history sizes; no summarization/archive action needed

@@ -102,7 +102,11 @@
 - TRX support is one row in the Helix tools table, not a featured section. It's a feature, not a differentiator.
 - MCP tool table descriptions should be short (one line). Detailed parameter docs belong in [Description] attributes on the actual tools, not README.
 - README went from 589 → ~270 lines. Conciseness is a feature for a README — readers are evaluating, not studying.
+- Discoverability guidance should stay as a short routing note, not a mini-manual: `helix_ci_guide(repo)` when repo expectations vary, `helix_test_results` for Helix-hosted structured results, then AzDO structured results or `helix_search_log` as the fallback path.
+- `docs/cli-reference.md` only needs a brief consistency note for that investigation path; the full repo-specific guidance belongs in MCP surfaces, not expanded CLI command docs.
 
 📌 Team update (2026-03-10): Review-fix decisions merged — README now leads with value prop, shared caching, and context reduction; cache path containment uses exact Ordinal root-boundary checks; and HelixService requires an injected HttpClient with no implicit fallback. Validation confirmed current CLI/MCP DI sites already comply and focused plus full-suite coverage exists. — decided by Kane, Lambert, Ripley
 
 📌 Team update (2026-03-10): Knowledgebase refresh guidance merged — treat the knowledgebase as a living document aligned to current file state, not a static snapshot; earlier README/cache-security/HelixService review findings are resolved knowledge, and only residual follow-up should stay active (discoverability plus documentation/tool-description synchronization). — requested by Larry Ewing, refreshed by Ash
+
+📌 Team update (2026-03-10): Discoverability routing decisions merged — keep the current tool surface, route repo-specific workflow selection through `helix_ci_guide(repo)`, treat `helix_test_results` as structured Helix-hosted parsing rather than a universal first step, and keep `helix_search_log`/docs/help guidance synchronized across surfaces. — decided by Dallas, Kane, Ripley
