@@ -6,6 +6,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using HelixTool.Core;
+using HelixTool.Core.Cache;
 using HelixTool.Core.AzDO;
 using NSubstitute;
 using Xunit;

@@ -4572,3 +4572,245 @@ These files exemplify the patterns the team should follow:
 **By:** Ripley
 **What:** Updated 5 MCP tool descriptions (helix_test_results, helix_search_log, azdo_test_runs, azdo_test_results, azdo_timeline) to embed repo-specific CI knowledge from CiKnowledgeService profiles. Added warnings about common failure paths, repo-specific search patterns, Helix task name mappings, and cross-references to helix_ci_guide.
 **Why:** Agents were wasting calls on helix_test_results for repos that don't upload TRX (4/6 major repos), using wrong search patterns, and not knowing which Helix task names to look for in timelines. These description changes are the cheapest possible fix — zero runtime cost, immediate agent behavior improvement. Descriptions are the first thing agents read before deciding which tool to call, so getting them right eliminates entire classes of dead-end investigations.
+
+
+### 2025-07-24: Architectural Analysis — Helix vs AzDO File Structure Separation
+
+**By:** Dallas
+**Requested by:** Larry Ewing
+
+#### 1. Current State Map
+
+### Project Dependency Graph
+```
+HelixTool (CLI)  ──→  HelixTool.Core  ←──  HelixTool.Mcp (HTTP server)
+       │                    ↑                       │
+       └──→  HelixTool.Mcp.Tools  ←────────────────┘
+```
+
+### File/Folder Census
+
+| Location | Files | Lines | Contents |
+|----------|-------|-------|----------|
+| `Core/` (root) | 13 .cs | 2,505 | Helix API client, service, ID resolver, auth, credential store, shared utilities |
+| `Core/AzDO/` | 7 .cs | 1,726 | AzDO API client, service, models, ID resolver, caching, token accessor |
+| `Core/Cache/` | 7 .cs | 863 | SQLite cache store, cache options/security/status, ICacheStore, CachingHelixApiClient |
+| `Mcp.Tools/` | 5 .cs | 1,025 | HelixMcpTools, AzdoMcpTools, CiKnowledge (tool+resource), McpToolResults |
+| `Tests/` (root) | 35 .cs | 8,691 | All Helix tests + shared tests (cache, security, CI knowledge, etc.) |
+| `Tests/AzDO/` | 14 .cs | 5,898 | All AzDO tests |
+
+### Namespace Map
+```
+HelixTool.Core          ← 13 Core root files + 7 Cache files (Cache/ has no sub-namespace!)
+HelixTool.Core.AzDO     ← 7 AzDO files (clean sub-namespace)
+HelixTool.Mcp           ← 2 files (middleware, token accessor)
+HelixTool.Mcp.Tools     ← 5 files (mixed Helix + AzDO MCP tools)
+HelixTool.Tests         ← 35 files (all non-AzDO tests)
+HelixTool.Tests.AzDO    ← 14 files (AzDO tests)
+```
+
+#### 2. Pain Points Identified
+
+### P1: Asymmetric organization — AzDO is clean, Helix is scattered
+AzDO code got a dedicated `AzDO/` subfolder from day one with its own sub-namespace (`HelixTool.Core.AzDO`). Helix-specific code sits at the Core root alongside truly shared utilities. You can't tell at a glance which root files are "Helix API" vs "shared infrastructure."
+
+**Root files that are Helix-specific:** HelixService.cs, HelixApiClient.cs, IHelixApiClient.cs, IHelixApiClientFactory.cs, HelixIdResolver.cs, HelixException.cs, IHelixTokenAccessor.cs, ChainedHelixTokenAccessor.cs (8 files, ~1,700 lines)
+
+**Root files that are genuinely shared:** TextSearchHelper.cs, StringHelpers.cs, CiKnowledgeService.cs, ICredentialStore.cs, GitCredentialStore.cs (5 files, ~800 lines)
+
+### P2: CachingHelixApiClient is in `Cache/` but is Helix-specific
+`Cache/CachingHelixApiClient.cs` (191 lines) is the Helix caching decorator. Its sibling `CachingAzdoApiClient.cs` correctly lives in `AzDO/`. This is a consistency violation — the Helix decorator is in the wrong folder.
+
+### P3: Cache folder has no sub-namespace
+All 7 files in `Core/Cache/` use `namespace HelixTool.Core` — no `HelixTool.Core.Cache` sub-namespace. Meanwhile AzDO files correctly use `HelixTool.Core.AzDO`. This means you can't distinguish cache types from Helix types by namespace alone.
+
+### P4: AzDO→Helix coupling via static methods
+`AzdoService.cs` directly calls `HelixService.MatchesPattern()` (line 147) and `HelixService.IsFileSearchDisabled` (lines 168, 309). These are shared utility methods that happen to live on `HelixService`. The AzDO subsystem should not depend on a Helix service class.
+
+### P5: MCP Tools project mixes domains
+`HelixTool.Mcp.Tools/` has 5 files in a flat structure: `HelixMcpTools.cs` (483 lines), `AzdoMcpTools.cs` (307 lines), `CiKnowledgeTool.cs`, `CiKnowledgeResource.cs`, `McpToolResults.cs`. No folder separation between Helix and AzDO tool definitions.
+
+### P6: Test folder mirrors the same asymmetry
+35 test files at root for Helix + shared concerns. 14 test files in `AzDO/` subfolder. The asymmetry makes it hard to identify test coverage gaps per domain.
+
+### P7: Program.cs (CLI) is 1,513 lines
+The CLI's `Program.cs` contains all commands for both Helix and AzDO in a single file. This is the largest file in the repo. Not a structural issue per se, but it would benefit from the same domain separation.
+
+#### 3. Restructuring Options
+
+### Option A: Minimal — Folder-level reorganization within existing projects (LOW RISK)
+
+Add a `Helix/` subfolder in Core (matching `AzDO/`), move CachingHelixApiClient to it, and give Cache its own sub-namespace. Extract shared utilities from HelixService.
+
+**Moves in `HelixTool.Core/`:**
+```
+NEW: Helix/
+  ← HelixService.cs
+  ← HelixApiClient.cs
+  ← IHelixApiClient.cs
+  ← IHelixApiClientFactory.cs
+  ← HelixIdResolver.cs
+  ← HelixException.cs
+  ← IHelixTokenAccessor.cs
+  ← ChainedHelixTokenAccessor.cs
+  ← Cache/CachingHelixApiClient.cs  (move from Cache/)
+
+Cache/ stays with generic cache infra only:
+  SqliteCacheStore.cs, ICacheStore.cs, ICacheStoreFactory.cs,
+  CacheOptions.cs, CacheSecurity.cs, CacheStatus.cs
+
+Root keeps shared utilities:
+  TextSearchHelper.cs, StringHelpers.cs, CiKnowledgeService.cs,
+  ICredentialStore.cs, GitCredentialStore.cs
+```
+
+**Extract from HelixService (prerequisite):**
+- `MatchesPattern()` → `StringHelpers.cs` (or new `PatternHelpers.cs`)
+- `IsFileSearchDisabled` → `StringHelpers.cs` or new shared config class
+
+**Namespace changes:**
+- `HelixTool.Core` → `HelixTool.Core.Helix` for the 9 moved files
+- `HelixTool.Core` → `HelixTool.Core.Cache` for Cache/ files (currently using `HelixTool.Core`)
+- ~20 `using` statement additions across consumers
+
+**Test folder mirroring:**
+```
+Tests/
+  NEW: Helix/
+    ← all Helix-specific test files (~20 files)
+  AzDO/ (unchanged, 14 files)
+  Root keeps shared tests: cache, security, CI knowledge, text search (~15 files)
+```
+
+**MCP Tools folder:**
+```
+Mcp.Tools/
+  NEW: Helix/
+    ← HelixMcpTools.cs
+  NEW: AzDO/
+    ← AzdoMcpTools.cs
+  Root keeps: CiKnowledgeTool.cs, CiKnowledgeResource.cs, McpToolResults.cs
+```
+
+**Impact:**
+- ~50 files touched (namespace updates, using additions)
+- Zero project/csproj changes
+- Zero packaging impact
+- MCP tool registration unchanged (assembly scanning picks up tools regardless of namespace)
+- Build unaffected — same projects, same references
+
+**Risk:** Low. Pure file moves + namespace renames. Mechanical refactor.
+
+---
+
+### Option B: Moderate — Option A + split HelixTool.Core into domain-specific libraries (MEDIUM RISK)
+
+Everything in Option A, plus: split `HelixTool.Core` into three projects.
+
+**New project structure:**
+```
+src/
+  HelixTool.Core/              ← shared only: cache, text search, string helpers, credential store, CI knowledge
+  HelixTool.Core.Helix/        ← Helix API client, service, ID resolver, auth, caching decorator
+  HelixTool.Core.AzDO/         ← AzDO API client, service, models, ID resolver, auth, caching decorator
+  HelixTool.Mcp.Tools/         ← (with folder separation per Option A)
+  HelixTool.Mcp/               ← (unchanged)
+  HelixTool/                   ← (unchanged, references all three Core projects)
+  HelixTool.Tests/             ← (with folder separation per Option A)
+```
+
+**Dependency graph:**
+```
+HelixTool.Core.Helix ──→ HelixTool.Core  ←── HelixTool.Core.AzDO
+```
+
+**Impact:**
+- 3 new .csproj files, InternalsVisibleTo updates
+- PackageReference for `Microsoft.DotNet.Helix.Client` moves to `HelixTool.Core.Helix` only
+- `HelixTool.Core` becomes much lighter (no Helix SDK dependency)
+- Test project references expand (3 core projects instead of 1)
+- Enforces no accidental cross-domain dependencies at compile time
+
+**Risk:** Medium. New projects affect solution file, CI, NuGet packaging. Need to verify `PackAsTool` still works when the tool project references 3 core libraries. Also need to split DI registration.
+
+---
+
+### Option C: Aggressive — Full domain isolation with separate test projects (HIGH RISK)
+
+Everything in Option B, plus: separate test projects per domain.
+
+**Structure:**
+```
+src/
+  HelixTool.Core/
+  HelixTool.Core.Helix/
+  HelixTool.Core.AzDO/
+  HelixTool.Mcp.Tools/
+  HelixTool.Mcp/
+  HelixTool/
+tests/
+  HelixTool.Core.Tests/
+  HelixTool.Core.Helix.Tests/
+  HelixTool.Core.AzDO.Tests/
+  HelixTool.Mcp.Tests/
+  HelixTool.Mcp.Tools.Tests/
+```
+
+**Impact:**
+- 5 test projects instead of 1
+- Each test project references only its target — compile-time enforcement of test isolation
+- Much more granular test execution (`dotnet test --project tests/HelixTool.Core.AzDO.Tests`)
+- Significant churn: 50 test files redistribute across 5 projects
+- More .csproj files to maintain
+
+**Risk:** High. Massive churn for marginal benefit at current scale. The single test project works fine today. Splitting makes sense at 2,000+ tests or when multiple teams own different domains. We have ~770 tests and one team.
+
+#### 4. Recommendation: Option A (Folder-level reorganization)
+
+**Rationale:**
+
+1. **Right-sized for current scale.** The codebase is ~22K lines across 80 .cs files. Project-level splitting (Options B/C) adds build complexity that doesn't pay for itself until the codebase is 2-3x larger or has multiple teams.
+
+2. **Fixes the actual problem.** Larry's observation is correct — the structure reflects organic growth. AzDO was added later with a clean subfolder, but the original Helix code never got the same treatment. Option A creates symmetry: `Helix/` and `AzDO/` folders at every level.
+
+3. **Eliminates the real coupling bug.** Extracting `MatchesPattern` and `IsFileSearchDisabled` from `HelixService` into shared utilities breaks the AzDO→Helix dependency. This is the one structural problem that causes actual confusion (a "Helix" service being called from AzDO code).
+
+4. **Cache gets its own namespace.** `HelixTool.Core.Cache` makes the cache subsystem's types unambiguous. Moving `CachingHelixApiClient` out of `Cache/` into `Helix/` clarifies that cache infrastructure is generic.
+
+5. **Low risk, high clarity.** The refactor is entirely mechanical (file moves + namespace renames). Zero behavioral changes. Easy to review. Easy to roll back if something breaks.
+
+6. **Leaves the door open for Option B later.** If a third domain arrives (e.g., GitHub Actions), or the AzDO surface area doubles, we can split projects then. The folder structure from Option A maps directly to the project boundaries in Option B.
+
+**Sequencing (if approved):**
+1. Extract `MatchesPattern` + `IsFileSearchDisabled` from `HelixService` → `StringHelpers.cs` (prerequisite, breaks AzDO→Helix coupling)
+2. Create `Helix/` folder in Core, move 9 files, update namespaces
+3. Add `HelixTool.Core.Cache` namespace to Cache/ files
+4. Create `Helix/` and `AzDO/` folders in Mcp.Tools, move tool files
+5. Create `Helix/` folder in Tests, move ~20 test files
+6. Update all `using` statements
+7. Verify build + all tests pass
+
+
+### 2025-07-24: Restructure Execution Notes — Option A
+
+**By:** Ripley
+**Branch:** `restructure/option-a-folder-reorg`
+
+#### What was done
+
+Executed Option A from Dallas's restructuring proposal. 59 files touched, 0 behavioral changes.
+
+### Namespace changes
+- `HelixTool.Core` → `HelixTool.Core.Helix` for 9 Helix-specific files (now in `Core/Helix/`)
+- `HelixTool.Core` → `HelixTool.Core.Cache` for 6 cache infrastructure files (in `Core/Cache/`)
+- `StringHelpers` promoted from `internal` to `public` (cross-project access needed)
+
+### Shared utility extraction
+- `MatchesPattern()` and `IsFileSearchDisabled` extracted from `HelixService` to `StringHelpers`
+- `HelixService` methods now delegate to `StringHelpers` (backward compatible)
+- `AzdoService`, `HelixMcpTools`, `AzdoMcpTools` updated to call `StringHelpers` directly
+
+### Decision for team awareness
+- **HelixService.MatchesPattern and HelixService.IsFileSearchDisabled still exist** as delegation wrappers for backward compatibility. New code should use `StringHelpers.MatchesPattern` and `StringHelpers.IsFileSearchDisabled` directly.
+- **MCP tool registration is unaffected** — assembly scanning picks up tools regardless of subfolder/namespace.
+- **All 1038 tests pass** with no modifications to test logic.

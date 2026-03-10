@@ -91,3 +91,5 @@
 📌 Team update (2026-03-09): CI profile analysis — 14 recommendations for MCP tool descriptions. Tool descriptions in HelixMcpTools.cs and AzdoMcpTools.cs will change. README and llmstxt may need updates once descriptions are implemented. — decided by Ash
 
 📌 Team update (2026-03-10): CiKnowledgeService expanded to 9 repos with 9 new CiRepoProfile properties. MCP tool descriptions now embed repo-specific CI knowledge. 171 new tests added. — decided by Ripley
+
+📌 Team update (2026-03-10): Option A folder restructuring executed — 9 Helix files moved to Core/Helix/, Cache namespace added, shared utils extracted from HelixService, Helix/AzDO subfolders in Mcp.Tools and Tests. 59 files, 1038 tests pass, zero behavioral changes. PR #17. — decided by Dallas (analysis), Ripley (execution)

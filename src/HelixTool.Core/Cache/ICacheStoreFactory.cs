@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 
-namespace HelixTool.Core;
+namespace HelixTool.Core.Cache;
 
 /// <summary>
 /// Factory for obtaining cache stores by auth context.

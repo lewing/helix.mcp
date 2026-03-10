@@ -4,6 +4,7 @@
 // where multiple requests hit the same cache store simultaneously.
 
 using HelixTool.Core;
+using HelixTool.Core.Cache;
 using Xunit;
 
 namespace HelixTool.Tests;

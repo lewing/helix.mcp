@@ -1,4 +1,5 @@
 using HelixTool.Core;
+using HelixTool.Core.Helix;
 using Microsoft.AspNetCore.Http;
 
 namespace HelixTool.Mcp;

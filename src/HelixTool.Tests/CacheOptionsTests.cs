@@ -3,6 +3,7 @@
 // Will compile once Ripley's Cache/CacheOptions.cs is in place.
 
 using HelixTool.Core;
+using HelixTool.Core.Cache;
 using Xunit;
 
 namespace HelixTool.Tests;

@@ -37,7 +37,7 @@
 
 **AzDO security review (2026-03-08):** 5 findings — (1) type-validate or `Uri.EscapeDataString` all user inputs in URLs, (2) `BuildUrl` hardcodes `https://dev.azure.com/` (SSRF-proof), (3) singleton token accessor doesn't handle expiry (fails closed — operational gap), (4) `CacheSecurity.SanitizeCacheKeySegment` required for all subsystems, (5) security review convention: 7 focus areas, SEC-{N} IDs. Full details in history-archive.md.
 
-📌 Team updates (2026-02-11 – 2026-03-07 summary): P0 foundation, requirements backlog (30 US), 9 US implemented, PackageId rename, NuGet publishing, HTTP/SSE auth tests, security fixes/tests, remote search design, status filter, UseStructuredContent refactor, Phase 1 auth UX, AzDO pipeline architecture. Decided by: Lambert, Kane, Dallas, Ash, Ripley, Larry.
+📌 Team updates (2026-02-11–03-07): P0 foundation, 30 US backlog, 9 US implemented, PackageId rename, NuGet publishing, HTTP/SSE auth, security fixes, UseStructuredContent, AzDO architecture. — various
 
 ## Learnings
 
@@ -79,19 +79,19 @@ Freshness marker pattern: content key (4h) + sentinel (15s). Delta-append via Co
 
 **P0 — CountLines off-by-one:** `Split('\n').Length` overcounts by 1 with trailing `\n`. Fix: subtract 1 when content ends with `\n`. Ripley: fix. Lambert: update C-18, C-19, delta tests.
 
-📌 Team updates (2026-03-09 summary): Incremental log fetching approved (32 new tests, PR #13). Timeline search types in Core (Ripley). Perf review (Ripley). Cache format changed to raw: prefix (Ripley).
+📌 Team updates (2026-03-09): Incremental log (PR #13), perf review, cache raw: prefix. — Ripley
 
 ### 2025-07-24: Test Quality Review — Tautological Test Audit
 
-**Spec:** `.ai-team/decisions/inbox/dallas-test-quality-review.md`
+Reviewed 776 tests. ~40 problematic (5%), concentrated not systemic. Deleted ~17 tests (~350 lines), zero coverage loss. Key rules: no layer duplication, ≤1 passthrough smoke test, interface compliance tests are redundant. Gold standard patterns: AzdoSecurityTests, AzdoIdResolverTests, TextSearchHelperTests, CachingAzdoApiClientTests, AzdoServiceTailTests.
 
-Reviewed all 776 tests across 50 files. Found ~40 problematic tests (5%), concentrated not systemic. Biggest issue: `AzdoCliCommandTests` is ~14 near-duplicate tests of `AzdoServiceTests` — same Service calls, same mock patterns, zero unique coverage. Also found 5 passthrough-only MCP tool tests, 3 redundant "ImplementsInterface" tests, and 2 overlapping filter tests. Recommended deleting ~17 tests (~350 lines) with zero coverage loss.
+📌 Team update (2026-03-10): CiKnowledgeService expanded to 9 repos with full profiles. 5 tool descriptions updated. — Ripley
 
-**Key test quality patterns to watch for in future reviews:**
-- **Layer duplication anti-pattern:** When Service tests exist, CLI/MCP test files should NOT re-test the same Service methods. One test per behavior, at the lowest layer that exercises the logic.
-- **Passthrough methods need at most 1 smoke test**, not exhaustive variations. If a method is `return await _client.Foo(args)`, one delegation test is enough.
-- **Interface compliance tests are compile-time guarantees** — `Assert.NotNull(new Foo() as IFoo)` adds zero value.
-- **Gold standard test patterns** in this codebase: AzdoSecurityTests (adversarial inputs), AzdoIdResolverTests (pure functions), TextSearchHelperTests (algorithmic logic), CachingAzdoApiClientTests (decorator behavior), AzdoServiceTailTests (optimization paths + fallbacks).
-- **Setup-to-assertion ratio** is a smell: if 20 lines of setup produce `Assert.NotNull`, something is wrong.
+- **HelixTool.Core has asymmetric organization.** AzDO code lives in a clean `AzDO/` subfolder with `HelixTool.Core.AzDO` namespace. Helix-specific code (8 files, ~1,700 lines) is scattered at the project root alongside shared utilities (5 files, ~800 lines). CachingHelixApiClient is in `Cache/` but is Helix-specific.
+- **Cache/ folder uses `HelixTool.Core` namespace, not `HelixTool.Core.Cache`.** All 7 cache files lack a sub-namespace, unlike AzDO which correctly uses `HelixTool.Core.AzDO`. This makes cache types indistinguishable from Helix types by namespace alone.
+- **AzdoService depends on HelixService for shared utility methods.** `AzdoService.cs` calls `HelixService.MatchesPattern()` and `HelixService.IsFileSearchDisabled` — these are genuinely shared utilities stranded on a domain-specific class. Must extract before any structural reorganization.
+- **HelixTool.Mcp.Tools has flat structure mixing domains.** HelixMcpTools.cs (483 lines) and AzdoMcpTools.cs (307 lines) sit side-by-side with no folder separation.
+- **Program.cs (CLI) is 1,513 lines** — largest file in the repo, contains all Helix + AzDO commands in one file.
+- **Option A (folder-level reorg) recommended over project splitting at current scale (~22K lines, ~80 files, ~770 tests, 1 team).** Create `Helix/` subfolders mirroring existing `AzDO/` subfolders. Decision spec: `.ai-team/decisions/inbox/dallas-helix-azdo-restructure.md`
 
-📌 Team update (2026-03-10): CiKnowledgeService expanded from 6 stubs to 9 full repo profiles with 9 new properties (exit codes, gotchas, investigation order, pipeline names). 3 new repos: maui, macios, android. MCP tool descriptions updated with repo-specific CI knowledge. — decided by Ripley
+📌 Team update (2026-03-10): Option A folder restructuring executed — 9 Helix files moved to Core/Helix/, Cache namespace added, shared utils extracted from HelixService, Helix/AzDO subfolders in Mcp.Tools and Tests. 59 files, 1038 tests pass, zero behavioral changes. PR #17. — decided by Dallas (analysis), Ripley (execution)

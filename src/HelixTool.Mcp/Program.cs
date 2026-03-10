@@ -1,4 +1,6 @@
 using HelixTool.Core;
+using HelixTool.Core.Cache;
+using HelixTool.Core.Helix;
 using HelixTool.Core.AzDO;
 using HelixTool.Mcp;
 using HelixTool.Mcp.Tools;

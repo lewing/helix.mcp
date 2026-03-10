@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 
-namespace HelixTool.Core;
+namespace HelixTool.Core.Cache;
 
 /// <summary>Configuration for the SQLite-backed cache layer.</summary>
 public record CacheOptions

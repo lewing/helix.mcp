@@ -79,3 +79,5 @@
 - **Test count:** 1038 total (was ~1020 before enrichment, net +~18 test methods but many more test cases via InlineData).
 
 📌 Team update (2026-03-10): CiKnowledgeService expanded from 6 stubs to 9 full repo profiles with 9 new properties. 5 MCP tool descriptions updated with repo-specific CI knowledge. Future test work should cover the enriched CiRepoProfile fields. — decided by Ripley
+
+📌 Team update (2026-03-10): Option A folder restructuring executed — 9 Helix files moved to Core/Helix/, Cache namespace added, shared utils extracted from HelixService, Helix/AzDO subfolders in Mcp.Tools and Tests. 59 files, 1038 tests pass, zero behavioral changes. PR #17. — decided by Dallas (analysis), Ripley (execution)

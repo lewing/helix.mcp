@@ -3,6 +3,7 @@
 // SqliteCacheStore requires file-based SQLite (constructor calls Directory.CreateDirectory).
 
 using HelixTool.Core;
+using HelixTool.Core.Cache;
 using Xunit;
 
 namespace HelixTool.Tests;

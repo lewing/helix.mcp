@@ -51,55 +51,57 @@
 - **Task.WhenAll for metadata:** Timeline + logs list fetched concurrently. Always `await` individual tasks after WhenAll.
 - **CachingAzdoApiClient dynamic TTL for logs list:** Completed → 4h, in-progress → 15s.
 
-📌 Team updates (2026-03-08 – 2026-03-09 summary): AzDO search gap analysis, incremental log fetching (PR #13), CountLines off-by-one fix, azdo_search_log_across_steps spec, test quality guidelines (~20 tests cleaned, PR #15). — decided by Ash/Dallas/Lambert
+📌 Team updates (2026-03-08–09): AzDO search, incremental log (PR #13), search_across_steps spec, test quality cleanup (PR #15). — Ash/Dallas/Lambert
 
-## Core Context (performance & review fixes, summarized 2026-03-09)
+## Learnings (perf & review fixes)
 
-> Full entries archived to history-archive.md.
-
-- **Perf review (2025-07-18):** 17 allocation issues found, 8 fixed. Key anti-patterns: chained `.Replace()`, Split+Join for tail, substring in loops, triple-iteration categorization, disk round-trip for search, JSON-serialized log strings.
-- **PR #13 fixes:** Integer overflow guards (cast to `long`). Cache-layer range returns `null` for out-of-range. Allocation-free `CountLines` via `AsSpan().Count('\n')`. `SearchValues<char>` for line-break scanning. Shared `StringHelpers.TailLines`. Cache format migration via `raw:` prefix.
-- **PR #14 fixes:** CRLF normalization before Split. Cache sentinel collision fix via NUL byte prefix.
+- **Perf review (2025-07-18):** 17 allocation issues, 8 fixed — chained `.Replace()`, Split+Join, substring-in-loops, disk round-trip for search, JSON-serialized log strings.
+- **PR #13/14 fixes:** Integer overflow guards, allocation-free `CountLines`, `SearchValues<char>`, cache `raw:` prefix migration, CRLF normalization, sentinel collision fix via NUL byte.
 - **Version 0.3.0:** AzDO integration, perf optimizations, incremental log support.
 
-## MCP Error Surfacing & Message Quality (latest session)
+## Learnings (MCP error surfacing)
 
-**Exception wrapping in MCP tools:** All AzDO and Helix MCP tool handlers now wrap service-layer exceptions (HttpRequestException, InvalidOperationException, ArgumentException, HelixException) in McpException with the actual error message. Pattern: `catch (Exception ex) when (ex is X or Y) { throw new McpException($"Failed to {action}: {ex.Message}", ex); }`. The MCP SDK only surfaces `McpException.Message` to clients — unhandled exceptions become generic "An error occurred" messages.
+- **McpException wrapping pattern:** `catch (Exception ex) when (ex is X or Y) { throw new McpException($"Failed to {action}: {ex.Message}", ex); }` — MCP SDK only surfaces McpException.Message; unhandled → generic error.
+- **helix_test_results "no TRX" error:** Filters noise, highlights crash dumps with ⚠️, suggests `helix_search_log` as fallback.
+- **helix_search_log description:** Documents substring-based (not regex) matching with common search patterns.
 
-**helix_test_results error message:** When no TRX files found, error now filters out noise (hash-named .log files) and highlights useful files (crash dumps, binlogs, XML). Crash artifacts (core.*, *.dmp, *crashdump*) get a ⚠️ callout with search suggestions. When only .log files exist, suggests `helix_search_log` with pattern `'  Failed'`.
+📌 Team update (2026-03-09): CI profile analysis — 14 tool description/error message recommendations. — Ash
 
-**helix_search_log description:** Updated to document substring-based (not regex) matching, literal treatment of metacharacters, and common search patterns.
-
-📌 Team update (2026-03-09): CI profile analysis — 14 recommendations for MCP tool descriptions/error messages. Tool description changes in HelixMcpTools.cs, AzdoMcpTools.cs, error messages in HelixService.cs. — decided by Ash
-
-📌 Team update (2025-07-24): Test quality review — ~17 redundant tests deleted, guidelines: no layer duplication, ≤1 passthrough smoke test, prune proactive tests when real tests land. — decided by Dallas
+📌 Team update (2025-07-24): Test quality review — ~17 redundant tests deleted, no layer duplication rule. — Dallas
 
 ## Learnings (MCP tool description updates with CI knowledge)
 
-- **Updated 5 tool descriptions** across HelixMcpTools.cs (helix_test_results, helix_search_log) and AzdoMcpTools.cs (azdo_test_runs, azdo_test_results, azdo_timeline) to embed repo-specific CI knowledge.
-- **Key pattern: warn-before-fail.** helix_test_results now warns that 4/6 major repos don't upload TRX to Helix, directing agents to azdo_test_runs + azdo_test_results instead. This prevents the most common wasted tool call.
-- **Repo-specific search patterns in descriptions:** helix_search_log now lists failure patterns per repo (runtime='[FAIL]', aspnetcore/efcore='  Failed', sdk='error MSB', roslyn='aborted'/'Process exited').
-- **Trust-but-verify on run counts:** azdo_test_runs description now warns that failedTests=0 can be a lie — always drill into azdo_test_results.
-- **Helix task name mapping in azdo_timeline:** runtime/aspnetcore='Send to Helix', sdk='🟣 Run TestBuild Tests', efcore='Send job to helix', roslyn=embedded, VMR=no Helix.
-- **helix_ci_guide cross-references:** Both helix_test_results and helix_search_log now point agents to helix_ci_guide for full repo profiles.
+- **5 tool descriptions updated** with repo-specific CI knowledge (helix_test_results, helix_search_log, azdo_test_runs, azdo_test_results, azdo_timeline).
+- **warn-before-fail pattern:** helix_test_results warns that 4/6 repos don't upload TRX, directing to azdo_test_runs/results.
+- **Repo-specific search patterns:** runtime=`[FAIL]`, aspnetcore/efcore=`  Failed`, sdk=`error MSB`, roslyn=`aborted`/`Process exited`.
+- **azdo_test_runs:** failedTests=0 can lie — always drill into results. azdo_timeline includes Helix task name mapping per repo.
 
 ## Learnings (CiKnowledgeService enrichment — 9-repo knowledge base)
 
-- **Expanded CiRepoProfile record** with 9 new properties: PipelineNames, OrgProject, ExitCodeMeanings, WorkItemNamingPattern, KnownGotchas, RecommendedInvestigationOrder, TestFramework, TestRunnerModel, UploadedFiles. All use init-only defaults so existing code is backward-compatible.
-- **Added 3 new repos:** maui (3 pipelines!), macios (devdiv org, NUnit, Make-based), android (devdiv org, NUnit+xUnit, emulator targets). Total: 9 repos.
-- **Key pattern: devdiv org repos need explicit warnings.** macios and android are on devdiv.visualstudio.com — standard `helix_*` and `ado-dnceng-*` tools do NOT work. KnownGotchas leads with ⚠️ prefix.
-- **ExitCodeMeanings as string[]** — cleaner than Dictionary<int, string> since entries include contextual notes (e.g., "0: Passed (but can coexist with [FAIL] results)").
-- **MAUI has 3 separate pipelines** with completely different investigation approaches — this is the only repo where pipeline identity matters for tool selection.
-- **FormatProfile() enriched** with sections for Org/Project, Pipelines, Gotchas, Exit Codes, Investigation Order, File Inventory. Gotchas rendered first because they're the most critical.
-- **GetOverview() enriched** with Org column and helix_test_results status column — agents immediately see which repos work with which tools.
-- **Test update needed:** Existing test asserted 6 repos; updated to 9. Lambert should review for coverage of new repos.
+- **CiRepoProfile expanded** with 9 new properties (PipelineNames, OrgProject, ExitCodeMeanings, etc.). Init-only defaults for backward compat. 3 new repos: maui (3 pipelines), macios (devdiv, NUnit), android (devdiv, NUnit+xUnit). Total: 9.
+- **devdiv org repos need ⚠️ warnings** — standard helix_*/ado-dnceng-* tools don't work for macios/android.
+- **MAUI is unique:** 3 separate pipelines with different investigation approaches. Pipeline identity matters for tool selection.
+- **FormatProfile/GetOverview enriched** with org, pipelines, gotchas, exit codes, investigation order columns.
 
-📌 Team update (2026-03-10): CiKnowledgeService enrichment merged — 9 full profiles, 9 new properties, 5 tool descriptions updated. 171 new tests by Lambert. All on mcp-error-improvements branch (PR #16). — decided by Ripley
+📌 Team update (2026-03-10): CiKnowledgeService enrichment (9 repos, 9 new properties, 171 tests, PR #16). — Ripley
 
 ## Learnings (PR #16 review comment fixes)
 
-- **Indentation inside try blocks must match method scope.** When wrapping existing code in a try block, re-indent the body. Four methods in HelixMcpTools.cs (Status, Files, WorkItem, BatchStatus) had inconsistent indentation after try-wrapping.
-- **McpException wrapping must include inner exception and "Failed to" prefix.** Three AzDO search tool catch blocks (azdo_search_log, azdo_search_timeline, azdo_search_log_across_steps) were doing `throw new McpException(ex.Message)` — dropping inner exception and context. Pattern: `throw new McpException($"Failed to {action}: {ex.Message}", ex)`.
-- **Error messages shouldn't recommend a single repo-specific pattern.** The "no test results" message in HelixService.cs suggested only `'  Failed'`, but patterns vary by repo (`[FAIL]` for runtime, `'  Failed'` for aspnetcore, etc.). Now suggests multiple patterns and points to `helix_ci_guide`.
-- **Boolean properties with nuanced semantics should be strings/enums.** `UploadsTestResultsToHelix: bool` couldn't represent "partial" (runtime CoreCLR yes, libraries no) or "varies" (MAUI device tests yes, unit tests no). Replaced with `HelixTestResultAvailability: string` using values `"none"`, `"partial"`, `"varies"`. FormatProfile and GetOverview updated to render nuanced status.
-- **When renaming a required record property, check test files too.** Three test assertions referenced `UploadsTestResultsToHelix` and needed updating to `HelixTestResultAvailability` + new values to compile.
+- **Try-block indentation:** Re-indent body when wrapping in try. Caught in 4 HelixMcpTools methods.
+- **McpException must include inner exception and "Failed to" prefix.** Three AzDO search catch blocks were dropping context.
+- **Error messages: don't hardcode one repo's pattern.** Use multiple patterns + point to `helix_ci_guide`.
+- **Bool→string for nuanced semantics.** `UploadsTestResultsToHelix: bool` → `HelixTestResultAvailability: string` (`"none"`, `"partial"`, `"varies"`).
+- **When renaming record properties, update test assertions too.**
+
+## Learnings (Option A folder restructuring)
+
+- **Moved 9 Helix files** from `Core/` root to `Core/Helix/`: HelixService, HelixApiClient, IHelixApiClient, IHelixApiClientFactory, HelixIdResolver, HelixException, IHelixTokenAccessor, ChainedHelixTokenAccessor, plus CachingHelixApiClient from `Cache/`. Namespace: `HelixTool.Core` → `HelixTool.Core.Helix`.
+- **Added `HelixTool.Core.Cache` namespace** to 6 cache infrastructure files in `Cache/`: SqliteCacheStore, ICacheStore, ICacheStoreFactory, CacheOptions, CacheSecurity, CacheStatus.
+- **Extracted `MatchesPattern` and `IsFileSearchDisabled`** from HelixService to `StringHelpers.cs`. HelixService methods now delegate to StringHelpers. AzdoService, HelixMcpTools, and AzdoMcpTools updated to call StringHelpers directly — breaking the AzDO→Helix coupling.
+- **Moved MCP tools**: HelixMcpTools → `Mcp.Tools/Helix/`, AzdoMcpTools → `Mcp.Tools/AzDO/`.
+- **Moved 24 Helix-specific test files** to `Tests/Helix/`. Kept shared tests (cache, security, CI knowledge, text search, API middleware) at root.
+- **HelixService.cs needed `using HelixTool.Core.Cache;`** — it references `CacheSecurity` for path validation. Initial build failed until this was added. Key learning: when splitting namespaces within the same project, intra-project cross-namespace references are easy to miss.
+- **StringHelpers changed from `internal` to `public`** to support cross-project access (MCP tools project references it).
+- **59 files touched**, 0 behavioral changes, all 1038 tests pass.
+
+📌 Team update (2026-03-10): Option A folder restructuring executed — 9 Helix files moved to Core/Helix/, Cache namespace added, shared utils extracted from HelixService, Helix/AzDO subfolders in Mcp.Tools and Tests. 59 files, 1038 tests pass, zero behavioral changes. PR #17. — decided by Dallas (analysis), Ripley (execution)

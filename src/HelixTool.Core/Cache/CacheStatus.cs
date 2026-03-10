@@ -1,4 +1,4 @@
-namespace HelixTool.Core;
+namespace HelixTool.Core.Cache;
 
 /// <summary>Status summary returned by <see cref="ICacheStore.GetStatusAsync"/>.</summary>
 public record CacheStatus(

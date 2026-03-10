@@ -57,3 +57,5 @@
 - Key P0s: improve `helix_test_results` description to steer agents away from futile TRX searches; add repo-specific pattern guidance to `helix_search_log`; improve error messages with actionable next steps
 
 📌 Team update (2026-03-10): 5 MCP tool descriptions updated with repo-specific CI knowledge. CiKnowledgeService expanded to 9 repos including devdiv-org repos (maui, macios, android). — decided by Ripley
+
+📌 Team update (2026-03-10): Option A folder restructuring executed — 9 Helix files moved to Core/Helix/, Cache namespace added, shared utils extracted from HelixService, Helix/AzDO subfolders in Mcp.Tools and Tests. 59 files, 1038 tests pass, zero behavioral changes. PR #17. — decided by Dallas (analysis), Ripley (execution)
