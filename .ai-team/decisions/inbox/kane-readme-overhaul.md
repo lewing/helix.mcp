@@ -1,4 +1,0 @@
-### 2026-03-10: README structure — lead with value prop, promote caching and context reduction
-**By:** Kane
-**What:** Restructured README to prioritize "why" (value prop for AI agents), cross-process caching, and context-efficient design as the three top-level stories. Removed project structure, moved CLI reference to docs/cli-reference.md, de-emphasized TRX parsing from featured section to tool list entry.
-**Why:** The previous README was comprehensive but organized by implementation surface (CLI commands, project structure, enhancement tables) rather than by what matters to someone evaluating the tool. The two biggest differentiators — that cached data is shared across MCP server instances, and that tools are designed to return minimal context-window-friendly output — were buried in subsections. The overhaul puts these front and center so the README answers "why should I use this?" before "how do I use it?".

@@ -12,3 +12,9 @@
 
 
 📌 Team update (2026-02-13): Requirements audit complete — 25/30 stories implemented, US-22 structured test failure parsing is only remaining P2 gap — audited by Ash
+
+### 2026-03-10: Review-fix session bookkeeping
+- Logged `2026-03-10-review-fix-session` for Larry Ewing
+- Merged 3 inbox decisions into `decisions.md` (README overhaul, strict HttpClient review validation, path-boundary/transport review fixes)
+- Propagated a consolidated 2026-03-10 team update to Ash, Dallas, Kane, Lambert, and Ripley
+- Checked agent history sizes; no summarization/archive action needed

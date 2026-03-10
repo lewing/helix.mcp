@@ -4814,3 +4814,18 @@ Executed Option A from Dallas's restructuring proposal. 59 files touched, 0 beha
 - **HelixService.MatchesPattern and HelixService.IsFileSearchDisabled still exist** as delegation wrappers for backward compatibility. New code should use `StringHelpers.MatchesPattern` and `StringHelpers.IsFileSearchDisabled` directly.
 - **MCP tool registration is unaffected** — assembly scanning picks up tools regardless of subfolder/namespace.
 - **All 1038 tests pass** with no modifications to test logic.
+
+### 2026-03-10: README structure — lead with value prop, promote caching and context reduction
+**By:** Kane
+**What:** Restructured README to prioritize "why" (value prop for AI agents), cross-process caching, and context-efficient design as the three top-level stories. Removed project structure, moved CLI reference to docs/cli-reference.md, de-emphasized TRX parsing from featured section to tool list entry.
+**Why:** The previous README was comprehensive but organized by implementation surface (CLI commands, project structure, enhancement tables) rather than by what matters to someone evaluating the tool. The two biggest differentiators — that cached data is shared across MCP server instances, and that tools are designed to return minimal context-window-friendly output — were buried in subsections. The overhaul puts these front and center so the README answers "why should I use this?" before "how do I use it?".
+
+### 2026-03-10: Keep the strict HelixService HttpClient requirement
+**By:** Lambert
+**What:** Validated the removal of `HelixService`'s implicit `new HttpClient()` fallback and found no remaining one-argument construction sites in repo code or tests. Existing DI wiring in `src/HelixTool/Program.cs` and `src/HelixTool.Mcp/Program.cs` already supplies named `HelixDownload` clients, and constructor null-guard coverage exists in `src/HelixTool.Tests/Helix/HelixServiceDITests.cs`.
+**Why:** This keeps the service aligned with explicit dependency injection and avoids silently bypassing configured HTTP policies. Focused tests plus the full suite passed, so there is no current production follow-up required for the fallback removal.
+
+### 2026-03-10: Security boundaries and download transports must be explicit
+**By:** Ripley
+**What:** `CacheSecurity.ValidatePathWithinRoot` now treats path containment as an exact, case-sensitive boundary check after full-path normalization and root-boundary trimming. `HelixService` no longer creates a fallback `HttpClient`; every caller must provide one, and the constructor null-guards both dependencies.
+**Why:** Ignore-case prefix checks can let a case-variant sibling path look like it is under the trusted root on case-sensitive filesystems. Requiring injected `HttpClient` instances keeps timeout/handler configuration centralized in DI and avoids hidden transport creation that bypasses host configuration.

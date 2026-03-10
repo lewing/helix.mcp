@@ -112,3 +112,5 @@
 - **HelixService constructor contract:** `HelixService` should require an injected `HttpClient` and null-guard both constructor dependencies instead of silently allocating a fallback transport.
 - **User preference:** Code-review follow-up fixes should stay surgical, behavior-safe, and avoid unrelated refactoring.
 - **Key file paths:** `src/HelixTool.Core/Cache/CacheSecurity.cs` contains cache/download path traversal guards. `src/HelixTool.Core/Helix/HelixService.cs` owns direct URL download behavior and now depends on caller-provided `HttpClient`. `src/HelixTool/Program.cs` and `src/HelixTool.Mcp/Program.cs` are the production DI registration points for `HelixService`.
+
+📌 Team update (2026-03-10): Review-fix decisions merged — README now leads with value prop, shared caching, and context reduction; cache path containment uses exact Ordinal root-boundary checks; and HelixService requires an injected HttpClient with no implicit fallback. Validation confirmed current CLI/MCP DI sites already comply and focused plus full-suite coverage exists. — decided by Kane, Lambert, Ripley

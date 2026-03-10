@@ -102,3 +102,5 @@
 - TRX support is one row in the Helix tools table, not a featured section. It's a feature, not a differentiator.
 - MCP tool table descriptions should be short (one line). Detailed parameter docs belong in [Description] attributes on the actual tools, not README.
 - README went from 589 → ~270 lines. Conciseness is a feature for a README — readers are evaluating, not studying.
+
+📌 Team update (2026-03-10): Review-fix decisions merged — README now leads with value prop, shared caching, and context reduction; cache path containment uses exact Ordinal root-boundary checks; and HelixService requires an injected HttpClient with no implicit fallback. Validation confirmed current CLI/MCP DI sites already comply and focused plus full-suite coverage exists. — decided by Kane, Lambert, Ripley
