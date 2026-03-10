@@ -103,3 +103,14 @@
 - **Error messages shouldn't recommend a single repo-specific pattern.** The "no test results" message in HelixService.cs suggested only `'  Failed'`, but patterns vary by repo (`[FAIL]` for runtime, `'  Failed'` for aspnetcore, etc.). Now suggests multiple patterns and points to `helix_ci_guide`.
 - **Boolean properties with nuanced semantics should be strings/enums.** `UploadsTestResultsToHelix: bool` couldn't represent "partial" (runtime CoreCLR yes, libraries no) or "varies" (MAUI device tests yes, unit tests no). Replaced with `HelixTestResultAvailability: string` using values `"none"`, `"partial"`, `"varies"`. FormatProfile and GetOverview updated to render nuanced status.
 - **When renaming a required record property, check test files too.** Three test assertions referenced `UploadsTestResultsToHelix` and needed updating to `HelixTestResultAvailability` + new values to compile.
+
+## Learnings (Option A folder restructuring)
+
+- **Moved 9 Helix files** from `Core/` root to `Core/Helix/`: HelixService, HelixApiClient, IHelixApiClient, IHelixApiClientFactory, HelixIdResolver, HelixException, IHelixTokenAccessor, ChainedHelixTokenAccessor, plus CachingHelixApiClient from `Cache/`. Namespace: `HelixTool.Core` → `HelixTool.Core.Helix`.
+- **Added `HelixTool.Core.Cache` namespace** to 6 cache infrastructure files in `Cache/`: SqliteCacheStore, ICacheStore, ICacheStoreFactory, CacheOptions, CacheSecurity, CacheStatus.
+- **Extracted `MatchesPattern` and `IsFileSearchDisabled`** from HelixService to `StringHelpers.cs`. HelixService methods now delegate to StringHelpers. AzdoService, HelixMcpTools, and AzdoMcpTools updated to call StringHelpers directly — breaking the AzDO→Helix coupling.
+- **Moved MCP tools**: HelixMcpTools → `Mcp.Tools/Helix/`, AzdoMcpTools → `Mcp.Tools/AzDO/`.
+- **Moved 24 Helix-specific test files** to `Tests/Helix/`. Kept shared tests (cache, security, CI knowledge, text search, API middleware) at root.
+- **HelixService.cs needed `using HelixTool.Core.Cache;`** — it references `CacheSecurity` for path validation. Initial build failed until this was added. Key learning: when splitting namespaces within the same project, intra-project cross-namespace references are easy to miss.
+- **StringHelpers changed from `internal` to `public`** to support cross-project access (MCP tools project references it).
+- **59 files touched**, 0 behavioral changes, all 1038 tests pass.
