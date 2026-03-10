@@ -75,3 +75,12 @@
 📌 Team update (2026-03-09): CI profile analysis — 14 recommendations for MCP tool descriptions/error messages. P0: helix_test_results fails for 4/6 repos (no TRX uploads), helix_search_log needs repo-specific patterns, error messages need actionable next steps. Tool description changes in HelixMcpTools.cs, AzdoMcpTools.cs, error messages in HelixService.cs. — decided by Ash
 
 📌 Team update (2025-07-24): Test quality review — ~17 redundant tests identified (AzdoCliCommandTests near-duplicates, interface compliance tests, overlapping filters). Lambert actioned deletions. Test guidelines: no layer duplication, ≤1 passthrough smoke test, prune proactive tests when real tests land. — decided by Dallas
+
+## Learnings (MCP tool description updates with CI knowledge)
+
+- **Updated 5 tool descriptions** across HelixMcpTools.cs (helix_test_results, helix_search_log) and AzdoMcpTools.cs (azdo_test_runs, azdo_test_results, azdo_timeline) to embed repo-specific CI knowledge.
+- **Key pattern: warn-before-fail.** helix_test_results now warns that 4/6 major repos don't upload TRX to Helix, directing agents to azdo_test_runs + azdo_test_results instead. This prevents the most common wasted tool call.
+- **Repo-specific search patterns in descriptions:** helix_search_log now lists failure patterns per repo (runtime='[FAIL]', aspnetcore/efcore='  Failed', sdk='error MSB', roslyn='aborted'/'Process exited').
+- **Trust-but-verify on run counts:** azdo_test_runs description now warns that failedTests=0 can be a lie — always drill into azdo_test_results.
+- **Helix task name mapping in azdo_timeline:** runtime/aspnetcore='Send to Helix', sdk='🟣 Run TestBuild Tests', efcore='Send job to helix', roslyn=embedded, VMR=no Helix.
+- **helix_ci_guide cross-references:** Both helix_test_results and helix_search_log now point agents to helix_ci_guide for full repo profiles.

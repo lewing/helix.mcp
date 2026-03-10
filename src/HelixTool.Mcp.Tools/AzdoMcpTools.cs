@@ -63,7 +63,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_timeline", Title = "AzDO Build Timeline", ReadOnly = true, UseStructuredContent = true),
-     Description("Get the build timeline showing stages, jobs, and tasks for an Azure DevOps build. Returns hierarchical timeline records with state, result, timing, log references, and issues. Use the 'filter' parameter to control which records are returned. Use to drill into which stage/job/task failed and find log IDs for azdo_log.")]
+     Description("Get the build timeline showing stages, jobs, and tasks for an Azure DevOps build. Returns hierarchical timeline records with state, result, timing, log references, and issues. Use the 'filter' parameter to control which records are returned. Use to drill into which stage/job/task failed and find log IDs for azdo_log. Helix task names vary by repo: runtime/aspnetcore='Send to Helix', sdk='🟣 Run TestBuild Tests', efcore='Send job to helix', roslyn=embedded in test tasks. VMR does not use Helix.")]
     public async Task<AzdoTimeline?> Timeline(
         [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId,
         [Description("Filter: 'failed' (default) shows only non-succeeded records, 'all' shows everything")] string filter = "failed")
@@ -154,7 +154,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_test_runs", Title = "AzDO Test Runs", ReadOnly = true, UseStructuredContent = true),
-     Description("Get test runs for an Azure DevOps build. Returns test run summaries with total, passed, and failed counts. Use to get an overview of test execution for a build before drilling into individual test results with azdo_test_results.")]
+     Description("Get test runs for an Azure DevOps build. Returns test run summaries with total, passed, and failed counts. Use to get an overview of test execution for a build before drilling into individual test results with azdo_test_results. NOTE: Run-level failedTests counts can be inaccurate (may show 0 when failures exist). Always drill into individual runs with azdo_test_results to verify.")]
     public async Task<IReadOnlyList<AzdoTestRun>> TestRuns(
         [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId,
         [Description("Maximum number of test runs to return (default: 50)")] int top = 50)
@@ -170,7 +170,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_test_results", Title = "AzDO Test Results", ReadOnly = true, UseStructuredContent = true),
-     Description("Get test results for a specific test run. Returns individual test case results including outcome, duration, and error details for failures. Defaults to showing only failed tests. Use after azdo_test_runs to investigate specific test failures.")]
+     Description("Get test results for a specific test run. Returns individual test case results including outcome, duration, and error details for failures. Defaults to showing only failed tests. Use after azdo_test_runs to investigate specific test failures. This is the primary tool for structured test results in most .NET repos (aspnetcore, sdk, roslyn, efcore) since they publish to AzDO, not Helix.")]
     public async Task<IReadOnlyList<AzdoTestResult>> TestResults(
         [Description("AzDO build ID (integer) or full AzDO build URL — used to resolve org/project context")] string buildId,
         [Description("Test run ID from azdo_test_runs output")] int runId,

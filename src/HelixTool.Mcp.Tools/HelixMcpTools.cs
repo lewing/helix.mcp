@@ -285,7 +285,7 @@ public sealed class HelixMcpTools
         }
     }
 
-    [McpServerTool(Name = "helix_search_log", Title = "Search Helix Console Log", ReadOnly = true, UseStructuredContent = true), Description("Search a work item's console log for lines matching a pattern. Returns matching lines with optional context. Use this to find specific errors, stack traces, or patterns in Helix test output. Matching is substring-based (case-insensitive), NOT regex — characters like *, +, ?, [, ] are treated as literals. Common patterns: '  Failed' (2 leading spaces) for xUnit test failures, 'Error Message:' for test error details, 'exit code' for process crashes.")]
+    [McpServerTool(Name = "helix_search_log", Title = "Search Helix Console Log", ReadOnly = true, UseStructuredContent = true), Description("Search a work item's console log for lines matching a pattern. Returns matching lines with optional context. Use this to find specific errors, stack traces, or patterns in Helix test output. Matching is substring-based (case-insensitive), NOT regex — characters like *, +, ?, [, ] are treated as literals. Common patterns: '  Failed' (2 leading spaces) for xUnit test failures, 'Error Message:' for test error details, 'exit code' for process crashes. Patterns vary by repo: runtime uses '[FAIL]', aspnetcore/efcore use '  Failed' (2 spaces), sdk uses 'error MSB', roslyn crashes show 'aborted' or 'Process exited'. Call helix_ci_guide(repo) for repo-specific patterns.")]
     public async Task<SearchLogResult> SearchLog(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
@@ -384,7 +384,7 @@ public sealed class HelixMcpTools
         }
     }
 
-    [McpServerTool(Name = "helix_test_results", Title = "Parse TRX Test Results", ReadOnly = true, UseStructuredContent = true), Description("Parse TRX test result files from a Helix work item. Returns structured test results including test names, outcomes, durations, and error messages for failed tests. Auto-discovers all .trx files or filter to a specific one.")]
+    [McpServerTool(Name = "helix_test_results", Title = "Parse TRX Test Results", ReadOnly = true, UseStructuredContent = true), Description("Parse TRX test result files from a Helix work item. Returns structured test results including test names, outcomes, durations, and error messages for failed tests. Auto-discovers all .trx files or filter to a specific one. WARNING: Most .NET repos (aspnetcore, sdk, roslyn, efcore) do NOT upload test results to Helix. For those repos, use azdo_test_runs + azdo_test_results instead. This tool works for runtime CoreCLR tests (xUnit XML) and repos that upload .trx files. Call helix_ci_guide for repo-specific guidance.")]
     public async Task<TestResultsToolResult> TestResults(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
