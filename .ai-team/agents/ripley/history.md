@@ -105,3 +105,10 @@
 - **59 files touched**, 0 behavioral changes, all 1038 tests pass.
 
 📌 Team update (2026-03-10): Option A folder restructuring executed — 9 Helix files moved to Core/Helix/, Cache namespace added, shared utils extracted from HelixService, Helix/AzDO subfolders in Mcp.Tools and Tests. 59 files, 1038 tests pass, zero behavioral changes. PR #17. — decided by Dallas (analysis), Ripley (execution)
+
+## Learnings (security boundary and DI review fixes)
+
+- **Path boundary checks:** For security-sensitive root containment, normalize both paths, preserve the root boundary with `Path.TrimEndingDirectorySeparator(...) + Path.DirectorySeparatorChar`, and compare with `StringComparison.Ordinal`; ignore-case prefix checks can admit case-variant sibling paths on case-sensitive filesystems.
+- **HelixService constructor contract:** `HelixService` should require an injected `HttpClient` and null-guard both constructor dependencies instead of silently allocating a fallback transport.
+- **User preference:** Code-review follow-up fixes should stay surgical, behavior-safe, and avoid unrelated refactoring.
+- **Key file paths:** `src/HelixTool.Core/Cache/CacheSecurity.cs` contains cache/download path traversal guards. `src/HelixTool.Core/Helix/HelixService.cs` owns direct URL download behavior and now depends on caller-provided `HttpClient`. `src/HelixTool/Program.cs` and `src/HelixTool.Mcp/Program.cs` are the production DI registration points for `HelixService`.
