@@ -8,7 +8,7 @@ namespace HelixTool.Mcp.Tools;
 [McpServerToolType]
 public sealed class CiKnowledgeTool
 {
-    [McpServerTool(Name = "helix_ci_guide", Title = "CI Investigation Guide", ReadOnly = true),
+    [McpServerTool(Name = "helix_ci_guide", Title = "CI Investigation Guide", ReadOnly = true, Idempotent = true),
      Description("Repo-specific CI guidance: tool selection, failure patterns, exit codes, pipeline details, gotchas. Covers 9 repos. Omit repo for overview. ⚠️ macios/android use devdiv — standard tools won't work.")]
     public string GetGuide(
         [Description("Repository name (e.g., 'runtime', 'aspnetcore', 'sdk', 'roslyn', 'efcore', 'vmr', 'maui', 'macios', 'android'). Also accepts 'dotnet/runtime', 'xamarin/macios', etc. Omit for an overview of all repos.")] string? repo = null)
