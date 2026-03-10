@@ -30,12 +30,12 @@ public class HelixService
     /// Initializes a new instance of <see cref="HelixService"/>.
     /// </summary>
     /// <param name="api">The Helix API client to use for all SDK calls.</param>
-    /// <param name="httpClient">HttpClient for direct URL downloads. When null, a default instance is created (test convenience).</param>
-    /// <exception cref="ArgumentNullException">Thrown when <paramref name="api"/> is <c>null</c>.</exception>
-    public HelixService(IHelixApiClient api, HttpClient? httpClient = null)
+    /// <param name="httpClient">HttpClient for direct URL downloads.</param>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="api"/> or <paramref name="httpClient"/> is <c>null</c>.</exception>
+    public HelixService(IHelixApiClient api, HttpClient httpClient)
     {
         _api = api ?? throw new ArgumentNullException(nameof(api));
-        _httpClient = httpClient ?? new HttpClient();
+        _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
     }
 
     /// <summary>Represents a single work item's name and exit code.</summary>
@@ -928,8 +928,8 @@ public class HelixService
             f.Contains("crashdump", StringComparison.OrdinalIgnoreCase) ||
             f.EndsWith(".binlog", StringComparison.OrdinalIgnoreCase)).ToList();
 
-        var message = $"No test result files found in work item '{workItem}'. Searched for: {patternsSearched}.";
-        message += " Most .NET repos do NOT upload test results to Helix — use azdo_test_runs + azdo_test_results for structured results, or helix_search_log with repo-specific patterns.";
+        var message = $"No structured test-result files found in work item '{workItem}'. Searched for: {patternsSearched}.";
+        message += " Helix-hosted structured results are absent or not expected for many repos.";
 
         if (crashArtifacts.Count > 0)
         {
@@ -937,18 +937,20 @@ public class HelixService
         }
         else if (usefulFiles.Count > 0)
         {
-            message += $" Available files: {string.Join(", ", usefulFiles)}.";
+            message += $" Available files: {string.Join(", ", usefulFiles)}. These help with log/crash investigation, not structured result parsing.";
         }
         else if (fileNames.Count > 0)
         {
-            message += $" {fileNames.Count} files found (mostly .log files). Try helix_search_log with common patterns: '[FAIL]', '  Failed' (2 leading spaces), 'Error Message:', or 'exit code'. Call helix_ci_guide with the repo name for repo-specific patterns.";
+            message += $" {fileNames.Count} files found (mostly .log files).";
         }
         else
         {
             message += " The work item has no uploaded files.";
         }
 
-        message += " Call helix_ci_guide with the repo name for recommended search patterns.";
+        message += " For structured per-test results, use azdo_test_runs + azdo_test_results.";
+        message += " For console-log investigation, use helix_search_log with repo-specific patterns such as '[FAIL]', '  Failed' (2 leading spaces), 'Error Message:', or 'exit code'.";
+        message += " Call helix_ci_guide with the repo name to confirm whether Helix-hosted results are expected and which search pattern fits this repo.";
 
         throw new HelixException(message);
     }

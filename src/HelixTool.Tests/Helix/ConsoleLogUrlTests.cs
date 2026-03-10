@@ -15,7 +15,7 @@ public class ConsoleLogUrlTests
     public ConsoleLogUrlTests()
     {
         _mockApi = Substitute.For<IHelixApiClient>();
-        _svc = new HelixService(_mockApi);
+        _svc = new HelixService(_mockApi, new HttpClient());
     }
 
     // --- Test 1: ConsoleLogUrl is correctly constructed ---

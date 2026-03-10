@@ -16,7 +16,7 @@ public class BatchStatusTests
     public BatchStatusTests()
     {
         _mockApi = Substitute.For<IHelixApiClient>();
-        _svc = new HelixService(_mockApi);
+        _svc = new HelixService(_mockApi, new HttpClient());
     }
 
     private void SetupJobMock(string jobId, string jobName, List<(string name, int exitCode)> workItems)

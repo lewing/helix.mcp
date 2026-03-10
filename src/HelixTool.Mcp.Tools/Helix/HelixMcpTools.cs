@@ -286,7 +286,7 @@ public sealed class HelixMcpTools
         }
     }
 
-    [McpServerTool(Name = "helix_search_log", Title = "Search Helix Console Log", ReadOnly = true, UseStructuredContent = true), Description("Search a work item's console log for lines matching a pattern. Returns matching lines with optional context. Use this to find specific errors, stack traces, or patterns in Helix test output. Matching is substring-based (case-insensitive), NOT regex — characters like *, +, ?, [, ] are treated as literals. Common patterns: '  Failed' (2 leading spaces) for xUnit test failures, 'Error Message:' for test error details, 'exit code' for process crashes. Patterns vary by repo: runtime uses '[FAIL]', aspnetcore/efcore use '  Failed' (2 spaces), sdk uses 'error MSB', roslyn crashes show 'aborted' or 'Process exited'. Call helix_ci_guide(repo) for repo-specific patterns.")]
+    [McpServerTool(Name = "helix_search_log", Title = "Search Helix Console Log", ReadOnly = true, UseStructuredContent = true), Description("Search a Helix work item's console log without downloading the full log first. Use this for remote-first failure investigation when structured Helix result files are absent, or when you need console markers, stack traces, or crash text. Matching is case-insensitive substring search, NOT regex — characters like *, +, ?, [, ] are treated literally. Pattern choice is repo/test-runner specific: runtime uses '[FAIL]', aspnetcore/efcore use '  Failed' (2 spaces), sdk uses 'Failed' or 'error MSB', roslyn crashes show 'aborted' or 'Process exited'. Call helix_ci_guide(repo) before broad log reads when you need repo-specific patterns.")]
     public async Task<SearchLogResult> SearchLog(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
@@ -385,11 +385,11 @@ public sealed class HelixMcpTools
         }
     }
 
-    [McpServerTool(Name = "helix_test_results", Title = "Parse TRX Test Results", ReadOnly = true, UseStructuredContent = true), Description("Parse TRX test result files from a Helix work item. Returns structured test results including test names, outcomes, durations, and error messages for failed tests. Auto-discovers all .trx files or filter to a specific one. WARNING: Most .NET repos (aspnetcore, sdk, roslyn, efcore) do NOT upload test results to Helix. For those repos, use azdo_test_runs + azdo_test_results instead. This tool works for runtime CoreCLR tests (xUnit XML) and repos that upload .trx files. Call helix_ci_guide for repo-specific guidance.")]
+    [McpServerTool(Name = "helix_test_results", Title = "Parse Helix Test Results", ReadOnly = true, UseStructuredContent = true), Description("Parse structured test-result files hosted in a Helix work item. Use this when the repo uploads TRX or Helix-hosted result XML and you want per-test names, outcomes, durations, and error messages. Auto-discovers supported result files, or filter to a specific one. Many repos (aspnetcore, sdk, roslyn, efcore) publish structured results to AzDO instead, so prefer azdo_test_runs + azdo_test_results there; use helix_search_log for console-only failures. runtime CoreCLR and some XHarness/device scenarios work. Call helix_ci_guide(repo) to choose the right path for a repo.")]
     public async Task<TestResultsToolResult> TestResults(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
-        [Description("Specific TRX file name (optional - auto-discovers all .trx files if not set)")] string? fileName = null,
+        [Description("Specific result file name (optional - auto-discovers supported Helix result files if not set)")] string? fileName = null,
         [Description("Include passed tests in output (default: false)")] bool includePassed = false,
         [Description("Maximum number of test results to return (default: 200)")] int maxResults = 200)
     {

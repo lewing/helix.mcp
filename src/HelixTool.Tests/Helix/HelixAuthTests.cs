@@ -47,7 +47,7 @@ public class HelixAuthTests
     public async Task GetJobStatusAsync_Unauthorized_ThrowsHelixExceptionWithAccessDeniedMessage()
     {
         var mockApi = Substitute.For<IHelixApiClient>();
-        var svc = new HelixService(mockApi);
+        var svc = new HelixService(mockApi, new HttpClient());
 
         mockApi.GetJobDetailsAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new HttpRequestException("Unauthorized", null, HttpStatusCode.Unauthorized));
@@ -63,7 +63,7 @@ public class HelixAuthTests
     public async Task GetJobStatusAsync_Forbidden_ThrowsHelixExceptionWithAccessDeniedMessage()
     {
         var mockApi = Substitute.For<IHelixApiClient>();
-        var svc = new HelixService(mockApi);
+        var svc = new HelixService(mockApi, new HttpClient());
 
         mockApi.GetJobDetailsAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new HttpRequestException("Forbidden", null, HttpStatusCode.Forbidden));
@@ -79,7 +79,7 @@ public class HelixAuthTests
     public async Task GetWorkItemFilesAsync_Unauthorized_ThrowsHelixExceptionWithAccessDeniedMessage()
     {
         var mockApi = Substitute.For<IHelixApiClient>();
-        var svc = new HelixService(mockApi);
+        var svc = new HelixService(mockApi, new HttpClient());
 
         mockApi.ListWorkItemFilesAsync("wi1", Arg.Any<string>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new HttpRequestException("Unauthorized", null, HttpStatusCode.Unauthorized));
@@ -95,7 +95,7 @@ public class HelixAuthTests
     public async Task GetWorkItemFilesAsync_Forbidden_ThrowsHelixExceptionWithAccessDeniedMessage()
     {
         var mockApi = Substitute.For<IHelixApiClient>();
-        var svc = new HelixService(mockApi);
+        var svc = new HelixService(mockApi, new HttpClient());
 
         mockApi.ListWorkItemFilesAsync("wi1", Arg.Any<string>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new HttpRequestException("Forbidden", null, HttpStatusCode.Forbidden));
@@ -113,7 +113,7 @@ public class HelixAuthTests
     public async Task GetJobStatusAsync_Unauthorized_PreservesInnerException()
     {
         var mockApi = Substitute.For<IHelixApiClient>();
-        var svc = new HelixService(mockApi);
+        var svc = new HelixService(mockApi, new HttpClient());
 
         var inner = new HttpRequestException("Unauthorized", null, HttpStatusCode.Unauthorized);
         mockApi.GetJobDetailsAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
@@ -129,7 +129,7 @@ public class HelixAuthTests
     public async Task GetWorkItemFilesAsync_Forbidden_PreservesInnerException()
     {
         var mockApi = Substitute.For<IHelixApiClient>();
-        var svc = new HelixService(mockApi);
+        var svc = new HelixService(mockApi, new HttpClient());
 
         var inner = new HttpRequestException("Forbidden", null, HttpStatusCode.Forbidden);
         mockApi.ListWorkItemFilesAsync("wi1", Arg.Any<string>(), Arg.Any<CancellationToken>())

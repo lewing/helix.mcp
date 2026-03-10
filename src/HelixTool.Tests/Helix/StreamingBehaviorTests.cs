@@ -22,7 +22,7 @@ public class StreamingBehaviorTests
     public StreamingBehaviorTests()
     {
         _mockApi = Substitute.For<IHelixApiClient>();
-        _svc = new HelixService(_mockApi);
+        _svc = new HelixService(_mockApi, new HttpClient());
     }
 
     // ── Empty response handling ──────────────────────────────────────

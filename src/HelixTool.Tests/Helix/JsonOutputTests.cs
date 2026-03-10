@@ -22,7 +22,7 @@ public class JsonOutputTests
     public JsonOutputTests()
     {
         _mockApi = Substitute.For<IHelixApiClient>();
-        _svc = new HelixService(_mockApi);
+        _svc = new HelixService(_mockApi, new HttpClient());
     }
 
     [Fact]

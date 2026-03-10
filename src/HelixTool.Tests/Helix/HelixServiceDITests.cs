@@ -22,7 +22,7 @@ public class HelixServiceDITests
     public HelixServiceDITests()
     {
         _mockApi = Substitute.For<IHelixApiClient>();
-        _svc = new HelixService(_mockApi);
+        _svc = new HelixService(_mockApi, new HttpClient());
     }
 
     // --- Happy path: GetJobStatusAsync aggregates job details + work items ---
@@ -208,7 +208,13 @@ public class HelixServiceDITests
     [Fact]
     public void Constructor_NullApiClient_ThrowsArgumentNullException()
     {
-        Assert.Throws<ArgumentNullException>(() => new HelixService(null!));
+        Assert.Throws<ArgumentNullException>(() => new HelixService(null!, new HttpClient()));
+    }
+
+    [Fact]
+    public void Constructor_NullHttpClient_ThrowsArgumentNullException()
+    {
+        Assert.Throws<ArgumentNullException>(() => new HelixService(_mockApi, null!));
     }
 
     // --- Error handling on GetWorkItemFilesAsync ---

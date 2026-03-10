@@ -560,9 +560,9 @@ public class Commands
 - `helix_find_files` — Search work items for files matching a glob pattern (*.binlog, *.trx, *.dmp, etc.)
 - `helix_work_item` — Detailed work item info with exit code, state, machine, duration, files
 - `helix_batch_status` — Status for multiple jobs in parallel (accepts an array of job IDs/URLs)
-- `helix_search_log` — Search a work item's console log for error patterns
+- `helix_search_log` — Remote-first console log search when failures live in Helix output; pattern choice is repo-specific
 - `helix_search_file` — Search a work item's uploaded file for lines matching a pattern
-- `helix_test_results` — Parse TRX test result files from a work item
+- `helix_test_results` — Parse Helix-hosted structured test results when present; otherwise use azdo_test_runs + azdo_test_results
 
 ### AzDO MCP Tools
 - `azdo_build` — Get build details by ID or AzDO URL (status, result, branch, timing, web URL)

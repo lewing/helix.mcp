@@ -478,6 +478,41 @@ public class CiKnowledgeServiceTests
     }
 
     [Fact]
+    public void GetGuide_Aspnetcore_FrontLoadsAzdoRoutingBeforeSearchPatterns()
+    {
+        var guide = CiKnowledgeService.GetGuide("aspnetcore");
+
+        var helixResultsLine = "**Test results in Helix:** No — use azdo_test_runs + azdo_test_results";
+        Assert.Contains(helixResultsLine, guide);
+        Assert.True(
+            guide.IndexOf(helixResultsLine, StringComparison.Ordinal) <
+            guide.IndexOf("## Recommended Search Patterns", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void GetGuide_Aspnetcore_RecommendedOrder_PivotsToAzdoBeforeHelixSearch()
+    {
+        var guide = CiKnowledgeService.GetGuide("aspnetcore");
+        var orderSection = GetMarkdownSection(guide, "## Recommended Investigation Order");
+
+        Assert.Contains("azdo_test_runs(buildId) + azdo_test_results(buildId, runId)", orderSection);
+        Assert.Contains("helix_search_log(jobId, workItem, '  Failed')", orderSection);
+        Assert.DoesNotContain("helix_test_results", orderSection);
+        Assert.True(
+            orderSection.IndexOf("azdo_test_runs(buildId) + azdo_test_results(buildId, runId)", StringComparison.Ordinal) <
+            orderSection.IndexOf("helix_search_log(jobId, workItem, '  Failed')", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void GetGuide_Runtime_PartialSupportStillDirectsFullCoverageToAzdo()
+    {
+        var guide = CiKnowledgeService.GetGuide("runtime");
+
+        Assert.Contains("Partial — helix_test_results works for some tests", guide);
+        Assert.Contains("use azdo_test_runs + azdo_test_results for full coverage", guide);
+    }
+
+    [Fact]
     public void GetGuide_UnknownRepo_ReturnsGeneralGuide()
     {
         var guide = CiKnowledgeService.GetGuide("some-unknown-repo");
@@ -605,6 +640,7 @@ public class CiKnowledgeServiceTests
 
         Assert.Contains("Most .NET repos do NOT upload test results to Helix", overview);
         Assert.Contains("azdo_test_runs", overview);
+        Assert.Contains("failedTests=0 is a lie", overview);
     }
 
     [Fact]
@@ -712,5 +748,16 @@ public class CiKnowledgeServiceTests
     {
         var profile = CiKnowledgeService.GetProfile(repo)!;
         Assert.NotEmpty(profile.CommonFailureCategories);
+    }
+
+    private static string GetMarkdownSection(string text, string heading)
+    {
+        var start = text.IndexOf(heading, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"Heading '{heading}' not found.");
+
+        var nextHeading = text.IndexOf("\n## ", start + heading.Length, StringComparison.Ordinal);
+        return nextHeading >= 0
+            ? text[start..nextHeading]
+            : text[start..];
     }
 }

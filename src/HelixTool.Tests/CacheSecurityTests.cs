@@ -68,6 +68,16 @@ public class CacheSecurityTests
     }
 
     [Fact]
+    public void ValidatePathWithinRoot_CaseVariantSibling_Throws()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "test-root");
+        var sibling = Path.Combine(Path.GetTempPath(), "TEST-ROOT", "file.db");
+
+        Assert.Throws<ArgumentException>(() =>
+            CacheSecurity.ValidatePathWithinRoot(sibling, tempRoot));
+    }
+
+    [Fact]
     public void ValidatePathWithinRoot_ForwardSlashTraversal_Throws()
     {
         var root = Path.Combine(Path.GetTempPath(), "test-root");

@@ -25,7 +25,7 @@ public class XunitXmlParsingTests
     public XunitXmlParsingTests()
     {
         _mockApi = Substitute.For<IHelixApiClient>();
-        _svc = new HelixService(_mockApi);
+        _svc = new HelixService(_mockApi, new HttpClient());
     }
 
     /// <summary>Configure mock to return files with given names and content.</summary>

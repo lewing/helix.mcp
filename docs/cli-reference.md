@@ -2,6 +2,8 @@
 
 `hlx` is the command-line interface for [helix.mcp](../README.md). It provides direct access to Helix and Azure DevOps CI data from the terminal.
 
+> **Investigation path:** use `hlx test-results` only when the work item uploads structured results to Helix; otherwise pivot to `hlx azdo test-runs` + `hlx azdo test-results`, or `hlx search-log` when the useful signal is only in console output. In MCP mode, `helix_ci_guide(repo)` is the repo-specific entry point when that choice varies by repo.
+
 ## Installation
 
 ```bash
@@ -126,7 +128,7 @@ hlx search-file 02d8bd09 "dotnet-watch.Tests.dll.1" "testhost.log" "error"
 
 ### `hlx test-results <jobId> <workItem> [--file-name NAME] [--include-passed] [--max-results N]`
 
-Parse TRX test result files and display structured results.
+Parse Helix-hosted structured test result files and display structured results.
 
 ```bash
 hlx test-results 02d8bd09 "dotnet-watch.Tests.dll.1"

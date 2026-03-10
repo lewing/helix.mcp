@@ -89,7 +89,7 @@ public class FailureCategoryTests
     public FailureCategoryTests()
     {
         _mockApi = Substitute.For<IHelixApiClient>();
-        _svc = new HelixService(_mockApi);
+        _svc = new HelixService(_mockApi, new HttpClient());
     }
 
     [Fact]

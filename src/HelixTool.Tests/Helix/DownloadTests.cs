@@ -23,7 +23,7 @@ public class DownloadFilesTests : IDisposable
     public DownloadFilesTests()
     {
         _mockApi = Substitute.For<IHelixApiClient>();
-        _svc = new HelixService(_mockApi);
+        _svc = new HelixService(_mockApi, new HttpClient());
     }
 
     public void Dispose()
@@ -484,7 +484,7 @@ public class DownloadFromUrlParsingTests
     public DownloadFromUrlParsingTests()
     {
         _mockApi = Substitute.For<IHelixApiClient>();
-        _svc = new HelixService(_mockApi);
+        _svc = new HelixService(_mockApi, new HttpClient());
     }
 
     // ==========================================================================
@@ -563,7 +563,7 @@ public class DownloadSanitizationTests : IDisposable
     public DownloadSanitizationTests()
     {
         _mockApi = Substitute.For<IHelixApiClient>();
-        _svc = new HelixService(_mockApi);
+        _svc = new HelixService(_mockApi, new HttpClient());
     }
 
     public void Dispose()
@@ -682,7 +682,7 @@ public class DownloadPatternTests : IDisposable
     public DownloadPatternTests()
     {
         _mockApi = Substitute.For<IHelixApiClient>();
-        _svc = new HelixService(_mockApi);
+        _svc = new HelixService(_mockApi, new HttpClient());
     }
 
     public void Dispose()

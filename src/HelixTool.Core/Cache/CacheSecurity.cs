@@ -13,15 +13,15 @@ internal static class CacheSecurity
     {
         var fullPath = Path.GetFullPath(path);
         var fullRoot = Path.GetFullPath(root);
+        var rootWithoutSeparator = Path.TrimEndingDirectorySeparator(fullRoot);
 
-        // Ensure root ends with separator for prefix comparison
-        if (!fullRoot.EndsWith(Path.DirectorySeparatorChar))
-            fullRoot += Path.DirectorySeparatorChar;
+        // Ensure root ends with separator for exact child-boundary comparison.
+        var rootedPrefix = rootWithoutSeparator + Path.DirectorySeparatorChar;
 
-        if (!fullPath.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(fullPath, fullRoot.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
+        if (!fullPath.StartsWith(rootedPrefix, StringComparison.Ordinal) &&
+            !string.Equals(fullPath, rootWithoutSeparator, StringComparison.Ordinal))
         {
-            throw new ArgumentException($"Path traversal detected: resolved path '{fullPath}' is outside root '{fullRoot}'.");
+            throw new ArgumentException($"Path traversal detected: resolved path '{fullPath}' is outside root '{rootedPrefix}'.");
         }
     }
 

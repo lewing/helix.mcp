@@ -725,8 +725,8 @@ public sealed class CiKnowledgeService
             "",
             "## Quick Reference",
             "",
-            "| Repo | Org | Helix? | helix_test_results? | Best failure pattern | Primary test results |",
-            "|------|-----|--------|--------------------|--------------------|---------------------|",
+            "| Repo | Org | Helix? | Helix structured results? | Best log pattern | Start with |",
+            "|------|-----|--------|--------------------------|------------------|------------|",
         };
 
         foreach (var p in s_profiles.Values)
@@ -741,8 +741,8 @@ public sealed class CiKnowledgeService
             var pattern = p.FailureSearchPatterns.Length > 0 ? $"`{p.FailureSearchPatterns[0]}`" : "N/A";
             var results = p.HelixTestResultAvailability switch
             {
-                "partial" => "helix_test_results (some tests)",
-                "varies" => "depends on pipeline",
+                "partial" => "helix_test_results (supported legs)",
+                "varies" => "check pipeline notes",
                 _ => p.UsesHelix ? "azdo_test_runs → azdo_test_results" : "azdo_timeline → azdo_log"
             };
             lines.Add($"| {p.DisplayName} | {p.OrgProject} | {helix} | {trxStatus} | {pattern} | {results} |");
@@ -751,8 +751,10 @@ public sealed class CiKnowledgeService
         lines.Add("");
         lines.Add("## Key Insights");
         lines.Add("");
+        lines.Add("- **Use repo profiles to choose the first tool path.** If the table says `❌ Fails`, skip `helix_test_results` and go straight to `azdo_test_runs + azdo_test_results` for structured results.");
         lines.Add("- **Most .NET repos do NOT upload test results to Helix.** `helix_test_results` fails for aspnetcore, sdk, roslyn, efcore.");
-        lines.Add("- **Partial support:** runtime CoreCLR/XHarness tests upload result XML; MAUI device tests (maui-pr-devicetests pipeline) upload testResults.xml.");
+        lines.Add("- **Partial support exists, but only for specific test legs.** runtime CoreCLR/XHarness tests upload result XML; MAUI device tests (maui-pr-devicetests pipeline) upload testResults.xml.");
+        lines.Add("- **Use `helix_search_log` as the remote-first console path.** The best search pattern varies by repo/test runner; check the repo profile before broad log reads.");
         lines.Add("- **azdo_test_runs + azdo_test_results** is the most reliable path for structured results across all repos.");
         lines.Add("- **⚠️ macios and android are on devdiv, not dnceng** — standard `helix_*` and `ado-dnceng-*` tools do not work.");
         lines.Add("- **failedTests=0 is a lie** — always drill into `azdo_test_results`, don't trust run-level summary counts.");
@@ -791,6 +793,22 @@ public sealed class CiKnowledgeService
 
         if (profile.HelixTaskNames.Length > 0)
             lines.Add($"**Helix task name in AzDO timeline:** {string.Join(", ", profile.HelixTaskNames.Select(n => $"'{n}'"))}");
+
+        lines.Add("");
+        lines.Add("## Start Here");
+        lines.Add("");
+        lines.Add(profile.HelixTestResultAvailability switch
+        {
+            "partial" => "- Structured results: try `helix_test_results` for the supported Helix-uploaded test legs below, but use `azdo_test_runs + azdo_test_results` for full coverage.",
+            "varies" => "- Structured results: pipeline-dependent. Check the pipeline notes and recommended order below before choosing between `helix_test_results` and `azdo_test_runs + azdo_test_results`.",
+            _ when profile.UsesHelix => "- Structured results: skip `helix_test_results` for this repo and start with `azdo_test_runs + azdo_test_results`.",
+            _ => "- Structured results: this repo does not use Helix; start with `azdo_timeline` and `azdo_log`."
+        });
+
+        if (profile.UsesHelix && profile.FailureSearchPatterns.Length > 0)
+            lines.Add($"- Console search: use `helix_search_log` with `{profile.FailureSearchPatterns[0]}` first, then follow the recommended order below.");
+        else if (!profile.UsesHelix)
+            lines.Add("- Console/build logs: use AzDO timeline/log tools rather than Helix tools.");
 
         // Known gotchas — these are CRITICAL
         if (profile.KnownGotchas.Length > 0)
@@ -860,10 +878,11 @@ public sealed class CiKnowledgeService
 
             No specific profile found for '{repoName}'. Here are general recommendations:
 
-            ## Getting Test Results
-            1. **Try `helix_test_results`** — works if the repo uploads TRX or xUnit XML to Helix
-            2. **If that fails, use `azdo_test_runs` + `azdo_test_results`** — most repos publish results to AzDO
-            3. **Use `helix_search_log`** with these patterns to find failures in console output:
+            ## Start Here
+            1. **If you know the repo, call `helix_ci_guide(repo)`** — repo profiles tell you whether to skip `helix_test_results`, which `helix_search_log` pattern to try, and whether devdiv tooling is required
+            2. **For structured results, start with `azdo_test_runs` + `azdo_test_results`** — this is the safest default across .NET repos
+            3. **Try `helix_test_results` only if the repo uploads structured results to Helix** — works for repos/pipelines that publish TRX or Helix-hosted result XML
+            4. **Use `helix_search_log`** with these patterns to find failures in console output:
                - `'  Failed'` (2 leading spaces) — dotnet test / xUnit summary
                - `'[FAIL]'` — xUnit runner failure marker
                - `'Error Message:'` — test error details

@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using HelixTool.Core;
 using HelixTool.Core.Helix;
 using HelixTool.Mcp.Tools;
@@ -18,7 +19,7 @@ public class HelixMcpToolsTests
     public HelixMcpToolsTests()
     {
         _mockApi = Substitute.For<IHelixApiClient>();
-        _svc = new HelixService(_mockApi);
+        _svc = new HelixService(_mockApi, new HttpClient());
         _tools = new HelixMcpTools(_svc);
     }
 
@@ -279,7 +280,7 @@ public class HelixMcpToolsTests
     // --- TestResults error surfacing tests (issue #4) ---
 
     [Fact]
-    public async Task TestResults_NoMatchingFiles_ErrorContainsClearMessage()
+    public async Task TestResults_NoMatchingFiles_ErrorRoutesToNextSteps()
     {
         // Arrange: work item with non-test files only (no .trx or .xml)
         var f = Substitute.For<IWorkItemFile>();
@@ -289,28 +290,50 @@ public class HelixMcpToolsTests
         _mockApi.ListWorkItemFilesAsync("no-test-wi", ValidJobId, Arg.Any<CancellationToken>())
             .Returns(new List<IWorkItemFile> { f });
 
-        var ex = await Record.ExceptionAsync(
+        var ex = await Assert.ThrowsAsync<McpException>(
             () => _tools.TestResults(ValidJobId, workItem: "no-test-wi"));
 
-        // The error message must be clear, not a generic "An error occurred"
-        Assert.NotNull(ex);
         Assert.Contains("no-test-wi", ex.Message);
-        // Issue #4 contract: once error handling is added in MCP layer,
-        // this should be McpException instead of HelixException:
-        // Assert.IsType<McpException>(ex);
+        Assert.Contains("No structured test-result files found", ex.Message);
+        Assert.Contains("azdo_test_runs + azdo_test_results", ex.Message);
+        Assert.Contains("helix_search_log", ex.Message);
+        Assert.Contains("helix_ci_guide", ex.Message);
+        Assert.Contains("'  Failed' (2 leading spaces)", ex.Message);
     }
 
     [Fact]
-    public async Task TestResults_EmptyFileList_ErrorContainsClearMessage()
+    public async Task TestResults_CrashArtifacts_ErrorRoutesToCrashFocusedLogSearch()
+    {
+        var dmp = Substitute.For<IWorkItemFile>();
+        dmp.Name.Returns("core.1234");
+        dmp.Link.Returns("https://helix.dot.net/files/core.1234");
+        var log = Substitute.For<IWorkItemFile>();
+        log.Name.Returns("console.log");
+        log.Link.Returns("https://helix.dot.net/files/console.log");
+
+        _mockApi.ListWorkItemFilesAsync("crash-wi", ValidJobId, Arg.Any<CancellationToken>())
+            .Returns(new List<IWorkItemFile> { dmp, log });
+
+        var ex = await Assert.ThrowsAsync<McpException>(
+            () => _tools.TestResults(ValidJobId, workItem: "crash-wi"));
+
+        Assert.Contains("Crash artifacts detected", ex.Message);
+        Assert.Contains("exit code", ex.Message);
+        Assert.Contains("SIGABRT", ex.Message);
+    }
+
+    [Fact]
+    public async Task TestResults_EmptyFileList_ErrorContainsClearRoutingMessage()
     {
         _mockApi.ListWorkItemFilesAsync("empty-wi", ValidJobId, Arg.Any<CancellationToken>())
             .Returns(new List<IWorkItemFile>());
 
-        var ex = await Record.ExceptionAsync(
+        var ex = await Assert.ThrowsAsync<McpException>(
             () => _tools.TestResults(ValidJobId, workItem: "empty-wi"));
 
-        Assert.NotNull(ex);
         Assert.Contains("empty-wi", ex.Message);
+        Assert.Contains("The work item has no uploaded files", ex.Message);
+        Assert.Contains("Helix-hosted structured results are absent or not expected for many repos", ex.Message);
     }
 
     [Fact]
@@ -328,6 +351,42 @@ public class HelixMcpToolsTests
         var ex = await Assert.ThrowsAsync<McpException>(
             () => _tools.TestResults(ValidJobId, workItem: ""));
         Assert.Contains("Work item name is required", ex.Message);
+    }
+
+    [Fact]
+    public void SearchLog_Description_ExplainsRemoteFirstRepoSpecificSelection()
+    {
+        var description = GetMethodDescription<HelixMcpTools>(nameof(HelixMcpTools.SearchLog));
+
+        Assert.Contains("without downloading the full log first", description);
+        Assert.Contains("NOT regex", description);
+        Assert.Contains("repo/test-runner specific", description);
+        Assert.Contains("runtime uses '[FAIL]'", description);
+        Assert.Contains("aspnetcore/efcore use '  Failed' (2 spaces)", description);
+        Assert.Contains("Call helix_ci_guide(repo) before broad log reads", description);
+    }
+
+    [Fact]
+    public void TestResults_Description_ExplainsStructuredResultScopeAndFallback()
+    {
+        var description = GetMethodDescription<HelixMcpTools>(nameof(HelixMcpTools.TestResults));
+
+        Assert.Contains("Parse structured test-result files hosted in a Helix work item", description);
+        Assert.Contains("Many repos", description);
+        Assert.Contains("azdo_test_runs + azdo_test_results", description);
+        Assert.Contains("use helix_search_log for console-only failures", description);
+        Assert.Contains("runtime CoreCLR and some XHarness/device scenarios work", description);
+        Assert.Contains("helix_ci_guide(repo)", description);
+    }
+
+    [Fact]
+    public void CiGuide_Description_PromotesGuideAsEarlyEntryPoint()
+    {
+        var description = GetMethodDescription<CiKnowledgeTool>(nameof(CiKnowledgeTool.GetGuide));
+
+        Assert.Contains("choose between helix_test_results", description);
+        Assert.Contains("before you start digging", description);
+        Assert.Contains("macios and android are on devdiv", description);
     }
 
     // --- FindFiles tests ---
@@ -512,5 +571,15 @@ public class HelixMcpToolsTests
 
         _mockApi.GetWorkItemDetailsAsync("wi1", ValidJobId, Arg.Any<CancellationToken>())
             .Returns(detail);
+    }
+
+    private static string GetMethodDescription<T>(string methodName)
+    {
+        var method = typeof(T).GetMethod(methodName);
+        Assert.NotNull(method);
+
+        var attribute = (DescriptionAttribute?)Attribute.GetCustomAttribute(method!, typeof(DescriptionAttribute));
+        Assert.NotNull(attribute);
+        return attribute!.Description;
     }
 }

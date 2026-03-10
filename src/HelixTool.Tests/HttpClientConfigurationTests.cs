@@ -150,7 +150,7 @@ public class HttpClientConfigurationTests
         mockApi.GetConsoleLogAsync("test-wi", validJobId, Arg.Any<CancellationToken>())
             .Returns<Stream>(_ => throw new TaskCanceledException("Request timed out"));
 
-        var svc = new HelixService(mockApi);
+        var svc = new HelixService(mockApi, new HttpClient());
 
         var ex = await Assert.ThrowsAsync<HelixException>(
             () => svc.GetConsoleLogContentAsync(validJobId, "test-wi"));
@@ -171,7 +171,7 @@ public class HttpClientConfigurationTests
             .Returns<Stream>(_ => throw new TaskCanceledException("Operation was canceled",
                 new OperationCanceledException(cts.Token), cts.Token));
 
-        var svc = new HelixService(mockApi);
+        var svc = new HelixService(mockApi, new HttpClient());
 
         // Should rethrow as TaskCanceledException with token set, NOT HelixException
         await Assert.ThrowsAnyAsync<OperationCanceledException>(

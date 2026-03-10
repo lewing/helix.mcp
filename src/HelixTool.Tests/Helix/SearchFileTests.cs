@@ -19,7 +19,7 @@ public class SearchFileTests
     public SearchFileTests()
     {
         _mockApi = Substitute.For<IHelixApiClient>();
-        _svc = new HelixService(_mockApi);
+        _svc = new HelixService(_mockApi, new HttpClient());
     }
 
     /// <summary>Helper: configure mock to return a file with given content via DownloadFilesAsync flow.</summary>

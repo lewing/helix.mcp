@@ -24,7 +24,7 @@ public class TrxParsingTests
     public TrxParsingTests()
     {
         _mockApi = Substitute.For<IHelixApiClient>();
-        _svc = new HelixService(_mockApi);
+        _svc = new HelixService(_mockApi, new HttpClient());
     }
 
     /// <summary>Helper: configure mock to return a .trx file with given XML content.</summary>

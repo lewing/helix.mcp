@@ -31,6 +31,12 @@ Every tool is designed to minimize token consumption in agent context windows:
 | **Batch operations** | `helix_batch_status` checks up to 50 jobs in one call; `helix_find_files` scans N work items instead of N+1 API calls |
 | **Ranked search** | `azdo_search_log_across_steps` searches all build logs but ranks by failure likelihood, stopping early when `maxMatches` is reached |
 
+## Investigation Path
+
+- When repo workflows vary, start with `helix_ci_guide(repo)` for the repo-specific path and search patterns.
+- Use `helix_test_results` when the work item uploads structured test results to Helix.
+- Otherwise pivot to `azdo_test_runs` → `azdo_test_results` for structured results, or `helix_search_log` when the signal is in console output.
+
 ## Cross-Process Caching
 
 ```mermaid
@@ -107,14 +113,14 @@ hlx cache clear    # Wipe all cached data
 | `helix_status` | Job pass/fail summary with failure categorization. Filter: `failed` (default), `passed`, `all`. |
 | `helix_batch_status` | Status for up to 50 jobs at once with aggregate totals. |
 | `helix_logs` | Console log content (last N lines, default 500). |
-| `helix_search_log` | Search a console log for a pattern. Returns matching lines with context. |
+| `helix_search_log` | Search a console log for repo-specific failure patterns without downloading the full log. |
 | `helix_search_file` | Search an uploaded file for a pattern — without downloading it. |
 | `helix_files` | List uploaded files for a work item, grouped by type. |
 | `helix_find_files` | Search across work items for files matching a glob (`*.binlog`, `*.trx`, `*.dmp`). |
 | `helix_work_item` | Detailed work item info (exit code, state, machine, duration, failure category). |
 | `helix_download` | Download files from a work item. Supports glob patterns. |
 | `helix_download_url` | Download a file by direct blob URL. |
-| `helix_test_results` | Parse TRX test result files into structured test names, outcomes, and error messages. |
+| `helix_test_results` | Parse Helix-hosted structured test result files into test names, outcomes, and error messages. |
 
 ### AzDO Tools (12)
 
