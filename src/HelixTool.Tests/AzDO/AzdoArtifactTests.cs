@@ -568,7 +568,7 @@ public class AzdoArtifactTests
     // ── Edge Cases ──────────────────────────────────────────────────
 
     [Fact]
-    public async Task Artifacts_InvalidBuildId_ThrowsArgumentException()
+    public async Task Artifacts_InvalidBuildId_ThrowsMcpException()
     {
         var ex = await Assert.ThrowsAnyAsync<McpException>(
             () => _tools.Artifacts("not-a-valid-id"));

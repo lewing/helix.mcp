@@ -9,7 +9,7 @@ public sealed record CiRepoProfile
     public required string RepoName { get; init; }
     public required string DisplayName { get; init; }
     public required bool UsesHelix { get; init; }
-    public required bool UploadsTestResultsToHelix { get; init; }
+    public required string HelixTestResultAvailability { get; init; }
     public required string TestResultLocation { get; init; }
     public required string[] FailureSearchPatterns { get; init; }
     public required string[] HelixTaskNames { get; init; }
@@ -60,7 +60,7 @@ public sealed class CiKnowledgeService
             RepoName = "runtime",
             DisplayName = "dotnet/runtime",
             UsesHelix = true,
-            UploadsTestResultsToHelix = false,
+            HelixTestResultAvailability = "partial",
             TestResultLocation = "Mixed: CoreCLR uploads *.testResults.xml.txt (helix_test_results works); libraries publish to AzDO only via Arcade reporter; XHarness (iOS/Android) uploads testResults.xml",
             PipelineNames = ["runtime (129)"],
             OrgProject = "dnceng-public/public",
@@ -132,7 +132,7 @@ public sealed class CiKnowledgeService
             RepoName = "aspnetcore",
             DisplayName = "dotnet/aspnetcore",
             UsesHelix = true,
-            UploadsTestResultsToHelix = false,
+            HelixTestResultAvailability = "none",
             TestResultLocation = "AzDO test reporting only — TRX consumed locally by Arcade reporter, published to AzDO, never uploaded to Helix blob storage",
             PipelineNames = ["aspnetcore-ci (83)"],
             OrgProject = "dnceng-public/public",
@@ -197,7 +197,7 @@ public sealed class CiKnowledgeService
             RepoName = "sdk",
             DisplayName = "dotnet/sdk",
             UsesHelix = true,
-            UploadsTestResultsToHelix = false,
+            HelixTestResultAvailability = "none",
             TestResultLocation = "AzDO test reporting — tests often crash before TRX generation; synthetic WorkItemExecution results for crashed items",
             PipelineNames = ["dotnet-sdk-public-ci (101)"],
             OrgProject = "dnceng-public/public",
@@ -267,7 +267,7 @@ public sealed class CiKnowledgeService
             RepoName = "roslyn",
             DisplayName = "dotnet/roslyn",
             UsesHelix = true,
-            UploadsTestResultsToHelix = false,
+            HelixTestResultAvailability = "none",
             TestResultLocation = "AzDO test reporting — Helix failures are dominated by crashes; crash dumps uploaded to Helix",
             PipelineNames = ["roslyn-CI (95)"],
             OrgProject = "dnceng-public/public",
@@ -344,7 +344,7 @@ public sealed class CiKnowledgeService
             RepoName = "efcore",
             DisplayName = "dotnet/efcore",
             UsesHelix = true,
-            UploadsTestResultsToHelix = false,
+            HelixTestResultAvailability = "none",
             TestResultLocation = "AzDO test reporting — dual execution: local agents + Helix; Arcade reporter publishes to AzDO",
             PipelineNames = ["efcore-ci (17)"],
             OrgProject = "dnceng-public/public",
@@ -417,7 +417,7 @@ public sealed class CiKnowledgeService
             RepoName = "vmr",
             DisplayName = "dotnet/dotnet (VMR)",
             UsesHelix = false,
-            UploadsTestResultsToHelix = false,
+            HelixTestResultAvailability = "none",
             TestResultLocation = "No Helix — ~30 validation tests (TRX + xUnit XML) published to AzDO via standard tasks; build errors in AzDO build logs",
             PipelineNames = ["dotnet-unified-build (278)"],
             OrgProject = "dnceng-public/public",
@@ -486,7 +486,7 @@ public sealed class CiKnowledgeService
             RepoName = "maui",
             DisplayName = "dotnet/maui",
             UsesHelix = true,
-            UploadsTestResultsToHelix = false,
+            HelixTestResultAvailability = "varies",
             TestResultLocation = "Mixed across 3 pipelines: unit tests → AzDO only; UI tests → AzDO only (no Helix); device tests → Helix (testResults.xml) AND AzDO",
             PipelineNames = ["maui-pr (302)", "maui-pr-uitests (313)", "maui-pr-devicetests (314)"],
             OrgProject = "dnceng-public/public",
@@ -560,7 +560,7 @@ public sealed class CiKnowledgeService
             RepoName = "macios",
             DisplayName = "xamarin/macios",
             UsesHelix = false,
-            UploadsTestResultsToHelix = false,
+            HelixTestResultAvailability = "none",
             TestResultLocation = "AzDO test reporting on devdiv org — NUnit XML (vsts-*.xml) published via PublishTestResults@2; HTML reports on VSDrops",
             PipelineNames = ["xamarin-macios-sim-pr-tests", "xamarin-macios (13947)", "xamarin-macios-pr-apidiff"],
             OrgProject = "devdiv/DevDiv",
@@ -624,7 +624,7 @@ public sealed class CiKnowledgeService
             RepoName = "android",
             DisplayName = "dotnet/android",
             UsesHelix = false,
-            UploadsTestResultsToHelix = false,
+            HelixTestResultAvailability = "none",
             TestResultLocation = "AzDO test reporting — TRX format (VSTest) published via PublishTestResults@2; primarily on devdiv org, fork PRs on dnceng-public",
             PipelineNames = ["Xamarin.Android (devdiv)", "Xamarin.Android-Private (devdiv)", "Public fork pipeline (dnceng-public)"],
             OrgProject = "devdiv/DevDiv",
@@ -732,19 +732,27 @@ public sealed class CiKnowledgeService
         foreach (var p in s_profiles.Values)
         {
             var helix = p.UsesHelix ? "✅" : "❌";
-            var trxStatus = p.UploadsTestResultsToHelix ? "✅ Works" : p.UsesHelix ? "❌ Fails" : "N/A";
+            var trxStatus = p.HelixTestResultAvailability switch
+            {
+                "partial" => "⚠️ Partial",
+                "varies" => "⚠️ Varies",
+                _ => p.UsesHelix ? "❌ Fails" : "N/A"
+            };
             var pattern = p.FailureSearchPatterns.Length > 0 ? $"`{p.FailureSearchPatterns[0]}`" : "N/A";
-            var results = p.UploadsTestResultsToHelix
-                ? "helix_test_results"
-                : p.UsesHelix ? "azdo_test_runs → azdo_test_results" : "azdo_timeline → azdo_log";
+            var results = p.HelixTestResultAvailability switch
+            {
+                "partial" => "helix_test_results (some tests)",
+                "varies" => "depends on pipeline",
+                _ => p.UsesHelix ? "azdo_test_runs → azdo_test_results" : "azdo_timeline → azdo_log"
+            };
             lines.Add($"| {p.DisplayName} | {p.OrgProject} | {helix} | {trxStatus} | {pattern} | {results} |");
         }
 
         lines.Add("");
         lines.Add("## Key Insights");
         lines.Add("");
-        lines.Add("- **No major .NET repo uploads TRX files to Helix.** `helix_test_results` fails for most repos.");
-        lines.Add("- **Exception:** MAUI device tests (maui-pr-devicetests pipeline) and runtime CoreCLR/XHarness tests DO upload result XML.");
+        lines.Add("- **Most .NET repos do NOT upload test results to Helix.** `helix_test_results` fails for aspnetcore, sdk, roslyn, efcore.");
+        lines.Add("- **Partial support:** runtime CoreCLR/XHarness tests upload result XML; MAUI device tests (maui-pr-devicetests pipeline) upload testResults.xml.");
         lines.Add("- **azdo_test_runs + azdo_test_results** is the most reliable path for structured results across all repos.");
         lines.Add("- **⚠️ macios and android are on devdiv, not dnceng** — standard `helix_*` and `ado-dnceng-*` tools do not work.");
         lines.Add("- **failedTests=0 is a lie** — always drill into `azdo_test_results`, don't trust run-level summary counts.");
@@ -765,7 +773,13 @@ public sealed class CiKnowledgeService
             lines.Add($"**Pipeline(s):** {string.Join(", ", profile.PipelineNames)}");
 
         lines.Add($"**Uses Helix:** {(profile.UsesHelix ? "Yes" : "No")}");
-        lines.Add($"**Test results in Helix:** {(profile.UploadsTestResultsToHelix ? "Yes — use helix_test_results" : "No — use azdo_test_runs + azdo_test_results")}");
+        var testResultsLine = profile.HelixTestResultAvailability switch
+        {
+            "partial" => "Partial — helix_test_results works for some tests (see TestResultLocation for details), use azdo_test_runs + azdo_test_results for full coverage",
+            "varies" => "Varies by pipeline — check pipeline-specific notes below",
+            _ => "No — use azdo_test_runs + azdo_test_results"
+        };
+        lines.Add($"**Test results in Helix:** {testResultsLine}");
         lines.Add($"**Test result location:** {profile.TestResultLocation}");
 
         if (!string.IsNullOrEmpty(profile.TestFramework))

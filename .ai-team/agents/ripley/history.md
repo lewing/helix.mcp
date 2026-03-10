@@ -95,3 +95,11 @@
 - **Test update needed:** Existing test asserted 6 repos; updated to 9. Lambert should review for coverage of new repos.
 
 📌 Team update (2026-03-10): CiKnowledgeService enrichment merged — 9 full profiles, 9 new properties, 5 tool descriptions updated. 171 new tests by Lambert. All on mcp-error-improvements branch (PR #16). — decided by Ripley
+
+## Learnings (PR #16 review comment fixes)
+
+- **Indentation inside try blocks must match method scope.** When wrapping existing code in a try block, re-indent the body. Four methods in HelixMcpTools.cs (Status, Files, WorkItem, BatchStatus) had inconsistent indentation after try-wrapping.
+- **McpException wrapping must include inner exception and "Failed to" prefix.** Three AzDO search tool catch blocks (azdo_search_log, azdo_search_timeline, azdo_search_log_across_steps) were doing `throw new McpException(ex.Message)` — dropping inner exception and context. Pattern: `throw new McpException($"Failed to {action}: {ex.Message}", ex)`.
+- **Error messages shouldn't recommend a single repo-specific pattern.** The "no test results" message in HelixService.cs suggested only `'  Failed'`, but patterns vary by repo (`[FAIL]` for runtime, `'  Failed'` for aspnetcore, etc.). Now suggests multiple patterns and points to `helix_ci_guide`.
+- **Boolean properties with nuanced semantics should be strings/enums.** `UploadsTestResultsToHelix: bool` couldn't represent "partial" (runtime CoreCLR yes, libraries no) or "varies" (MAUI device tests yes, unit tests no). Replaced with `HelixTestResultAvailability: string` using values `"none"`, `"partial"`, `"varies"`. FormatProfile and GetOverview updated to render nuanced status.
+- **When renaming a required record property, check test files too.** Three test assertions referenced `UploadsTestResultsToHelix` and needed updating to `HelixTestResultAvailability` + new values to compile.

@@ -36,34 +36,34 @@ public sealed class HelixMcpTools
             var showPassed = filter.Equals("passed", StringComparison.OrdinalIgnoreCase) || filter.Equals("all", StringComparison.OrdinalIgnoreCase);
 
             return new StatusResult
-        {
-            Job = new StatusJobInfo
             {
-                JobId = summary.JobId,
-                Name = summary.Name,
-                QueueId = summary.QueueId,
-                Creator = summary.Creator,
-                Source = summary.Source,
-                Created = summary.Created,
-                Finished = summary.Finished,
-                HelixUrl = $"https://helix.dot.net/api/jobs/{summary.JobId}/details"
-            },
-            TotalWorkItems = summary.TotalCount,
-            FailedCount = summary.Failed.Count,
-            PassedCount = summary.Passed.Count,
-            Failed = showFailed ? summary.Failed.Select(f => new StatusWorkItem
-            {
-                Name = f.Name, ExitCode = f.ExitCode, State = f.State, MachineName = f.MachineName,
-                Duration = FormatDuration(f.Duration), ConsoleLogUrl = f.ConsoleLogUrl,
-                FailureCategory = f.FailureCategory?.ToString()
-            }).ToList() : null,
-            Passed = showPassed ? summary.Passed.Select(p => new StatusWorkItem
-            {
-                Name = p.Name, ExitCode = p.ExitCode, State = p.State, MachineName = p.MachineName,
-                Duration = FormatDuration(p.Duration), ConsoleLogUrl = p.ConsoleLogUrl,
-                FailureCategory = null
-            }).ToList() : null
-        };
+                Job = new StatusJobInfo
+                {
+                    JobId = summary.JobId,
+                    Name = summary.Name,
+                    QueueId = summary.QueueId,
+                    Creator = summary.Creator,
+                    Source = summary.Source,
+                    Created = summary.Created,
+                    Finished = summary.Finished,
+                    HelixUrl = $"https://helix.dot.net/api/jobs/{summary.JobId}/details"
+                },
+                TotalWorkItems = summary.TotalCount,
+                FailedCount = summary.Failed.Count,
+                PassedCount = summary.Passed.Count,
+                Failed = showFailed ? summary.Failed.Select(f => new StatusWorkItem
+                {
+                    Name = f.Name, ExitCode = f.ExitCode, State = f.State, MachineName = f.MachineName,
+                    Duration = FormatDuration(f.Duration), ConsoleLogUrl = f.ConsoleLogUrl,
+                    FailureCategory = f.FailureCategory?.ToString()
+                }).ToList() : null,
+                Passed = showPassed ? summary.Passed.Select(p => new StatusWorkItem
+                {
+                    Name = p.Name, ExitCode = p.ExitCode, State = p.State, MachineName = p.MachineName,
+                    Duration = FormatDuration(p.Duration), ConsoleLogUrl = p.ConsoleLogUrl,
+                    FailureCategory = null
+                }).ToList() : null
+            };
         }
         catch (Exception ex) when (ex is HttpRequestException or HelixException or InvalidOperationException or ArgumentException)
         {
@@ -142,25 +142,25 @@ public sealed class HelixMcpTools
             var files = await _svc.GetWorkItemFilesAsync(jobId, workItem);
 
             var binlogs = new List<FileInfo_>();
-        var testResults = new List<FileInfo_>();
-        var other = new List<FileInfo_>();
-        foreach (var f in files)
-        {
-            var info = new FileInfo_ { Name = f.Name, Uri = f.Uri };
-            if (HelixService.MatchesPattern(f.Name, "*.binlog"))
-                binlogs.Add(info);
-            else if (HelixService.IsTestResultFile(f.Name))
-                testResults.Add(info);
-            else
-                other.Add(info);
-        }
+            var testResults = new List<FileInfo_>();
+            var other = new List<FileInfo_>();
+            foreach (var f in files)
+            {
+                var info = new FileInfo_ { Name = f.Name, Uri = f.Uri };
+                if (HelixService.MatchesPattern(f.Name, "*.binlog"))
+                    binlogs.Add(info);
+                else if (HelixService.IsTestResultFile(f.Name))
+                    testResults.Add(info);
+                else
+                    other.Add(info);
+            }
 
-        return new FilesResult
-        {
-            Binlogs = binlogs,
-            TestResults = testResults,
-            Other = other
-        };
+            return new FilesResult
+            {
+                Binlogs = binlogs,
+                TestResults = testResults,
+                Other = other
+            };
         }
         catch (Exception ex) when (ex is HttpRequestException or HelixException or InvalidOperationException or ArgumentException)
         {
@@ -268,16 +268,16 @@ public sealed class HelixMcpTools
             var detail = await _svc.GetWorkItemDetailAsync(jobId, workItem);
 
             return new WorkItemToolResult
-        {
-            Name = detail.Name,
-            ExitCode = detail.ExitCode,
-            State = detail.State,
-            MachineName = detail.MachineName,
-            Duration = FormatDuration(detail.Duration),
-            ConsoleLogUrl = detail.ConsoleLogUrl,
-            FailureCategory = detail.FailureCategory?.ToString(),
-            Files = detail.Files.Select(f => new FileInfo_ { Name = f.Name, Uri = f.Uri }).ToList()
-        };
+            {
+                Name = detail.Name,
+                ExitCode = detail.ExitCode,
+                State = detail.State,
+                MachineName = detail.MachineName,
+                Duration = FormatDuration(detail.Duration),
+                ConsoleLogUrl = detail.ConsoleLogUrl,
+                FailureCategory = detail.FailureCategory?.ToString(),
+                Files = detail.Files.Select(f => new FileInfo_ { Name = f.Name, Uri = f.Uri }).ToList()
+            };
         }
         catch (Exception ex) when (ex is HttpRequestException or HelixException or InvalidOperationException or ArgumentException)
         {
@@ -454,10 +454,10 @@ public sealed class HelixMcpTools
             var batch = await _svc.GetBatchStatusAsync(jobIds);
 
             var allFailed = batch.Jobs.SelectMany(j => j.Failed).Where(f => f.FailureCategory.HasValue).ToList();
-        var failureBreakdown = allFailed.Count > 0
-            ? allFailed.GroupBy(f => f.FailureCategory!.Value.ToString())
-                .ToDictionary(g => g.Key, g => g.Count())
-            : null;
+            var failureBreakdown = allFailed.Count > 0
+                ? allFailed.GroupBy(f => f.FailureCategory!.Value.ToString())
+                    .ToDictionary(g => g.Key, g => g.Count())
+                : null;
 
             return new BatchStatusResult
             {

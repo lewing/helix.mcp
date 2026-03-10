@@ -941,7 +941,7 @@ public class HelixService
         }
         else if (fileNames.Count > 0)
         {
-            message += $" {fileNames.Count} files found (mostly .log files). Try helix_search_log with '  Failed' (2 leading spaces) for test failures.";
+            message += $" {fileNames.Count} files found (mostly .log files). Try helix_search_log with common patterns: '[FAIL]', '  Failed' (2 leading spaces), 'Error Message:', or 'exit code'. Call helix_ci_guide with the repo name for repo-specific patterns.";
         }
         else
         {

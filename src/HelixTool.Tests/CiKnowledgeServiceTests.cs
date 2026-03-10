@@ -348,7 +348,7 @@ public class CiKnowledgeServiceTests
         var profile = CiKnowledgeService.GetProfile("maui")!;
 
         Assert.True(profile.UsesHelix);
-        Assert.False(profile.UploadsTestResultsToHelix);
+        Assert.Equal("varies", profile.HelixTestResultAvailability);
         Assert.Equal("dnceng-public/public", profile.OrgProject);
         Assert.Contains("xUnit", profile.TestFramework);
         Assert.Contains("Appium", profile.TestFramework);
@@ -367,7 +367,7 @@ public class CiKnowledgeServiceTests
         var profile = CiKnowledgeService.GetProfile("macios")!;
 
         Assert.False(profile.UsesHelix);
-        Assert.False(profile.UploadsTestResultsToHelix);
+        Assert.Equal("none", profile.HelixTestResultAvailability);
         Assert.Equal("devdiv/DevDiv", profile.OrgProject);
         Assert.Equal("xamarin/macios", profile.DisplayName);
     }
@@ -392,7 +392,7 @@ public class CiKnowledgeServiceTests
         var profile = CiKnowledgeService.GetProfile("android")!;
 
         Assert.False(profile.UsesHelix);
-        Assert.False(profile.UploadsTestResultsToHelix);
+        Assert.Equal("none", profile.HelixTestResultAvailability);
         Assert.Equal("devdiv/DevDiv", profile.OrgProject);
         Assert.Equal("dotnet/android", profile.DisplayName);
     }
@@ -603,7 +603,7 @@ public class CiKnowledgeServiceTests
     {
         var overview = CiKnowledgeService.GetOverview();
 
-        Assert.Contains("No major .NET repo uploads TRX files to Helix", overview);
+        Assert.Contains("Most .NET repos do NOT upload test results to Helix", overview);
         Assert.Contains("azdo_test_runs", overview);
     }
 

@@ -222,7 +222,7 @@ public sealed class AzdoMcpTools
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
         {
-            throw new McpException(ex.Message);
+            throw new McpException($"Failed to search build log: {ex.Message}", ex);
         }
 
         return new SearchBuildLogResult
@@ -255,7 +255,7 @@ public sealed class AzdoMcpTools
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
         {
-            throw new McpException(ex.Message);
+            throw new McpException($"Failed to search timeline: {ex.Message}", ex);
         }
     }
 
@@ -301,7 +301,7 @@ public sealed class AzdoMcpTools
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
         {
-            throw new McpException(ex.Message);
+            throw new McpException($"Failed to search build logs: {ex.Message}", ex);
         }
     }
 }
