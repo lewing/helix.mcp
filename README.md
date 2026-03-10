@@ -14,7 +14,7 @@ AI agents investigating CI failures in dotnet repos (runtime, sdk, aspnetcore, e
 hlx solves both:
 
 - **Return less, return better.** Tools like `helix_search_log` and `azdo_search_log` search in place and return only matching lines with context — agents never download a full log. `helix_status` returns structured failure summaries instead of raw JSON. Default `tail` limits (500 lines), `filter` parameters (`failed` by default), and `maxMatches` caps keep responses focused.
-- **Cache everything, share across processes.** A local SQLite cache sits between agents and the APIs. Different MCP server instances (one per IDE window) share the same cache, so the second agent to inspect a job gets instant results. Smart TTLs track job lifecycle — running jobs cache briefly (15–30s), completed jobs cache for hours.
+- **Cache everything, share across processes.** A local SQLite cache sits between agents and the APIs. Different MCP server instances (one per IDE window/terminal) share the same cache, so the second agent to inspect a job gets instant results. Smart TTLs track job lifecycle — running jobs cache briefly (15–30s), completed jobs cache for hours.
 
 > **Zero config** — public dotnet CI works out of the box. Install and go.
 
