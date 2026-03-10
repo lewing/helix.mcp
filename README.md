@@ -25,7 +25,7 @@ Every tool is designed to minimize token consumption in agent context windows:
 | Technique | How it helps |
 |-----------|-------------|
 | **Tail limits** | `helix_logs` and `azdo_log` return the last N lines (default 500), not the full log |
-| **Pattern search** | `helix_search_log`, `helix_search_file`, `azdo_search_log`, `azdo_search_log_across_steps` search remotely and return matching lines with configurable context — no full download |
+| **Pattern search** | `helix_search_log`, `helix_search_file`, `azdo_search_log`, `azdo_search_log_across_steps` search outside agent context and return matching lines with configurable context — no full ingestion |
 | **Failure-first defaults** | `helix_status`, `azdo_timeline`, `azdo_test_results` default to showing only failures |
 | **Structured JSON** | Failure summaries, test results, and timeline data come pre-parsed — no agent-side text extraction |
 | **Batch operations** | `helix_batch_status` checks up to 50 jobs in one call; `helix_find_files` scans N work items instead of N+1 API calls |
