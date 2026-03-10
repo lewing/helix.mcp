@@ -51,47 +51,55 @@
 - **Task.WhenAll for metadata:** Timeline + logs list fetched concurrently. Always `await` individual tasks after WhenAll.
 - **CachingAzdoApiClient dynamic TTL for logs list:** Completed → 4h, in-progress → 15s.
 
-📌 Team updates (2026-03-08 – 2026-03-09 summary): AzDO search gap analysis, incremental log fetching (PR #13), CountLines off-by-one fix, azdo_search_log_across_steps spec. — decided by Ash/Dallas
+📌 Team updates (2026-03-08 – 2026-03-09 summary): AzDO search gap analysis, incremental log fetching (PR #13), CountLines off-by-one fix, azdo_search_log_across_steps spec, test quality guidelines (~20 tests cleaned, PR #15). — decided by Ash/Dallas/Lambert
 
-## Learnings (PR #13 review fixes + performance, 2025-07-18)
+## Core Context (performance & review fixes, summarized 2026-03-09)
 
-- **Integer overflow guard:** Cast to `(long)` for user-controlled arithmetic before narrowing to `int`. Falls back to full fetch on overflow.
-- **Cache-layer range must match server semantics:** Return `null` for out-of-range, don't clamp.
-- **Allocation-free string line ops:** `content.AsSpan().Count('\n')` for CountLines; `IndexOf('\n')` loop + slice for ExtractRange. Critical for large log delta-refresh.
-- **SearchValues<char> for line-break scanning:** `SearchValues.Create("\r\n")` + `IndexOfAny` handles all line endings in one pass without pre-normalizing.
-- **Shared StringHelpers.TailLines:** Reverse-scan `LastIndexOf('\n')` in Core. Guard empty string (pos+1 exceeds length).
-- **SearchConsoleLogAsync refactor safe:** Only download feature and SearchFileAsync use disk path. Search can stream directly.
-- **Cache format migration via sentinel prefix:** `raw:` prefix with `JsonSerializer.Deserialize<string>()` fallback for legacy entries. Zero-downtime, natural TTL expiry handles transition.
-- **Test assertions must match serialization format:** Tests asserting exact stored values need updating on format changes; `Arg.Any<string>()` is resilient.
-- **Key perf anti-patterns:** Chained `.Replace()` (span enumerator instead), Split+Join for tail (reverse-scan slice), `pattern[1..]` substring in loops (span EndsWith), triple-iteration file categorization (single-pass), disk round-trip for search (stream directly), JSON-serialized log strings (plain text + marker).
+> Full entries archived to history-archive.md.
 
-📌 Team update (2025-07-18): Perf review (17 issues) + 8 fixes implemented (3 P0, 5 P1), all 864 tests passing — decided/implemented by Ripley
+- **Perf review (2025-07-18):** 17 allocation issues found, 8 fixed. Key anti-patterns: chained `.Replace()`, Split+Join for tail, substring in loops, triple-iteration categorization, disk round-trip for search, JSON-serialized log strings.
+- **PR #13 fixes:** Integer overflow guards (cast to `long`). Cache-layer range returns `null` for out-of-range. Allocation-free `CountLines` via `AsSpan().Count('\n')`. `SearchValues<char>` for line-break scanning. Shared `StringHelpers.TailLines`. Cache format migration via `raw:` prefix.
+- **PR #14 fixes:** CRLF normalization before Split. Cache sentinel collision fix via NUL byte prefix.
+- **Version 0.3.0:** AzDO integration, perf optimizations, incremental log support.
 
-📌 Team update (2026-03-09): 3 perf decisions merged — raw: cache prefix, SearchConsoleLog decoupling, shared StringHelpers — decided by Ripley
+## MCP Error Surfacing & Message Quality (latest session)
 
-## Learnings (PR #14 review fixes, 2025-07-18)
+**Exception wrapping in MCP tools:** All AzDO and Helix MCP tool handlers now wrap service-layer exceptions (HttpRequestException, InvalidOperationException, ArgumentException, HelixException) in McpException with the actual error message. Pattern: `catch (Exception ex) when (ex is X or Y) { throw new McpException($"Failed to {action}: {ex.Message}", ex); }`. The MCP SDK only surfaces `McpException.Message` to clients — unhandled exceptions become generic "An error occurred" messages.
 
-- **CRLF in streamed content:** When bypassing `File.ReadAllLinesAsync` and splitting raw content, always normalize `\r\n`/`\r` to `\n` before splitting — otherwise `\r` leaks into line strings and breaks pattern matching.
-- **Trailing empty element on split:** `"content\n".Split('\n')` yields a trailing empty string. Drop it only when `lines.Count > 1` to preserve semantics for single-newline inputs like `"\n"` → `[""]`.
-- **Cache sentinel collision:** Plain-text prefixes like `"raw:"` can collide with legitimate log content. Use NUL byte prefixes (`"\0raw\n"`) — NUL can't appear in valid log text, making collision impossible.
+**helix_test_results error message:** When no TRX files found, error now filters out noise (hash-named .log files) and highlights useful files (crash dumps, binlogs, XML). Crash artifacts (core.*, *.dmp, *crashdump*) get a ⚠️ callout with search suggestions. When only .log files exist, suggests `helix_search_log` with pattern `'  Failed'`.
 
-📌 Team update (2025-07-18): Fixed 3 PR #14 review comments — CRLF handling in SearchConsoleLogAsync, NormalizeAndSplit edge case for single-newline, cache sentinel collision via NUL prefix — implemented by Ripley
-- **Integer overflow in tail optimization:** `tailLines.Value * 2` computed as `int` can overflow for large user-controlled values. Fix: cast to `(long)tailLines.Value * 2` for the comparison, and guard `startLine` arithmetic with bounds check (`> 0 && <= int.MaxValue`) before the `(int)` cast. Falls back to full fetch if values don't fit. Lesson: always consider overflow on user-controlled arithmetic, especially before narrowing casts.
-- **ExtractRange clamping vs server semantics:** The original `ExtractRange` clamped out-of-bounds `startLine` to the last line, which differs from AzDO API behavior (returns empty/404 for out-of-range). Fix: return `null` when `start >= lines.Length`, `start < 0`, or `end < start`. Lesson: cache-layer range extraction must match server semantics to avoid behavioral divergence between cached and uncached paths.
-- **Allocation-free string line operations:** Replace `string.Split('\n')` with span-based approaches for hot-path methods. `CountLines`: use `content.AsSpan().Count('\n')` (MemoryExtensions.Count) — zero allocation. `ExtractRange`: scan for Nth newline via `IndexOf('\n')` in a loop to find character offsets, then slice with `content[start..end]` — avoids allocating an array of all lines just to extract a small range. Critical for large AzDO logs on delta-refresh paths. Note: must handle content without trailing `\n` (add +1 to count).
+**helix_search_log description:** Updated to document substring-based (not regex) matching, literal treatment of metacharacters, and common search patterns.
 
-## Learnings (performance code review, 2025-07-18)
+📌 Team update (2026-03-09): CI profile analysis — 14 recommendations for MCP tool descriptions/error messages. Tool description changes in HelixMcpTools.cs, AzdoMcpTools.cs, error messages in HelixService.cs. — decided by Ash
 
-- **Chained Replace is the #1 perf pattern to watch:** `NormalizeAndSplit()` in AzdoService does `.Replace("\r\n", "\n").Replace("\r", "\n")` creating two intermediate full-size strings before `.Split('\n')` creates a third. In cross-step search this runs up to 30× per request on multi-MB logs. Fix: span-based line enumerator that handles all line ending types in one pass.
-- **Split+Join for tail trimming is wasteful:** Both `AzdoService.GetBuildLogAsync` and `HelixService.GetConsoleLogContentAsync` split the entire log into a string[] just to get the last N lines, then Join them back. Fix: reverse-scan for Nth `\n` from end using `ReadOnlySpan<char>.LastIndexOf('\n')`, then slice — zero array allocation.
-- **MatchesPattern allocates a substring on every call:** `pattern[1..]` in `MatchesPattern` and `MatchesTestResultPattern` creates a new string. Called per-file in loops (FindFiles scans 30 work items × N files each). Fix: `name.AsSpan().EndsWith(pattern.AsSpan(1), ...)`.
-- **Triple-iteration anti-pattern in HelixMcpTools.Files:** Three `.Where().Select().ToList()` chains iterate the file list 3 times with redundant `MatchesPattern`/`IsTestResultFile` calls. Fix: single-pass categorization loop.
-- **SearchConsoleLogAsync does disk round-trip unnecessarily:** Downloads log to temp file, then reads it all back with `File.ReadAllLinesAsync`. Could stream directly into memory, avoiding double I/O.
-- **CachingAzdoApiClient serializes log content as JSON strings:** `JsonSerializer.Serialize<string>()` on multi-MB log content escapes every special character and wraps in quotes. `Deserialize<string>()` on cache hit re-parses it all. For large logs, store as plain text with a content-type marker instead.
-- **Static array allocations on every call:** `knownTrailingSegments` in `HelixIdResolver.TryResolveJobAndWorkItem` allocates `string[]` per invocation. Should be `static readonly`.
+📌 Team update (2025-07-24): Test quality review — ~17 redundant tests deleted, guidelines: no layer duplication, ≤1 passthrough smoke test, prune proactive tests when real tests land. — decided by Dallas
 
-📌 Team update (2025-07-18): Perf review identified 17 allocation issues — decided by Ripley
+## Learnings (MCP tool description updates with CI knowledge)
 
-## Learnings (version bump 0.3.0, 2025-07-18)
+- **Updated 5 tool descriptions** across HelixMcpTools.cs (helix_test_results, helix_search_log) and AzdoMcpTools.cs (azdo_test_runs, azdo_test_results, azdo_timeline) to embed repo-specific CI knowledge.
+- **Key pattern: warn-before-fail.** helix_test_results now warns that 4/6 major repos don't upload TRX to Helix, directing agents to azdo_test_runs + azdo_test_results instead. This prevents the most common wasted tool call.
+- **Repo-specific search patterns in descriptions:** helix_search_log now lists failure patterns per repo (runtime='[FAIL]', aspnetcore/efcore='  Failed', sdk='error MSB', roslyn='aborted'/'Process exited').
+- **Trust-but-verify on run counts:** azdo_test_runs description now warns that failedTests=0 can be a lie — always drill into azdo_test_results.
+- **Helix task name mapping in azdo_timeline:** runtime/aspnetcore='Send to Helix', sdk='🟣 Run TestBuild Tests', efcore='Send job to helix', roslyn=embedded, VMR=no Helix.
+- **helix_ci_guide cross-references:** Both helix_test_results and helix_search_log now point agents to helix_ci_guide for full repo profiles.
 
-- Version bump to 0.3.0 for the release containing AzDO integration, perf optimizations, and incremental log support
+## Learnings (CiKnowledgeService enrichment — 9-repo knowledge base)
+
+- **Expanded CiRepoProfile record** with 9 new properties: PipelineNames, OrgProject, ExitCodeMeanings, WorkItemNamingPattern, KnownGotchas, RecommendedInvestigationOrder, TestFramework, TestRunnerModel, UploadedFiles. All use init-only defaults so existing code is backward-compatible.
+- **Added 3 new repos:** maui (3 pipelines!), macios (devdiv org, NUnit, Make-based), android (devdiv org, NUnit+xUnit, emulator targets). Total: 9 repos.
+- **Key pattern: devdiv org repos need explicit warnings.** macios and android are on devdiv.visualstudio.com — standard `helix_*` and `ado-dnceng-*` tools do NOT work. KnownGotchas leads with ⚠️ prefix.
+- **ExitCodeMeanings as string[]** — cleaner than Dictionary<int, string> since entries include contextual notes (e.g., "0: Passed (but can coexist with [FAIL] results)").
+- **MAUI has 3 separate pipelines** with completely different investigation approaches — this is the only repo where pipeline identity matters for tool selection.
+- **FormatProfile() enriched** with sections for Org/Project, Pipelines, Gotchas, Exit Codes, Investigation Order, File Inventory. Gotchas rendered first because they're the most critical.
+- **GetOverview() enriched** with Org column and helix_test_results status column — agents immediately see which repos work with which tools.
+- **Test update needed:** Existing test asserted 6 repos; updated to 9. Lambert should review for coverage of new repos.
+
+📌 Team update (2026-03-10): CiKnowledgeService enrichment merged — 9 full profiles, 9 new properties, 5 tool descriptions updated. 171 new tests by Lambert. All on mcp-error-improvements branch (PR #16). — decided by Ripley
+
+## Learnings (PR #16 review comment fixes)
+
+- **Indentation inside try blocks must match method scope.** When wrapping existing code in a try block, re-indent the body. Four methods in HelixMcpTools.cs (Status, Files, WorkItem, BatchStatus) had inconsistent indentation after try-wrapping.
+- **McpException wrapping must include inner exception and "Failed to" prefix.** Three AzDO search tool catch blocks (azdo_search_log, azdo_search_timeline, azdo_search_log_across_steps) were doing `throw new McpException(ex.Message)` — dropping inner exception and context. Pattern: `throw new McpException($"Failed to {action}: {ex.Message}", ex)`.
+- **Error messages shouldn't recommend a single repo-specific pattern.** The "no test results" message in HelixService.cs suggested only `'  Failed'`, but patterns vary by repo (`[FAIL]` for runtime, `'  Failed'` for aspnetcore, etc.). Now suggests multiple patterns and points to `helix_ci_guide`.
+- **Boolean properties with nuanced semantics should be strings/enums.** `UploadsTestResultsToHelix: bool` couldn't represent "partial" (runtime CoreCLR yes, libraries no) or "varies" (MAUI device tests yes, unit tests no). Replaced with `HelixTestResultAvailability: string` using values `"none"`, `"partial"`, `"varies"`. FormatProfile and GetOverview updated to render nuanced status.
+- **When renaming a required record property, check test files too.** Three test assertions referenced `UploadsTestResultsToHelix` and needed updating to `HelixTestResultAvailability` + new values to compile.

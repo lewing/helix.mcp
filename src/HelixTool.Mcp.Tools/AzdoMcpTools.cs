@@ -22,7 +22,14 @@ public sealed class AzdoMcpTools
     public async Task<AzdoBuildSummary> Build(
         [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId)
     {
-        return await _svc.GetBuildSummaryAsync(buildId);
+        try
+        {
+            return await _svc.GetBuildSummaryAsync(buildId);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
+        {
+            throw new McpException($"Failed to get build details: {ex.Message}", ex);
+        }
     }
 
     [McpServerTool(Name = "azdo_builds", Title = "AzDO Build List", ReadOnly = true, UseStructuredContent = true),
@@ -45,11 +52,18 @@ public sealed class AzdoMcpTools
             StatusFilter = status
         };
 
-        return await _svc.ListBuildsAsync(org, project, filter);
+        try
+        {
+            return await _svc.ListBuildsAsync(org, project, filter);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
+        {
+            throw new McpException($"Failed to list builds: {ex.Message}", ex);
+        }
     }
 
     [McpServerTool(Name = "azdo_timeline", Title = "AzDO Build Timeline", ReadOnly = true, UseStructuredContent = true),
-     Description("Get the build timeline showing stages, jobs, and tasks for an Azure DevOps build. Returns hierarchical timeline records with state, result, timing, log references, and issues. Use the 'filter' parameter to control which records are returned. Use to drill into which stage/job/task failed and find log IDs for azdo_log.")]
+     Description("Get the build timeline showing stages, jobs, and tasks for an Azure DevOps build. Returns hierarchical timeline records with state, result, timing, log references, and issues. Use the 'filter' parameter to control which records are returned. Use to drill into which stage/job/task failed and find log IDs for azdo_log. Helix task names vary by repo: runtime/aspnetcore='Send to Helix', sdk='🟣 Run TestBuild Tests', efcore='Send job to helix', roslyn=embedded in test tasks. VMR does not use Helix.")]
     public async Task<AzdoTimeline?> Timeline(
         [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId,
         [Description("Filter: 'failed' (default) shows only non-succeeded records, 'all' shows everything")] string filter = "failed")
@@ -57,10 +71,18 @@ public sealed class AzdoMcpTools
         if (!filter.Equals("failed", StringComparison.OrdinalIgnoreCase) &&
             !filter.Equals("all", StringComparison.OrdinalIgnoreCase))
         {
-            throw new ArgumentException($"Invalid filter '{filter}'. Must be 'failed' or 'all'.", nameof(filter));
+            throw new McpException($"Invalid filter '{filter}'. Must be 'failed' or 'all'.");
         }
 
-        var timeline = await _svc.GetTimelineAsync(buildId);
+        AzdoTimeline? timeline;
+        try
+        {
+            timeline = await _svc.GetTimelineAsync(buildId);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
+        {
+            throw new McpException($"Failed to get build timeline: {ex.Message}", ex);
+        }
 
         if (timeline is null || filter.Equals("all", StringComparison.OrdinalIgnoreCase))
             return timeline;
@@ -103,7 +125,15 @@ public sealed class AzdoMcpTools
         [Description("Log ID from the timeline record's log reference")] int logId,
         [Description("Number of lines from the end to return (default: 500)")] int? tailLines = 500)
     {
-        var content = await _svc.GetBuildLogAsync(buildId, logId, tailLines);
+        string? content;
+        try
+        {
+            content = await _svc.GetBuildLogAsync(buildId, logId, tailLines);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
+        {
+            throw new McpException($"Failed to get build log: {ex.Message}", ex);
+        }
         return content ?? string.Empty;
     }
 
@@ -113,26 +143,47 @@ public sealed class AzdoMcpTools
         [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId,
         [Description("Maximum number of changes to return (default: 20)")] int top = 20)
     {
-        return await _svc.GetBuildChangesAsync(buildId, top);
+        try
+        {
+            return await _svc.GetBuildChangesAsync(buildId, top);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
+        {
+            throw new McpException($"Failed to get build changes: {ex.Message}", ex);
+        }
     }
 
     [McpServerTool(Name = "azdo_test_runs", Title = "AzDO Test Runs", ReadOnly = true, UseStructuredContent = true),
-     Description("Get test runs for an Azure DevOps build. Returns test run summaries with total, passed, and failed counts. Use to get an overview of test execution for a build before drilling into individual test results with azdo_test_results.")]
+     Description("Get test runs for an Azure DevOps build. Returns test run summaries with total, passed, and failed counts. Use to get an overview of test execution for a build before drilling into individual test results with azdo_test_results. NOTE: Run-level failedTests counts can be inaccurate (may show 0 when failures exist). Always drill into individual runs with azdo_test_results to verify.")]
     public async Task<IReadOnlyList<AzdoTestRun>> TestRuns(
         [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId,
         [Description("Maximum number of test runs to return (default: 50)")] int top = 50)
     {
-        return await _svc.GetTestRunsAsync(buildId, top);
+        try
+        {
+            return await _svc.GetTestRunsAsync(buildId, top);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
+        {
+            throw new McpException($"Failed to get test runs: {ex.Message}", ex);
+        }
     }
 
     [McpServerTool(Name = "azdo_test_results", Title = "AzDO Test Results", ReadOnly = true, UseStructuredContent = true),
-     Description("Get test results for a specific test run. Returns individual test case results including outcome, duration, and error details for failures. Defaults to showing only failed tests. Use after azdo_test_runs to investigate specific test failures.")]
+     Description("Get test results for a specific test run. Returns individual test case results including outcome, duration, and error details for failures. Defaults to showing only failed tests. Use after azdo_test_runs to investigate specific test failures. This is the primary tool for structured test results in most .NET repos (aspnetcore, sdk, roslyn, efcore) since they publish to AzDO, not Helix.")]
     public async Task<IReadOnlyList<AzdoTestResult>> TestResults(
         [Description("AzDO build ID (integer) or full AzDO build URL — used to resolve org/project context")] string buildId,
         [Description("Test run ID from azdo_test_runs output")] int runId,
         [Description("Maximum number of test results to return (default: 200)")] int top = 200)
     {
-        return await _svc.GetTestResultsAsync(buildId, runId, top);
+        try
+        {
+            return await _svc.GetTestResultsAsync(buildId, runId, top);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
+        {
+            throw new McpException($"Failed to get test results: {ex.Message}", ex);
+        }
     }
 
     [McpServerTool(Name = "azdo_artifacts", Title = "AzDO Build Artifacts", ReadOnly = true, UseStructuredContent = true),
@@ -142,7 +193,14 @@ public sealed class AzdoMcpTools
         [Description("Filter artifacts by name using glob-style matching (e.g., '*.binlog', '*.trx', or '*' for all). Default: all artifacts")] string pattern = "*",
         [Description("Maximum number of artifacts to return (default: 50)")] int top = 50)
     {
-        return await _svc.GetBuildArtifactsAsync(buildId, pattern, top);
+        try
+        {
+            return await _svc.GetBuildArtifactsAsync(buildId, pattern, top);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
+        {
+            throw new McpException($"Failed to get build artifacts: {ex.Message}", ex);
+        }
     }
 
     [McpServerTool(Name = "azdo_search_log", Title = "Search AzDO Build Log", ReadOnly = true, UseStructuredContent = true),
@@ -164,7 +222,7 @@ public sealed class AzdoMcpTools
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
         {
-            throw new McpException(ex.Message);
+            throw new McpException($"Failed to search build log: {ex.Message}", ex);
         }
 
         return new SearchBuildLogResult
@@ -197,7 +255,7 @@ public sealed class AzdoMcpTools
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
         {
-            throw new McpException(ex.Message);
+            throw new McpException($"Failed to search timeline: {ex.Message}", ex);
         }
     }
 
@@ -210,7 +268,14 @@ public sealed class AzdoMcpTools
         [Description("Azure DevOps organization (default: dnceng-public)")] string org = "dnceng-public",
         [Description("Maximum number of attachments to return (default: 50)")] int top = 50)
     {
-        return await _svc.GetTestAttachmentsAsync(org, project, runId, resultId, top);
+        try
+        {
+            return await _svc.GetTestAttachmentsAsync(org, project, runId, resultId, top);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
+        {
+            throw new McpException($"Failed to get test attachments: {ex.Message}", ex);
+        }
     }
 
     [McpServerTool(Name = "azdo_search_log_across_steps",
@@ -236,7 +301,7 @@ public sealed class AzdoMcpTools
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
         {
-            throw new McpException(ex.Message);
+            throw new McpException($"Failed to search build logs: {ex.Message}", ex);
         }
     }
 }

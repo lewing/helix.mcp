@@ -911,16 +911,46 @@ public class HelixService
                 return results;
         }
 
-        // Build a helpful error message listing what was searched and what files exist
+        // Build a helpful error message — filter out noise (hash-named .log files)
         var fileNames = allFiles.Select(f => f.Name).ToList();
         var patternsSearched = string.Join(", ", TestResultFilePatterns);
-        var availableFiles = fileNames.Count > 0
-            ? $" Available files: {string.Join(", ", fileNames.Take(10))}{(fileNames.Count > 10 ? $" (and {fileNames.Count - 10} more)" : "")}"
-            : " The work item has no uploaded files.";
 
-        throw new HelixException(
-            $"No test result files found in work item '{workItem}'. " +
-            $"Searched for: {patternsSearched}.{availableFiles}");
+        // Identify useful files vs noise
+        var crashArtifacts = fileNames.Where(f =>
+            f.StartsWith("core.", StringComparison.OrdinalIgnoreCase) ||
+            f.EndsWith(".dmp", StringComparison.OrdinalIgnoreCase) ||
+            f.Contains("crashdump", StringComparison.OrdinalIgnoreCase)).ToList();
+        var usefulFiles = fileNames.Where(f =>
+            IsTestResultFile(f) ||
+            (f.StartsWith("vstest.", StringComparison.OrdinalIgnoreCase) && f.EndsWith(".log", StringComparison.OrdinalIgnoreCase)) ||
+            f.EndsWith(".dmp", StringComparison.OrdinalIgnoreCase) ||
+            f.StartsWith("core.", StringComparison.OrdinalIgnoreCase) ||
+            f.Contains("crashdump", StringComparison.OrdinalIgnoreCase) ||
+            f.EndsWith(".binlog", StringComparison.OrdinalIgnoreCase)).ToList();
+
+        var message = $"No test result files found in work item '{workItem}'. Searched for: {patternsSearched}.";
+        message += " Most .NET repos do NOT upload test results to Helix — use azdo_test_runs + azdo_test_results for structured results, or helix_search_log with repo-specific patterns.";
+
+        if (crashArtifacts.Count > 0)
+        {
+            message += $" ⚠️ Crash artifacts detected: {string.Join(", ", crashArtifacts)}. The test host may have crashed. Try helix_search_log with pattern 'exit code' or 'SIGABRT'.";
+        }
+        else if (usefulFiles.Count > 0)
+        {
+            message += $" Available files: {string.Join(", ", usefulFiles)}.";
+        }
+        else if (fileNames.Count > 0)
+        {
+            message += $" {fileNames.Count} files found (mostly .log files). Try helix_search_log with common patterns: '[FAIL]', '  Failed' (2 leading spaces), 'Error Message:', or 'exit code'. Call helix_ci_guide with the repo name for repo-specific patterns.";
+        }
+        else
+        {
+            message += " The work item has no uploaded files.";
+        }
+
+        message += " Call helix_ci_guide with the repo name for recommended search patterns.";
+
+        throw new HelixException(message);
     }
 
     /// <summary>Download specific files from a work item's file list.</summary>

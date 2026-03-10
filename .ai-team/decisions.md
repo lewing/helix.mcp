@@ -4191,3 +4191,384 @@ Deferred. Sequential downloads are simpler and sufficient for Phase 1. If perfor
 **Context:** Both AzdoService and HelixService had identical tail-trimming patterns. Extracted to `HelixTool.Core.StringHelpers` (internal static class).
 
 **Decision:** `internal` visibility is sufficient — only Core code needs it. If CLI or MCP projects need it in the future, promote to `public`.
+
+### 2026-03-09: CI repo profile analysis for MCP tool improvements
+**By:** Ash
+**What:** Analysis of CI repo profiles identifying improvements for MCP tool descriptions and error messages
+**Why:** Real-world CI investigation patterns should inform tool guidance to reduce agent iteration cycles
+
+---
+
+## Executive Summary
+
+Analyzed 6 CI repo profiles (runtime, aspnetcore, sdk, roslyn, efcore, vmr) plus the SKILL.md umbrella document against current MCP tool implementations in `HelixMcpTools.cs`, `AzdoMcpTools.cs`, and `HelixService.cs`. Found **14 actionable recommendations** across 4 categories. The highest-impact change is improving `helix_test_results` description and error messages — agents currently waste 2-3 tool calls discovering that TRX files don't exist for most repos.
+
+---
+
+## 1. Tool Description Improvements
+
+### REC-1: `helix_test_results` — Add repo-aware guidance to tool description (P0)
+
+**Current description:**
+> "Parse TRX test result files from a Helix work item. Returns structured test results including test names, outcomes, durations, and error messages for failed tests. Auto-discovers all .trx files or filter to a specific one."
+
+**Problem:** The name says "TRX" but the tool also parses xUnit XML. More critically, agents don't know that this tool **fails for 4 of 6 major repos** (aspnetcore, sdk, roslyn, efcore). They try it first, get an error, then have to figure out an alternative — wasting 2-3 tool calls per investigation.
+
+**Recommended new description:**
+> "Parse test result files (TRX or xUnit XML) from a Helix work item's blob storage. Returns structured test results including test names, outcomes, durations, and error messages. Auto-discovers files matching *.trx, testResults.xml, *.testResults.xml.txt. **Important:** Most dotnet repos do NOT upload test result files to Helix blob storage — the Arcade reporter consumes them locally and publishes to AzDO instead. This tool works for: runtime CoreCLR tests (job names containing 'coreclr_tests'), runtime iOS/Android XHarness tests. For all other repos/workloads (aspnetcore, sdk, roslyn, efcore, runtime libraries), use azdo_test_runs + azdo_test_results instead."
+
+**Profiles motivating this:** runtime.md (lines 41-49, 63-71), aspnetcore.md (lines 9, 17-28), sdk.md (lines 37-39), roslyn.md (lines 43-47), efcore.md (lines 60-65)
+
+---
+
+### REC-2: `helix_search_log` — Add repo-specific search pattern guidance (P0)
+
+**Current description mentions:**
+> "Common patterns: '  Failed' (2 leading spaces) for xUnit test failures, 'Error Message:' for test error details, 'exit code' for process crashes."
+
+**Problem:** The best search pattern varies dramatically by repo. `[FAIL]` works for runtime but not aspnetcore. `  Failed` works for aspnetcore but not runtime. Neither works for roslyn (crashes dominate). Agents pick the wrong pattern and get 0 results, then iterate.
+
+**Recommended addition to description:**
+> "Best search patterns vary by repo: runtime uses '[FAIL]' (xunit runner format); aspnetcore uses '  Failed' (2 leading spaces, dotnet test format); sdk uses 'Failed' or 'Error' (build-as-test, infra failures dominate); roslyn uses 'aborted' or 'Process exited' (crashes dominate, not assertion failures); efcore uses '[FAIL]' (xunit console runner). For build failures in any repo, try 'error MSB' or 'error CS'."
+
+**Profiles motivating this:** runtime.md (lines 93-101), aspnetcore.md (lines 57-71), sdk.md (lines 90-101), roslyn.md (lines 75-86), efcore.md (lines 97-103)
+
+---
+
+### REC-3: `azdo_test_runs` — Warn about untrustworthy summary counts (P1)
+
+**Current description:**
+> "Get test runs for an Azure DevOps build. Returns test run summaries with total, passed, and failed counts. Use to get an overview of test execution for a build before drilling into individual test results with azdo_test_results."
+
+**Problem:** Every single profile documents the same gotcha — run-level `failedTests: 0` metadata lies. Agents trust the summary and skip drilling into runs, missing real failures.
+
+**Recommended addition:**
+> "⚠️ Run-level failedTests counts can be 0 even when the run contains actual failures. Always call azdo_test_results on runs associated with failed Helix jobs — do not trust the summary count to determine if tests passed."
+
+**Profiles motivating this:** runtime.md (lines 84-88), aspnetcore.md (lines 50-51), sdk.md (lines 63-67), roslyn.md (lines 68-71)
+
+---
+
+### REC-4: `azdo_timeline` — Add repo-specific task name guidance (P1)
+
+**Current description:**
+> "Get the build timeline showing stages, jobs, and tasks for an Azure DevOps build."
+
+**Problem:** The Helix-dispatching task has different names across repos. Agents search for "Send to Helix" universally, but this fails for sdk (`🟣 Run TestBuild Tests`), roslyn (no separate task — Helix is inside `Run Unit Tests`/`Test`), and efcore (`Send job to helix`).
+
+**Recommended addition to description:**
+> "To find Helix job IDs, search for the Helix-dispatching task. Task names vary by repo: runtime/aspnetcore use 'Send to Helix'; sdk uses '🟣 Run TestBuild Tests'; roslyn embeds Helix inside 'Run Unit Tests' or 'Test' tasks (no separate Helix task); efcore uses 'Send job to helix'. Use azdo_search_timeline to find the right task."
+
+**Profiles motivating this:** sdk.md (lines 48-55), roslyn.md (lines 16-29), efcore.md (line 178)
+
+---
+
+### REC-5: `helix_status` — Clarify exit code interpretation (P2)
+
+**Current description:**
+> "Get work item pass/fail summary for a Helix job. Returns structured JSON with job metadata, failed items (with exit codes, state, duration, machine, failureCategory), and passed count."
+
+**Problem:** Exit codes mean different things and agents don't know how to interpret them. Also, runtime exit code 0 can mask test failures — the tool description should warn about this.
+
+**Recommended addition:**
+> "Common exit codes: 0 = passed (but runtime may report 0 with actual [FAIL] results — check console), 1 = test assertion failure, 130 = crash/SIGINT, -3 = timeout, -4 = infrastructure failure (docker/environment). Check failureCategory: 'InfrastructureError' or 'Crash' = infra problem, not a test bug."
+
+**Profiles motivating this:** runtime.md (lines 152-156), sdk.md (lines 81-86), roslyn.md (lines 57-60), efcore.md (lines 91-95)
+
+---
+
+### REC-6: `azdo_search_timeline` — Suggest as the primary triage entry point (P2)
+
+**Current description is functional but doesn't suggest workflow.** Every profile's recommended investigation order starts with `azdo_timeline(buildId, filter="failed")`, but agents often skip straight to Helix tools without knowing which jobs failed.
+
+**Recommended addition:**
+> "This is typically the first tool to call when investigating a build failure. Use pattern '*' with filter='failed' to see all failures, or search for specific task names like 'Send to Helix', 'Build', or 'Test' to find relevant steps."
+
+**Profiles motivating this:** All 6 profiles list `azdo_timeline` as step 1
+
+---
+
+## 2. Error Message Improvements
+
+### REC-7: `helix_test_results` "No test result files" error — Add actionable next steps (P0)
+
+**Current error message (HelixService.cs line 931):**
+> "No test result files found in work item '{workItem}'. Searched for: {patterns}."
+
+The message already has crash-artifact detection and file-listing logic (good!), but the generic case (files found, no test results) suggests searching for `'  Failed'` only — which is wrong for runtime (`[FAIL]`) and roslyn (`aborted`).
+
+**Recommended change:** Replace the generic fallback (line 943) with repo-aware guidance:
+
+```
+$"{fileNames.Count} files found but none match test result patterns. "
++ "Test results are likely published to AzDO instead of Helix blob storage. "
++ "Use azdo_test_runs + azdo_test_results to get structured test data. "
++ "For quick console triage, try helix_search_log with patterns: "
++ "'[FAIL]' (runtime/efcore), '  Failed' (aspnetcore), "
++ "'Failed' (sdk), 'aborted' (roslyn crashes)."
+```
+
+**Profile motivating this:** All non-runtime profiles document this as the primary failure mode
+
+---
+
+### REC-8: `helix_test_results` — Strengthen the "no files at all" message (P1)
+
+**Current message (line 947):**
+> "The work item has no uploaded files."
+
+**Recommended change:**
+> "The work item has no uploaded files. This typically means the test host crashed before producing results. Check helix_status for exit code and failureCategory. For roslyn, search console for 'aborted' or 'Process exited'. For sdk, check for architecture mismatch ('incompatible')."
+
+**Profiles motivating this:** roslyn.md (lines 129-138), sdk.md (lines 131-138), efcore.md (line 111-112)
+
+---
+
+## 3. Missing Tool Capabilities
+
+### REC-9: `azdo_search_log_across_steps` — Powerful but description needs workflow guidance (P1)
+
+This tool exists and is well-implemented, but agents often don't know when to use it vs `azdo_search_log`. The profiles suggest clear use cases.
+
+**Recommended addition to description:**
+> "Especially useful for: VMR builds (44+ verticals, need to find which component failed — search for 'error MSB3073'); runtime builds (50-200+ jobs); sdk builds (find architecture mismatch errors across jobs — search for 'incompatible'). Use azdo_search_log when you already know the specific log ID."
+
+**Profiles motivating this:** vmr.md (lines 86-93), runtime.md (lines 166-183)
+
+---
+
+### REC-10: No tool for extracting Helix job IDs from AzDO build logs (P2 — future capability)
+
+**Problem:** All profiles describe a manual step: read AzDO task log → find Helix job GUID. For runtime/aspnetcore, job IDs appear in "Send to Helix" task output. For roslyn, they're in the body of "Run Unit Tests" output (`"Work item workitem_N in job <GUID> has failed"`). For sdk, they're in `🟣 Run TestBuild Tests` issue messages.
+
+**Recommendation:** Consider a future tool or enhancement that auto-extracts Helix job IDs from an AzDO build. This would eliminate 1-2 manual tool calls per investigation. Could be implemented as an enhancement to `azdo_timeline` that parses known patterns from failed task messages/logs.
+
+**Profiles motivating this:** All Helix-using profiles (runtime, aspnetcore, sdk, roslyn, efcore)
+
+---
+
+### REC-11: `helix_batch_status` could surface cross-job failure patterns (P3 — future)
+
+**Problem:** When an entire Helix queue fails (e.g., efcore macOS crash exit -3 on all 20 work items, or sdk architecture mismatch on all items), agents need to recognize the pattern. Currently they check individual work items.
+
+**Recommendation:** Future enhancement — `helix_batch_status` or `helix_status` could detect and flag patterns like "all N items on queue X failed with same exit code" → likely infrastructure issue, not individual test failures.
+
+**Profiles motivating this:** efcore.md (lines 133-136), sdk.md (lines 126-128)
+
+---
+
+## 4. Search Pattern Guidance
+
+### REC-12: Create a consolidated pattern reference in tool descriptions (P1)
+
+The profiles document different console log patterns per repo. This knowledge should be surfaced somewhere accessible to agents. Options:
+
+**Option A (recommended):** Enrich `helix_search_log` description with a concise pattern table (see REC-2 above)
+
+**Option B:** Add a `helix_search_patterns` read-only tool that returns repo-specific search guidance when given a repo name. Low implementation cost but adds tool count.
+
+**Option C:** Document in the ci-analysis skill prompt. Already partially done in the SKILL.md, but agents using raw MCP tools (not the skill) don't see it.
+
+---
+
+### REC-13: VMR builds don't use Helix — agents should know this (P1)
+
+**Problem:** VMR (dotnet/dotnet) doesn't use Helix at all. Agents may waste calls trying `helix_status` on VMR builds.
+
+**Recommended:** Add to `helix_status` description:
+> "Note: VMR (dotnet/dotnet) builds do NOT use Helix. For VMR build failures, use azdo_timeline and azdo_search_log_across_steps to find build errors (typically 'error MSB3073')."
+
+**Profile motivating this:** vmr.md (lines 14-18)
+
+---
+
+### REC-14: `azdo_test_results` — Clarify synthetic vs real results (P2)
+
+**Problem:** SDK and roslyn produce synthetic `WorkItemExecution` results when Helix work items crash — these are not real test failures. Agents may misinterpret them.
+
+**Recommended addition:**
+> "For sdk/roslyn builds, watch for synthetic results with testCaseTitle ending in 'Work Item' and automatedTestName ending in 'WorkItemExecution' — these indicate Helix work item crashes, not actual test failures. Check helix_status for the underlying exit code."
+
+**Profile motivating this:** sdk.md (lines 68-75)
+
+---
+
+## Priority Summary
+
+| Priority | Rec | Tool/Area | Impact |
+|----------|-----|-----------|--------|
+| **P0** | REC-1 | `helix_test_results` description | Saves 2-3 wasted calls per investigation for 4/6 repos |
+| **P0** | REC-2 | `helix_search_log` description | Prevents wrong-pattern searches, saves 1-2 iterations |
+| **P0** | REC-7 | `helix_test_results` error message | Provides actionable next steps instead of dead end |
+| **P1** | REC-3 | `azdo_test_runs` description | Prevents agents from trusting lying summary counts |
+| **P1** | REC-4 | `azdo_timeline` description | Eliminates failed "Send to Helix" searches for 3/6 repos |
+| **P1** | REC-8 | `helix_test_results` error (no files) | Better crash diagnosis guidance |
+| **P1** | REC-9 | `azdo_search_log_across_steps` description | Better workflow guidance for large builds |
+| **P1** | REC-12 | Pattern reference location | Ensures agents can find the right search pattern |
+| **P1** | REC-13 | `helix_status` description | Prevents wasted Helix calls on VMR builds |
+| **P2** | REC-5 | `helix_status` description | Exit code interpretation |
+| **P2** | REC-6 | `azdo_search_timeline` description | Workflow guidance |
+| **P2** | REC-10 | Future: auto-extract Helix job IDs | Eliminates manual log-reading step |
+| **P2** | REC-14 | `azdo_test_results` description | Synthetic result disambiguation |
+| **P3** | REC-11 | Future: cross-job pattern detection | Infrastructure failure recognition |
+
+---
+
+## Implementation Notes
+
+- **REC-1, 2, 3, 4, 5, 6, 9, 13, 14** are pure description text changes in `HelixMcpTools.cs` and `AzdoMcpTools.cs` — no logic changes needed
+- **REC-7, 8** are error message changes in `HelixService.cs` (lines 931-948)
+- **REC-10, 11** are future capability proposals requiring design review
+- **REC-12** is a decision about where to surface pattern knowledge — recommend Option A (enrich tool descriptions) as the simplest path
+- All description changes should be verified by Lambert with existing tests to ensure no regressions
+
+# Decision: Test Quality Review — Tautological Test Findings
+
+**Date:** 2025-07-24
+**Decided by:** Dallas (Lead)
+**Status:** RECOMMENDATION — requires team discussion
+
+## Executive Summary
+
+Reviewed all 776 tests across 50 test files (~14,200 lines). Found **~40 problematic tests** (5% of total) across 4 categories, with the most significant issue being **redundant duplication between AzdoCliCommandTests and AzdoServiceTests** (~14 near-duplicate tests). The test suite is generally well-engineered — the problems are concentrated, not systemic.
+
+**Severity: LOW-MEDIUM.** The test suite is not bloated to the point of harm, but the duplication wastes CI time and creates maintenance burden when service signatures change.
+
+---
+
+## Detailed Findings
+
+### Category 4 — Redundant Tests (MOST SIGNIFICANT: ~20 tests)
+
+**The biggest problem.** `AzdoCliCommandTests` was written "proactively for CLI subcommand registration" but tests the _same AzdoService methods_ as `AzdoServiceTests`. Both test files mock IAzdoApiClient, construct AzdoService, and call the same methods with the same patterns.
+
+| AzdoCliCommandTests | AzdoServiceTests | Identical? |
+|---|---|---|
+| `GetBuildSummary_PlainBuildId_DefaultsToPublic` | `GetBuildSummaryAsync_PlainId_UsesDefaultOrgProject` | YES |
+| `GetBuildSummary_AzdoUrl_ResolvesOrgProject` | `GetBuildSummaryAsync_DevAzureUrl_ParsesOrgAndProject` | YES |
+| `GetBuildSummary_NotFound_ThrowsInvalidOperation` | `GetBuildSummaryAsync_NullBuild_ThrowsInvalidOperation` | YES |
+| `GetBuildSummary_InvalidBuildId_ThrowsArgumentException` | `GetBuildSummaryAsync_InvalidUrl_ThrowsArgumentException` | YES |
+| `GetTimeline_ValidBuild_ReturnsTimeline` | `GetTimelineAsync_PlainId_ResolvesToDefaultOrgProject` | YES |
+| `GetTimeline_NoBuild_ReturnsNull` | `GetTimelineAsync_NullResult_ReturnsNull` | YES |
+| `GetBuildLog_ReturnsContent` | `GetBuildLogAsync_NullTailLines_ReturnsFullContent` | ~90% |
+| `GetBuildLog_WithTailLines_ReturnsLastN` | `GetBuildLogAsync_TailLines_ReturnsLastNLines` | YES |
+| `GetBuildLog_NotFound_ReturnsNull` | `GetBuildLogAsync_NullContent_ReturnsNull` | YES |
+| `GetBuildChanges_ReturnsChangeList` | `GetBuildChangesAsync_PlainId_PassesDefaultsToClient` | YES |
+| `GetTestRuns_ReturnsRunsList` | `GetTestRunsAsync_PlainId_PassesDefaultsToClient` | YES |
+| `GetTestResults_ReturnsResults` | `GetTestResultsAsync_Url_ResolvesOrgProject` | ~80% |
+| `GetBuildSummary_CalculatesDuration` | `GetBuildSummaryAsync_Duration_ComputedFromStartAndFinish` | YES |
+| `GetBuildSummary_InProgressBuild_NullDuration` | `GetBuildSummaryAsync_NullStartOrFinish_DurationIsNull` | YES |
+
+Also **AzdoMcpToolsTests** overlaps with both:
+- `Build_ReturnsBuildSummary` overlaps with `AzdoServiceTests.GetBuildSummaryAsync_MapsAllFieldsCorrectly`
+- `Changes_ReturnsChangeList`, `TestRuns_ReturnsRunList`, `TestResults_ReturnsResultList` are passthrough-verifying tests that mostly just confirm the MCP tool delegates to the service
+
+And in Helix:
+- `HelixMcpToolsTests.Status_ReturnsValidJsonWithExpectedStructure` substantially overlaps with `HelixServiceDITests.GetJobStatusAsync_HappyPath_ReturnsAggregatedSummary`
+- `Status_FilterFailed_PassedIsNull` and `Status_DefaultFilter_ShowsOnlyFailed` verify the same behavior (default filter = "failed")
+
+**Recommendation:** CONSOLIDATE. Delete `AzdoCliCommandTests` entirely — it provides zero coverage that `AzdoServiceTests` doesn't already have. The CLI tests should only exist once CLI command classes exist and need registration/parsing testing. The `AzdoCliCommandTests.GetBuildArtifacts_*` and `GetBuildChanges_WithTopParameter_PassesToClient` tests are the only ones adding unique value — move those to `AzdoServiceTests`. Merge the two overlapping HelixMcpToolsTests filter tests.
+
+---
+
+### Category 2 — Identity-Transform / Passthrough Tests (~8 tests)
+
+Tests where the code under test is essentially `return await _client.Method(...)` and the test just verifies the return value matches the mock:
+
+| Test | What it actually tests |
+|---|---|
+| `AzdoServiceTests.ListBuildsAsync_EmptyList_ReturnsEmpty` | Passthrough — service calls client, returns result |
+| `AzdoServiceTests.GetBuildChangesAsync_EmptyList_ReturnsEmpty` | Same |
+| `AzdoServiceTests.GetTestRunsAsync_EmptyList_ReturnsEmpty` | Same |
+| `AzdoServiceTests.ListBuildsAsync_PassesFilterToClient` | Only asserts `Received(1)` — verifies wiring, not logic |
+| `AzdoMcpToolsTests.Changes_ReturnsChangeList` | MCP → Service → Client passthrough |
+| `AzdoMcpToolsTests.TestRuns_ReturnsRunList` | Same |
+| `AzdoMcpToolsTests.TestResults_ReturnsResultList` | Same |
+| `AzdoMcpToolsTests.Builds_ReturnsBuildList` | Same |
+
+**Recommendation:** KEEP with reduced priority. These do have marginal value as regression guards — if someone accidentally breaks the wiring, they'll catch it. But they should never be the ONLY tests for a feature. They're acceptable as "contract smoke tests" but should not be treated as meaningful coverage.
+
+---
+
+### Category 5 — Setup-Heavy / Assertion-Light (~5 tests)
+
+| Test | Assertion |
+|---|---|
+| `HelixApiClientFactoryTests.ImplementsIHelixApiClientFactory` | `Assert.NotNull(factory)` |
+| `HttpContextHelixTokenAccessorTests.ImplementsIHelixTokenAccessor` | `Assert.NotNull(accessor)` |
+| `HelixMcpToolsTests.Constructor_AcceptsHelixService` | `Assert.NotNull(tools)` |
+| `HelixApiClientFactoryTests.Create_WithToken_ReturnsValidClient` | `Assert.NotNull` + `IsAssignableFrom` |
+| `HelixApiClientFactoryTests.Create_NullToken_ReturnsUnauthenticatedClient` | `Assert.NotNull` + `IsAssignableFrom` |
+
+**Recommendation:** REMOVE the "ImplementsI*" and "Constructor_Accepts*" tests. These are compile-time guarantees — if the class doesn't implement the interface, the code won't compile. The `Create_*_ReturnsValidClient` tests have marginal value; consider keeping one and dropping the rest.
+
+---
+
+### Category 1 — Mock-Verifying Tests (~5 tests)
+
+| Test | Pattern |
+|---|---|
+| `AzdoMcpToolsTests.Build_ReturnsBuildSummary` | Mock returns AzdoBuild, assert AzdoBuildSummary fields match |
+| `StructuredJsonTests.Status_IncludesJobId` | 20 lines setup, asserts `result.Job.JobId == ValidJobId` |
+| `StructuredJsonTests.Status_IncludesHelixUrl` | 20 lines setup, asserts URL construction |
+
+**Recommendation:** The `Build_ReturnsBuildSummary` test is a duplicate of `AzdoServiceTests.GetBuildSummaryAsync_MapsAllFieldsCorrectly` — CONSOLIDATE. The StructuredJsonTests are borderline; they test real output structure but the setup-to-assertion ratio is high. KEEP but note they're low-value.
+
+---
+
+## Well-Written Tests (Positive Examples)
+
+These files exemplify the patterns the team should follow:
+
+1. **AzdoSecurityTests** — Tests real security boundaries with adversarial inputs (SSRF, XSS, SQL injection, path traversal, embedded credentials). Each test verifies defense-in-depth behavior. **Gold standard for security testing.**
+
+2. **AzdoIdResolverTests / HelixIdResolverTests** — Pure-function tests. No mocking. Clear input→output contracts. Easy to read, fast to execute.
+
+3. **TextSearchHelperTests** — Tests real algorithmic logic (context lines, max matches, case sensitivity, edge cases). No mocks.
+
+4. **AzdoServiceTailTests** — Tests meaningful optimization logic (tail vs full fetch). Verifies both the optimization path AND the fallback. Uses `Received`/`DidNotReceive` to verify the correct API was called — this is the RIGHT way to use mock verification.
+
+5. **CachingAzdoApiClientTests / CachingHelixApiClientTests** — Decorator pattern tests done right. Cache hit → skip inner. Cache miss → call inner + store. Dynamic TTL. These test real caching logic, not just passthrough.
+
+6. **StreamingBehaviorTests** — Tests real I/O edge cases (empty streams, large content, tail behavior, UTF-8 encoding, stream disposal). The `TrackingMemoryStream` helper is a good pattern.
+
+7. **SqliteCacheStoreTests / SqliteCacheStoreConcurrencyTests** — Integration tests with real SQLite. Tests real storage behavior.
+
+---
+
+## Recommendations
+
+### Immediate (Lambert should action)
+
+1. **Delete `AzdoCliCommandTests.cs`** — Move the 3 unique tests (`GetBuildArtifacts_DefaultPattern_ReturnsAll`, `GetBuildArtifacts_PatternFilter_FiltersResults`, `GetBuildChanges_WithTopParameter_PassesToClient`) to `AzdoServiceTests.cs`. Delete the rest (~16 tests). Net reduction: ~13 tests, ~280 lines.
+
+2. **Delete the 3 "ImplementsI*" / "Constructor_Accepts*" tests** — Compile-time guarantees don't need runtime tests. Net reduction: 3 tests.
+
+3. **Merge `Status_FilterFailed_PassedIsNull` and `Status_DefaultFilter_ShowsOnlyFailed`** in `HelixMcpToolsTests` — They test the same thing. Net reduction: 1 test.
+
+### Future Guidelines
+
+4. **Rule: No test file per layer for the same behavior.** When testing Service methods, one test file is enough. Don't create CLI-level and MCP-level test files that re-test the same Service calls. When a proactive test file (written before production code) overlaps with a later "real" test file, prune the proactive tests during the PR that adds the real tests — don't let duplicates accumulate. *(Consolidated from Lambert's independent finding on 2025-07-18.)*
+
+5. **Rule: Passthrough methods get at most 1 smoke test,** not exhaustive input variations. If a method is `return await _client.Foo(args)`, one test proving the delegation is sufficient.
+
+6. **Rule: Interface compliance tests are redundant.** The compiler already enforces `IFoo foo = new Bar()` — testing it at runtime wastes CI.
+
+### Estimated Impact
+
+- Tests to remove/consolidate: ~17
+- Lines to remove: ~350
+- Tests remaining: ~759
+- Coverage impact: ZERO (all removed tests are duplicates of retained tests)
+
+
+
+### 2026-03-10: Enriched CiKnowledgeService with full 9-repo knowledge base
+**By:** Ripley
+**What:** Expanded `CiRepoProfile` record with 9 new properties (PipelineNames, OrgProject, ExitCodeMeanings, WorkItemNamingPattern, KnownGotchas, RecommendedInvestigationOrder, TestFramework, TestRunnerModel, UploadedFiles) and added 3 new repos (maui, macios, android) to the knowledge base. Updated FormatProfile() and GetOverview() to render enriched fields. Updated CiKnowledgeTool.cs description for expanded repo set. Total coverage: 9 repos.
+**Why:** The CI knowledge base was the single source of truth for agent investigation guidance but only covered 6 repos with basic fields. Agents investigating MAUI, macios, or android failures had no guidance at all. Critical operational knowledge (exit code meanings, known gotchas like failedTests=0 lying, org/project differences for devdiv repos, pipeline-specific investigation paths for MAUI's 3 pipelines) was missing. The enriched profiles prevent wasted tool calls (e.g., trying helix_* on devdiv repos) and encode hard-won investigation patterns from reference profile analysis.
+
+### 2026-03-10: Updated MCP tool descriptions with CI knowledge
+**By:** Ripley
+**What:** Updated 5 MCP tool descriptions (helix_test_results, helix_search_log, azdo_test_runs, azdo_test_results, azdo_timeline) to embed repo-specific CI knowledge from CiKnowledgeService profiles. Added warnings about common failure paths, repo-specific search patterns, Helix task name mappings, and cross-references to helix_ci_guide.
+**Why:** Agents were wasting calls on helix_test_results for repos that don't upload TRX (4/6 major repos), using wrong search patterns, and not knowing which Helix task names to look for in timelines. These description changes are the cheapest possible fix — zero runtime cost, immediate agent behavior improvement. Descriptions are the first thing agents read before deciding which tool to call, so getting them right eliminates entire classes of dead-end investigations.

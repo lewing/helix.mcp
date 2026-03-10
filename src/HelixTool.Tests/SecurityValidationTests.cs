@@ -8,6 +8,7 @@
 
 using HelixTool.Core;
 using HelixTool.Mcp.Tools;
+using ModelContextProtocol;
 using NSubstitute;
 using Xunit;
 
@@ -189,10 +190,10 @@ public class SecurityValidationTests
             .Select(i => $"{i:x8}-0000-0000-0000-000000000000")
             .ToArray();
 
-        // The MCP tool should propagate the ArgumentException from GetBatchStatusAsync
-        // or enforce its own limit. Either way, 51 IDs must not be processed.
-        await Assert.ThrowsAnyAsync<ArgumentException>(
+        // The MCP tool wraps the ArgumentException in McpException for proper error surfacing
+        var ex = await Assert.ThrowsAnyAsync<McpException>(
             () => tools.BatchStatus(jobIds));
+        Assert.Contains("exceeds the maximum", ex.Message);
     }
 
     [Fact]

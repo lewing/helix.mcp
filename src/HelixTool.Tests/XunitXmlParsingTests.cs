@@ -559,8 +559,8 @@ public class XunitXmlParsingTests
         var ex = await Assert.ThrowsAsync<HelixException>(
             () => _svc.ParseTrxResultsAsync(ValidJobId, WorkItem));
 
-        // Error should list files that ARE present so user can see what's available
-        Assert.Contains("console.log", ex.Message);
+        // Error should mention available useful files (binlog) and filter out noise (.log)
+        Assert.Contains("build.binlog", ex.Message);
     }
 
     [Fact]
