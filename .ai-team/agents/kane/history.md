@@ -93,3 +93,12 @@
 📌 Team update (2026-03-10): CiKnowledgeService expanded to 9 repos with 9 new CiRepoProfile properties. MCP tool descriptions now embed repo-specific CI knowledge. 171 new tests added. — decided by Ripley
 
 📌 Team update (2026-03-10): Option A folder restructuring executed — 9 Helix files moved to Core/Helix/, Cache namespace added, shared utils extracted from HelixService, Helix/AzDO subfolders in Mcp.Tools and Tests. 59 files, 1038 tests pass, zero behavioral changes. PR #17. — decided by Dallas (analysis), Ripley (execution)
+
+📌 Team update (2026-03-10): README overhaul — restructured around value proposition, caching, and context reduction. Removed project structure section, moved CLI reference to docs/cli-reference.md, de-emphasized TRX support, consolidated auth. PR #18. — documented by Kane
+
+- README structure: Why → Context-Efficient Design → Cross-Process Caching → MCP Tools → Installation → MCP Config → Auth → Security. This order leads with value prop for evaluators.
+- CLI reference lives at docs/cli-reference.md — README links to it but doesn't include full command listings. Keep CLI details there, MCP tool tables in README.
+- "How hlx Enhances the Helix API" section was removed — its content overlapped heavily with the Why section and the context-efficiency table. Avoid duplicate storytelling.
+- TRX support is one row in the Helix tools table, not a featured section. It's a feature, not a differentiator.
+- MCP tool table descriptions should be short (one line). Detailed parameter docs belong in [Description] attributes on the actual tools, not README.
+- README went from 589 → ~270 lines. Conciseness is a feature for a README — readers are evaluating, not studying.
