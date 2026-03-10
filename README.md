@@ -34,8 +34,8 @@ Every tool is designed to minimize token consumption in agent context windows:
 ## Investigation Path
 
 - When repo workflows vary, start with `helix_ci_guide(repo)` for the repo-specific path and search patterns.
-- Use `helix_test_results` when the work item uploads structured test results to Helix.
-- Otherwise pivot to `azdo_test_runs` → `azdo_test_results` for structured results, or `helix_search_log` when the signal is in console output.
+- Use `helix_parse_uploaded_trx` only when the work item uploads structured test results to Helix (runtime CoreCLR, XHarness device tests).
+- Otherwise use `azdo_test_runs` → `azdo_test_results` for structured results, or `helix_search_log` when the signal is in console output.
 
 ## Cross-Process Caching
 
@@ -120,7 +120,7 @@ hlx cache clear    # Wipe all cached data
 | `helix_work_item` | Detailed work item info (exit code, state, machine, duration, failure category). |
 | `helix_download` | Download files from a work item. Supports glob patterns. |
 | `helix_download_url` | Download a file by direct blob URL. |
-| `helix_test_results` | Parse Helix-hosted structured test result files into test names, outcomes, and error messages. |
+| `helix_parse_uploaded_trx` | Parse TRX/xUnit XML files uploaded to Helix blob storage into test names, outcomes, and error messages. |
 
 ### AzDO Tools (12)
 

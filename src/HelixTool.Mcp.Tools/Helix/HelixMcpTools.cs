@@ -17,7 +17,7 @@ public sealed class HelixMcpTools
         _svc = svc;
     }
 
-    [McpServerTool(Name = "helix_status", Title = "Helix Job Status", ReadOnly = true, UseStructuredContent = true), Description("Get work item pass/fail summary for a Helix job. Returns structured JSON with job metadata, failed items (with exit codes, state, duration, machine, failureCategory), and passed count. Use the 'filter' parameter to control which work items are included: 'failed' (default), 'passed', or 'all'.")]
+    [McpServerTool(Name = "helix_status", Title = "Helix Job Status", ReadOnly = true, UseStructuredContent = true), Description("Work item pass/fail summary for a Helix job. Returns failed items with exit codes, state, duration, machine. Filter: 'failed' (default), 'passed', or 'all'.")]
     public async Task<StatusResult> Status(
         [Description("Helix job ID (GUID) or full Helix URL")] string jobId,
         [Description("Filter: 'failed' (default) shows only failures, 'passed' shows only passed, 'all' shows everything")] string filter = "failed")
@@ -203,7 +203,7 @@ public sealed class HelixMcpTools
         }
     }
 
-    [McpServerTool(Name = "helix_find_files", Title = "Find Files in Helix Job", ReadOnly = true, UseStructuredContent = true), Description("Search work items in a Helix job for files matching a pattern. Returns work item names and matching file URIs. Use pattern like '*.binlog', '*.trx', '*.dmp', or '*' for all files.")]
+    [McpServerTool(Name = "helix_find_files", Title = "Find Files in Helix Job", ReadOnly = true, UseStructuredContent = true), Description("Search work items in a Helix job for files matching a glob pattern. Returns work item names and matching file URIs.")]
     public async Task<FindFilesResult> FindFiles(
         [Description("Helix job ID (GUID) or URL")] string jobId,
         [Description("File name or glob pattern (e.g., *.binlog, *.trx, *.dmp). Default: all files")] string pattern = "*",
@@ -286,7 +286,7 @@ public sealed class HelixMcpTools
         }
     }
 
-    [McpServerTool(Name = "helix_search_log", Title = "Search Helix Console Log", ReadOnly = true, UseStructuredContent = true), Description("Search a Helix work item's console log without downloading the full log first. Use this for remote-first failure investigation when structured Helix result files are absent, or when you need console markers, stack traces, or crash text. Matching is case-insensitive substring search, NOT regex — characters like *, +, ?, [, ] are treated literally. Pattern choice is repo/test-runner specific: runtime uses '[FAIL]', aspnetcore/efcore use '  Failed' (2 spaces), sdk uses 'Failed' or 'error MSB', roslyn crashes show 'aborted' or 'Process exited'. Call helix_ci_guide(repo) before broad log reads when you need repo-specific patterns.")]
+    [McpServerTool(Name = "helix_search_log", Title = "Search Helix Console Log", ReadOnly = true, UseStructuredContent = true), Description("Search a work item's console log for a case-insensitive substring pattern. Not regex. Call helix_ci_guide(repo) for repo-specific failure patterns.")]
     public async Task<SearchLogResult> SearchLog(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
@@ -333,7 +333,7 @@ public sealed class HelixMcpTools
         }
     }
 
-    [McpServerTool(Name = "helix_search_file", Title = "Search Helix File", ReadOnly = true, UseStructuredContent = true), Description("Search a work item's uploaded file for lines matching a pattern. Returns matching lines with optional context. Use this to find specific errors, stack traces, or patterns in Helix test output files without downloading them.")]
+    [McpServerTool(Name = "helix_search_file", Title = "Search Helix File", ReadOnly = true, UseStructuredContent = true), Description("Search a work item's uploaded file for lines matching a pattern. Returns matches with context, without downloading the file.")]
     public async Task<SearchFileResult> SearchFile(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("File name to search (exact name from helix_files output)")] string fileName,
@@ -385,7 +385,7 @@ public sealed class HelixMcpTools
         }
     }
 
-    [McpServerTool(Name = "helix_test_results", Title = "Parse Helix Test Results", ReadOnly = true, UseStructuredContent = true), Description("Parse structured test-result files hosted in a Helix work item. Use this when the repo uploads TRX or Helix-hosted result XML and you want per-test names, outcomes, durations, and error messages. Auto-discovers supported result files, or filter to a specific one. Many repos (aspnetcore, sdk, roslyn, efcore) publish structured results to AzDO instead, so prefer azdo_test_runs + azdo_test_results there; use helix_search_log for console-only failures. runtime CoreCLR and some XHarness/device scenarios work. Call helix_ci_guide(repo) to choose the right path for a repo.")]
+    [McpServerTool(Name = "helix_parse_uploaded_trx", Title = "Parse Uploaded TRX from Helix", ReadOnly = true, UseStructuredContent = true), Description("Parse TRX/xUnit XML files from Helix blob storage. Niche — most repos use azdo_test_results instead.")]
     public async Task<TestResultsToolResult> TestResults(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,

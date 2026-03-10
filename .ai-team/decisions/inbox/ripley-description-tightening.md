@@ -1,0 +1,4 @@
+### 2026-03-10: MCP tool description tightening
+**By:** Ripley
+**What:** Tightened 17 MCP tool Description() attributes to ≤35 words each (from up to 93 words). Stripped repo-specific CI patterns from descriptions. Kept critical warnings (azdo_test_runs inaccurate counts) and steering hints (azdo_test_results primary tool routing). Left helix_parse_uploaded_trx untouched (already 15 words).
+**Why:** Tool descriptions are loaded into every agent's context window on every session whether the agent uses that tool or not. ~550 words of description text was removed, saving context tokens across all sessions. Repo-specific guidance (failure patterns, Helix task names per repo) now lives exclusively in helix_ci_guide responses where it belongs — queried on demand rather than loaded unconditionally.

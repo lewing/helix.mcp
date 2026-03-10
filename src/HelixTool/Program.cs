@@ -454,13 +454,13 @@ public class Commands
         Console.WriteLine($"{result.Matches.Count} matches found (showing up to {maxMatches}).");
     }
 
-    /// <summary>Parse TRX test results from a work item.</summary>
+    /// <summary>Parse TRX/xUnit XML test result files uploaded to Helix blob storage.</summary>
     /// <param name="jobId">Helix job ID or URL.</param>
     /// <param name="workItem">Work item name.</param>
     /// <param name="fileName">Specific TRX file name (optional - auto-discovers all .trx files if not set).</param>
     /// <param name="includePassed">Include passed tests in output (default: false).</param>
     /// <param name="maxResults">Maximum number of test results to return (default: 200).</param>
-    [Command("test-results")]
+    [Command("parse-uploaded-trx")]
     public async Task TestResults([Argument] string jobId, [Argument] string workItem,
         string? fileName = null, bool includePassed = false, int maxResults = 200)
     {
@@ -562,7 +562,7 @@ public class Commands
 - `helix_batch_status` — Status for multiple jobs in parallel (accepts an array of job IDs/URLs)
 - `helix_search_log` — Remote-first console log search when failures live in Helix output; pattern choice is repo-specific
 - `helix_search_file` — Search a work item's uploaded file for lines matching a pattern
-- `helix_test_results` — Parse Helix-hosted structured test results when present; otherwise use azdo_test_runs + azdo_test_results
+- `helix_parse_uploaded_trx` — Parse TRX/xUnit XML files uploaded to Helix blob storage; most repos use azdo_test_results instead
 
 ### AzDO MCP Tools
 - `azdo_build` — Get build details by ID or AzDO URL (status, result, branch, timing, web URL)

@@ -474,7 +474,7 @@ public class CiKnowledgeServiceTests
 
         Assert.Contains("Failed", guide);
         Assert.Contains("azdo_test_runs", guide);
-        Assert.Contains("helix_test_results will ALWAYS fail", guide);
+        Assert.Contains("helix_parse_uploaded_trx will ALWAYS fail", guide);
     }
 
     [Fact]
@@ -497,7 +497,7 @@ public class CiKnowledgeServiceTests
 
         Assert.Contains("azdo_test_runs(buildId) + azdo_test_results(buildId, runId)", orderSection);
         Assert.Contains("helix_search_log(jobId, workItem, '  Failed')", orderSection);
-        Assert.DoesNotContain("helix_test_results", orderSection);
+        Assert.DoesNotContain("helix_parse_uploaded_trx", orderSection);
         Assert.True(
             orderSection.IndexOf("azdo_test_runs(buildId) + azdo_test_results(buildId, runId)", StringComparison.Ordinal) <
             orderSection.IndexOf("helix_search_log(jobId, workItem, '  Failed')", StringComparison.Ordinal));
@@ -508,7 +508,7 @@ public class CiKnowledgeServiceTests
     {
         var guide = CiKnowledgeService.GetGuide("runtime");
 
-        Assert.Contains("Partial — helix_test_results works for some tests", guide);
+        Assert.Contains("Partial — helix_parse_uploaded_trx works for some tests", guide);
         Assert.Contains("use azdo_test_runs + azdo_test_results for full coverage", guide);
     }
 

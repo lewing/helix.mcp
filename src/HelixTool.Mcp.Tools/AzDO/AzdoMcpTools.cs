@@ -18,7 +18,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_build", Title = "AzDO Build Details", ReadOnly = true, UseStructuredContent = true),
-     Description("Get details of a specific Azure DevOps build. Returns build metadata including status, result, definition, source branch, timing, and a direct web URL. Use to investigate build failures, check build status, or get build context. Accepts a build URL or plain integer ID.")]
+     Description("Get details of an AzDO build: status, result, definition, source branch, timing, and web URL. Accepts build URL or integer ID.")]
     public async Task<AzdoBuildSummary> Build(
         [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId)
     {
@@ -33,7 +33,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_builds", Title = "AzDO Build List", ReadOnly = true, UseStructuredContent = true),
-     Description("List recent builds for an Azure DevOps project. Returns build summaries with status, result, branch, and timing. Use to find builds for a PR, branch, or pipeline definition. Defaults to the dnceng-public/public project.")]
+     Description("List recent builds for an AzDO project. Filter by PR, branch, or definition. Defaults to dnceng-public/public.")]
     public async Task<IReadOnlyList<AzdoBuild>> Builds(
         [Description("Azure DevOps organization (default: dnceng-public)")] string org = "dnceng-public",
         [Description("Azure DevOps project (default: public)")] string project = "public",
@@ -63,7 +63,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_timeline", Title = "AzDO Build Timeline", ReadOnly = true, UseStructuredContent = true),
-     Description("Get the build timeline showing stages, jobs, and tasks for an Azure DevOps build. Returns hierarchical timeline records with state, result, timing, log references, and issues. Use the 'filter' parameter to control which records are returned. Use to drill into which stage/job/task failed and find log IDs for azdo_log. Helix task names vary by repo: runtime/aspnetcore='Send to Helix', sdk='🟣 Run TestBuild Tests', efcore='Send job to helix', roslyn=embedded in test tasks. VMR does not use Helix.")]
+     Description("Build timeline with stages, jobs, and tasks — state, result, timing, log refs, issues. Find failed steps and log IDs for azdo_log. Filter: 'failed' (default) or 'all'.")]
     public async Task<AzdoTimeline?> Timeline(
         [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId,
         [Description("Filter: 'failed' (default) shows only non-succeeded records, 'all' shows everything")] string filter = "failed")
@@ -119,7 +119,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_log", Title = "AzDO Build Log", ReadOnly = true),
-     Description("Get log content for a specific build log. Returns plain text log output. Use after azdo_timeline to read the log of a failed task (use the log ID from the timeline record). Returns last N lines by default to prevent context overflow.")]
+     Description("Get log content for a build step. Use log ID from azdo_timeline. Returns last N lines by default.")]
     public async Task<string> Log(
         [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId,
         [Description("Log ID from the timeline record's log reference")] int logId,
@@ -138,7 +138,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_changes", Title = "AzDO Build Changes", ReadOnly = true, UseStructuredContent = true),
-     Description("Get the commits/changes associated with an Azure DevOps build. Returns commit IDs, messages, authors, and timestamps. Use to see what code changes triggered or are included in a build.")]
+     Description("Get commits/changes for an AzDO build. Returns commit IDs, messages, authors, and timestamps.")]
     public async Task<IReadOnlyList<AzdoBuildChange>> Changes(
         [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId,
         [Description("Maximum number of changes to return (default: 20)")] int top = 20)
@@ -154,7 +154,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_test_runs", Title = "AzDO Test Runs", ReadOnly = true, UseStructuredContent = true),
-     Description("Get test runs for an Azure DevOps build. Returns test run summaries with total, passed, and failed counts. Use to get an overview of test execution for a build before drilling into individual test results with azdo_test_results. NOTE: Run-level failedTests counts can be inaccurate (may show 0 when failures exist). Always drill into individual runs with azdo_test_results to verify.")]
+     Description("Test run summaries for an AzDO build with total/passed/failed counts. ⚠️ Run-level failedTests can be inaccurate — always drill into azdo_test_results to verify.")]
     public async Task<IReadOnlyList<AzdoTestRun>> TestRuns(
         [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId,
         [Description("Maximum number of test runs to return (default: 50)")] int top = 50)
@@ -170,7 +170,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_test_results", Title = "AzDO Test Results", ReadOnly = true, UseStructuredContent = true),
-     Description("Get test results for a specific test run. Returns individual test case results including outcome, duration, and error details for failures. Defaults to showing only failed tests. Use after azdo_test_runs to investigate specific test failures. This is the primary tool for structured test results in most .NET repos (aspnetcore, sdk, roslyn, efcore) since they publish to AzDO, not Helix.")]
+     Description("Test results for a specific run. Defaults to failed tests only. Primary tool for test failures in most dotnet repos (aspnetcore, sdk, roslyn, efcore).")]
     public async Task<IReadOnlyList<AzdoTestResult>> TestResults(
         [Description("AzDO build ID (integer) or full AzDO build URL — used to resolve org/project context")] string buildId,
         [Description("Test run ID from azdo_test_runs output")] int runId,
@@ -187,7 +187,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_artifacts", Title = "AzDO Build Artifacts", ReadOnly = true, UseStructuredContent = true),
-     Description("List artifacts produced by an Azure DevOps build (logs, test results, binlogs, etc.). Returns artifact names, resource types, and download URLs. Use to discover what files a build published. Supports glob-style pattern filtering (e.g., '*.binlog', '*.trx') and result limiting.")]
+     Description("List artifacts from an AzDO build (logs, test results, binlogs). Supports glob-style pattern filtering.")]
     public async Task<IReadOnlyList<AzdoBuildArtifact>> Artifacts(
         [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildId,
         [Description("Filter artifacts by name using glob-style matching (e.g., '*.binlog', '*.trx', or '*' for all). Default: all artifacts")] string pattern = "*",
@@ -204,7 +204,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_search_log", Title = "Search AzDO Build Log", ReadOnly = true, UseStructuredContent = true),
-     Description("Search a build step log for lines matching a pattern. Returns matching lines with optional context. Use this to find specific errors, stack traces, or patterns in AzDO build logs without reading the entire log. Use after azdo_timeline to get the log ID of a failed task.")]
+     Description("Search a build step log for lines matching a pattern. Use log ID from azdo_timeline. For broad search, use azdo_search_log_across_steps.")]
     public async Task<SearchBuildLogResult> SearchLog(
         [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildIdOrUrl,
         [Description("Log ID from the timeline record's log reference")] int logId,
@@ -242,7 +242,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_search_timeline", Title = "AzDO Search Timeline", ReadOnly = true, UseStructuredContent = true),
-     Description("Search an Azure DevOps build timeline for records matching a pattern. Searches record names and issue messages. Use to find failed steps, specific tasks, or errors without manually scanning the full timeline. Returns matching records with log IDs for follow-up with azdo_log or azdo_search_log.")]
+     Description("Search build timeline record names and issue messages for a pattern. Returns matching records with log IDs for azdo_log or azdo_search_log.")]
     public async Task<TimelineSearchResult> SearchTimeline(
         [Description("AzDO build ID (integer) or full AzDO build URL (https://dev.azure.com/...)")] string buildIdOrUrl,
         [Description("Text pattern to search for in record names and issue messages (case-insensitive)")] string pattern,
@@ -260,7 +260,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_test_attachments", Title = "AzDO Test Attachments", ReadOnly = true, UseStructuredContent = true),
-     Description("List attachments for a specific test result (screenshots, logs, dumps). Use after azdo_test_results to get files attached to a failed test. Requires run ID and result ID from previous tool output.")]
+     Description("List attachments for a test result (screenshots, logs, dumps). Requires run ID and result ID from azdo_test_results.")]
     public async Task<IReadOnlyList<AzdoTestAttachment>> TestAttachments(
         [Description("Test run ID from azdo_test_runs output")] int runId,
         [Description("Test result ID from azdo_test_results output")] int resultId,
@@ -282,7 +282,7 @@ public sealed class AzdoMcpTools
                    Title = "Search All AzDO Build Logs",
                    ReadOnly = true,
                    UseStructuredContent = true),
-     Description("Search ALL log steps in an Azure DevOps build for lines matching a pattern. Automatically ranks logs by failure likelihood (failed tasks first, then tasks with issues, then large succeeded logs) and returns matches incrementally. Stops early when maxMatches is reached. Use instead of manually iterating azdo_search_log across many log IDs. For targeted search of a specific log step, use azdo_search_log instead.")]
+     Description("Search all log steps in a build for a pattern, ranked by failure likelihood. Stops early at maxMatches. For a single step, use azdo_search_log.")]
     public async Task<CrossStepSearchResult> SearchLogAcrossSteps(
         [Description("AzDO build ID (integer) or full AzDO build URL")] string buildIdOrUrl,
         [Description("Text pattern to search for (case-insensitive substring match)")] string pattern = "error",

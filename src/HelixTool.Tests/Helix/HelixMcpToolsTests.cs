@@ -358,25 +358,19 @@ public class HelixMcpToolsTests
     {
         var description = GetMethodDescription<HelixMcpTools>(nameof(HelixMcpTools.SearchLog));
 
-        Assert.Contains("without downloading the full log first", description);
-        Assert.Contains("NOT regex", description);
-        Assert.Contains("repo/test-runner specific", description);
-        Assert.Contains("runtime uses '[FAIL]'", description);
-        Assert.Contains("aspnetcore/efcore use '  Failed' (2 spaces)", description);
-        Assert.Contains("Call helix_ci_guide(repo) before broad log reads", description);
+        Assert.Contains("substring", description);
+        Assert.Contains("Not regex", description);
+        Assert.Contains("helix_ci_guide", description);
     }
 
     [Fact]
-    public void TestResults_Description_ExplainsStructuredResultScopeAndFallback()
+    public void TestResults_Description_ExplainsTrxParsingScope()
     {
         var description = GetMethodDescription<HelixMcpTools>(nameof(HelixMcpTools.TestResults));
 
-        Assert.Contains("Parse structured test-result files hosted in a Helix work item", description);
-        Assert.Contains("Many repos", description);
-        Assert.Contains("azdo_test_runs + azdo_test_results", description);
-        Assert.Contains("use helix_search_log for console-only failures", description);
-        Assert.Contains("runtime CoreCLR and some XHarness/device scenarios work", description);
-        Assert.Contains("helix_ci_guide(repo)", description);
+        Assert.Contains("TRX/xUnit XML", description);
+        Assert.Contains("Niche", description);
+        Assert.Contains("azdo_test_results", description);
     }
 
     [Fact]
@@ -384,9 +378,8 @@ public class HelixMcpToolsTests
     {
         var description = GetMethodDescription<CiKnowledgeTool>(nameof(CiKnowledgeTool.GetGuide));
 
-        Assert.Contains("choose between helix_test_results", description);
-        Assert.Contains("before you start digging", description);
-        Assert.Contains("macios and android are on devdiv", description);
+        Assert.Contains("Repo-specific CI guidance", description);
+        Assert.Contains("devdiv", description);
     }
 
     // --- FindFiles tests ---

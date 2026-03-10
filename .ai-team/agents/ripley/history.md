@@ -125,3 +125,18 @@
 - **Key file paths:** `src/HelixTool.Mcp.Tools/Helix/HelixMcpTools.cs` holds MCP tool descriptions, `src/HelixTool.Core/Helix/HelixService.cs` owns `helix_test_results` fallback messaging, `src/HelixTool.Core/CiKnowledgeService.cs` formats repo-specific CI guides, `src/HelixTool.Mcp.Tools/CiKnowledgeTool.cs` describes `helix_ci_guide`, and `src/HelixTool/Program.cs` mirrors MCP guidance in llms-txt/help output.
 
 📌 Team update (2026-03-10): Discoverability routing decisions merged — keep the current tool surface, route repo-specific workflow selection through `helix_ci_guide(repo)`, treat `helix_test_results` as structured Helix-hosted parsing rather than a universal first step, and keep `helix_search_log`/docs/help guidance synchronized across surfaces. — decided by Dallas, Kane, Ripley
+
+## Learnings (helix_test_results → helix_parse_uploaded_trx rename)
+
+## Learnings (MCP tool description tightening)
+
+- **Tightened 17 tool descriptions** across HelixMcpTools.cs (4), AzdoMcpTools.cs (12), and CiKnowledgeTool.cs (1). Total word reduction: ~550 words removed from tool-level Description() attributes.
+- **Stripped all repo-specific patterns** from tool descriptions (e.g., `runtime uses '[FAIL]'`, Helix task name mappings per repo). That guidance now lives exclusively in `helix_ci_guide` responses.
+- **Preserved critical steering hints:** azdo_test_runs inaccurate counts warning, azdo_test_results "primary tool" routing, helix_search_log "not regex" + ci_guide pointer, macios/android devdiv warning.
+- **Rule of thumb:** Tool descriptions are loaded into every agent context — every word costs tokens on every session. Repo-specific knowledge belongs in helix_ci_guide, not tool descriptions.
+
+- **Renamed MCP tool** from `helix_test_results` to `helix_parse_uploaded_trx` and CLI command from `test-results` to `parse-uploaded-trx`.
+- **Reason:** The generic name `helix_test_results` was a context trap — agents reached for it first on every CI investigation even though 95%+ of dotnet repos publish results to AzDO, not as TRX files in Helix. Wasted tool calls on every investigation.
+- **Updated description** to steer agents toward `azdo_test_results` first, making clear this tool only works for repos that upload raw result files to Helix (runtime CoreCLR, XHarness device tests).
+- **Files with old name references that were updated:** HelixMcpTools.cs (MCP tool registration), CiKnowledgeTool.cs (helix_ci_guide description), Program.cs (CLI command + help text), CiKnowledgeService.cs (25+ references in repo profiles and formatting), README.md (tool table + tips), CiKnowledgeServiceTests.cs (3 assertions), HelixMcpToolsTests.cs (2 assertions + test name).
+- **Internal method names unchanged:** `ParseTrxResultsAsync`, `TestResults` method name in HelixMcpTools, `IsTestResultFile` — these are implementation details, not agent-facing.
