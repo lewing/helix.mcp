@@ -1,10 +1,23 @@
 namespace HelixTool.Core;
 
 /// <summary>
-/// Allocation-efficient string utilities for log processing.
+/// Allocation-efficient string utilities shared across Helix and AzDO subsystems.
 /// </summary>
-internal static class StringHelpers
+public static class StringHelpers
 {
+    /// <summary>Simple glob match: '*' matches all, '*.ext' matches suffix, else substring.</summary>
+    public static bool MatchesPattern(string name, string pattern)
+    {
+        if (pattern == "*") return true;
+        if (pattern.StartsWith("*."))
+            return name.AsSpan().EndsWith(pattern.AsSpan(1), StringComparison.OrdinalIgnoreCase);
+        return name.Contains(pattern, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Whether file content search is disabled by configuration.</summary>
+    public static bool IsFileSearchDisabled =>
+        string.Equals(Environment.GetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH"), "true", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// Return the last <paramref name="lineCount"/> lines of <paramref name="content"/>
     /// using reverse-scan — zero array allocation.

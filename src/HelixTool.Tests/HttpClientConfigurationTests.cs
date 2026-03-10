@@ -5,6 +5,8 @@
 using System.Net;
 using System.Text;
 using HelixTool.Core;
+using HelixTool.Core.Cache;
+using HelixTool.Core.Helix;
 using HelixTool.Core.AzDO;
 using NSubstitute;
 using Xunit;

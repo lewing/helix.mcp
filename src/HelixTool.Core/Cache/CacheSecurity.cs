@@ -1,4 +1,4 @@
-namespace HelixTool.Core;
+namespace HelixTool.Core.Cache;
 
 /// <summary>
 /// Security helpers to prevent path traversal attacks in cache operations.

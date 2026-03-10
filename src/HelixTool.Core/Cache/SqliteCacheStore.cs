@@ -1,7 +1,7 @@
 using System.Globalization;
 using Microsoft.Data.Sqlite;
 
-namespace HelixTool.Core;
+namespace HelixTool.Core.Cache;
 
 /// <summary>
 /// SQLite-backed implementation of <see cref="ICacheStore"/>.

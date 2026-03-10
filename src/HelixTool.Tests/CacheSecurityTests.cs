@@ -3,6 +3,8 @@
 // and integration with SqliteCacheStore and CachingHelixApiClient.
 
 using HelixTool.Core;
+using HelixTool.Core.Cache;
+using HelixTool.Core.Helix;
 using NSubstitute;
 using Xunit;
 

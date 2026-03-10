@@ -1,4 +1,4 @@
-namespace HelixTool.Core;
+namespace HelixTool.Core.Cache;
 
 /// <summary>
 /// Abstract cache storage for API metadata and artifact files.

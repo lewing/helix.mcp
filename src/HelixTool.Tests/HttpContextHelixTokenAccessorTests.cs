@@ -4,6 +4,7 @@
 // Will compile once Ripley's HttpContextHelixTokenAccessor lands.
 
 using HelixTool.Core;
+using HelixTool.Core.Helix;
 using HelixTool.Mcp;
 using Microsoft.AspNetCore.Http;
 using Xunit;

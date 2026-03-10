@@ -4,6 +4,7 @@
 // Will compile once Ripley's ICacheStoreFactory.cs and implementation land.
 
 using HelixTool.Core;
+using HelixTool.Core.Cache;
 using Xunit;
 
 namespace HelixTool.Tests;

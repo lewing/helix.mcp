@@ -144,7 +144,7 @@ public class AzdoService
         var results = await _client.GetBuildArtifactsAsync(org, project, buildId, ct);
 
         if (pattern != "*")
-            results = results.Where(a => HelixService.MatchesPattern(a.Name ?? string.Empty, pattern)).ToList();
+            results = results.Where(a => StringHelpers.MatchesPattern(a.Name ?? string.Empty, pattern)).ToList();
 
         if (results.Count > top)
             results = results.Take(top).ToList();
@@ -165,7 +165,7 @@ public class AzdoService
         ArgumentOutOfRangeException.ThrowIfNegative(contextLines);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(maxMatches, 0);
 
-        if (HelixService.IsFileSearchDisabled)
+        if (StringHelpers.IsFileSearchDisabled)
             throw new InvalidOperationException("File content search is disabled by configuration.");
 
         var content = await GetBuildLogAsync(buildIdOrUrl, logId, tailLines: null, ct);
@@ -306,7 +306,7 @@ public class AzdoService
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(maxLogsToSearch, 0);
         ArgumentOutOfRangeException.ThrowIfNegative(minLogLines);
 
-        if (HelixService.IsFileSearchDisabled)
+        if (StringHelpers.IsFileSearchDisabled)
             throw new InvalidOperationException("File content search is disabled by configuration.");
 
         var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
