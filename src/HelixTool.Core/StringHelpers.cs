@@ -23,7 +23,7 @@ public static class StringHelpers
     /// using reverse-scan — zero array allocation.
     /// Returns the original string if it has fewer lines than requested.
     /// </summary>
-    public static string TailLines(string content, int lineCount)
+    internal static string TailLines(string content, int lineCount)
     {
         if (lineCount <= 0 || content.Length == 0)
             return content;
