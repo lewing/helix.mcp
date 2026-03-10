@@ -9,9 +9,9 @@ namespace HelixTool.Mcp.Tools;
 public sealed class CiKnowledgeTool
 {
     [McpServerTool(Name = "helix_ci_guide", Title = "CI Investigation Guide", ReadOnly = true),
-     Description("Get CI investigation guidance for a .NET repository. Returns repo-specific patterns for finding test failures, recommended tool sequences, and common failure categories. Call with no arguments for an overview of all repos, or pass a repo name (e.g., 'runtime', 'aspnetcore', 'sdk') for detailed guidance. Use this BEFORE investigating CI failures to avoid wasted tool calls.")]
+     Description("Get CI investigation guidance for a .NET repository. Returns repo-specific profiles including failure patterns, recommended tool sequences, exit code meanings, known gotchas, and pipeline details. Covers 9 repos: runtime, aspnetcore, sdk, roslyn, efcore, vmr, maui, macios, android. Call with no arguments for an overview of all repos. ⚠️ macios and android are on devdiv (not dnceng) — standard tools won't work for those. Use this BEFORE investigating CI failures to avoid wasted tool calls.")]
     public string GetGuide(
-        [Description("Repository name (e.g., 'runtime', 'aspnetcore', 'sdk', 'roslyn', 'efcore', 'vmr'). Omit for an overview of all repos.")] string? repo = null)
+        [Description("Repository name (e.g., 'runtime', 'aspnetcore', 'sdk', 'roslyn', 'efcore', 'vmr', 'maui', 'macios', 'android'). Also accepts 'dotnet/runtime', 'xamarin/macios', etc. Omit for an overview of all repos.")] string? repo = null)
     {
         if (string.IsNullOrWhiteSpace(repo))
             return CiKnowledgeService.GetOverview();

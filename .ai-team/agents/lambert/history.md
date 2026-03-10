@@ -90,3 +90,17 @@ Tests for AzdoMcpTools should assert against the model types' `[JsonPropertyName
 📌 Team update (2026-03-09): CI profile analysis — 14 recommendations for MCP tool descriptions and error messages. Description changes (REC-1–6, 9, 13, 14) are text-only. Error message changes (REC-7, 8) in HelixService.cs need test verification. — decided by Ash
 
 📌 Team update (2025-07-24): Test quality review — Delete AzdoCliCommandTests.cs (rescue 3 unique tests), remove 3 ImplementsInterface tests, merge 2 overlapping filter tests. Net -17 tests, zero coverage loss. Test guideline: prune proactive tests when real tests land. — decided by Dallas
+
+### CiKnowledgeService enrichment tests (2025-07-25)
+- **Expanded `CiKnowledgeServiceTests.cs`** from ~23 tests (14 [Fact] + 9 [Theory] cases) to 57 test methods with 159 InlineData entries covering all 9 repos.
+- **New repo coverage:** maui, macios, android — profile lookup by short name, full path (`dotnet/maui`, `xamarin/macios`, `xamarin/android`), case insensitivity (`MAUI`, `Macios`, `ANDROID`).
+- **Enriched property tests (all 9 repos via Theory):** TestFramework, TestRunnerModel, WorkItemNamingPattern, KnownGotchas, RecommendedInvestigationOrder, PipelineNames, UploadedFiles, CommonFailureCategories — all verified non-empty.
+- **OrgProject correctness:** devdiv/DevDiv for macios + android, dnceng-public/public for the other 7.
+- **UsesHelix matrix:** Theory covering all 9 repos with expected bool values.
+- **ExitCodeMeanings split:** non-empty for Helix repos + vmr, empty for macios/android (no Helix = no exit codes).
+- **Edge cases:** maui has 3 pipelines verified, macios/android KnownGotchas warn about devdiv, android mentions fork PRs, roslyn has empty HelixTaskNames, efcore has lowercase 'Send job to helix'.
+- **FormatProfile rendering:** KnownGotchas section renders for new repos, ExitCodes section omitted when empty, OrgProject/TestFramework rendered, Maui guide lists all 3 pipelines.
+- **GetOverview:** 9 repos in table, devdiv warning present, OrgProject column has both orgs, Quick Reference table format verified.
+- **DisplayName correctness:** xamarin/macios, dotnet/android, dotnet/dotnet (VMR) — verifies non-dotnet org display names.
+- **Key patterns:** [Theory] with all 9 repos for property-existence tests, [Fact] for repo-specific behavioral assertions. No mocking needed — CiKnowledgeService is pure static data.
+- **Test count:** 1038 total (was ~1020 before enrichment, net +~18 test methods but many more test cases via InlineData).

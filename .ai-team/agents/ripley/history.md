@@ -84,3 +84,14 @@
 - **Trust-but-verify on run counts:** azdo_test_runs description now warns that failedTests=0 can be a lie — always drill into azdo_test_results.
 - **Helix task name mapping in azdo_timeline:** runtime/aspnetcore='Send to Helix', sdk='🟣 Run TestBuild Tests', efcore='Send job to helix', roslyn=embedded, VMR=no Helix.
 - **helix_ci_guide cross-references:** Both helix_test_results and helix_search_log now point agents to helix_ci_guide for full repo profiles.
+
+## Learnings (CiKnowledgeService enrichment — 9-repo knowledge base)
+
+- **Expanded CiRepoProfile record** with 9 new properties: PipelineNames, OrgProject, ExitCodeMeanings, WorkItemNamingPattern, KnownGotchas, RecommendedInvestigationOrder, TestFramework, TestRunnerModel, UploadedFiles. All use init-only defaults so existing code is backward-compatible.
+- **Added 3 new repos:** maui (3 pipelines!), macios (devdiv org, NUnit, Make-based), android (devdiv org, NUnit+xUnit, emulator targets). Total: 9 repos.
+- **Key pattern: devdiv org repos need explicit warnings.** macios and android are on devdiv.visualstudio.com — standard `helix_*` and `ado-dnceng-*` tools do NOT work. KnownGotchas leads with ⚠️ prefix.
+- **ExitCodeMeanings as string[]** — cleaner than Dictionary<int, string> since entries include contextual notes (e.g., "0: Passed (but can coexist with [FAIL] results)").
+- **MAUI has 3 separate pipelines** with completely different investigation approaches — this is the only repo where pipeline identity matters for tool selection.
+- **FormatProfile() enriched** with sections for Org/Project, Pipelines, Gotchas, Exit Codes, Investigation Order, File Inventory. Gotchas rendered first because they're the most critical.
+- **GetOverview() enriched** with Org column and helix_test_results status column — agents immediately see which repos work with which tools.
+- **Test update needed:** Existing test asserted 6 repos; updated to 9. Lambert should review for coverage of new repos.
