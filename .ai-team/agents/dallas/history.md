@@ -57,15 +57,7 @@
 - **`CountLines` must account for trailing newlines in AzDO log content.** `string.Split('\n').Length` overcounts by 1 when content ends with `\n` (common for AzDO logs). The correct count is the number of `\n` characters (for newline-terminated content) or `Split` count minus 1 when trailing `\n` exists. This matters for delta-fetch `startLine` computation — an off-by-one causes a missed boundary line on every delta cycle. P0 fix required.
 - **Existing tests survive interface changes via `Arg.Any<T>()` for new optional params.** When adding optional parameters to an interface method (like `int? startLine = null`), all existing mock setups need `Arg.Any<int?>()` for the new params. NSubstitute won't match if the arg matchers don't cover the full signature.
 
-📌 Team update (2026-03-07): Test result file discovery consolidated — ParseTrxResultsAsync uses TestResultFilePatterns array, supports TRX + xUnit XML, auto-detection via DetectTestFileFormat. — decided by Ripley
-📌 Team update (2026-03-07): CacheStoreFactory uses Lazy<T> wrapping — standard .NET pattern for ConcurrentDictionary.GetOrAdd with side effects. — decided by Ripley
-📌 Team update (2026-03-07): AzDO test patterns documented — Lambert identified edge cases in AzdoIdResolver (negative buildIds, TryResolve defaults, thread safety). — documented by Lambert
-📌 Team update (2026-03-07): AzDO caching strategy — dynamic TTL (completed 4h, in-progress 15s, timelines never while running). No DTO layer needed for AzDO models. — decided by Ripley
-📌 Team update (2026-03-08): AzDO context-limiting defaults — safe output-size defaults added to all AzDO MCP tools, matching Helix patterns. — decided by Ripley
-📌 Team update (2026-03-08): AzDO artifact/attachment test patterns — artifact caching ImmutableTtl (4h), attachment caching TestTtl (1h). 700 total tests. — documented by Lambert
-📌 Team update (2026-03-08): AzDO docs use subsections within existing README structure — decided by Kane
-📌 Team update (2026-03-08): `IsFileSearchDisabled` promoted to public on `HelixService` — needed for MCP tools extraction. — decided by Ripley
-📌 Team update (2026-03-08): AzDO search gap analysis — P0 `azdo_search_log` (PR #10). P1 candidates: `azdo_search_timeline`, multi-step log search. — analyzed by Ash
+📌 Team updates (2026-03-07 – 2026-03-08 summary): Test result file discovery consolidated (Ripley). CacheStoreFactory Lazy<T> pattern (Ripley). AzDO edge cases documented (Lambert). Dynamic TTL caching strategy (Ripley). Context-limiting defaults for AzDO MCP tools (Ripley). AzDO artifact/attachment test patterns — 700 total tests (Lambert). AzDO docs subsections (Kane). IsFileSearchDisabled promoted to public (Ripley). AzDO search gap analysis — P0 azdo_search_log (Ash).
 
 ### 2026-03-09: azdo_search_log_across_steps design spec
 
@@ -87,12 +79,7 @@ Freshness marker pattern: content key (4h) + sentinel (15s). Delta-append via Co
 
 **P0 — CountLines off-by-one:** `Split('\n').Length` overcounts by 1 with trailing `\n`. Fix: subtract 1 when content ends with `\n`. Ripley: fix. Lambert: update C-18, C-19, delta tests.
 
-📌 Team update (2026-03-09): Incremental log fetching Phase 1+2 approved — API range support, dual-key append-on-expire caching, tail optimization. 863/863 tests, 32 new. P0: CountLines off-by-one. — reviewed by Dallas
-📌 Team update (2026-03-09): Timeline search result types live in Core — TimelineSearchMatch/TimelineSearchResult in AzdoModels.cs. MCP tools return Core types directly. [JsonIgnore] on Record for flat JSON. — decided by Ripley
-
-📌 Team update (2025-07-18): Perf review identified 17 allocation issues — decided by Ripley
-
-📌 Team update (2026-03-09): Cache format changed to raw: prefix with sentinel detection, SearchConsoleLogAsync decoupled from disk, shared StringHelpers in Core — decided by Ripley
+📌 Team updates (2026-03-09 summary): Incremental log fetching approved (32 new tests, PR #13). Timeline search types in Core (Ripley). Perf review (Ripley). Cache format changed to raw: prefix (Ripley).
 
 ### 2025-07-24: Test Quality Review — Tautological Test Audit
 
@@ -106,3 +93,5 @@ Reviewed all 776 tests across 50 files. Found ~40 problematic tests (5%), concen
 - **Interface compliance tests are compile-time guarantees** — `Assert.NotNull(new Foo() as IFoo)` adds zero value.
 - **Gold standard test patterns** in this codebase: AzdoSecurityTests (adversarial inputs), AzdoIdResolverTests (pure functions), TextSearchHelperTests (algorithmic logic), CachingAzdoApiClientTests (decorator behavior), AzdoServiceTailTests (optimization paths + fallbacks).
 - **Setup-to-assertion ratio** is a smell: if 20 lines of setup produce `Assert.NotNull`, something is wrong.
+
+📌 Team update (2026-03-10): CiKnowledgeService expanded from 6 stubs to 9 full repo profiles with 9 new properties (exit codes, gotchas, investigation order, pipeline names). 3 new repos: maui, macios, android. MCP tool descriptions updated with repo-specific CI knowledge. — decided by Ripley

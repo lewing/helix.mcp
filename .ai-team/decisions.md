@@ -4562,3 +4562,13 @@ These files exemplify the patterns the team should follow:
 - Coverage impact: ZERO (all removed tests are duplicates of retained tests)
 
 
+
+### 2026-03-10: Enriched CiKnowledgeService with full 9-repo knowledge base
+**By:** Ripley
+**What:** Expanded `CiRepoProfile` record with 9 new properties (PipelineNames, OrgProject, ExitCodeMeanings, WorkItemNamingPattern, KnownGotchas, RecommendedInvestigationOrder, TestFramework, TestRunnerModel, UploadedFiles) and added 3 new repos (maui, macios, android) to the knowledge base. Updated FormatProfile() and GetOverview() to render enriched fields. Updated CiKnowledgeTool.cs description for expanded repo set. Total coverage: 9 repos.
+**Why:** The CI knowledge base was the single source of truth for agent investigation guidance but only covered 6 repos with basic fields. Agents investigating MAUI, macios, or android failures had no guidance at all. Critical operational knowledge (exit code meanings, known gotchas like failedTests=0 lying, org/project differences for devdiv repos, pipeline-specific investigation paths for MAUI's 3 pipelines) was missing. The enriched profiles prevent wasted tool calls (e.g., trying helix_* on devdiv repos) and encode hard-won investigation patterns from reference profile analysis.
+
+### 2026-03-10: Updated MCP tool descriptions with CI knowledge
+**By:** Ripley
+**What:** Updated 5 MCP tool descriptions (helix_test_results, helix_search_log, azdo_test_runs, azdo_test_results, azdo_timeline) to embed repo-specific CI knowledge from CiKnowledgeService profiles. Added warnings about common failure paths, repo-specific search patterns, Helix task name mappings, and cross-references to helix_ci_guide.
+**Why:** Agents were wasting calls on helix_test_results for repos that don't upload TRX (4/6 major repos), using wrong search patterns, and not knowing which Helix task names to look for in timelines. These description changes are the cheapest possible fix — zero runtime cost, immediate agent behavior improvement. Descriptions are the first thing agents read before deciding which tool to call, so getting them right eliminates entire classes of dead-end investigations.

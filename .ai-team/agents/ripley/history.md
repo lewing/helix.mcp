@@ -51,18 +51,16 @@
 - **Task.WhenAll for metadata:** Timeline + logs list fetched concurrently. Always `await` individual tasks after WhenAll.
 - **CachingAzdoApiClient dynamic TTL for logs list:** Completed → 4h, in-progress → 15s.
 
-📌 Team updates (2026-03-08 – 2026-03-09 summary): AzDO search gap analysis, incremental log fetching (PR #13), CountLines off-by-one fix, azdo_search_log_across_steps spec. — decided by Ash/Dallas
+📌 Team updates (2026-03-08 – 2026-03-09 summary): AzDO search gap analysis, incremental log fetching (PR #13), CountLines off-by-one fix, azdo_search_log_across_steps spec, test quality guidelines (~20 tests cleaned, PR #15). — decided by Ash/Dallas/Lambert
 
 ## Core Context (performance & review fixes, summarized 2026-03-09)
 
 > Full entries archived to history-archive.md.
 
-- **Perf review (2025-07-18):** 17 allocation issues found, 8 fixed (3 P0, 5 P1). Key anti-patterns: chained `.Replace()` (use span enumerator), Split+Join for tail (reverse-scan slice), substring in loops (use span EndsWith), triple-iteration file categorization (single-pass), disk round-trip for search (stream directly), JSON-serialized log strings (plain text + marker). `knownTrailingSegments` should be `static readonly`.
-- **PR #13 fixes:** Integer overflow guards on user-controlled arithmetic (cast to `long` before narrowing). Cache-layer range returns `null` for out-of-range (match server semantics). Allocation-free `CountLines` via `AsSpan().Count('\n')`. `SearchValues<char>` for line-break scanning. Shared `StringHelpers.TailLines` in Core. Cache format migration via `raw:` prefix with JSON fallback.
-- **PR #14 fixes:** CRLF normalization before Split (prevent `\r` leaking). Trailing empty element handling. Cache sentinel collision fix via NUL byte prefix (`"\0raw\n"`).
+- **Perf review (2025-07-18):** 17 allocation issues found, 8 fixed. Key anti-patterns: chained `.Replace()`, Split+Join for tail, substring in loops, triple-iteration categorization, disk round-trip for search, JSON-serialized log strings.
+- **PR #13 fixes:** Integer overflow guards (cast to `long`). Cache-layer range returns `null` for out-of-range. Allocation-free `CountLines` via `AsSpan().Count('\n')`. `SearchValues<char>` for line-break scanning. Shared `StringHelpers.TailLines`. Cache format migration via `raw:` prefix.
+- **PR #14 fixes:** CRLF normalization before Split. Cache sentinel collision fix via NUL byte prefix.
 - **Version 0.3.0:** AzDO integration, perf optimizations, incremental log support.
-
-📌 Team update (2026-03-09): Test quality guidelines established — no layer duplication in tests, passthrough methods get ≤1 smoke test, interface compliance tests are redundant. ~20 tests cleaned up (PR #15). — decided by Dallas, actioned by Lambert
 
 ## MCP Error Surfacing & Message Quality (latest session)
 
@@ -72,9 +70,9 @@
 
 **helix_search_log description:** Updated to document substring-based (not regex) matching, literal treatment of metacharacters, and common search patterns.
 
-📌 Team update (2026-03-09): CI profile analysis — 14 recommendations for MCP tool descriptions/error messages. P0: helix_test_results fails for 4/6 repos (no TRX uploads), helix_search_log needs repo-specific patterns, error messages need actionable next steps. Tool description changes in HelixMcpTools.cs, AzdoMcpTools.cs, error messages in HelixService.cs. — decided by Ash
+📌 Team update (2026-03-09): CI profile analysis — 14 recommendations for MCP tool descriptions/error messages. Tool description changes in HelixMcpTools.cs, AzdoMcpTools.cs, error messages in HelixService.cs. — decided by Ash
 
-📌 Team update (2025-07-24): Test quality review — ~17 redundant tests identified (AzdoCliCommandTests near-duplicates, interface compliance tests, overlapping filters). Lambert actioned deletions. Test guidelines: no layer duplication, ≤1 passthrough smoke test, prune proactive tests when real tests land. — decided by Dallas
+📌 Team update (2025-07-24): Test quality review — ~17 redundant tests deleted, guidelines: no layer duplication, ≤1 passthrough smoke test, prune proactive tests when real tests land. — decided by Dallas
 
 ## Learnings (MCP tool description updates with CI knowledge)
 
@@ -95,3 +93,5 @@
 - **FormatProfile() enriched** with sections for Org/Project, Pipelines, Gotchas, Exit Codes, Investigation Order, File Inventory. Gotchas rendered first because they're the most critical.
 - **GetOverview() enriched** with Org column and helix_test_results status column — agents immediately see which repos work with which tools.
 - **Test update needed:** Existing test asserted 6 repos; updated to 9. Lambert should review for coverage of new repos.
+
+📌 Team update (2026-03-10): CiKnowledgeService enrichment merged — 9 full profiles, 9 new properties, 5 tool descriptions updated. 171 new tests by Lambert. All on mcp-error-improvements branch (PR #16). — decided by Ripley

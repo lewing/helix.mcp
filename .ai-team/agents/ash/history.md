@@ -55,3 +55,5 @@
 - EF Core runs tests both locally on agents AND via Helix — dual execution model unique among dotnet repos
 - 14 recommendations produced: 3 P0, 6 P1, 4 P2, 1 P3 → `.ai-team/decisions/inbox/ash-ci-profile-analysis.md`
 - Key P0s: improve `helix_test_results` description to steer agents away from futile TRX searches; add repo-specific pattern guidance to `helix_search_log`; improve error messages with actionable next steps
+
+📌 Team update (2026-03-10): 5 MCP tool descriptions updated with repo-specific CI knowledge. CiKnowledgeService expanded to 9 repos including devdiv-org repos (maui, macios, android). — decided by Ripley
