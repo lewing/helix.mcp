@@ -135,6 +135,16 @@ hlx cache clear    # Wipe all cached data
 
 ## Installation
 
+### Use with the dotnet-dnceng plugin (recommended)
+
+The [dotnet-dnceng plugin](https://github.com/lewing/agent-plugins/tree/main/plugins/dotnet-dnceng) bundles hlx alongside related MCP servers (Azure DevOps, Maestro, binlog) and CI analysis skills — one install, batteries included:
+
+```bash
+copilot extensions install lewing/agent-plugins/plugins/dotnet-dnceng
+```
+
+This gives your agent `helix_*` and `azdo_*` tools plus skills for CI failure analysis, codeflow tracing, and dependency flow debugging.
+
 ### Run with dnx (no install needed)
 
 ```bash
