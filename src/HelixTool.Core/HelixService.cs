@@ -929,6 +929,7 @@ public class HelixService
             f.EndsWith(".binlog", StringComparison.OrdinalIgnoreCase)).ToList();
 
         var message = $"No test result files found in work item '{workItem}'. Searched for: {patternsSearched}.";
+        message += " Most .NET repos do NOT upload test results to Helix — use azdo_test_runs + azdo_test_results for structured results, or helix_search_log with repo-specific patterns.";
 
         if (crashArtifacts.Count > 0)
         {
@@ -940,12 +941,14 @@ public class HelixService
         }
         else if (fileNames.Count > 0)
         {
-            message += $" {fileNames.Count} files found. Test console output is often stored in .log files; try helix_search_log with pattern '  Failed' (2 leading spaces) to find test failures in console output.";
+            message += $" {fileNames.Count} files found (mostly .log files). Try helix_search_log with '  Failed' (2 leading spaces) for test failures.";
         }
         else
         {
             message += " The work item has no uploaded files.";
         }
+
+        message += " Call helix_ci_guide with the repo name for recommended search patterns.";
 
         throw new HelixException(message);
     }

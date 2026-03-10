@@ -78,7 +78,8 @@ builder.Services
         options.ServerInfo = new() { Name = "hlx", Version = "0.1.2" };
     })
     .WithHttpTransport()
-    .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly);
+    .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly)
+    .WithResourcesFromAssembly(typeof(HelixMcpTools).Assembly);
 
 var app = builder.Build();
 app.UseApiKeyAuthIfConfigured();
