@@ -4829,3 +4829,14 @@ Executed Option A from Dallas's restructuring proposal. 59 files touched, 0 beha
 **By:** Ripley
 **What:** `CacheSecurity.ValidatePathWithinRoot` now treats path containment as an exact, case-sensitive boundary check after full-path normalization and root-boundary trimming. `HelixService` no longer creates a fallback `HttpClient`; every caller must provide one, and the constructor null-guards both dependencies.
 **Why:** Ignore-case prefix checks can let a case-variant sibling path look like it is under the trusted root on case-sensitive filesystems. Requiring injected `HttpClient` instances keeps timeout/handler configuration centralized in DI and avoids hidden transport creation that bypasses host configuration.
+
+### 2026-03-10: Mark review-fix findings resolved in planning artifacts
+**By:** Ash
+**What:** The README value-prop rewrite, cache path-boundary hardening, and `HelixService` explicit-`HttpClient` requirement are now confirmed by updated code, tests, and docs. Planning artifacts should record these as fixed findings and keep only residual follow-up work around discoverability and documentation/tool-description synchronization.
+**Why:** Leaving those earlier review findings in the active backlog would make the knowledgebase stale and could send future analysts chasing already-resolved work instead of the remaining product gaps.
+
+### 2026-03-10: User directive
+**By:** Larry Ewing (via Copilot)
+**What:** Treat the knowledgebase as a living document that should be updated from the latest file state rather than preserved as a static snapshot.
+**Why:** User request — captured for team memory
+

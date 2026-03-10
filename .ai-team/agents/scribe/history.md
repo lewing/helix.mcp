@@ -18,3 +18,9 @@
 - Merged 3 inbox decisions into `decisions.md` (README overhaul, strict HttpClient review validation, path-boundary/transport review fixes)
 - Propagated a consolidated 2026-03-10 team update to Ash, Dallas, Kane, Lambert, and Ripley
 - Checked agent history sizes; no summarization/archive action needed
+
+### 2026-03-10: Ash knowledgebase refresh bookkeeping
+- Logged `2026-03-10-ash-kb-refresh` for Larry Ewing
+- Merged 2 inbox decisions into `decisions.md` (Ash knowledgebase-refresh note, living-document directive)
+- Propagated a consolidated 2026-03-10 knowledgebase-refresh update to Ash, Dallas, Kane, Lambert, and Ripley
+- Checked agent history sizes; no summarization/archive action needed

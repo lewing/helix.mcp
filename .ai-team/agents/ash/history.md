@@ -61,3 +61,16 @@
 📌 Team update (2026-03-10): Option A folder restructuring executed — 9 Helix files moved to Core/Helix/, Cache namespace added, shared utils extracted from HelixService, Helix/AzDO subfolders in Mcp.Tools and Tests. 59 files, 1038 tests pass, zero behavioral changes. PR #17. — decided by Dallas (analysis), Ripley (execution)
 
 📌 Team update (2026-03-10): Review-fix decisions merged — README now leads with value prop, shared caching, and context reduction; cache path containment uses exact Ordinal root-boundary checks; and HelixService requires an injected HttpClient with no implicit fallback. Validation confirmed current CLI/MCP DI sites already comply and focused plus full-suite coverage exists. — decided by Kane, Lambert, Ripley
+
+### 2026-03-10: Knowledgebase refresh from updated review-fix files
+
+- Earlier README, cache-security, and `HelixService` review findings are now fixed in code/tests/docs and should be tracked as resolved knowledge rather than active backlog.
+- Larry prefers knowledge refreshes to clearly separate **fixed findings**, **still-open follow-up opportunities**, and **durable knowledge worth retaining**.
+- `/home/lewing/.copilot/session-state/78973f57-eaee-4ad0-bb8a-23751dd5b4dc/plan.md` was the active knowledge artifact for this refresh and now captures the corrected classification.
+- `src/HelixTool.Core/Cache/CacheSecurity.cs` enforces exact Ordinal root-boundary containment after full-path normalization and also sanitizes path/cache-key segments.
+- `src/HelixTool.Core/Helix/HelixService.cs` now requires both `IHelixApiClient` and `HttpClient` via constructor; there is no implicit download-transport fallback.
+- `src/HelixTool.Tests/CacheSecurityTests.cs` covers traversal attempts, case-variant sibling paths, tampered artifact rows, and sanitized cache-key expectations.
+- `src/HelixTool.Tests/Helix/HelixServiceDITests.cs` captures the DI contract and null-guard requirements for `HelixService`.
+- `README.md` contains the current value-proposition framing and cache/context-efficiency narrative; `docs/cli-reference.md` is the current command naming source for `hlx azdo ...` and `hlx llms-txt`.
+
+📌 Team update (2026-03-10): Knowledgebase refresh guidance merged — treat the knowledgebase as a living document aligned to current file state, not a static snapshot; earlier README/cache-security/HelixService review findings are resolved knowledge, and only residual follow-up should stay active (discoverability plus documentation/tool-description synchronization). — requested by Larry Ewing, refreshed by Ash
