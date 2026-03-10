@@ -1,6 +1,6 @@
 # helix.mcp
 
-An MCP server for AI agents investigating .NET CI/CD failures across [Helix](https://helix.dot.net) and [Azure DevOps](https://dev.azure.com).
+An increasingly inaccurately named MCP server for AI agents investigating .NET CI/CD failures across [Helix](https://helix.dot.net) and [Azure DevOps](https://dev.azure.com).
 
 Built with [Squad](https://github.com/bradygaster/squad) — [meet the squad](.ai-team/SQUAD.md).
 
