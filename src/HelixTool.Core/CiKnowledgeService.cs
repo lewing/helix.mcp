@@ -49,7 +49,7 @@ public sealed record CiRepoProfile
 /// <summary>
 /// Provides domain knowledge about CI infrastructure for .NET repositories.
 /// Used by MCP tools, resources, and error messages to guide investigation.
-/// Covers 9 repos: runtime, aspnetcore, sdk, roslyn, efcore, vmr, maui, macios, android.
+/// Covers 9 repos: runtime, aspnetcore, sdk, roslyn, efcore, dotnet, maui, macios, android.
 /// </summary>
 public sealed class CiKnowledgeService
 {
@@ -412,9 +412,9 @@ public sealed class CiKnowledgeService
             ],
         },
 
-        ["vmr"] = new CiRepoProfile
+        ["dotnet"] = new CiRepoProfile
         {
-            RepoName = "vmr",
+            RepoName = "dotnet/dotnet",
             DisplayName = "dotnet/dotnet (VMR)",
             UsesHelix = false,
             HelixTestResultAvailability = "none",
@@ -697,11 +697,6 @@ public sealed class CiKnowledgeService
         var shortName = repoName.Contains('/') ? repoName.Split('/').Last() : null;
         if (shortName != null && s_profiles.TryGetValue(shortName, out profile))
             return profile;
-
-        // Special case: "dotnet" repo is the VMR
-        if (repoName.Equals("dotnet", StringComparison.OrdinalIgnoreCase) ||
-            repoName.Equals("dotnet/dotnet", StringComparison.OrdinalIgnoreCase))
-            return s_profiles["vmr"];
 
         return null;
     }

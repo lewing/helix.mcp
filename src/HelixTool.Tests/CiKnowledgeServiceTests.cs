@@ -15,7 +15,6 @@ public class CiKnowledgeServiceTests
     [InlineData("sdk")]
     [InlineData("roslyn")]
     [InlineData("efcore")]
-    [InlineData("vmr")]
     [InlineData("maui")]
     [InlineData("macios")]
     [InlineData("android")]
@@ -71,18 +70,18 @@ public class CiKnowledgeServiceTests
     }
 
     // ──────────────────────────────────────────────
-    // VMR special-case lookups
+    // dotnet/dotnet lookups (full path resolves via shortName extraction)
     // ──────────────────────────────────────────────
 
     [Theory]
     [InlineData("dotnet")]
     [InlineData("dotnet/dotnet")]
-    public void GetProfile_DotnetRepo_ResolvesToVmr(string input)
+    public void GetProfile_DotnetRepo_ResolvesToDotnet(string input)
     {
         var profile = CiKnowledgeService.GetProfile(input);
 
         Assert.NotNull(profile);
-        Assert.Equal("vmr", profile.RepoName);
+        Assert.Equal("dotnet/dotnet", profile.RepoName);
         Assert.False(profile.UsesHelix);
     }
 
@@ -108,7 +107,7 @@ public class CiKnowledgeServiceTests
     [InlineData("sdk")]
     [InlineData("roslyn")]
     [InlineData("efcore")]
-    [InlineData("vmr")]
+    [InlineData("dotnet")]
     [InlineData("maui")]
     [InlineData("macios")]
     [InlineData("android")]
@@ -128,7 +127,7 @@ public class CiKnowledgeServiceTests
     [InlineData("roslyn", true)]
     [InlineData("efcore", true)]
     [InlineData("maui", true)]
-    [InlineData("vmr", false)]
+    [InlineData("dotnet", false)]
     [InlineData("macios", false)]
     [InlineData("android", false)]
     public void GetProfile_UsesHelix_CorrectForEachRepo(string repo, bool expected)
@@ -147,7 +146,7 @@ public class CiKnowledgeServiceTests
     [InlineData("sdk", "dnceng-public/public")]
     [InlineData("roslyn", "dnceng-public/public")]
     [InlineData("efcore", "dnceng-public/public")]
-    [InlineData("vmr", "dnceng-public/public")]
+    [InlineData("dotnet", "dnceng-public/public")]
     [InlineData("maui", "dnceng-public/public")]
     [InlineData("macios", "devdiv/DevDiv")]
     [InlineData("android", "devdiv/DevDiv")]
@@ -167,7 +166,7 @@ public class CiKnowledgeServiceTests
     [InlineData("sdk")]
     [InlineData("roslyn")]
     [InlineData("efcore")]
-    [InlineData("vmr")]
+    [InlineData("dotnet")]
     [InlineData("maui")]
     [InlineData("macios")]
     [InlineData("android")]
@@ -197,7 +196,7 @@ public class CiKnowledgeServiceTests
     [InlineData("sdk")]
     [InlineData("roslyn")]
     [InlineData("efcore")]
-    [InlineData("vmr")]
+    [InlineData("dotnet")]
     [InlineData("maui")]
     [InlineData("macios")]
     [InlineData("android")]
@@ -224,7 +223,7 @@ public class CiKnowledgeServiceTests
     [InlineData("sdk")]
     [InlineData("roslyn")]
     [InlineData("efcore")]
-    [InlineData("vmr")]
+    [InlineData("dotnet")]
     [InlineData("maui")]
     [InlineData("macios")]
     [InlineData("android")]
@@ -244,7 +243,7 @@ public class CiKnowledgeServiceTests
     [InlineData("sdk")]
     [InlineData("roslyn")]
     [InlineData("efcore")]
-    [InlineData("vmr")]
+    [InlineData("dotnet")]
     [InlineData("maui")]
     [InlineData("macios")]
     [InlineData("android")]
@@ -264,7 +263,7 @@ public class CiKnowledgeServiceTests
     [InlineData("sdk")]
     [InlineData("roslyn")]
     [InlineData("efcore")]
-    [InlineData("vmr")]
+    [InlineData("dotnet")]
     [InlineData("maui")]
     [InlineData("macios")]
     [InlineData("android")]
@@ -284,7 +283,7 @@ public class CiKnowledgeServiceTests
     [InlineData("sdk")]
     [InlineData("roslyn")]
     [InlineData("efcore")]
-    [InlineData("vmr")]
+    [InlineData("dotnet")]
     [InlineData("maui")]
     [InlineData("macios")]
     [InlineData("android")]
@@ -321,9 +320,9 @@ public class CiKnowledgeServiceTests
     [InlineData("sdk")]
     [InlineData("roslyn")]
     [InlineData("efcore")]
-    [InlineData("vmr")]
+    [InlineData("dotnet")]
     [InlineData("maui")]
-    public void GetProfile_ExitCodeMeanings_NonEmpty_ForHelixReposAndVmr(string repo)
+    public void GetProfile_ExitCodeMeanings_NonEmpty_ForHelixReposAndDotnet(string repo)
     {
         var profile = CiKnowledgeService.GetProfile(repo)!;
         Assert.NotEmpty(profile.ExitCodeMeanings);
@@ -424,12 +423,12 @@ public class CiKnowledgeServiceTests
     // ──────────────────────────────────────────────
 
     [Fact]
-    public void VmrProfile_DoesNotUseHelix()
+    public void DotnetProfile_DoesNotUseHelix()
     {
-        var vmr = CiKnowledgeService.GetProfile("vmr")!;
+        var dotnet = CiKnowledgeService.GetProfile("dotnet")!;
 
-        Assert.False(vmr.UsesHelix);
-        Assert.Contains(vmr.InvestigationTips, t => t.Contains("does NOT use Helix"));
+        Assert.False(dotnet.UsesHelix);
+        Assert.Contains(dotnet.InvestigationTips, t => t.Contains("does NOT use Helix"));
     }
 
     [Fact]
@@ -549,7 +548,7 @@ public class CiKnowledgeServiceTests
     [InlineData("sdk")]
     [InlineData("roslyn")]
     [InlineData("efcore")]
-    [InlineData("vmr")]
+    [InlineData("dotnet")]
     [InlineData("maui")]
     [InlineData("macios")]
     [InlineData("android")]
@@ -688,7 +687,7 @@ public class CiKnowledgeServiceTests
     [InlineData("runtime", "dotnet/runtime")]
     [InlineData("macios", "xamarin/macios")]
     [InlineData("android", "dotnet/android")]
-    [InlineData("vmr", "dotnet/dotnet (VMR)")]
+    [InlineData("dotnet", "dotnet/dotnet (VMR)")]
     public void GetProfile_DisplayName_CorrectOrg(string repo, string expectedDisplay)
     {
         var profile = CiKnowledgeService.GetProfile(repo)!;
@@ -700,7 +699,7 @@ public class CiKnowledgeServiceTests
     // ──────────────────────────────────────────────
 
     [Theory]
-    [InlineData("vmr")]
+    [InlineData("dotnet")]
     [InlineData("macios")]
     [InlineData("android")]
     [InlineData("roslyn")]
@@ -720,7 +719,7 @@ public class CiKnowledgeServiceTests
     [InlineData("sdk")]
     [InlineData("roslyn")]
     [InlineData("efcore")]
-    [InlineData("vmr")]
+    [InlineData("dotnet")]
     [InlineData("maui")]
     [InlineData("macios")]
     [InlineData("android")]
@@ -740,7 +739,7 @@ public class CiKnowledgeServiceTests
     [InlineData("sdk")]
     [InlineData("roslyn")]
     [InlineData("efcore")]
-    [InlineData("vmr")]
+    [InlineData("dotnet")]
     [InlineData("maui")]
     [InlineData("macios")]
     [InlineData("android")]
