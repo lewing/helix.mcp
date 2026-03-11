@@ -30,6 +30,7 @@ Every tool is designed to minimize token consumption in agent context windows:
 | **Structured JSON** | Failure summaries, test results, and timeline data come pre-parsed — no agent-side text extraction |
 | **Batch operations** | `helix_batch_status` checks up to 50 jobs in one call; `helix_find_files` scans N work items instead of N+1 API calls |
 | **Ranked search** | `azdo_search_log_across_steps` searches all build logs but ranks by failure likelihood, stopping early when `maxMatches` is reached |
+| **Idempotent annotations** | Read-only tools marked safe for retry and caching — clients can optimize scheduling and error recovery |
 
 ## Investigation Path
 
@@ -138,6 +139,17 @@ hlx cache clear    # Wipe all cached data
 | `azdo_test_results` | Individual test results. Defaults to failed tests only (top 200). |
 | `azdo_artifacts` | Build artifacts with pattern filtering (e.g., `*.binlog`). |
 | `azdo_test_attachments` | Test result attachments (screenshots, logs, dumps). |
+
+## MCP Resources
+
+MCP resources are URI-addressable data that clients can discover and read without invoking a tool.
+
+| Resource URI | Description |
+|-------------|-------------|
+| `ci://profiles` | Overview of CI investigation patterns for all .NET repositories. |
+| `ci://profiles/{repo}` | CI investigation guide for a specific .NET repository (e.g., `ci://profiles/runtime`). |
+
+These provide the same CI investigation guides available via the `helix_ci_guide` tool, exposed as client-discoverable resources for browsing and caching.
 
 ## Installation
 
