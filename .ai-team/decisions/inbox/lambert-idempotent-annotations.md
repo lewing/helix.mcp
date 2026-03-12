@@ -1,0 +1,4 @@
+### 2025-07-25: All read-only MCP tools must have Idempotent = true
+**By:** Lambert
+**What:** Added `Idempotent = true` to all 22 `[McpServerTool]` attributes that already had `ReadOnly = true`. The two download tools (`helix_download`, `helix_download_url`) correctly keep `Idempotent = true` without `ReadOnly = true` since they write files to disk.
+**Why:** MCP best practices from Anthropic, OpenAI, AWS, and the "smelly descriptions" paper (arxiv 2602.14878) recommend safety annotations (`readOnlyHint`, `destructiveHint`, `idempotent`) on all tools. `Idempotent = true` signals to MCP clients that a tool is safe to retry and cache. Since all our read-only tools are pure queries with no side effects, calling them twice produces the same result — they are inherently idempotent. This convention should apply to any future read-only tools added to the project.
