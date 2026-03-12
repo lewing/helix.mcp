@@ -359,8 +359,7 @@ public class HelixMcpToolsTests
         var description = GetMethodDescription<HelixMcpTools>(nameof(HelixMcpTools.SearchLog));
 
         Assert.Contains("substring", description);
-        Assert.Contains("Not regex", description);
-        Assert.Contains("helix_ci_guide", description);
+        Assert.Contains("console log", description);
     }
 
     [Fact]

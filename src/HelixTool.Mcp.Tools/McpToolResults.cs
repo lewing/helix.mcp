@@ -75,13 +75,6 @@ public sealed class DownloadResult
     [JsonPropertyName("downloadedFiles")] public List<string> DownloadedFiles { get; init; } = [];
 }
 
-// --- DownloadUrl tool ---
-
-public sealed class DownloadUrlResult
-{
-    [JsonPropertyName("downloadedFile")] public string DownloadedFile { get; init; } = "";
-}
-
 // --- WorkItem tool ---
 
 public sealed class WorkItemToolResult
@@ -108,21 +101,11 @@ public sealed class SearchMatch
 public sealed class SearchLogResult
 {
     [JsonPropertyName("workItem")] public string WorkItem { get; init; } = "";
+    [JsonPropertyName("fileName")] public string? FileName { get; init; }
     [JsonPropertyName("pattern")] public string Pattern { get; init; } = "";
     [JsonPropertyName("totalLines")] public int TotalLines { get; init; }
     [JsonPropertyName("matchCount")] public int MatchCount { get; init; }
-    [JsonPropertyName("matches")] public List<SearchMatch> Matches { get; init; } = [];
-}
-
-// --- SearchFile tool ---
-
-public sealed class SearchFileResult
-{
-    [JsonPropertyName("fileName")] public string FileName { get; init; } = "";
-    [JsonPropertyName("pattern")] public string Pattern { get; init; } = "";
-    [JsonPropertyName("totalLines")] public int TotalLines { get; init; }
-    [JsonPropertyName("matchCount")] public int MatchCount { get; init; }
-    [JsonPropertyName("truncated")] public bool Truncated { get; init; }
+    [JsonPropertyName("truncated")] public bool? Truncated { get; init; }
     [JsonPropertyName("matches")] public List<SearchMatch> Matches { get; init; } = [];
 }
 
@@ -153,20 +136,6 @@ public sealed class TestResultsToolResult
     [JsonPropertyName("workItem")] public string WorkItem { get; init; } = "";
     [JsonPropertyName("fileCount")] public int FileCount { get; init; }
     [JsonPropertyName("files")] public List<TestResultFile> Files { get; init; } = [];
-}
-
-// --- AzDO SearchLog tool ---
-
-// --- SearchBuildLog tool ---
-
-public sealed class SearchBuildLogResult
-{
-    [JsonPropertyName("build")] public string Build { get; init; } = "";
-    [JsonPropertyName("logId")] public int LogId { get; init; }
-    [JsonPropertyName("pattern")] public string Pattern { get; init; } = "";
-    [JsonPropertyName("totalLines")] public int TotalLines { get; init; }
-    [JsonPropertyName("matchCount")] public int MatchCount { get; init; }
-    [JsonPropertyName("matches")] public List<SearchMatch> Matches { get; init; } = [];
 }
 
 // --- BatchStatus tool ---

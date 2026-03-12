@@ -68,20 +68,13 @@ List uploaded files for a work item, grouped by type (binlogs, test results, oth
 hlx files 02d8bd09 "dotnet-watch.Tests.dll.1"
 ```
 
-### `hlx download <jobId> <workItem> [--pattern PAT]`
+### `hlx download <jobId> <workItem> [--pattern PAT]` or `hlx download --url <url>`
 
-Download work item files to a temp directory. Glob pattern (default: `*`).
+Download work item files to a temp directory, or download a file by direct blob storage URL.
 
 ```bash
 hlx download 02d8bd09 "dotnet-watch.Tests.dll.1" --pattern "*.binlog"
-```
-
-### `hlx download-url <url>`
-
-Download a file by direct blob storage URL (from `hlx files` output).
-
-```bash
-hlx download-url "https://helix.dot.net/..."
+hlx download --url "https://helix.dot.net/..."
 ```
 
 ### `hlx find-files <jobId> [--pattern PAT] [--max-items N]`
@@ -109,21 +102,13 @@ Status for multiple jobs in parallel with aggregate totals.
 hlx batch-status 02d8bd09 a1b2c3d4 e5f6a7b8
 ```
 
-### `hlx search-log <jobId> <workItem> <pattern> [--context N] [--max-matches N]`
+### `hlx search-log <jobId> <workItem> <pattern> [--file-name NAME] [--context N] [--max-matches N]`
 
-Search a work item's console log for lines matching a pattern.
+Search a work item's console log or an uploaded file for lines matching a pattern.
 
 ```bash
 hlx search-log 02d8bd09 "dotnet-watch.Tests.dll.1" "error CS"
-hlx search-log 02d8bd09 "dotnet-watch.Tests.dll.1" "FAIL" --context 5 --max-matches 20
-```
-
-### `hlx search-file <jobId> <workItem> <fileName> <pattern> [--context N] [--max-matches N]`
-
-Search an uploaded file for a pattern without downloading the full file.
-
-```bash
-hlx search-file 02d8bd09 "dotnet-watch.Tests.dll.1" "testhost.log" "error"
+hlx search-log 02d8bd09 "dotnet-watch.Tests.dll.1" "FAIL" --file-name "testhost.log" --context 5 --max-matches 20
 ```
 
 ### `hlx test-results <jobId> <workItem> [--file-name NAME] [--include-passed] [--max-results N]`
@@ -206,21 +191,13 @@ hlx azdo artifacts 12345678
 hlx azdo artifacts 12345678 --pattern "*.binlog"
 ```
 
-### `hlx azdo search-log <buildId> <logId> <pattern> [--context-lines N] [--max-matches N]`
+### `hlx azdo search-log <buildId> [--log-id N] [--pattern P] [--context-lines N] [--max-matches N] [--max-logs N] [--min-lines N]`
 
-Search a specific build log for a pattern.
-
-```bash
-hlx azdo search-log 12345678 42 "error CS"
-```
-
-### `hlx azdo search-log-all <buildId> [--pattern P] [--context-lines N] [--max-matches N] [--max-logs N] [--min-lines N]`
-
-Search ALL build log steps for a pattern, ranked by failure priority (failed tasks first).
+Search a specific build log, or omit `--log-id` to search ranked build log steps across the build.
 
 ```bash
-hlx azdo search-log-all 12345678 --pattern "error CS"
-hlx azdo search-log-all 12345678 --pattern "FAIL" --max-matches 30
+hlx azdo search-log 12345678 --log-id 42 --pattern "error CS"
+hlx azdo search-log 12345678 --pattern "FAIL" --max-matches 30
 ```
 
 ### `hlx azdo search-timeline <buildId> <pattern> [--type Stage|Job|Task] [--result failed|all]`

@@ -405,7 +405,7 @@ public class SearchBuildLogAcrossStepsTests
             Environment.SetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH", "true");
 
             await Assert.ThrowsAsync<McpException>(
-                () => _tools.SearchLogAcrossSteps("42", "error"));
+                () => _tools.SearchLog("42", pattern: "error"));
         }
         finally
         {
@@ -420,6 +420,6 @@ public class SearchBuildLogAcrossStepsTests
     {
         // Null pattern triggers ArgumentException in service; MCP should remap to McpException
         await Assert.ThrowsAsync<McpException>(
-            () => _tools.SearchLogAcrossSteps("42", null!));
+            () => _tools.SearchLog("42", pattern: null!));
     }
 }

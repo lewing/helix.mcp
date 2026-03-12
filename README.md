@@ -25,11 +25,11 @@ Every tool is designed to minimize token consumption in agent context windows:
 | Technique | How it helps |
 |-----------|-------------|
 | **Tail limits** | `helix_logs` and `azdo_log` return the last N lines (default 500), not the full log |
-| **Pattern search** | `helix_search_log`, `helix_search_file`, `azdo_search_log`, `azdo_search_log_across_steps` search outside agent context and return matching lines with configurable context — no full ingestion |
+| **Pattern search** | `helix_search_log` and `azdo_search_log` search outside agent context and return matching lines with configurable context — no full ingestion |
 | **Failure-first defaults** | `helix_status`, `azdo_timeline`, `azdo_test_results` default to showing only failures |
 | **Structured JSON** | Failure summaries, test results, and timeline data come pre-parsed — no agent-side text extraction |
 | **Batch operations** | `helix_batch_status` checks up to 50 jobs in one call; `helix_find_files` scans N work items instead of N+1 API calls |
-| **Ranked search** | `azdo_search_log_across_steps` searches all build logs but ranks by failure likelihood, stopping early when `maxMatches` is reached |
+| **Ranked search** | `azdo_search_log` can search all build logs, ranking by failure likelihood and stopping early when `maxMatches` is reached |
 | **Idempotent annotations** | Read-only tools marked safe for retry and caching — clients can optimize scheduling and error recovery |
 
 ## Investigation Path
@@ -107,23 +107,21 @@ hlx cache clear    # Wipe all cached data
 
 ## MCP Tools
 
-### Helix Tools (11)
+### Helix Tools (9)
 
 | Tool | Description |
 |------|-------------|
 | `helix_status` | Job pass/fail summary with failure categorization. Filter: `failed` (default), `passed`, `all`. |
 | `helix_batch_status` | Status for up to 50 jobs at once with aggregate totals. |
 | `helix_logs` | Console log content (last N lines, default 500). |
-| `helix_search_log` | Search a console log for repo-specific failure patterns without downloading the full log. |
-| `helix_search_file` | Search an uploaded file for a pattern — without downloading it. |
+| `helix_search_log` | Search a console log or uploaded file for repo-specific failure patterns without downloading the full content. |
 | `helix_files` | List uploaded files for a work item, grouped by type. |
 | `helix_find_files` | Search across work items for files matching a glob (`*.binlog`, `*.trx`, `*.dmp`). |
 | `helix_work_item` | Detailed work item info (exit code, state, machine, duration, failure category). |
-| `helix_download` | Download files from a work item. Supports glob patterns. |
-| `helix_download_url` | Download a file by direct blob URL. |
+| `helix_download` | Download files from a work item or direct blob URL. Supports glob patterns for work-item downloads. |
 | `helix_parse_uploaded_trx` | Parse TRX/xUnit XML files uploaded to Helix blob storage into test names, outcomes, and error messages. |
 
-### AzDO Tools (12)
+### AzDO Tools (11)
 
 | Tool | Description |
 |------|-------------|
@@ -131,8 +129,7 @@ hlx cache clear    # Wipe all cached data
 | `azdo_builds` | List recent builds. Filter by branch, PR, definition, status. |
 | `azdo_timeline` | Build timeline (stages, jobs, tasks). Filter: `failed` (default) or `all`. |
 | `azdo_log` | Log content for a specific build step (last N lines, default 500). |
-| `azdo_search_log` | Search a specific build log for a pattern with context lines. |
-| `azdo_search_log_across_steps` | Search ALL build logs, ranked by failure likelihood. Stops at `maxMatches`. |
+| `azdo_search_log` | Search a specific build log or all ranked build logs for a pattern with context lines. |
 | `azdo_search_timeline` | Search timeline records by name or issue pattern. |
 | `azdo_changes` | Commits/changes associated with a build. |
 | `azdo_test_runs` | Test run summaries (total, passed, failed counts). |

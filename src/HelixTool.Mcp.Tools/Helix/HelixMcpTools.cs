@@ -19,8 +19,8 @@ public sealed class HelixMcpTools
 
     [McpServerTool(Name = "helix_status", Title = "Helix Job Status", ReadOnly = true, Idempotent = true, UseStructuredContent = true), Description("Work item pass/fail summary for a Helix job. Returns failed items with exit codes, state, duration, machine. Filter: 'failed' (default), 'passed', or 'all'.")]
     public async Task<StatusResult> Status(
-        [Description("Helix job ID (GUID) or full Helix URL")] string jobId,
-        [Description("Filter: 'failed' (default) shows only failures, 'passed' shows only passed, 'all' shows everything")] string filter = "failed")
+        [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
+        [Description("Filter: 'failed' (default), 'passed', or 'all'")] string filter = "failed")
     {
         if (!filter.Equals("failed", StringComparison.OrdinalIgnoreCase) &&
             !filter.Equals("passed", StringComparison.OrdinalIgnoreCase) &&
@@ -93,9 +93,9 @@ public sealed class HelixMcpTools
 
     [McpServerTool(Name = "helix_logs", Title = "Helix Work Item Logs", ReadOnly = true, Idempotent = true), Description("Get console log content for a Helix work item. Returns the log text directly (last N lines if tail specified).")]
     public async Task<string> Logs(
-        [Description("Helix job ID (GUID), Helix job URL, or full work item URL (which includes both job ID and work item name)")] string jobId,
-        [Description("Work item name (optional if included in the jobId URL)")] string? workItem = null,
-        [Description("Number of lines from the end to return (default: all)")] int? tail = 500)
+        [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
+        [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
+        [Description("Lines from end to return (default: all)")] int? tail = 500)
     {
         // If workItem not provided, try to extract from jobId URL
         if (string.IsNullOrEmpty(workItem) && HelixIdResolver.TryResolveJobAndWorkItem(jobId, out var resolvedJobId, out var resolvedWorkItem))
@@ -122,8 +122,8 @@ public sealed class HelixMcpTools
 
     [McpServerTool(Name = "helix_files", Title = "Helix Work Item Files", ReadOnly = true, Idempotent = true, UseStructuredContent = true), Description("List uploaded files for a Helix work item, grouped by type. Returns binlogs, testResults, and other files with names and URIs.")]
     public async Task<FilesResult> Files(
-        [Description("Helix job ID (GUID), Helix job URL, or full work item URL (which includes both job ID and work item name)")] string jobId,
-        [Description("Work item name (optional if included in the jobId URL)")] string? workItem = null)
+        [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
+        [Description("Work item name (optional if included in jobId URL)")] string? workItem = null)
     {
         // If workItem not provided, try to extract from jobId URL
         if (string.IsNullOrEmpty(workItem) && HelixIdResolver.TryResolveJobAndWorkItem(jobId, out var resolvedJobId, out var resolvedWorkItem))
@@ -169,27 +169,37 @@ public sealed class HelixMcpTools
         }
     }
 
-    [McpServerTool(Name = "helix_download", Title = "Download Helix Files", Idempotent = true, UseStructuredContent = true), Description("Download files from a Helix work item to temp directory. Returns local file paths. Use pattern to filter (e.g., '*.binlog').")]
+    [McpServerTool(Name = "helix_download", Title = "Download Helix Files or URL", Idempotent = true, UseStructuredContent = true), Description("Download Helix files by pattern or direct URL. Returns local file paths.")]
     public async Task<DownloadResult> Download(
-        [Description("Helix job ID (GUID), Helix job URL, or full work item URL (which includes both job ID and work item name)")] string jobId,
-        [Description("Work item name (optional if included in the jobId URL)")] string? workItem = null,
-        [Description("File name or glob pattern (e.g., *.binlog). Default: all files")] string pattern = "*")
+        [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string? jobId = null,
+        [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
+        [Description("File name or glob pattern (e.g., *.binlog). Default: all files")] string pattern = "*",
+        [Description("Direct file URL to download (bypasses jobId/workItem)")] string? url = null)
     {
-        // If workItem not provided, try to extract from jobId URL
-        if (string.IsNullOrEmpty(workItem) && HelixIdResolver.TryResolveJobAndWorkItem(jobId, out var resolvedJobId, out var resolvedWorkItem))
-        {
-            if (!string.IsNullOrEmpty(resolvedWorkItem))
-            {
-                jobId = resolvedJobId;
-                workItem = resolvedWorkItem;
-            }
-        }
-
-        if (string.IsNullOrEmpty(workItem))
-            throw new McpException("Work item name is required. Provide it as a separate parameter or include it in the Helix URL.");
-
         try
         {
+            if (!string.IsNullOrWhiteSpace(url))
+            {
+                var path = await _svc.DownloadFromUrlAsync(url);
+                return new DownloadResult { DownloadedFiles = [path] };
+            }
+
+            if (string.IsNullOrWhiteSpace(jobId))
+                throw new McpException("Job ID is required unless url is provided.");
+
+            // If workItem not provided, try to extract from jobId URL
+            if (string.IsNullOrEmpty(workItem) && HelixIdResolver.TryResolveJobAndWorkItem(jobId, out var resolvedJobId, out var resolvedWorkItem))
+            {
+                if (!string.IsNullOrEmpty(resolvedWorkItem))
+                {
+                    jobId = resolvedJobId;
+                    workItem = resolvedWorkItem;
+                }
+            }
+
+            if (string.IsNullOrEmpty(workItem))
+                throw new McpException("Work item name is required. Provide it as a separate parameter or include it in the Helix URL.");
+
             var paths = await _svc.DownloadFilesAsync(jobId, workItem, pattern);
 
             if (paths.Count == 0)
@@ -205,9 +215,9 @@ public sealed class HelixMcpTools
 
     [McpServerTool(Name = "helix_find_files", Title = "Find Files in Helix Job", ReadOnly = true, Idempotent = true, UseStructuredContent = true), Description("Search work items in a Helix job for files matching a glob pattern. Returns work item names and matching file URIs.")]
     public async Task<FindFilesResult> FindFiles(
-        [Description("Helix job ID (GUID) or URL")] string jobId,
-        [Description("File name or glob pattern (e.g., *.binlog, *.trx, *.dmp). Default: all files")] string pattern = "*",
-        [Description("Maximum work items to scan (default: 30)")] int maxItems = 30)
+        [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
+        [Description("File name or glob pattern (e.g., *.binlog). Default: all files")] string pattern = "*",
+        [Description("Maximum work items to scan")] int maxItems = 30)
     {
         try
         {
@@ -229,22 +239,6 @@ public sealed class HelixMcpTools
         {
             throw new McpException($"Failed to find files: {ex.Message}", ex);
         }
-    }
-
-    [McpServerTool(Name = "helix_download_url", Title = "Download File by URL", Idempotent = true, UseStructuredContent = true), Description("Download a file by direct URL (e.g., blob storage URI from helix_files output). Returns the local file path.")]
-    public async Task<DownloadUrlResult> DownloadUrl(
-        [Description("Direct file URL to download")] string url)
-    {
-        string path;
-        try
-        {
-            path = await _svc.DownloadFromUrlAsync(url);
-        }
-        catch (Exception ex) when (ex is HttpRequestException or HelixException or InvalidOperationException or ArgumentException)
-        {
-            throw new McpException($"Failed to download file: {ex.Message}", ex);
-        }
-        return new DownloadUrlResult { DownloadedFile = path };
     }
 
     [McpServerTool(Name = "helix_work_item", Title = "Helix Work Item Details", ReadOnly = true, Idempotent = true, UseStructuredContent = true), Description("Get detailed info about a specific work item including exit code, state, machine, duration, files, and console log URL.")]
@@ -286,13 +280,14 @@ public sealed class HelixMcpTools
         }
     }
 
-    [McpServerTool(Name = "helix_search_log", Title = "Search Helix Console Log", ReadOnly = true, Idempotent = true, UseStructuredContent = true), Description("Search a work item's console log for a case-insensitive substring pattern. Not regex. Call helix_ci_guide(repo) for repo-specific failure patterns.")]
+    [McpServerTool(Name = "helix_search_log", Title = "Search Helix Logs or Files", ReadOnly = true, Idempotent = true, UseStructuredContent = true), Description("Search a work item's console log or uploaded file for a case-insensitive substring with context.")]
     public async Task<SearchLogResult> SearchLog(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
+        [Description("File name to search (from helix_files). Omit for console log.")] string? fileName = null,
         [Description("Text pattern to search for (case-insensitive)")] string pattern = "error",
-        [Description("Lines of context before and after each match")] int contextLines = 2,
-        [Description("Maximum number of matches to return")] int maxMatches = 50)
+        [Description("Lines of context around each match")] int contextLines = 2,
+        [Description("Maximum matches to return")] int maxMatches = 50)
     {
         if (StringHelpers.IsFileSearchDisabled)
             throw new McpException("File content search is disabled by configuration.");
@@ -311,15 +306,39 @@ public sealed class HelixMcpTools
 
         try
         {
-            var result = await _svc.SearchConsoleLogAsync(jobId, workItem, pattern, contextLines, maxMatches);
+            if (!string.IsNullOrWhiteSpace(fileName))
+            {
+                var result = await _svc.SearchFileAsync(jobId, workItem, fileName, pattern, contextLines, maxMatches);
+
+                if (result.IsBinary)
+                    throw new McpException($"File '{fileName}' appears to be binary and cannot be searched.");
+
+                return new SearchLogResult
+                {
+                    WorkItem = workItem,
+                    FileName = result.FileName,
+                    Pattern = pattern,
+                    TotalLines = result.TotalLines,
+                    MatchCount = result.Matches.Count,
+                    Truncated = result.Truncated,
+                    Matches = result.Matches.Select(m => new SearchMatch
+                    {
+                        LineNumber = m.LineNumber,
+                        Line = m.Line,
+                        Context = m.Context
+                    }).ToList()
+                };
+            }
+
+            var logResult = await _svc.SearchConsoleLogAsync(jobId, workItem, pattern, contextLines, maxMatches);
 
             return new SearchLogResult
             {
-                WorkItem = result.WorkItem,
+                WorkItem = logResult.WorkItem,
                 Pattern = pattern,
-                TotalLines = result.TotalLines,
-                MatchCount = result.Matches.Count,
-                Matches = result.Matches.Select(m => new SearchMatch
+                TotalLines = logResult.TotalLines,
+                MatchCount = logResult.Matches.Count,
+                Matches = logResult.Matches.Select(m => new SearchMatch
                 {
                     LineNumber = m.LineNumber,
                     Line = m.Line,
@@ -329,59 +348,7 @@ public sealed class HelixMcpTools
         }
         catch (Exception ex) when (ex is HttpRequestException or HelixException or InvalidOperationException or ArgumentException)
         {
-            throw new McpException($"Failed to search console log: {ex.Message}", ex);
-        }
-    }
-
-    [McpServerTool(Name = "helix_search_file", Title = "Search Helix File", ReadOnly = true, Idempotent = true, UseStructuredContent = true), Description("Search a work item's uploaded file for lines matching a pattern. Returns matches with context, without downloading the file.")]
-    public async Task<SearchFileResult> SearchFile(
-        [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
-        [Description("File name to search (exact name from helix_files output)")] string fileName,
-        [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
-        [Description("Text pattern to search for (case-insensitive)")] string pattern = "error",
-        [Description("Lines of context before and after each match")] int contextLines = 2,
-        [Description("Maximum number of matches to return")] int maxMatches = 50)
-    {
-        if (StringHelpers.IsFileSearchDisabled)
-            throw new McpException("File content search is disabled by configuration.");
-
-        if (string.IsNullOrEmpty(workItem) && HelixIdResolver.TryResolveJobAndWorkItem(jobId, out var resolvedJobId, out var resolvedWorkItem))
-        {
-            if (!string.IsNullOrEmpty(resolvedWorkItem))
-            {
-                jobId = resolvedJobId;
-                workItem = resolvedWorkItem;
-            }
-        }
-
-        if (string.IsNullOrEmpty(workItem))
-            throw new McpException("Work item name is required. Provide it as a separate parameter or include it in the Helix URL.");
-
-        try
-        {
-            var result = await _svc.SearchFileAsync(jobId, workItem, fileName, pattern, contextLines, maxMatches);
-
-            if (result.IsBinary)
-                throw new McpException($"File '{fileName}' appears to be binary and cannot be searched.");
-
-            return new SearchFileResult
-            {
-                FileName = result.FileName,
-                Pattern = pattern,
-                TotalLines = result.TotalLines,
-                MatchCount = result.Matches.Count,
-                Truncated = result.Truncated,
-                Matches = result.Matches.Select(m => new SearchMatch
-                {
-                    LineNumber = m.LineNumber,
-                    Line = m.Line,
-                    Context = m.Context
-                }).ToList()
-            };
-        }
-        catch (Exception ex) when (ex is HttpRequestException or HelixException or InvalidOperationException or ArgumentException)
-        {
-            throw new McpException($"Failed to search file: {ex.Message}", ex);
+            throw new McpException($"Failed to search log: {ex.Message}", ex);
         }
     }
 
@@ -389,9 +356,9 @@ public sealed class HelixMcpTools
     public async Task<TestResultsToolResult> TestResults(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
-        [Description("Specific result file name (optional - auto-discovers supported Helix result files if not set)")] string? fileName = null,
-        [Description("Include passed tests in output (default: false)")] bool includePassed = false,
-        [Description("Maximum number of test results to return (default: 200)")] int maxResults = 200)
+        [Description("Result file name (optional; auto-discovered)")] string? fileName = null,
+        [Description("Include passed tests (default: false)")] bool includePassed = false,
+        [Description("Maximum results to return")] int maxResults = 200)
     {
         if (StringHelpers.IsFileSearchDisabled)
             throw new McpException("File content search is disabled by configuration.");

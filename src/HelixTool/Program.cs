@@ -224,13 +224,25 @@ public class Commands
         }
     }
 
-    /// <summary>Download a specific file from a work item.</summary>
+    /// <summary>Download work item files or a direct URL.</summary>
     /// <param name="jobId">Helix job ID or URL.</param>
     /// <param name="workItem">Work item name.</param>
     /// <param name="pattern">File name or glob pattern (e.g., *.binlog).</param>
+    /// <param name="url">Direct file URL to download (bypasses jobId/workItem).</param>
     [Command("download")]
-    public async Task Download([Argument] string jobId, [Argument] string workItem, string pattern = "*")
+    public async Task Download([Argument] string? jobId = null, [Argument] string? workItem = null,
+        string pattern = "*", string? url = null)
     {
+        if (!string.IsNullOrWhiteSpace(url))
+        {
+            var path = await Svc.DownloadFromUrlAsync(url);
+            Console.WriteLine(path);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(jobId) || string.IsNullOrWhiteSpace(workItem))
+            throw new ArgumentException("jobId and workItem are required unless --url is provided.");
+
         var paths = await Svc.DownloadFilesAsync(jobId, workItem, pattern);
         if (paths.Count == 0)
         {
@@ -239,15 +251,6 @@ public class Commands
         }
         foreach (var p in paths)
             Console.WriteLine(p);
-    }
-
-    /// <summary>Download a file by direct URL (e.g., blob storage URI).</summary>
-    /// <param name="url">Direct file URL to download.</param>
-    [Command("download-url")]
-    public async Task DownloadUrl([Argument] string url)
-    {
-        var path = await Svc.DownloadFromUrlAsync(url);
-        Console.WriteLine(path);
     }
 
     /// <summary>Scan work items in a job to find files matching a pattern.</summary>
@@ -349,108 +352,74 @@ public class Commands
         }
     }
 
-    /// <summary>Search a work item's console log for a pattern.</summary>
+    /// <summary>Search a work item's console log or uploaded file for a pattern.</summary>
     /// <param name="jobId">Helix job ID or URL.</param>
     /// <param name="workItem">Work item name.</param>
     /// <param name="pattern">Text pattern to search for (case-insensitive substring match).</param>
     /// <param name="context">Number of context lines before and after each match.</param>
     /// <param name="maxMatches">Maximum number of matches to return (default 50).</param>
+    /// <param name="fileName">File name to search (omit for console log).</param>
     [Command("search-log")]
     public async Task SearchLog([Argument] string jobId, [Argument] string workItem,
-        [Argument] string pattern, int context = 2, int maxMatches = 50)
+        [Argument] string pattern, int context = 2, int maxMatches = 50, string? fileName = null)
     {
+        static void PrintMatches(IReadOnlyList<LogMatch> matches, int contextLines)
+        {
+            foreach (var match in matches)
+            {
+                Console.WriteLine($"--- Line {match.LineNumber} ---");
+                if (match.Context != null && contextLines > 0)
+                {
+                    int startLine = Math.Max(1, match.LineNumber - contextLines);
+                    for (int i = 0; i < match.Context.Count; i++)
+                    {
+                        int lineNum = startLine + i;
+                        if (lineNum == match.LineNumber)
+                        {
+                            Console.ForegroundColor = ConsoleColor.Yellow;
+                            Console.WriteLine($"  {lineNum}: {match.Context[i]}");
+                            Console.ResetColor();
+                        }
+                        else
+                        {
+                            Console.WriteLine($"  {lineNum}: {match.Context[i]}");
+                        }
+                    }
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"  {match.LineNumber}: {match.Line}");
+                    Console.ResetColor();
+                }
+                Console.WriteLine();
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(fileName))
+        {
+            var fileResult = await Svc.SearchFileAsync(jobId, workItem, fileName, pattern, context, maxMatches);
+
+            if (fileResult.IsBinary)
+            {
+                Console.Error.WriteLine($"File '{fileName}' appears to be binary and cannot be searched.");
+                return;
+            }
+
+            Console.WriteLine($"Searching for \"{pattern}\" in {fileResult.FileName} ({fileResult.TotalLines} lines)...");
+            Console.WriteLine($"Found {fileResult.Matches.Count} matches{(fileResult.Truncated ? " (truncated)" : "")}:");
+            Console.WriteLine();
+            PrintMatches(fileResult.Matches, context);
+            Console.WriteLine($"{fileResult.Matches.Count} matches found (showing up to {maxMatches}).");
+            return;
+        }
+
         var result = await Svc.SearchConsoleLogAsync(jobId, workItem, pattern, context, maxMatches);
 
         Console.WriteLine($"Searching for \"{pattern}\" in console log ({result.TotalLines} lines)...");
         Console.WriteLine($"Found {result.Matches.Count} matches:");
         Console.WriteLine();
-
-        foreach (var match in result.Matches)
-        {
-            Console.WriteLine($"--- Line {match.LineNumber} ---");
-            if (match.Context != null && context > 0)
-            {
-                int startLine = Math.Max(1, match.LineNumber - context);
-                for (int i = 0; i < match.Context.Count; i++)
-                {
-                    int lineNum = startLine + i;
-                    if (lineNum == match.LineNumber)
-                    {
-                        Console.ForegroundColor = ConsoleColor.Yellow;
-                        Console.WriteLine($"  {lineNum}: {match.Context[i]}");
-                        Console.ResetColor();
-                    }
-                    else
-                    {
-                        Console.WriteLine($"  {lineNum}: {match.Context[i]}");
-                    }
-                }
-            }
-            else
-            {
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine($"  {match.LineNumber}: {match.Line}");
-                Console.ResetColor();
-            }
-            Console.WriteLine();
-        }
-
-        Console.WriteLine($"{result.Matches.Count} matches found (showing up to {maxMatches}).");
-    }
-
-    /// <summary>Search a work item's uploaded file for matching lines.</summary>
-    /// <param name="jobId">Helix job ID or URL.</param>
-    /// <param name="workItem">Work item name.</param>
-    /// <param name="fileName">File name to search (exact name from files output).</param>
-    /// <param name="pattern">Text pattern to search for (case-insensitive substring match).</param>
-    /// <param name="context">Number of context lines before and after each match.</param>
-    /// <param name="maxMatches">Maximum number of matches to return (default 50).</param>
-    [Command("search-file")]
-    public async Task SearchFile([Argument] string jobId, [Argument] string workItem,
-        [Argument] string fileName, [Argument] string pattern, int context = 2, int maxMatches = 50)
-    {
-        var result = await Svc.SearchFileAsync(jobId, workItem, fileName, pattern, context, maxMatches);
-
-        if (result.IsBinary)
-        {
-            Console.Error.WriteLine($"File '{fileName}' appears to be binary and cannot be searched.");
-            return;
-        }
-
-        Console.WriteLine($"Searching for \"{pattern}\" in {result.FileName} ({result.TotalLines} lines)...");
-        Console.WriteLine($"Found {result.Matches.Count} matches{(result.Truncated ? " (truncated)" : "")}:");
-        Console.WriteLine();
-
-        foreach (var match in result.Matches)
-        {
-            Console.WriteLine($"--- Line {match.LineNumber} ---");
-            if (match.Context != null && context > 0)
-            {
-                int startLine = Math.Max(1, match.LineNumber - context);
-                for (int i = 0; i < match.Context.Count; i++)
-                {
-                    int lineNum = startLine + i;
-                    if (lineNum == match.LineNumber)
-                    {
-                        Console.ForegroundColor = ConsoleColor.Yellow;
-                        Console.WriteLine($"  {lineNum}: {match.Context[i]}");
-                        Console.ResetColor();
-                    }
-                    else
-                    {
-                        Console.WriteLine($"  {lineNum}: {match.Context[i]}");
-                    }
-                }
-            }
-            else
-            {
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine($"  {match.LineNumber}: {match.Line}");
-                Console.ResetColor();
-            }
-            Console.WriteLine();
-        }
-
+        PrintMatches(result.Matches, context);
         Console.WriteLine($"{result.Matches.Count} matches found (showing up to {maxMatches}).");
     }
 
@@ -524,12 +493,11 @@ public class Commands
 - `hlx status <jobId> [failed|passed|all]` — Work item summary (failed items with exit code, duration, machine)
 - `hlx logs <jobId> <workItem>` — Download console log to temp file
 - `hlx files <jobId> <workItem>` — List uploaded files for a work item
-- `hlx download <jobId> <workItem> [--pattern PATTERN]` — Download artifacts (e.g., *.binlog)
-- `hlx download-url <url>` — Download a file by direct blob storage URL
+- `hlx download <jobId> <workItem> [--pattern PATTERN]` or `hlx download --url URL` — Download artifacts or a direct blob URL
 - `hlx find-files <jobId> [--pattern PATTERN] [--max-items N]` — Search work items for files matching a pattern
 - `hlx work-item <jobId> <workItem> [--json]` — Detailed work item info (exit code, state, machine, duration, files)
 - `hlx batch-status <jobId1> <jobId2> ...` — Status for multiple jobs in parallel
-- `hlx search-log <jobId> <workItem> <pattern> [--context N] [--max-matches N]` — Search console log for patterns
+- `hlx search-log <jobId> <workItem> <pattern> [--file-name NAME] [--context N] [--max-matches N]` — Search console logs or uploaded files
 - `hlx cache status` — Show cache size, entry count, oldest/newest entries
 - `hlx cache clear` — Wipe all cached data (SQLite + artifact files)
 
@@ -538,9 +506,8 @@ public class Commands
 - `hlx azdo builds [--org ORG] [--project PROJ] [--top N] [--branch B] [--pr-number N] [--definition-id N] [--status S] [--json]` — List builds
 - `hlx azdo timeline <buildId> [--filter failed|all] [--json]` — Build timeline (stages, jobs, tasks with log IDs)
 - `hlx azdo log <buildId> <logId> [--tail-lines N]` — Get build log content (last N lines, default 500)
-- `hlx azdo search-log <buildId> <logId> [--pattern P] [--context-lines N] [--max-matches N] [--json]` — Search build log for pattern matches
+- `hlx azdo search-log <buildId> [--log-id N] [--pattern P] [--context-lines N] [--max-matches N] [--max-logs N] [--min-lines N] [--json]` — Search one build log or all ranked logs
 - `hlx azdo search-timeline <buildId> <pattern> [--type Stage|Job|Task] [--result failed|all] [--json]` — Search timeline records by name/issue pattern
-- `hlx azdo search-log-all <buildId> [--pattern P] [--context-lines N] [--max-matches N] [--max-logs N] [--min-lines N] [--json]` — Search all build log steps for a pattern, ranked by failure priority
 - `hlx azdo changes <buildId> [--top N] [--json]` — Commits/changes associated with a build
 - `hlx azdo test-runs <buildId> [--top N] [--json]` — List test runs for a build
 - `hlx azdo test-results <buildId> <runId> [--top N] [--json]` — Test results for a test run (defaults to failed)
@@ -555,13 +522,11 @@ public class Commands
 - `helix_status` — Job pass/fail summary with consoleLogUrl and failureCategory per work item
 - `helix_logs` — Console log content (last N lines)
 - `helix_files` — List uploaded files, grouped by type (binlogs, testResults, other)
-- `helix_download` — Download files by glob pattern to temp dir
-- `helix_download_url` — Download a file by direct blob storage URL
+- `helix_download` — Download files by glob pattern or direct blob URL to temp storage
 - `helix_find_files` — Search work items for files matching a glob pattern (*.binlog, *.trx, *.dmp, etc.)
 - `helix_work_item` — Detailed work item info with exit code, state, machine, duration, files
 - `helix_batch_status` — Status for multiple jobs in parallel (accepts an array of job IDs/URLs)
-- `helix_search_log` — Remote-first console log search when failures live in Helix output; pattern choice is repo-specific
-- `helix_search_file` — Search a work item's uploaded file for lines matching a pattern
+- `helix_search_log` — Remote-first search for console logs or uploaded files when failures live in Helix output
 - `helix_parse_uploaded_trx` — Parse TRX/xUnit XML files uploaded to Helix blob storage; most repos use azdo_test_results instead
 
 ### AzDO MCP Tools
@@ -569,7 +534,7 @@ public class Commands
 - `azdo_builds` — List builds with filters (definition, branch, PR number, status). Defaults to dnceng-public/public
 - `azdo_timeline` — Get build timeline (stages, jobs, tasks) with optional filter ('failed' or 'all'). Returns log IDs for azdo_log
 - `azdo_log` — Get build log content (last N lines, default 500). Use log ID from azdo_timeline
-- `azdo_search_log` — Search a build log for lines matching a pattern (case-insensitive). Use log ID from azdo_timeline
+- `azdo_search_log` — Search one build log by log ID or all ranked build logs for a pattern (case-insensitive)
 - `azdo_search_timeline` — Search build timeline records by name or issue message pattern. Find specific failed steps or errors
 - `azdo_changes` — Get commits/changes associated with a build
 - `azdo_test_runs` — List test runs for a build (total/passed/failed counts)
@@ -1135,45 +1100,97 @@ public class AzdoCommands
         Console.Write(content);
     }
 
-    /// <summary>Search a build log for lines matching a pattern.</summary>
+    /// <summary>Search one build log or all ranked build logs for a pattern.</summary>
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
-    /// <param name="logId">Log ID from the timeline record's log reference.</param>
     /// <param name="pattern">Text pattern to search for (case-insensitive).</param>
     /// <param name="contextLines">Lines of context before and after each match.</param>
     /// <param name="maxMatches">Maximum number of matches to return.</param>
+    /// <param name="logId">Log ID from the timeline record's log reference. Omit to search all ranked logs.</param>
+    /// <param name="maxLogs">Maximum number of log steps to download and search.</param>
+    /// <param name="minLines">Minimum line count to include a log in the search.</param>
     /// <param name="json">Output as structured JSON.</param>
     [Command("azdo search-log")]
-    public async Task SearchLog([Argument] string buildId, [Argument] int logId,
-        string pattern = "error", int contextLines = 2, int maxMatches = 50, bool json = false)
+    public async Task SearchLog([Argument] string buildId,
+        string pattern = "error", int contextLines = 2, int maxMatches = 50,
+        int? logId = null, int maxLogs = 30, int minLines = 5, bool json = false)
     {
-        var result = await _svc.SearchBuildLogAsync(buildId, logId, pattern, contextLines, maxMatches);
-
-        if (json)
+        static void PrintMatches(IReadOnlyList<LogMatch> matches, int context)
         {
-            Console.WriteLine(JsonSerializer.Serialize(result, s_jsonOptions));
+            foreach (var m in matches)
+            {
+                if (m.Context is { Count: > 0 })
+                {
+                    int currentLineNumber = Math.Max(1, m.LineNumber - context);
+                    foreach (var line in m.Context)
+                    {
+                        var prefix = currentLineNumber == m.LineNumber ? ">>>" : "   ";
+                        Console.WriteLine($"  {prefix} {currentLineNumber,6}: {line}");
+                        currentLineNumber++;
+                    }
+                    Console.WriteLine();
+                }
+                else
+                {
+                    Console.WriteLine($"  >>> {m.LineNumber,6}: {m.Line}");
+                }
+            }
+        }
+
+        if (logId.HasValue)
+        {
+            var result = await _svc.SearchBuildLogAsync(buildId, logId.Value, pattern, contextLines, maxMatches);
+
+            if (json)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(result, s_jsonOptions));
+                return;
+            }
+
+            Console.WriteLine($"Search: '{pattern}' in log {logId.Value} — {result.Matches.Count} match(es) in {result.TotalLines} lines");
+            Console.WriteLine();
+            PrintMatches(result.Matches, contextLines);
             return;
         }
 
-        Console.WriteLine($"Search: '{pattern}' in log {logId} — {result.Matches.Count} match(es) in {result.TotalLines} lines");
+        var crossStepResult = await _svc.SearchBuildLogAcrossStepsAsync(
+            buildId, pattern, contextLines, maxMatches, maxLogs, minLines);
+
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(crossStepResult, s_jsonOptions));
+            return;
+        }
+
+        Console.WriteLine($"Search: '{pattern}' across build — {crossStepResult.TotalMatchCount} match(es) in {crossStepResult.LogsSearched}/{crossStepResult.TotalLogsInBuild} logs ({crossStepResult.LogsSkipped} skipped)");
+        if (crossStepResult.StoppedEarly)
+            Console.WriteLine("  (stopped early — increase --max-matches or --max-logs to see more)");
         Console.WriteLine();
 
-        foreach (var m in result.Matches)
+        if (crossStepResult.Steps.Count == 0)
         {
-            if (m.Context is { Count: > 0 })
-            {
-                int currentLineNumber = Math.Max(1, m.LineNumber - contextLines);
-                foreach (var line in m.Context)
-                {
-                    var prefix = currentLineNumber == m.LineNumber ? ">>>" : "   ";
-                    Console.WriteLine($"  {prefix} {currentLineNumber,6}: {line}");
-                    currentLineNumber++;
-                }
-                Console.WriteLine();
-            }
+            Console.WriteLine("No matches found.");
+            return;
+        }
+
+        foreach (var step in crossStepResult.Steps)
+        {
+            var resultStr = step.StepResult ?? "?";
+            if (resultStr.Equals("failed", StringComparison.OrdinalIgnoreCase))
+                Console.ForegroundColor = ConsoleColor.Red;
+            else if (resultStr.Equals("succeeded", StringComparison.OrdinalIgnoreCase))
+                Console.ForegroundColor = ConsoleColor.Green;
             else
-            {
-                Console.WriteLine($"  >>> {m.LineNumber,6}: {m.Line}");
-            }
+                Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.Write($"  [{resultStr}]");
+            Console.ResetColor();
+
+            Console.Write($" {step.StepName} (log: {step.LogId}, {step.MatchCount} match(es))");
+
+            if (step.ParentName is not null)
+                Console.Write($" in {step.ParentName}");
+
+            Console.WriteLine();
+            PrintMatches(step.Matches, contextLines);
         }
     }
 
@@ -1404,78 +1421,6 @@ public class AzdoCommands
         }
     }
 
-    /// <summary>Search all build log steps for a pattern, ranked by failure priority.</summary>
-    /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
-    /// <param name="pattern">Text pattern to search for (case-insensitive).</param>
-    /// <param name="contextLines">Lines of context before and after each match.</param>
-    /// <param name="maxMatches">Maximum total matches across all logs.</param>
-    /// <param name="maxLogs">Maximum number of log steps to download and search.</param>
-    /// <param name="minLines">Minimum line count to include a log in the search.</param>
-    /// <param name="json">Output as structured JSON.</param>
-    [Command("azdo search-log-all")]
-    public async Task SearchLogAll([Argument] string buildId,
-        string pattern = "error", int contextLines = 2, int maxMatches = 50,
-        int maxLogs = 30, int minLines = 5, bool json = false)
-    {
-        var result = await _svc.SearchBuildLogAcrossStepsAsync(
-            buildId, pattern, contextLines, maxMatches, maxLogs, minLines);
-
-        if (json)
-        {
-            Console.WriteLine(JsonSerializer.Serialize(result, s_jsonOptions));
-            return;
-        }
-
-        Console.WriteLine($"Search: '{pattern}' across build — {result.TotalMatchCount} match(es) in {result.LogsSearched}/{result.TotalLogsInBuild} logs ({result.LogsSkipped} skipped)");
-        if (result.StoppedEarly)
-            Console.WriteLine("  (stopped early — increase --max-matches or --max-logs to see more)");
-        Console.WriteLine();
-
-        if (result.Steps.Count == 0)
-        {
-            Console.WriteLine("No matches found.");
-            return;
-        }
-
-        foreach (var step in result.Steps)
-        {
-            var resultStr = step.StepResult ?? "?";
-            if (resultStr.Equals("failed", StringComparison.OrdinalIgnoreCase))
-                Console.ForegroundColor = ConsoleColor.Red;
-            else if (resultStr.Equals("succeeded", StringComparison.OrdinalIgnoreCase))
-                Console.ForegroundColor = ConsoleColor.Green;
-            else
-                Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.Write($"  [{resultStr}]");
-            Console.ResetColor();
-
-            Console.Write($" {step.StepName} (log: {step.LogId}, {step.MatchCount} match(es))");
-
-            if (step.ParentName is not null)
-                Console.Write($" in {step.ParentName}");
-
-            Console.WriteLine();
-
-            foreach (var m in step.Matches)
-            {
-                if (m.Context is { Count: > 0 })
-                {
-                    int currentLineNumber = Math.Max(1, m.LineNumber - contextLines);
-                    foreach (var line in m.Context)
-                    {
-                        var prefix = currentLineNumber == m.LineNumber ? ">>>" : "   ";
-                        Console.WriteLine($"    {prefix} {currentLineNumber,6}: {line}");
-                        currentLineNumber++;
-                    }
-                    Console.WriteLine();
-                }
-                else
-                {
-                    Console.WriteLine($"    >>> {m.LineNumber,6}: {m.Line}");
-                }
-            }
-        }
-    }
 
     /// <summary>List attachments for a specific test result.</summary>
     /// <param name="runId">Test run ID from azdo-test-runs output.</param>
