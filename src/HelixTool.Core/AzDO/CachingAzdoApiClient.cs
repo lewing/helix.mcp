@@ -45,8 +45,9 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
         var key = BuildCacheKey(org, project, $"build:{buildId}");
         var cached = await _cache.GetMetadataAsync(key, ct);
-        if (cached is not null)
-            return JsonSerializer.Deserialize<AzdoBuild>(cached);
+        var deserialized = TryDeserialize<AzdoBuild>(cached);
+        if (deserialized is not null)
+            return deserialized;
 
         var result = await _inner.GetBuildAsync(org, project, buildId, ct);
         if (result is null)
@@ -70,8 +71,9 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         var filterHash = HashFilter(filter);
         var key = BuildCacheKey(org, project, $"builds:{filterHash}");
         var cached = await _cache.GetMetadataAsync(key, ct);
-        if (cached is not null)
-            return JsonSerializer.Deserialize<List<AzdoBuild>>(cached) ?? [];
+        var deserialized = TryDeserialize<List<AzdoBuild>>(cached);
+        if (deserialized is not null)
+            return deserialized;
 
         var result = await _inner.ListBuildsAsync(org, project, filter, ct);
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), ListTtl, ct);
@@ -90,8 +92,9 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
         var key = BuildCacheKey(org, project, $"timeline:{buildId}");
         var cached = await _cache.GetMetadataAsync(key, ct);
-        if (cached is not null)
-            return JsonSerializer.Deserialize<AzdoTimeline>(cached);
+        var deserialized = TryDeserialize<AzdoTimeline>(cached);
+        if (deserialized is not null)
+            return deserialized;
 
         var result = await _inner.GetTimelineAsync(org, project, buildId, ct);
         if (result is not null)
@@ -179,8 +182,9 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
         var key = BuildCacheKey(org, project, $"changes:{buildId}:{top}");
         var cached = await _cache.GetMetadataAsync(key, ct);
-        if (cached is not null)
-            return JsonSerializer.Deserialize<List<AzdoBuildChange>>(cached) ?? [];
+        var deserialized = TryDeserialize<List<AzdoBuildChange>>(cached);
+        if (deserialized is not null)
+            return deserialized;
 
         var result = await _inner.GetBuildChangesAsync(org, project, buildId, top, ct);
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), ImmutableTtl, ct);
@@ -194,8 +198,9 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
         var key = BuildCacheKey(org, project, $"testruns:{buildId}:{top}");
         var cached = await _cache.GetMetadataAsync(key, ct);
-        if (cached is not null)
-            return JsonSerializer.Deserialize<List<AzdoTestRun>>(cached) ?? [];
+        var deserialized = TryDeserialize<List<AzdoTestRun>>(cached);
+        if (deserialized is not null)
+            return deserialized;
 
         var result = await _inner.GetTestRunsAsync(org, project, buildId, top, ct);
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
@@ -209,8 +214,9 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
         var key = BuildCacheKey(org, project, $"testresults:{runId}:{top}");
         var cached = await _cache.GetMetadataAsync(key, ct);
-        if (cached is not null)
-            return JsonSerializer.Deserialize<List<AzdoTestResult>>(cached) ?? [];
+        var deserialized = TryDeserialize<List<AzdoTestResult>>(cached);
+        if (deserialized is not null)
+            return deserialized;
 
         var result = await _inner.GetTestResultsAsync(org, project, runId, top, ct);
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
@@ -224,8 +230,9 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
         var key = BuildCacheKey(org, project, $"artifacts:{buildId}");
         var cached = await _cache.GetMetadataAsync(key, ct);
-        if (cached is not null)
-            return JsonSerializer.Deserialize<List<AzdoBuildArtifact>>(cached) ?? [];
+        var deserialized = TryDeserialize<List<AzdoBuildArtifact>>(cached);
+        if (deserialized is not null)
+            return deserialized;
 
         var result = await _inner.GetBuildArtifactsAsync(org, project, buildId, ct);
         // Artifacts are immutable once the build publishes them
@@ -240,8 +247,9 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
         var key = BuildCacheKey(org, project, $"testattachments:{runId}:{resultId}:{top}");
         var cached = await _cache.GetMetadataAsync(key, ct);
-        if (cached is not null)
-            return JsonSerializer.Deserialize<List<AzdoTestAttachment>>(cached) ?? [];
+        var deserialized = TryDeserialize<List<AzdoTestAttachment>>(cached);
+        if (deserialized is not null)
+            return deserialized;
 
         var result = await _inner.GetTestAttachmentsAsync(org, project, runId, resultId, top, ct);
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
@@ -257,8 +265,9 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         var ttl = isCompleted ? CompletedTtl : InProgressTtl;
         var key = BuildCacheKey(org, project, $"logslist:{buildId}");
         var cached = await _cache.GetMetadataAsync(key, ct);
-        if (cached is not null)
-            return JsonSerializer.Deserialize<List<AzdoBuildLogEntry>>(cached) ?? [];
+        var deserialized = TryDeserialize<List<AzdoBuildLogEntry>>(cached);
+        if (deserialized is not null)
+            return deserialized;
 
         var result = await _inner.GetBuildLogsListAsync(org, project, buildId, ct);
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), ttl, ct);
@@ -287,6 +296,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
     /// <summary>
     /// Read log content from cache. Supports both raw: prefixed (new format) and
     /// JSON-wrapped (legacy) entries for backward compatibility.
+    /// Returns null on corrupt entries (treated as cache miss).
     /// </summary>
     private static string? DeserializeLogContent(string? cached)
     {
@@ -294,7 +304,24 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         if (cached.StartsWith(RawTextPrefix, StringComparison.Ordinal))
             return cached[RawTextPrefix.Length..];
         // Legacy JSON-wrapped format — graceful migration
-        return JsonSerializer.Deserialize<string>(cached);
+        return TryDeserialize<string>(cached);
+    }
+
+    /// <summary>
+    /// Safely deserialize a cached JSON value. Returns default(T) if the cached
+    /// data is corrupt or unparseable, treating it as a cache miss rather than crashing.
+    /// </summary>
+    private static T? TryDeserialize<T>(string? cached)
+    {
+        if (cached is null) return default;
+        try
+        {
+            return JsonSerializer.Deserialize<T>(cached);
+        }
+        catch (JsonException)
+        {
+            return default;
+        }
     }
 
     private async Task<bool> IsBuildCompletedAsync(string org, string project, int buildId, CancellationToken ct)
