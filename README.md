@@ -13,7 +13,7 @@ AI agents investigating CI failures in dotnet repos (runtime, sdk, aspnetcore, e
 
 hlx solves both:
 
-- **Return less, return better.** Tools like `helix_search_log` and `azdo_search_log` search in place and return only matching lines with context — agents never download a full log. `helix_status` returns structured failure summaries instead of raw JSON. Default `tail` limits (500 lines), `filter` parameters (`failed` by default), and `maxMatches` caps keep responses focused.
+- **Return less, return better.** Tools like `helix_search` and `azdo_search_log` search in place and return only matching lines with context — agents never download a full log. `helix_status` returns structured failure summaries instead of raw JSON. Default `tail` limits (500 lines), `filter` parameters (`failed` by default), and `maxMatches` caps keep responses focused.
 - **Cache everything, share across processes.** A local SQLite cache sits between agents and the APIs. Different MCP server instances (one per IDE window/terminal) share the same cache, so the second agent to inspect a job gets instant results. Smart TTLs track job lifecycle — running jobs cache briefly (15–30s), completed jobs cache for hours.
 
 > **Zero config** — public dotnet CI works out of the box. Install and go.
@@ -25,7 +25,7 @@ Every tool is designed to minimize token consumption in agent context windows:
 | Technique | How it helps |
 |-----------|-------------|
 | **Tail limits** | `helix_logs` and `azdo_log` return the last N lines (default 500), not the full log |
-| **Pattern search** | `helix_search_log` and `azdo_search_log` search outside agent context and return matching lines with configurable context — no full ingestion |
+| **Pattern search** | `helix_search` and `azdo_search_log` search outside agent context and return matching lines with configurable context — no full ingestion |
 | **Failure-first defaults** | `helix_status`, `azdo_timeline`, `azdo_test_results` default to showing only failures |
 | **Structured JSON** | Failure summaries, test results, and timeline data come pre-parsed — no agent-side text extraction |
 | **Batch operations** | `helix_batch_status` checks up to 50 jobs in one call; `helix_find_files` scans N work items instead of N+1 API calls |
@@ -36,7 +36,7 @@ Every tool is designed to minimize token consumption in agent context windows:
 
 - When repo workflows vary, start with `helix_ci_guide(repo)` for the repo-specific path and search patterns.
 - Use `helix_parse_uploaded_trx` only when the work item uploads structured test results to Helix (runtime CoreCLR, XHarness device tests).
-- Otherwise use `azdo_test_runs` → `azdo_test_results` for structured results, or `helix_search_log` when the signal is in console output.
+- Otherwise use `azdo_test_runs` → `azdo_test_results` for structured results, or `helix_search` when the signal is in console output.
 
 ## Cross-Process Caching
 
@@ -114,7 +114,7 @@ hlx cache clear    # Wipe all cached data
 | `helix_status` | Job pass/fail summary with failure categorization. Filter: `failed` (default), `passed`, `all`. |
 | `helix_batch_status` | Status for up to 50 jobs at once with aggregate totals. |
 | `helix_logs` | Console log content (last N lines, default 500). |
-| `helix_search_log` | Search a console log or uploaded file for repo-specific failure patterns without downloading the full content. |
+| `helix_search` | Search a console log or uploaded file for repo-specific failure patterns without downloading the full content. |
 | `helix_files` | List uploaded files for a work item, grouped by type. |
 | `helix_find_files` | Search across work items for files matching a glob (`*.binlog`, `*.trx`, `*.dmp`). |
 | `helix_work_item` | Detailed work item info (exit code, state, machine, duration, failure category). |

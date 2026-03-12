@@ -296,7 +296,7 @@ public class HelixMcpToolsTests
         Assert.Contains("no-test-wi", ex.Message);
         Assert.Contains("No structured test-result files found", ex.Message);
         Assert.Contains("azdo_test_runs + azdo_test_results", ex.Message);
-        Assert.Contains("helix_search_log", ex.Message);
+        Assert.Contains("helix_search", ex.Message);
         Assert.Contains("helix_ci_guide", ex.Message);
         Assert.Contains("'  Failed' (2 leading spaces)", ex.Message);
     }

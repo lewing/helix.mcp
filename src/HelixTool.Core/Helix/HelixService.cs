@@ -933,7 +933,7 @@ public class HelixService
 
         if (crashArtifacts.Count > 0)
         {
-            message += $" ⚠️ Crash artifacts detected: {string.Join(", ", crashArtifacts)}. The test host may have crashed. Try helix_search_log with pattern 'exit code' or 'SIGABRT'.";
+            message += $" ⚠️ Crash artifacts detected: {string.Join(", ", crashArtifacts)}. The test host may have crashed. Try helix_search with pattern 'exit code' or 'SIGABRT'.";
         }
         else if (usefulFiles.Count > 0)
         {
@@ -949,7 +949,7 @@ public class HelixService
         }
 
         message += " For structured per-test results, use azdo_test_runs + azdo_test_results.";
-        message += " For console-log investigation, use helix_search_log with repo-specific patterns such as '[FAIL]', '  Failed' (2 leading spaces), 'Error Message:', or 'exit code'.";
+        message += " For console-log investigation, use helix_search with repo-specific patterns such as '[FAIL]', '  Failed' (2 leading spaces), 'Error Message:', or 'exit code'.";
         message += " Call helix_ci_guide with the repo name to confirm whether Helix-hosted results are expected and which search pattern fits this repo.";
 
         throw new HelixException(message);

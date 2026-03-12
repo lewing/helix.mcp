@@ -99,7 +99,7 @@ public sealed class CiKnowledgeService
                 "helix_status(jobId) → find failed work items + exit codes",
                 "azdo_test_runs(buildId) → get test run IDs",
                 "azdo_test_results(buildId, runId) → structured failures (always drill in, don't trust summary counts)",
-                "helix_search_log(jobId, workItem, '[FAIL]') → console confirmation",
+                "helix_search(jobId, workItem, '[FAIL]') → console confirmation",
                 "helix_logs(jobId, workItem) → full context if needed",
             ],
             UploadedFiles =
@@ -119,8 +119,8 @@ public sealed class CiKnowledgeService
             InvestigationTips =
             [
                 "helix_parse_uploaded_trx works for CoreCLR tests (*.testResults.xml.txt) and XHarness (testResults.xml) but NOT for libraries tests",
-                "Use helix_search_log with '[FAIL]' to find xUnit test failures — this is the best pattern for runtime",
-                "Use helix_search_log with 'Error Message:' to get error details after finding [FAIL] hits",
+                "Use helix_search with '[FAIL]' to find xUnit test failures — this is the best pattern for runtime",
+                "Use helix_search with 'Error Message:' to get error details after finding [FAIL] hits",
                 "azdo_test_runs + azdo_test_results is the most reliable path for structured results across all test types",
                 "'  Failed' pattern does NOT work for runtime — runtime uses raw xUnit runner, not dotnet test CLI format",
                 "Check failureCategory in helix_status: Crash/InfrastructureError → infra, not a test bug",
@@ -165,7 +165,7 @@ public sealed class CiKnowledgeService
             [
                 "helix_status(jobId) → which work items failed? (maps to test projects)",
                 "azdo_test_runs(buildId) + azdo_test_results(buildId, runId) → structured failures with stack traces",
-                "helix_search_log(jobId, workItem, '  Failed') → quick cross-reference from console",
+                "helix_search(jobId, workItem, '  Failed') → quick cross-reference from console",
                 "Search GitHub issues with test name + label:'Known Build Error'",
             ],
             UploadedFiles =
@@ -185,7 +185,7 @@ public sealed class CiKnowledgeService
             InvestigationTips =
             [
                 "helix_parse_uploaded_trx will ALWAYS fail — aspnetcore never uploads TRX to Helix",
-                "Use helix_search_log with '  Failed' (2 leading spaces) to find failed test names — gives N+1 matches for N failures",
+                "Use helix_search with '  Failed' (2 leading spaces) to find failed test names — gives N+1 matches for N failures",
                 "Use azdo_test_runs + azdo_test_results for structured test results — this is the primary path",
                 "Warning: azdo_test_runs summary counts can be inaccurate — always drill into azdo_test_results",
                 "Skip helix_find_files('*.trx') — always empty for aspnetcore",
@@ -236,7 +236,7 @@ public sealed class CiKnowledgeService
                 "helix_status(jobId) → exit codes — 130/-4 = infra, 1 = real test failure",
                 "azdo_test_runs(buildId) → get test run IDs",
                 "azdo_test_results(buildId, runId) → check for real vs synthetic (WorkItemExecution = crash, not assertion failure)",
-                "helix_search_log(jobId, workItem, 'Failed') → console error details",
+                "helix_search(jobId, workItem, 'Failed') → console error details",
                 "helix_logs(jobId, workItem) → full context",
             ],
             UploadedFiles =
@@ -258,7 +258,7 @@ public sealed class CiKnowledgeService
                 "SDK uses build-as-test pattern — many 'test failures' are actually build errors",
                 "Helix task name is '🟣 Run TestBuild Tests' (with emoji) — use this in azdo_timeline searches",
                 "Use azdo_test_runs + azdo_test_results for structured results — but watch for synthetic WorkItemExecution entries",
-                "Use helix_search_log with 'Failed' or 'Error' (not '[FAIL]') for SDK — crashes don't produce xUnit output",
+                "Use helix_search with 'Failed' or 'Error' (not '[FAIL]') for SDK — crashes don't produce xUnit output",
             ],
         },
 
@@ -306,7 +306,7 @@ public sealed class CiKnowledgeService
                 "azdo_timeline(buildId, filter='failed') → identify failed jobs",
                 "Read failed 'Run Unit Tests' or 'Test' task log → search for 'has failed' to find Helix job GUIDs",
                 "helix_status(jobId) → exit codes + failureCategory (InfrastructureError = crash)",
-                "If crash: helix_search_log(jobId, workItem, 'aborted') → crash details",
+                "If crash: helix_search(jobId, workItem, 'aborted') → crash details",
                 "If crash: helix_files(jobId, workItem) → crash dumps available?",
                 "If test failure (not crash): azdo_test_runs + azdo_test_results → structured results",
                 "helix_logs(jobId, workItem) → full context",
@@ -332,7 +332,7 @@ public sealed class CiKnowledgeService
                 "helix_parse_uploaded_trx will ALWAYS fail — roslyn never uploads TRX or result XML to Helix",
                 "Roslyn Helix failures are usually crashes, not assertion failures — check helix_status failureCategory first",
                 "Helix tasks are hidden inside 'Run Unit Tests' (Windows) or 'Test' (Linux) — no dedicated 'Send to Helix' step",
-                "Use helix_search_log with 'aborted' or 'Process exited' to find crashes",
+                "Use helix_search with 'aborted' or 'Process exited' to find crashes",
                 "Use azdo_test_runs + azdo_test_results for structured results — but only works for non-crash failures",
                 "[FAIL] pattern does NOT work for roslyn — the xUnit output format differs",
                 "Same test often crashes across multiple platforms (Windows + Linux) — check both",
@@ -386,7 +386,7 @@ public sealed class CiKnowledgeService
                 "If local phase failed → check task log for test output directly",
                 "azdo_test_runs(buildId) → find runs with failures (~51 runs: local + Helix combined)",
                 "azdo_test_results(buildId, runId) → structured failures",
-                "helix_search_log(jobId, workItem, '[FAIL]') → console confirmation",
+                "helix_search(jobId, workItem, '[FAIL]') → console confirmation",
             ],
             UploadedFiles =
             [
@@ -407,7 +407,7 @@ public sealed class CiKnowledgeService
                 "Helix task name is 'Send job to helix' (lowercase 'j') — different from other repos",
                 "macOS tests frequently fail with exit -3 (infrastructure issue, not code bug) — check if ALL items on the queue failed",
                 "Use azdo_test_runs + azdo_test_results for structured results — both local and Helix results appear",
-                "Use helix_search_log with '[FAIL]' for xUnit failures in console output",
+                "Use helix_search with '[FAIL]' for xUnit failures in console output",
                 "Check both local runs (Windows-xunit_N, Linux-xunit_N) AND Helix runs — same test might pass locally but fail on Helix",
             ],
         },
@@ -521,7 +521,7 @@ public sealed class CiKnowledgeService
             RecommendedInvestigationOrder =
             [
                 "Identify which pipeline failed: maui-pr (unit), maui-pr-uitests (UI), maui-pr-devicetests (device)",
-                "For maui-pr (unit): azdo_test_runs + azdo_test_results → structured results; helix_search_log '[FAIL]' for console; SKIP helix_parse_uploaded_trx",
+                "For maui-pr (unit): azdo_test_runs + azdo_test_results → structured results; helix_search '[FAIL]' for console; SKIP helix_parse_uploaded_trx",
                 "For maui-pr-uitests (UI): azdo_test_runs + azdo_test_results ONLY — no Helix tools useful; azdo_timeline for control group/platform",
                 "For maui-pr-devicetests (device): helix_parse_uploaded_trx WORKS → parse testResults.xml; also azdo_test_runs as alternative",
                 "For device tests: check platform-specific logs — adb-logcat-*.log (Android), MacCatalyst.system.log (Mac)",
@@ -547,7 +547,7 @@ public sealed class CiKnowledgeService
             InvestigationTips =
             [
                 "First identify which of the 3 pipelines failed — investigation approach differs completely",
-                "maui-pr: helix_parse_uploaded_trx fails; use azdo_test_runs + azdo_test_results or helix_search_log '[FAIL]'",
+                "maui-pr: helix_parse_uploaded_trx fails; use azdo_test_runs + azdo_test_results or helix_search '[FAIL]'",
                 "maui-pr-uitests: NO Helix — skip all helix_* tools; AzDO test runs are the only source",
                 "maui-pr-devicetests: helix_parse_uploaded_trx WORKS — try it first for structured per-test results",
                 "For Android device tests, check INSTRUMENTATION_RESULT lines in console for test summaries",
@@ -749,7 +749,7 @@ public sealed class CiKnowledgeService
         lines.Add("- **Use repo profiles to choose the first tool path.** If the table says `❌ Fails`, skip `helix_parse_uploaded_trx` and go straight to `azdo_test_runs + azdo_test_results` for structured results.");
         lines.Add("- **Most .NET repos do NOT upload test results to Helix.** `helix_parse_uploaded_trx` fails for aspnetcore, sdk, roslyn, efcore.");
         lines.Add("- **Partial support exists, but only for specific test legs.** runtime CoreCLR/XHarness tests upload result XML; MAUI device tests (maui-pr-devicetests pipeline) upload testResults.xml.");
-        lines.Add("- **Use `helix_search_log` as the remote-first console path.** The best search pattern varies by repo/test runner; check the repo profile before broad log reads.");
+        lines.Add("- **Use `helix_search` as the remote-first console path.** The best search pattern varies by repo/test runner; check the repo profile before broad log reads.");
         lines.Add("- **azdo_test_runs + azdo_test_results** is the most reliable path for structured results across all repos.");
         lines.Add("- **⚠️ macios and android are on devdiv, not dnceng** — standard `helix_*` and `ado-dnceng-*` tools do not work.");
         lines.Add("- **failedTests=0 is a lie** — always drill into `azdo_test_results`, don't trust run-level summary counts.");
@@ -801,7 +801,7 @@ public sealed class CiKnowledgeService
         });
 
         if (profile.UsesHelix && profile.FailureSearchPatterns.Length > 0)
-            lines.Add($"- Console search: use `helix_search_log` with `{profile.FailureSearchPatterns[0]}` first, then follow the recommended order below.");
+            lines.Add($"- Console search: use `helix_search` with `{profile.FailureSearchPatterns[0]}` first, then follow the recommended order below.");
         else if (!profile.UsesHelix)
             lines.Add("- Console/build logs: use AzDO timeline/log tools rather than Helix tools.");
 
@@ -874,10 +874,10 @@ public sealed class CiKnowledgeService
             No specific profile found for '{repoName}'. Here are general recommendations:
 
             ## Start Here
-            1. **If you know the repo, call `helix_ci_guide(repo)`** — repo profiles tell you whether to skip `helix_parse_uploaded_trx`, which `helix_search_log` pattern to try, and whether devdiv tooling is required
+            1. **If you know the repo, call `helix_ci_guide(repo)`** — repo profiles tell you whether to skip `helix_parse_uploaded_trx`, which `helix_search` pattern to try, and whether devdiv tooling is required
             2. **For structured results, start with `azdo_test_runs` + `azdo_test_results`** — this is the safest default across .NET repos
             3. **Try `helix_parse_uploaded_trx` only if the repo uploads structured results to Helix** — works for repos/pipelines that publish TRX or Helix-hosted result XML
-            4. **Use `helix_search_log`** with these patterns to find failures in console output:
+            4. **Use `helix_search`** with these patterns to find failures in console output:
                - `'  Failed'` (2 leading spaces) — dotnet test / xUnit summary
                - `'[FAIL]'` — xUnit runner failure marker
                - `'Error Message:'` — test error details

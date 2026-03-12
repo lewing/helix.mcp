@@ -89,7 +89,7 @@ public sealed class WorkItemToolResult
     [JsonPropertyName("files")] public List<FileInfo_> Files { get; init; } = [];
 }
 
-// --- SearchLog tool ---
+// --- Search tool ---
 
 public sealed class SearchMatch
 {
@@ -98,7 +98,7 @@ public sealed class SearchMatch
     [JsonPropertyName("context")] public List<string>? Context { get; init; }
 }
 
-public sealed class SearchLogResult
+public sealed class SearchResult
 {
     [JsonPropertyName("workItem")] public string WorkItem { get; init; } = "";
     [JsonPropertyName("fileName")] public string? FileName { get; init; }

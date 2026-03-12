@@ -140,3 +140,9 @@
 - **Updated description** to steer agents toward `azdo_test_results` first, making clear this tool only works for repos that upload raw result files to Helix (runtime CoreCLR, XHarness device tests).
 - **Files with old name references that were updated:** HelixMcpTools.cs (MCP tool registration), CiKnowledgeTool.cs (helix_ci_guide description), Program.cs (CLI command + help text), CiKnowledgeService.cs (25+ references in repo profiles and formatting), README.md (tool table + tips), CiKnowledgeServiceTests.cs (3 assertions), HelixMcpToolsTests.cs (2 assertions + test name).
 - **Internal method names unchanged:** `ParseTrxResultsAsync`, `TestResults` method name in HelixMcpTools, `IsTestResultFile` — these are implementation details, not agent-facing.
+
+## Learnings (helix_search_log → helix_search rename)
+
+- **Renamed MCP-visible tool name** from `helix_search_log` to `helix_search` because the tool now searches both console logs and uploaded files, so the broader name better matches its scope and improves agent discoverability.
+- **Kept implementation and CLI names stable:** the `SearchLog` C# method and `search-log` CLI command remain unchanged; only MCP-visible and human-facing strings moved to `helix_search`.
+- **Key file paths changed:** `src/HelixTool.Mcp.Tools/Helix/HelixMcpTools.cs`, `src/HelixTool/Program.cs`, `src/HelixTool.Core/CiKnowledgeService.cs`, `src/HelixTool.Core/Helix/HelixService.cs`, `src/HelixTool.Tests/CiKnowledgeServiceTests.cs`, `src/HelixTool.Tests/Helix/HelixMcpToolsTests.cs`, and `README.md`.

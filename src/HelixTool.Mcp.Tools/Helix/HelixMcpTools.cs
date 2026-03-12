@@ -280,8 +280,8 @@ public sealed class HelixMcpTools
         }
     }
 
-    [McpServerTool(Name = "helix_search_log", Title = "Search Helix Logs or Files", ReadOnly = true, Idempotent = true, UseStructuredContent = true), Description("Search a work item's console log or uploaded file for a case-insensitive substring with context.")]
-    public async Task<SearchLogResult> SearchLog(
+    [McpServerTool(Name = "helix_search", Title = "Search Helix Work Item Content", ReadOnly = true, Idempotent = true, UseStructuredContent = true), Description("Search a Helix work item's console log or uploaded file for case-insensitive text matches with context.")]
+    public async Task<SearchResult> SearchLog(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
         [Description("File name to search (from helix_files). Omit for console log.")] string? fileName = null,
@@ -313,7 +313,7 @@ public sealed class HelixMcpTools
                 if (result.IsBinary)
                     throw new McpException($"File '{fileName}' appears to be binary and cannot be searched.");
 
-                return new SearchLogResult
+                return new SearchResult
                 {
                     WorkItem = workItem,
                     FileName = result.FileName,
@@ -332,7 +332,7 @@ public sealed class HelixMcpTools
 
             var logResult = await _svc.SearchConsoleLogAsync(jobId, workItem, pattern, contextLines, maxMatches);
 
-            return new SearchLogResult
+            return new SearchResult
             {
                 WorkItem = logResult.WorkItem,
                 Pattern = pattern,
@@ -348,7 +348,7 @@ public sealed class HelixMcpTools
         }
         catch (Exception ex) when (ex is HttpRequestException or HelixException or InvalidOperationException or ArgumentException)
         {
-            throw new McpException($"Failed to search log: {ex.Message}", ex);
+            throw new McpException($"Failed to search: {ex.Message}", ex);
         }
     }
 
