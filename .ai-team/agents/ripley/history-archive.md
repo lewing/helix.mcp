@@ -237,3 +237,7 @@
 - **Key file paths:** `src/HelixTool.Mcp.Tools/Helix/HelixMcpTools.cs` holds MCP tool descriptions, `src/HelixTool.Core/Helix/HelixService.cs` owns `helix_test_results` fallback messaging, `src/HelixTool.Core/CiKnowledgeService.cs` formats repo-specific CI guides, `src/HelixTool.Mcp.Tools/CiKnowledgeTool.cs` describes `helix_ci_guide`, and `src/HelixTool/Program.cs` mirrors MCP guidance in llms-txt/help output.
 
 📌 Team update (2026-03-10): Discoverability routing decisions merged — keep the current tool surface, route repo-specific workflow selection through `helix_ci_guide(repo)`, treat `helix_test_results` as structured Helix-hosted parsing rather than a universal first step, and keep `helix_search_log`/docs/help guidance synchronized across surfaces. — decided by Dallas, Kane, Ripley
+
+## 2026-03-13: Archived older learnings from history.md
+
+📌 Team update (2025-07-24): Test quality review — ~17 redundant tests deleted, no layer duplication rule. — Dallas

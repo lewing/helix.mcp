@@ -15,8 +15,12 @@ public sealed record AzdoCredential(string Token, string Scheme, string Source)
 {
     public string DisplayToken { get; init; } = Token;
 
-    public static implicit operator string?(AzdoCredential? credential) => credential?.DisplayToken;
-
+    /// <summary>
+    /// Legacy compatibility conversion from a raw token string.
+    /// Warning: this assumes a Bearer token and preserves the raw token as <see cref="DisplayToken"/>.
+    /// Prefer constructing <see cref="AzdoCredential"/> explicitly to avoid accidental credential exposure.
+    /// </summary>
+    [Obsolete("Implicit conversion from string to AzdoCredential is legacy compatibility only. Prefer constructing AzdoCredential explicitly to avoid accidental token exposure.")]
     public static implicit operator AzdoCredential?(string? token)
         => string.IsNullOrEmpty(token)
             ? null
@@ -27,7 +31,7 @@ public sealed record AzdoCredential(string Token, string Scheme, string Source)
 
 /// <summary>
 /// Abstraction for resolving Azure DevOps authentication.
-/// Chain: AZDO_TOKEN env var → AzureCliCredential → az CLI → null (anonymous for public repos).
+/// Chain: AZDO_TOKEN env var (optionally forced via AZDO_TOKEN_TYPE) → AzureCliCredential → az CLI → null (anonymous for public repos).
 /// </summary>
 public interface IAzdoTokenAccessor
 {
@@ -41,6 +45,8 @@ public interface IAzdoTokenAccessor
 public sealed class AzCliAzdoTokenAccessor : IAzdoTokenAccessor
 {
     private const string AzdoResourceId = "499b84ac-1321-427f-aa17-267ca6975798";
+    private const string AzdoTokenEnvVarName = "AZDO_TOKEN";
+    private const string AzdoTokenTypeEnvVarName = "AZDO_TOKEN_TYPE";
     private static readonly string[] s_azdoScopes = [$"{AzdoResourceId}/.default"];
 
     private readonly AzureCliCredential _azureCliCredential = new();
@@ -127,13 +133,30 @@ public sealed class AzCliAzdoTokenAccessor : IAzdoTokenAccessor
 
     private static AzdoCredential? TryGetEnvCredential()
     {
-        var envToken = Environment.GetEnvironmentVariable("AZDO_TOKEN");
+        var envToken = Environment.GetEnvironmentVariable(AzdoTokenEnvVarName);
         if (string.IsNullOrEmpty(envToken))
             return null;
 
-        return LooksLikeJwt(envToken)
-            ? new AzdoCredential(envToken, "Bearer", "AZDO_TOKEN (Bearer)") { DisplayToken = envToken }
-            : new AzdoCredential(EncodePatForBasic(envToken), "Basic", "AZDO_TOKEN (PAT)") { DisplayToken = envToken };
+        return GetExplicitSchemeOverride() switch
+        {
+            "Bearer" => new AzdoCredential(envToken, "Bearer", "AZDO_TOKEN (Bearer)") { DisplayToken = envToken },
+            "Basic" => new AzdoCredential(EncodePatForBasic(envToken), "Basic", "AZDO_TOKEN (PAT)") { DisplayToken = envToken },
+            _ => LooksLikeJwt(envToken)
+                ? new AzdoCredential(envToken, "Bearer", "AZDO_TOKEN (Bearer)") { DisplayToken = envToken }
+                : new AzdoCredential(EncodePatForBasic(envToken), "Basic", "AZDO_TOKEN (PAT)") { DisplayToken = envToken }
+        };
+    }
+
+    private static string? GetExplicitSchemeOverride()
+    {
+        var tokenType = Environment.GetEnvironmentVariable(AzdoTokenTypeEnvVarName);
+        if (string.Equals(tokenType, "bearer", StringComparison.OrdinalIgnoreCase))
+            return "Bearer";
+
+        if (string.Equals(tokenType, "pat", StringComparison.OrdinalIgnoreCase))
+            return "Basic";
+
+        return null;
     }
 
     private static string EncodePatForBasic(string token)

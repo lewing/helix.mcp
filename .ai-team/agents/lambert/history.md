@@ -61,3 +61,7 @@
 📌 Team update (2026-03-13): AzDO auth is now the narrow chain `AZDO_TOKEN` → `AzureCliCredential` → az CLI → anonymous, with scheme-aware `AzdoCredential` metadata and `DisplayToken` kept separate from the wire token. — decided by Dallas, Ripley
 
 📌 Team update (2026-03-13): MCP-facing Helix names/descriptions should stay scope-accurate and low-context: use `helix_parse_uploaded_trx`, `helix_search`, and keep repo-specific routing in `helix_ci_guide`. — decided by Ripley
+- For private or compile-time auth seams, prefer narrow seam tests: drive `AzdoApiClient` redaction through public 500-response behavior, and use reflection only for `AzdoCredential` API-surface assertions or `TryGetEnvCredential` env-only behavior.
+- Edge case: `GetAccessTokenAsync()` does not return null when only `AZDO_TOKEN_TYPE` is set, because the accessor still falls through to `AzureCliCredential`/`az` fallback; the null assertion belongs at the env-resolution seam, not the full accessor chain.
+- Edge case: redaction regexes are intentionally selective — `token|key|password|secret=` values, JWT-shaped triples, and 41+ char base64-like blobs redact independently, while ordinary `name=value` text such as `reason=timeout` should remain visible in exception snippets.
+- Key file paths: `src/HelixTool.Tests/AzDO/AzdoApiClientRedactionTests.cs` covers error-body redaction via `GetBuildAsync`, and `src/HelixTool.Tests/AzDO/AzdoTokenAccessorTests.cs` now locks invalid override fallback, missing-token env behavior, and `AzdoCredential` operator metadata.
