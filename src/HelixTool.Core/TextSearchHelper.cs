@@ -24,11 +24,13 @@ public static class TextSearchHelper
 
         var matchIndices = new List<int>();
 
-        for (int i = 0; i < lines.Length && matchIndices.Count < maxMatches; i++)
+        int i;
+        for (i = 0; i < lines.Length && matchIndices.Count < maxMatches; i++)
         {
             if (lines[i].Contains(pattern, StringComparison.OrdinalIgnoreCase))
                 matchIndices.Add(i);
         }
+        var scannedAll = i >= lines.Length;
 
         var matches = new List<LogMatch>();
         foreach (var idx in matchIndices)
@@ -45,6 +47,6 @@ public static class TextSearchHelper
             matches.Add(new LogMatch(idx + 1, lines[idx], context));
         }
 
-        return new LogSearchResult(identifier, matches, lines.Length, matches.Count >= maxMatches);
+        return new LogSearchResult(identifier, matches, lines.Length, Truncated: !scannedAll && matches.Count >= maxMatches);
     }
 }
