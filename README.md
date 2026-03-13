@@ -64,7 +64,7 @@ flowchart LR
 
     subgraph Cache["Caching Layer"]
         direction TB
-        Check{"Cache\nhit?"}
+        Check{"Cache<br/>hit?"}
     end
 
     Check -- miss --> API["Helix / AzDO API"]
@@ -73,7 +73,7 @@ flowchart LR
 
     subgraph Store["SQLite + Disk (shared)"]
         direction TB
-        DB["SQLite DB\n(WAL mode)"]
+        DB["SQLite DB<br/>(WAL mode)"]
         Artifacts["Artifact files"]
     end
 
