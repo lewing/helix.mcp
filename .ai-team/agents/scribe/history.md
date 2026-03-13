@@ -36,3 +36,9 @@
 - Merged 7 inbox decisions into `decisions.md`, consolidating Lambert's README/resources and idempotent-annotation notes into one shared block
 - Propagated a consolidated 2026-03-13 team update to Ash, Dallas, Kane, Lambert, and Ripley
 - Summarized Dallas, Lambert, and Ripley histories into archive/context after the size check
+
+### 2026-03-13: Auth remaining bookkeeping
+- Logged `2026-03-13-auth-remaining` for Larry Ewing
+- Merged 1 inbox decision into `decisions.md`, folding the PR #28 auth-source/cache-isolation/auth-status note into the consolidated 2026-03-13 AzDO auth decision and removing overlapping duplicate decision blocks
+- Propagated the merged auth decision to Ash, Dallas, Kane, and Lambert histories
+- Summarized Ripley history after the size check
