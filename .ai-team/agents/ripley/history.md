@@ -9,39 +9,12 @@
 - **HelixIdResolver:** Handles bare GUIDs, full Helix URLs, and `TryResolveJobAndWorkItem` for URL-based jobId+workItem extraction
 - **MatchesPattern:** Simple glob — `*` matches all, `*.ext` matches suffix, else substring match
 
-## Core Context (summarized through 2026-03-09)
+## Core Context
 
-> Older history archived to history-archive.md on 2026-03-09.
-
-**Architecture & DI:** IHelixApiClient with projection interfaces (IJobDetails, IWorkItemSummary, IWorkItemDetails, IWorkItemFile). Constructor injection on HelixService. DI: CLI via `ConsoleApp.ServiceProvider`, MCP via `builder.Services.AddSingleton<>()`. Two DI containers in CLI (commands + `hlx mcp`). Program.cs has UTF-8 BOM.
-
-**Helix features (P0-P1 complete):** Positional args, dotnet tool packaging, --json flag, namespace cleanup, rich status, download by URL, ConsoleLogUrl, batch status (SemaphoreSlim(5)), URL parsing for optional workItem, structured JSON, stdio MCP transport, hlx_search_file (SearchLines helper, binary detection, 50MB cap), hlx_test_results (TRX+xUnit XML, XXE-safe, auto-discovery via TestResultFilePatterns). Status filter: `failed|passed|all`. MaxBatchSize=50. URL scheme validation (http/https only).
-
-**Cache (2026-02-12):** SQLite-backed (WAL mode, connection-per-operation with `Cache=Shared`), CachingHelixApiClient decorator with TTL matrix, XDG paths, `HLX_CACHE_MAX_SIZE_MB=0` disables. Auth isolation via per-token-hash DB + artifact dirs. Path traversal defense-in-depth: sanitize + `Path.GetFullPath` prefix check. `ValidatePathWithinRoot` must append `DirectorySeparatorChar` to root.
-
-**HTTP/SSE multi-auth (2026-02-13):** IHelixTokenAccessor + IHelixApiClientFactory + ICacheStoreFactory pattern. HttpContextHelixTokenAccessor in HelixTool.Mcp. Scoped DI for HTTP transport. Multi-auth deferred — single-token-per-process sufficient. CacheStoreFactory uses `ConcurrentDictionary<K, Lazy<T>>` for thread-safe single-invocation.
-
-**MCP API refactoring:** FileEntry simplified to `(Name, Uri)`. `FindFilesAsync` generalized from binlog-only. `hlx_batch_status` uses `string[]` (native MCP arrays). All MCP JSON output camelCase via `JsonNamingPolicy.CamelCase`. `UseStructuredContent=true` for all 12 tools (hlx_logs excepted). HelixException → McpException translation in tool handlers.
-
-**Test result parsing:** TRX strict + xUnit XML best-effort. Auto-discovery via TestResultFilePatterns (`*.trx`, `testResults.xml`, `*.testResults.xml.txt`, `testResults.xml.txt`). Single file list query per work item. `IsTestResultFile()` public for CLI tagging.
-
-**AzDO foundation (2026-03-07):** Files in `src/HelixTool.Core/AzDO/`. AzdoModels.cs (sealed records, `[JsonPropertyName]`), IAzdoTokenAccessor (AZDO_TOKEN → az CLI → null), AzdoIdResolver (dev.azure.com + visualstudio.com, no regex), IAzdoApiClient (7 methods), AzdoApiClient (HTTP + Bearer auth, 404→null, 401/403→auth hint). CachingAzdoApiClient with `azdo:` key prefix, dynamic TTL by build status.
-
-**AzDO MCP tools (2026-03-07):** 6 tools with `azdo_` prefix. Context-limiting defaults: tailLines=500, top=20-200, filter="failed". Timeline filtering is client-side (parent chain walk-up). Model types used directly as MCP returns (no wrapper DTOs needed). Cache keys must include all limit/filter parameters.
-
-**AzDO CLI (2026-03-08):** 9 commands mirroring MCP tools. IHttpClientFactory via DI (named clients "HelixDownload" + "AzDO", 5-min timeout). `HttpCompletionOption.ResponseHeadersRead` for streaming.
-
-**Mcp.Tools extraction (2026-03-08):** Separate `HelixTool.Mcp.Tools` project for MCP tool definitions + DTOs. ModelContextProtocol dependency removed from Core. `WithToolsFromAssembly(typeof(HelixMcpTools).Assembly)`. Internal→public promotions for cross-assembly access. `git mv` for history preservation. Test project references Core, Mcp, and Mcp.Tools.
-
-**AzDO search & timeline tools (2026-03-08–09):** `TextSearchHelper` extracted to Core (shared Helix/AzDO search). Domain types (TimelineSearchMatch, TimelineSearchResult, CrossStepSearchResult) in Core AzdoModels.cs, returned directly by MCP tools. `[JsonIgnore]` for raw record access. CRLF normalization (`\r\n`→`\n`) before Split('\n'). `IsFileSearchDisabled` dual-check: MCP→McpException, service→InvalidOperationException. CLI-side validation references CLI option names in errors. MCP result fields named for broader type (e.g., `Build` not `BuildId`). McpException wrapping for service exceptions. `result="failed"` filter means non-succeeded OR has issues.
-
-**Key patterns:**
-- `File.Move(overwrite: true)` on Windows: catch both `IOException` and `UnauthorizedAccessException`
-- Per-invocation `Guid.NewGuid()` temp dirs to prevent cross-process races
-- `WithToolsFromAssembly()` needs explicit assembly arg for referenced libs
-- MCP descriptions should expose behavioral contracts, not implementation mechanics
-- Default parameter values: check test call sites when extracting methods to public APIs
-- CLI context line-numbers: use `m.LineNumber - contextLines`, not TakeWhile (breaks with duplicate lines)
+- **Implementation layout:** service code lives under `src/HelixTool.Core/Helix/` and `src/HelixTool.Core/AzDO/`; MCP tool definitions live under `src/HelixTool.Mcp.Tools/Helix/` and `src/HelixTool.Mcp.Tools/AzDO/`.
+- **Cache/search primitives:** `CachingHelixApiClient`, `CachingAzdoApiClient`, `StringHelpers`, and `TextSearchHelper` are the shared implementation seams; `HLX_CACHE_MAX_SIZE_MB=0` disables caching and `HLX_DISABLE_FILE_SEARCH` disables file-content search.
+- **Wire-format conventions:** structured MCP tools use `UseStructuredContent=true`, camelCase JSON/property names remain stable, and descriptions stay behavior-first with repo-specific guidance routed to `helix_ci_guide`.
+- **Auth/runtime:** Helix auth remains env-var based, while AzDO auth now uses the narrow chain `AZDO_TOKEN` → `AzureCliCredential` → az CLI → anonymous with metadata carried by `AzdoCredential`.
 
 ## Learnings (azdo_search_log_across_steps implementation)
 
@@ -57,7 +30,6 @@
 
 ## Learnings (perf & review fixes)
 
-- **Perf review (2025-07-18):** 17 allocation issues, 8 fixed — chained `.Replace()`, Split+Join, substring-in-loops, disk round-trip for search, JSON-serialized log strings.
 - **PR #13/14 fixes:** Integer overflow guards, allocation-free `CountLines`, `SearchValues<char>`, cache `raw:` prefix migration, CRLF normalization, sentinel collision fix via NUL byte.
 - **Version 0.3.0:** AzDO integration, perf optimizations, incremental log support.
 
@@ -70,6 +42,62 @@
 📌 Team update (2026-03-09): CI profile analysis — 14 tool description/error message recommendations. — Ash
 
 📌 Team update (2025-07-24): Test quality review — ~17 redundant tests deleted, no layer duplication rule. — Dallas
+## Learnings (MCP tool description updates with CI knowledge)
+
+- **5 tool descriptions updated** with repo-specific CI knowledge (helix_test_results, helix_search_log, azdo_test_runs, azdo_test_results, azdo_timeline).
+- **warn-before-fail pattern:** helix_test_results warns that 4/6 repos don't upload TRX, directing to azdo_test_runs/results.
+- **Repo-specific search patterns:** runtime=`[FAIL]`, aspnetcore/efcore=`  Failed`, sdk=`error MSB`, roslyn=`aborted`/`Process exited`.
+- **azdo_test_runs:** failedTests=0 can lie — always drill into results. azdo_timeline includes Helix task name mapping per repo.
+
+## Learnings (CiKnowledgeService enrichment — 9-repo knowledge base)
+
+- **CiRepoProfile expanded** with 9 new properties (PipelineNames, OrgProject, ExitCodeMeanings, etc.). Init-only defaults for backward compat. 3 new repos: maui (3 pipelines), macios (devdiv, NUnit), android (devdiv, NUnit+xUnit). Total: 9.
+- **devdiv org repos need ⚠️ warnings** — standard helix_*/ado-dnceng-* tools don't work for macios/android.
+- **MAUI is unique:** 3 separate pipelines with different investigation approaches. Pipeline identity matters for tool selection.
+- **FormatProfile/GetOverview enriched** with org, pipelines, gotchas, exit codes, investigation order columns.
+
+📌 Team update (2026-03-10): CiKnowledgeService enrichment (9 repos, 9 new properties, 171 tests, PR #16). — Ripley
+
+## Learnings (PR #16 review comment fixes)
+
+- **Try-block indentation:** Re-indent body when wrapping in try. Caught in 4 HelixMcpTools methods.
+- **McpException must include inner exception and "Failed to" prefix.** Three AzDO search catch blocks were dropping context.
+- **Error messages: don't hardcode one repo's pattern.** Use multiple patterns + point to `helix_ci_guide`.
+- **Bool→string for nuanced semantics.** `UploadsTestResultsToHelix: bool` → `HelixTestResultAvailability: string` (`"none"`, `"partial"`, `"varies"`).
+- **When renaming record properties, update test assertions too.**
+
+## Learnings (Option A folder restructuring)
+
+- **Moved 9 Helix files** from `Core/` root to `Core/Helix/`: HelixService, HelixApiClient, IHelixApiClient, IHelixApiClientFactory, HelixIdResolver, HelixException, IHelixTokenAccessor, ChainedHelixTokenAccessor, plus CachingHelixApiClient from `Cache/`. Namespace: `HelixTool.Core` → `HelixTool.Core.Helix`.
+- **Added `HelixTool.Core.Cache` namespace** to 6 cache infrastructure files in `Cache/`: SqliteCacheStore, ICacheStore, ICacheStoreFactory, CacheOptions, CacheSecurity, CacheStatus.
+- **Extracted `MatchesPattern` and `IsFileSearchDisabled`** from HelixService to `StringHelpers.cs`. HelixService methods now delegate to StringHelpers. AzdoService, HelixMcpTools, and AzdoMcpTools updated to call StringHelpers directly — breaking the AzDO→Helix coupling.
+- **Moved MCP tools**: HelixMcpTools → `Mcp.Tools/Helix/`, AzdoMcpTools → `Mcp.Tools/AzDO/`.
+- **Moved 24 Helix-specific test files** to `Tests/Helix/`. Kept shared tests (cache, security, CI knowledge, text search, API middleware) at root.
+- **HelixService.cs needed `using HelixTool.Core.Cache;`** — it references `CacheSecurity` for path validation. Initial build failed until this was added. Key learning: when splitting namespaces within the same project, intra-project cross-namespace references are easy to miss.
+- **StringHelpers changed from `internal` to `public`** to support cross-project access (MCP tools project references it).
+- **59 files touched**, 0 behavioral changes, all 1038 tests pass.
+
+📌 Team update (2026-03-10): Option A folder restructuring executed — 9 Helix files moved to Core/Helix/, Cache namespace added, shared utils extracted from HelixService, Helix/AzDO subfolders in Mcp.Tools and Tests. 59 files, 1038 tests pass, zero behavioral changes. PR #17. — decided by Dallas (analysis), Ripley (execution)
+
+## Learnings (security boundary and DI review fixes)
+
+- **Path boundary checks:** For security-sensitive root containment, normalize both paths, preserve the root boundary with `Path.TrimEndingDirectorySeparator(...) + Path.DirectorySeparatorChar`, and compare with `StringComparison.Ordinal`; ignore-case prefix checks can admit case-variant sibling paths on case-sensitive filesystems.
+- **HelixService constructor contract:** `HelixService` should require an injected `HttpClient` and null-guard both constructor dependencies instead of silently allocating a fallback transport.
+- **User preference:** Code-review follow-up fixes should stay surgical, behavior-safe, and avoid unrelated refactoring.
+- **Key file paths:** `src/HelixTool.Core/Cache/CacheSecurity.cs` contains cache/download path traversal guards. `src/HelixTool.Core/Helix/HelixService.cs` owns direct URL download behavior and now depends on caller-provided `HttpClient`. `src/HelixTool/Program.cs` and `src/HelixTool.Mcp/Program.cs` are the production DI registration points for `HelixService`.
+
+📌 Team update (2026-03-10): Review-fix decisions merged — README now leads with value prop, shared caching, and context reduction; cache path containment uses exact Ordinal root-boundary checks; and HelixService requires an injected HttpClient with no implicit fallback. Validation confirmed current CLI/MCP DI sites already comply and focused plus full-suite coverage exists. — decided by Kane, Lambert, Ripley
+
+📌 Team update (2026-03-10): Knowledgebase refresh guidance merged — treat the knowledgebase as a living document aligned to current file state, not a static snapshot; earlier README/cache-security/HelixService review findings are resolved knowledge, and only residual follow-up should stay active (discoverability plus documentation/tool-description synchronization). — requested by Larry Ewing, refreshed by Ash
+
+## Learnings (discoverability routing pass)
+
+- **Behavioral routing beats vague warnings:** For tool-selection surfaces, state when a tool works, when to skip it, and the exact fallback path instead of saying it may fail.
+- **Guide ordering pattern:** A short `Start Here` section before gotchas and inventory makes repo-specific workflow choice discoverable without reading the entire CI profile.
+- **User preference:** Keep discoverability improvements incremental; do not add composite tools or new parameters when wording/order changes can solve the workflow gap.
+- **Key file paths:** `src/HelixTool.Mcp.Tools/Helix/HelixMcpTools.cs` holds MCP tool descriptions, `src/HelixTool.Core/Helix/HelixService.cs` owns `helix_test_results` fallback messaging, `src/HelixTool.Core/CiKnowledgeService.cs` formats repo-specific CI guides, `src/HelixTool.Mcp.Tools/CiKnowledgeTool.cs` describes `helix_ci_guide`, and `src/HelixTool/Program.cs` mirrors MCP guidance in llms-txt/help output.
+
+📌 Team update (2026-03-10): Discoverability routing decisions merged — keep the current tool surface, route repo-specific workflow selection through `helix_ci_guide(repo)`, treat `helix_test_results` as structured Helix-hosted parsing rather than a universal first step, and keep `helix_search_log`/docs/help guidance synchronized across surfaces. — decided by Dallas, Kane, Ripley
 
 ## Learnings (helix_test_results → helix_parse_uploaded_trx rename)
 
@@ -97,3 +125,15 @@
 - **Shared log-search truncation belongs in `LogSearchResult`.** Adding `Truncated` at the shared `TextSearchHelper.SearchLines` layer fixed Helix console-log MCP responses and also made single-log AzDO CLI/MCP responses surface early-stop state without duplicating search logic.
 - **Raw-list MCP outputs can gain metadata without losing list semantics in tests.** A `LimitedResults<T>` wrapper that implements `IReadOnlyList<T>` but uses a custom JSON converter lets MCP emit `{ results, truncated, note }` while existing direct C# callers still use `Count`, indexers, and `Assert.Single/Empty` naturally.
 - **When defaults change, sync all agent-facing surfaces together.** For these tools that meant MCP parameter defaults, CLI command defaults, XML/help text in `Program.cs`, and human-facing stop-early hints so agents and humans get the same expectations.
+## Learnings (AzDO Azure.Identity credential chain)
+
+- **AzDO auth chain order is now** `AZDO_TOKEN` → `AzureCliCredential` → `az account get-access-token` subprocess → anonymous. `DefaultAzureCredential` stays out of the path to avoid slow probing/timeouts.
+- **`IAzdoTokenAccessor` now returns `AzdoCredential` metadata** so callers can distinguish `Bearer` vs `Basic` and surface a safe auth source string in errors.
+- **PAT handling is pre-encoded at the accessor boundary:** non-JWT `AZDO_TOKEN` values are treated as PATs and converted to the Basic header payload for `:{pat}`. `AzdoApiClient` just applies the declared scheme.
+- **`AzdoCredential.DisplayToken` exists for compatibility** so older string-based tests/mocks still compile and compare human-readable token values while `Token` remains the on-wire header payload.
+- **AzDO auth failures now include request context** (`org/project` plus credential source) so 401/403 errors explain which auth path was attempted and how to recover.
+- **Validation:** `dotnet build HelixTool.slnx --nologo` passes, and the AzDO-focused test slice passes with serial xUnit runsettings because the env-var auth tests mutate global process state.
+
+📌 Team update (2026-03-13): AzDO auth is now the narrow chain `AZDO_TOKEN` → `AzureCliCredential` → az CLI → anonymous, with scheme-aware `AzdoCredential` metadata and `DisplayToken` kept separate from the wire token. — decided by Dallas, Ripley
+
+📌 Team update (2026-03-13): README/docs should expose MCP resources (`ci://profiles`, `ci://profiles/{repo}`) and treat idempotent annotations as a context-efficiency design point. — decided by Lambert

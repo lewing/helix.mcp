@@ -4,10 +4,10 @@
 
 ### 2025-07-18: Architecture Review — hlx project improvement proposal
 
-**By:** Dallas
-**Requested by:** Larry Ewing
+### 2025-07-18: Architecture Review — Initial Assessment (archived)
 
----
+- Archived summary of the original Dallas review: the Core/CLI/MCP split was sound, but namespace collisions, direct SDK construction, and missing error handling were the main structural risks.
+- Most follow-up work landed in 2026 (DI/testability, cache architecture, namespace cleanup, tool extraction, folder reorg); remaining long-term guidance is to keep service boundaries clear and continue treating descriptions/docs as behavioral contracts.
 
 ## 1. Architecture — Core/CLI/MCP Split
 
@@ -218,12 +218,20 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 **By:** Ash
 **What:** Created `.ai-team/requirements.md` with 18 user stories (US-1 through US-18), categorized into Implemented, Planned, Architectural, and Discovered requirements. Prioritized P0–P3 with ownership assignments. P0 items are: layered architecture (US-7), logs-out-of-context principle (US-8), DI/testability (US-12), and error handling (US-13).
 **Why:** The session contained requirements scattered across plan.md, architecture docs, checkpoint notes, and implicit workflow observations. No single source had the full picture. The team needs a single backlog to prioritize from, and the P0 items (testability + error handling) must land before any feature work — Dallas identified this correctly and I'm reinforcing it as the requirements owner. Ripley should not pick up P1/P2 stories until US-12 and US-13 are done.
+### 2025-07-14: MatchesPattern exposed via InternalsVisibleTo
+
+- `MatchesPattern` was made `internal` and `HelixTool.Tests` was added to `InternalsVisibleTo` so matching logic can be tested without widening the public API.
+- Established the convention that shared internal helpers may stay non-public when tests can reach them through the project friendship boundary.
+
+### 2025-07-18: Requirements backlog formalized — 18 user stories extracted from session 72e659c1
+
+- Created `.ai-team/requirements.md` with 18 user stories and P0–P3 prioritization so architectural and feature work could be sequenced from one backlog.
+- P0 remained layered architecture, logs-out-of-context, DI/testability, and error handling; feature work should follow those foundations.
 
 ### 2026-02-11: P0 Foundation Design Review — IHelixApiClient, DI, HelixException, CancellationToken (D1–D10)
 
-**By:** Dallas
-**Date:** 2026-02-11
-**Context:** Design review for US-12 (DI/testability) and US-13 (error handling)
+- Foundation contract: `IHelixApiClient` is the single mock boundary; `HelixService` uses constructor injection; `HelixException`, input validation, and `CancellationToken` support are standard across async APIs.
+- Use projection interfaces for concrete Helix SDK models and keep shared JSON options static instead of allocating per call.
 
 **Decisions:**
 - **D1:** `IHelixApiClient` interface in `HelixTool.Core` — 6 methods mirroring actual SDK usage, all with `CancellationToken`
@@ -241,9 +249,8 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 
 ### 2026-02-11: P0 Implementation — Runtime Decisions
 
-**By:** Ripley
-**Date:** 2026-02-11
-**Context:** Discovered during P0 implementation (US-12, US-13)
+- Use `cancellationToken.IsCancellationRequested` to distinguish true cancellation from HTTP timeout when catching `TaskCanceledException`.
+- Helix SDK models are concrete, so `HelixApiClient` should adapt them to projection interfaces (`IJobDetails`, `IWorkItemSummary`, `IWorkItemDetails`, `IWorkItemFile`) before they reach the service layer.
 
 - **TaskCanceledException timeout detection:** Use `cancellationToken.IsCancellationRequested` (true = real cancellation, false = HTTP timeout), NOT `ex.CancellationToken == cancellationToken`. The equality check fails when both tokens are `CancellationToken.None` (default parameter).
 - **Helix SDK model types are concrete:** `JobDetails`, `WorkItemSummary`, `WorkItemDetails`, `UploadedFile` have no interfaces. Solved with projection interfaces (`IJobDetails`, `IWorkItemSummary`, `IWorkItemDetails`, `IWorkItemFile`) in `IHelixApiClient.cs` and private adapter classes in `HelixApiClient.cs`.
@@ -251,9 +258,8 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 
 ### 2026-02-11: P0 Test Infrastructure Decisions
 
-**By:** Lambert
-**Date:** 2026-02-11
-**Context:** Test creation for P0 foundation
+- NSubstitute 5.x is the mocking framework for Core tests; invalid-input tests were updated to assert throws after the resolver contract changed.
+- Parallel/proactive test writing against an agreed design spec is acceptable when signatures are stable.
 
 - **NSubstitute 5.* chosen as mocking framework** per Dallas's D9 recommendation. Simpler API than Moq (no `Setup(...).Returns(...)` ceremony, no `.Object` property). `.ThrowsAsync()` from `NSubstitute.ExceptionExtensions` maps cleanly to D6 error handling contract.
 - **HelixIdResolver invalid-input tests updated for D7 breaking change:** Replaced 5 pass-through tests with `ArgumentException` throw assertions. Happy-path GUID/URL extraction tests unchanged.
@@ -261,8 +267,8 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 
 ### 2026-02-11: US-1 & US-20 Implementation — Positional Args + Rich Status Output
 
-**By:** Ripley
-**Date:** 2025-07-18
+- CLI commands use positional `jobId` / `workItem` arguments, and status output includes state, machine, duration, and other richer work-item metadata for both CLI and MCP.
+- The duplicated `FormatDuration` helper is acceptable with two consumers; only extract it if a third caller appears.
 
 - **US-1 (Positional Arguments):** Applied `[Argument]` attribute to `jobId` on all 5 commands and `workItem` on logs/files/download. Named `--job-id` flag still works. Updated `llmstxt` to reflect positional syntax.
 - **US-20 (Rich Status Output):** Expanded `IWorkItemDetails` with `State`, `MachineName`, `Started`, `Finished`. `WorkItemResult` now includes `State`, `MachineName`, `Duration`. CLI shows `[FAIL] Name (exit code 1, 2m 34s, machine: helix-win-01)`. MCP JSON includes per-work-item `state`, `machineName`, `duration`.
@@ -271,9 +277,8 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 
 ### 2026-02-12: Documentation fixes — llmstxt, README, XML doc comments
 
-**By:** Kane
-**Date:** 2026-02-12
-**Requested by:** Larry Ewing
+- `README.md` and the `llmstxt` output in `Program.cs` are the authoritative public docs and must be updated together whenever commands or MCP tools change.
+- The 2026 docs pass also added XML comments broadly; remaining historical gaps were HelixIdResolver docs, HelixMcpTools class docs, LICENSE, and dotnet-tool install guidance.
 
 - **llmstxt indentation fix** — Raw string literal now uses `var text = """...""";` pattern with proper indentation stripping.
 - **MCP tools added to llmstxt** — All five MCP tools documented with JSON return shapes, parameters, and CLI-vs-MCP guidance.
@@ -284,9 +289,8 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 
 ### 2026-02-12: US-4 Authentication Design — HELIX_ACCESS_TOKEN env var, optional token constructor
 
-**By:** Dallas
-**Date:** 2026-02-12
-**Requested by:** Larry Ewing
+- Helix auth uses the `HELIX_ACCESS_TOKEN` environment variable; `HelixApiClient(string? accessToken)` stays anonymous when unset and authenticated when present.
+- No built-in login flow was added here — auth remained an environment/transport concern, with 401/403 errors pointing users toward the env var.
 
 - **D-AUTH-1:** Token source is `HELIX_ACCESS_TOKEN` environment variable. Matches arcade naming convention. No config file, no secrets on disk.
 - **D-AUTH-2:** `HelixApiClient` constructor accepts optional `string? accessToken`. Null/empty → anonymous (zero breakage). Non-empty → authenticated via `HelixApiTokenCredential`.
@@ -298,9 +302,8 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 
 ### 2026-02-12: Stdio MCP Transport — `hlx mcp` subcommand (Option B approved)
 
-**By:** Dallas
-**Date:** 2026-02-12
-**Requested by:** Larry Ewing
+- Primary MCP transport is stdio via `hlx mcp` inside the CLI binary; HTTP transport remains a separate path for remote or multi-client scenarios.
+- Run MCP logging to stderr and keep tool discovery explicit when scanning assemblies outside the entry assembly.
 
 - **Decision:** Support stdio MCP via `hlx mcp` subcommand in CLI binary. Not in separate HelixTool.Mcp project.
 - **Why:** All primary consumers (Copilot CLI, Claude Desktop, VS Code, ci-analysis skill) use stdio. Single binary install aligns with US-5.
@@ -312,9 +315,8 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 
 ### 2026-02-12: Stdio MCP Implementation — Runtime decisions
 
-**By:** Ripley
-**Date:** 2026-02-12
-**Implements:** Dallas's stdio MCP design
+- The `mcp` command builds its own DI container with `Host.CreateApplicationBuilder()` instead of reusing the CLI command container.
+- At this stage duplicated tool definitions were acceptable, but tool discovery still required `WithToolsFromAssembly(typeof(HelixMcpTools).Assembly)`.
 
 - `HelixMcpTools.cs` copied to CLI project (same namespace, discovered by `WithToolsFromAssembly()`).
 - `mcp` command creates its own DI container via `Host.CreateApplicationBuilder()` — does not reuse CLI's `ServiceCollection`.
@@ -324,8 +326,8 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 
 ### 2026-02-12: MCP Tools Test Strategy
 
-**By:** Lambert
-**Date:** 2025-07-18
+- MCP tests parse JSON output and assert behavior through the tool surface rather than reaching into formatting helpers directly.
+- Original error-path convention was structured error JSON for download failures; later structured-content work superseded the string-only transport details.
 
 - Tests reference HelixTool.Mcp via `ProjectReference`. `HelixMcpTools` lives in `namespace HelixTool`.
 - `FormatDuration` tested indirectly through Status output (6 branches via arranged timestamps).
@@ -335,9 +337,8 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 
 ### 2026-02-12: US-5 + US-25 Implementation — dotnet tool packaging + ConsoleLogUrl
 
-**By:** Ripley
-**Date:** 2026-02-12
-**Requested by:** Larry Ewing
+- HelixTool ships as a dotnet tool, and work-item results include a computed `ConsoleLogUrl` in both CLI and MCP output for direct navigation.
+- When MCP tool definitions lived in two hosts, both copies had to stay in sync for wire-format changes.
 
 - **US-5 (dotnet tool):** Added `<Version>0.1.0</Version>` to HelixTool.csproj. Updated `<Description>` and `<Authors>`. `PackAsTool`, `ToolCommandName`, `PackageId` already existed.
 - **US-25 (ConsoleLogUrl):** `WorkItemResult` record gained 6th positional parameter `string ConsoleLogUrl`. URL: `https://helix.dot.net/api/2019-06-17/jobs/{id}/workitems/{name}/console`. CLI shows URL below failed items. MCP JSON includes `consoleLogUrl` for all items.
@@ -416,10 +417,8 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 
 ### 2026-02-12: US-10 (Work Item Detail) and US-23 (Batch Status) Implementation
 
-
-**By:** Ripley
-**Date:** 2026-02-12
-**Status:** Implemented
+- Added `GetWorkItemDetailAsync` and `GetBatchStatusAsync`, plus matching CLI/MCP entry points for per-item details and multi-job aggregation.
+- Batch status uses `SemaphoreSlim(5)` throttling and work-item detail fetches details/files in parallel.
 
 **US-10 (Work Item Detail):** New `GetWorkItemDetailAsync` method in `HelixService` returns detailed info about a single work item — exit code, state, machine, duration, console log URL, and file list with type tags. Design: parallel fetch via `Task.WhenAll`, `WorkItemDetail` nested record, CLI `hlx work-item <jobId> <workItem> [--json]`, MCP `hlx_work_item` with US-29 URL resolution, standard error handling.
 
@@ -433,9 +432,8 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 
 ### 2026-02-12: US-21 Failure Categorization
 
-
-**By:** Ripley
-**Date:** 2026-02-12
+- Failure categorization lives in a top-level `FailureCategory` enum and is populated only for failed work items.
+- `ClassifyFailure` is a static helper on `HelixService`; state-based heuristics outrank exit-code guesses.
 
 ## Decision
 
@@ -468,9 +466,8 @@ No test modifications needed — all 100 existing tests pass. The new `FailureCa
 
 ### 2026-02-12: US-22: Console Log Search / Pattern Extraction
 
-**By:** Ripley
-**Date:** 2026-02-12
-**Requested by:** Larry Ewing
+- `SearchConsoleLogAsync` followed a simple download-search-delete pattern and added `LogMatch`/`LogSearchResult` with optional context windows.
+- Search reused existing console-log download/error handling instead of adding a separate streaming path.
 
 ## Decision
 
@@ -497,8 +494,8 @@ Implemented `SearchConsoleLogAsync` in HelixService to search console log conten
 
 ### 2026-02-12: Consolidate HelixMcpTools into HelixTool.Core
 
-**By:** Ripley
-**Requested by:** Larry Ewing
+- Tool definitions were consolidated into one `HelixTool.Core` source file so stdio and HTTP hosts stop carrying duplicate implementations.
+- Both hosts must call `WithToolsFromAssembly(typeof(HelixMcpTools).Assembly)` because default scanning only inspects the calling assembly.
 
 `HelixMcpTools.cs` was duplicated in two projects:
 - `src/HelixTool/HelixMcpTools.cs` (namespace `HelixTool`) — used by stdio MCP via `hlx mcp`
@@ -540,12 +537,30 @@ Both copies contained identical logic and had to be kept in sync manually. Conso
 **By:** Ripley
 **What:** Created `.github/workflows/publish.yml` that publishes `lewing.helix.mcp` to nuget.org on `v*` tag push using NuGet Trusted Publishing (OIDC) via `NuGet/login@v1`. Creates a GitHub Release with the nupkg attached. No API key secrets — only `NUGET_USER` is needed. Pattern adapted from baronfel/mcp-binlog-tool.
 **Why:** Trusted Publishing is the modern NuGet approach — OIDC tokens are short-lived and scoped to the workflow, eliminating long-lived API key secrets. The workflow mirrors CI's .NET 10 preview SDK setup for consistency. Using `-o src/HelixTool/nupkg` gives a predictable output path for both the push glob and the release artifact attachment. Changelog support intentionally deferred — simple `Release ${{ github.ref_name }}` body for now.
+### 2025-07-21: CI workflow added at .github/workflows/ci.yml
+
+- GitHub Actions CI runs restore, build, and test on Ubuntu and Windows for pushes/PRs, using the repo-root `nuget.config` and .NET 10 preview.
+- Cross-platform validation is part of the normal maintenance bar for the tool.
+
+### 2026-02-11: McpServer package type support
+
+- Added the `McpServer` package type and `.mcp/server.json` so clients can use the `dnx hlx mcp` zero-install path.
+- Package metadata should continue to support both normal dotnet-tool installs and MCP registry discovery.
+
+### 2025-07-23: Rename NuGet package from `hlx` to `lewing.helix.mcp`
+
+- The package identity is `lewing.helix.mcp` while the command name remains `hlx`; server metadata was updated to the newer MCP registry schema.
+- Use the owner-scoped package naming pattern for public discovery instead of short generic IDs.
+
+### 2025-02-12: NuGet Trusted Publishing workflow
+
+- Publishing uses GitHub Actions OIDC / NuGet Trusted Publishing on `v*` tags, avoiding long-lived nuget.org API keys.
+- The workflow also creates a GitHub Release and attaches the produced nupkg artifact.
 
 ### 2026-02-12: Refined Cache Requirements — SQLite-backed, Cross-Process Shared Cache
-**By:** Larry (via Coordinator)
-**What:** Refined caching requirements superseding the original Dallas design. Key changes: SQLite-backed (not in-memory), cross-process shared cache for stdio MCP server instances, XDG-compliant cache location, 1GB default cap (configurable).
 
-**Why:** Each MCP stdio invocation is a fresh process — in-memory cache is useless for the primary use case. SQLite provides safe concurrent access across multiple hlx instances (WAL mode), structured queryable metadata, and reliable cross-process sharing.
+- Cache requirements settled on SQLite metadata + disk artifacts, XDG-compliant roots, a 1 GB default cap, and cross-process sharing for stdio MCP processes.
+- Running console logs are never cached; completed logs, file lists, job/work-item metadata, and downloaded artifacts follow the documented TTL/eviction policy.
 
 ---
 
@@ -593,11 +608,9 @@ Console logs for running work items are append-only streams. Bypass cache entire
 - Default: 1 GB
 
 ### 2026-02-12: Cache Implementation Design Review
-**By:** Dallas
-**What:** SQLite-backed cross-process caching layer for hlx — interface design, integration strategy, schema, risk assessment, and action items for Ripley (implementation) and Lambert (tests).
-**Why:** Each MCP stdio invocation (`hlx mcp`) is a fresh process. In-memory caching is useless for the primary use case. SQLite provides safe concurrent access across multiple hlx instances (WAL mode), structured queryable metadata, and reliable cross-process sharing. This design review translates Larry's refined requirements into concrete interfaces, classes, and tasks.
 
----
+- Caching belongs in a `CachingHelixApiClient` decorator over `IHelixApiClient`, not inside `HelixService`, with `ICacheStore`, SQLite schema, and cache commands owned in `Cache/`.
+- The design also established `HLX_CACHE_MAX_SIZE_MB`, WAL-mode SQLite, full-log/artifact caching rules, and the cache-key structure that later implementations followed.
 
 ## 1. Architectural Decision: Decorator on IHelixApiClient
 
@@ -995,12 +1008,15 @@ Ripley should target the interfaces first so Lambert can write tests in parallel
 **By:** Kane
 **What:** Replaced three duplicate MCP client config JSON blocks (VS Code, Claude Desktop, Claude Code/Cursor) with a single canonical example plus a table of config file locations and key names. Added `--yes` flag to all `dnx` args. Removed stale "not yet published to nuget.org" notes since v0.1.0 is live.
 **Why:** The three JSON blocks were nearly identical — only the top-level key (`servers` vs `mcpServers`) and file path differed. Duplicating them made maintenance error-prone (changes had to be made in 3+ places) and made the README unnecessarily long. The consolidated format is easier to maintain and scan. The `--yes` flag is required for MCP server definitions because `dnx` runs non-interactively when launched by an MCP client. Pattern established: when configs differ only by file path and a single key name, use one example + a table rather than repeating the full block.
+### 2025-02-13: Consolidate MCP config examples in README — one example + file path table
+
+- When MCP config examples differ only by file path or top-level key, keep one canonical JSON example and a table of target files instead of duplicating blocks.
+- For `dnx`-based configs, include `--yes` because MCP launches are non-interactive.
 
 ### 2025-02-12: Cache Test Suite Complete (L-CACHE-1 through L-CACHE-10)
-**By:** Lambert
-**What:** 56 tests covering all 10 Dallas cache test action items, across 3 new test files.
 
----
+- The first cache test pass covered the decorator, SQLite store, and options with 56 tests and established temp-dir + sequential-return patterns for cache-hit simulation.
+- Cache behavior should continue to be split between fast mock-based unit tests and focused SQLite integration tests.
 
 ## Files Created
 
@@ -1028,10 +1044,9 @@ Ripley should target the interfaces first so Lambert can write tests in parallel
 - The LRU eviction test uses `MaxSizeBytes = 100` with 60-byte artifacts. This verifies the eviction fires but doesn't deeply test the LRU ordering — a more thorough test would need controlled `last_accessed` timestamps.
 
 ### 2026-02-12: Cache Implementation Details
-**By:** Ripley
-**What:** SQLite-backed caching layer implemented per Dallas's design review (R-CACHE-1 through R-CACHE-11).
 
-**Implementation decisions:**
+- The shipped cache used `Microsoft.Data.Sqlite`, destructive `user_version` migrations, a simplified artifact path strategy, and fire-and-forget startup eviction.
+- `ICacheStore` is the test seam; `CachingHelixApiClient` returns DTOs that implement the same projection interfaces used elsewhere in Core.
 
 1. **Microsoft.Data.Sqlite v9.0.7** — latest stable at time of implementation.
 
@@ -1061,12 +1076,9 @@ Ripley should target the interfaces first so Lambert can write tests in parallel
 ---
 
 ### 2026-02-13: Cache Auth Isolation (Security Fix)
-**By:** Ripley
-**Requested by:** Larry Ewing
 
-Separate SQLite databases and artifact directories per auth context, derived from HELIX_ACCESS_TOKEN:
-- No token → `{base}/public/cache.db` + `{base}/public/artifacts/`
-- Token present → `{base}/cache-{hash}/cache.db` + `{base}/cache-{hash}/artifacts/`
+- Cache roots split by auth context: `public/` for anonymous use and `cache-{hash}/` for authenticated contexts, where the hash is derived from `HELIX_ACCESS_TOKEN`.
+- Same-token reuse is intentional across restarts, and `hlx cache clear` is expected to wipe every auth-context subdirectory.
 
 Where `{hash}` = first 8 hex chars of SHA256 of the token (lowercase, deterministic).
 
@@ -1080,10 +1092,9 @@ Where `{hash}` = first 8 hex chars of SHA256 of the token (lowercase, determinis
 ---
 
 ### 2026-02-13: Path Traversal Hardening for Cache and Download Paths (Security Fix)
-**By:** Ripley
-**Requested by:** Larry Ewing
 
-Defense-in-depth against path traversal attacks via crafted inputs (job IDs, work item names, file names).
+- Introduced `CacheSecurity` helpers for segment sanitization and root-boundary validation, then applied them to cache keys, artifact paths, and download outputs.
+- Path handling in cache/download code should always sanitize user-controlled segments and confirm the resolved path stays beneath the intended root.
 
 **New: `Cache/CacheSecurity.cs`** — Static helper class with three methods:
 - `ValidatePathWithinRoot(path, root)` — canonical path traversal defense via `Path.GetFullPath` + prefix check with directory separator.
@@ -1099,8 +1110,8 @@ All 182 existing tests pass unchanged — sanitization is transparent for well-f
 
 ### 2026-02-12: HTTP/SSE multi-client auth architecture for HelixTool.Mcp
 
-**By:** Dallas
-**Requested by:** Larry Ewing
+- Remote HTTP/SSE mode should resolve Helix tokens per request via `IHttpContextAccessor`, `IHelixTokenAccessor`, `IHelixApiClientFactory`, and per-token cache-store reuse.
+- That design keeps `HelixService` and tool classes unchanged while isolating auth state and cache data across concurrent clients.
 
 **What:** Architectural design for supporting per-client Helix auth tokens in the HTTP/SSE MCP transport (`HelixTool.Mcp`), where the server is a long-running process serving multiple concurrent clients, each with potentially different Helix tokens.
 
@@ -1388,8 +1399,8 @@ When implemented, the ordering should be:
 
 ### 2026-02-12: Multi-auth support — defer, current design is sufficient
 
-**By:** Dallas
-**Requested by:** Larry Ewing
+- Do not build general multi-auth UX for hlx yet; single-token-per-process matches stdio CLI/MCP usage and keeps the composition roots simple.
+- Remote multi-client auth is a transport concern, not a reason to complicate the normal CLI or stdio workflows.
 
 **What:** Analyzed whether hlx should support multiple simultaneous Helix auth tokens (e.g., public + internal, different orgs). Recommendation: **do not implement multi-auth**. The current single-token-per-process model is correct for our execution context.
 
@@ -1523,11 +1534,20 @@ Re-evaluate if: (a) Helix deploys multiple independent instances that users need
 **By:** Lambert
 **What:** Created 46 comprehensive tests for DownloadFilesAsync and DownloadFromUrlAsync in `DownloadTests.cs`, organized into 4 test classes: DownloadFilesTests (27), DownloadFromUrlParsingTests (5), DownloadSanitizationTests (6), DownloadPatternTests (8). All 298 tests pass.
 **Why:** Download commands had zero test coverage. Tests verify happy paths (single/multi-file, pattern matching, binary content), security (path traversal via `..`, `/`, `\` — all sanitized by CacheSecurity), error handling (401/403/404/timeout/cancellation), input validation, and edge cases (empty streams, unicode filenames, same-name files, URL-encoded characters). Each test class uses a distinct ValidJobId GUID to prevent temp directory collisions during parallel xUnit execution — a pattern discovered when shared GUIDs caused file contention failures.
+### 2025-07-18: US-9 Script Removability Analysis Complete
+
+- ci-analysis can replace roughly 85% of its Helix-specific script logic with hlx immediately, with no Phase 1 blockers for migration.
+- The only meaningful gap at the time was structured test-failure extraction, which later work addressed through file parsing and search guidance.
+
+### 2026-02-13: US-6 Download E2E Verification
+
+- Download coverage grew to 46 tests spanning happy paths, sanitization, error handling, and direct-URL parsing.
+- Disk-writing test classes should use distinct job IDs so temp directories do not collide under parallel xUnit execution.
 
 ### 2026-02-15: README comprehensive updates (caching, v0.1.3, project structure)
 
-**By:** Kane
-**Requested by:** Larry Ewing
+- README was expanded to cover caching, auth, security, project structure, and the fuller tool surface as the product matured.
+- That sweep also surfaced a docs-sync rule: the `llmstxt` raw string in `Program.cs` must be updated when README command/tool inventories change.
 
 **What changed (cumulative):**
 - Caching section added (settings table, TTL policy, auth isolation, CLI commands)
@@ -1544,9 +1564,6 @@ Re-evaluate if: (a) Helix deploys multiple independent instances that users need
 **Note for Ripley:** The llmstxt output in Program.cs is now out of sync with the README — it’s missing hlx_search_file, hlx_test_results, and the search-file/	est-results CLI commands. It should be updated to match.
 
 ### 2026-02-13: Requirements audit — P0/P1/P2 completion status
-**By:** Ash
-**What:** Comprehensive audit of all 30 user stories against the actual codebase. Marked 25 stories as ✅ Implemented in requirements.md. Replaced the "Implementation Gaps" section with "Resolved Gaps" (all 8 original gaps fixed) and a new "Remaining Implementation Gaps" section (5 minor items). Updated the feature table from 7 features to 15. Identified 7 acceptance criteria that were NOT met despite the parent feature being functional — left these unchecked with explanatory notes.
-**Why:** The requirements document was significantly out of date — it still described the project as an MVP with 6 commands and 8 implementation gaps, when in reality it has 15 capabilities and all original gaps are resolved. This caused confusion about project maturity and remaining work. The updated document now accurately reflects that hlx is feature-complete for ci-analysis integration (all P1s done), with only P3 stories and one partial P2 (structured test failure parsing) remaining.
 
 **Key findings for the team:**
 1. **US-22 (structured test failure parsing)** is the only P2 that's NOT fully done. `hlx_search_log` provides generic search, but the structured `hlx_test_failures` tool was never built. This is the single remaining gap for full ci-analysis migration.
@@ -1558,12 +1575,18 @@ Re-evaluate if: (a) Helix deploys multiple independent instances that users need
 **By:** Dallas
 **What:** Comprehensive API design review of all 9 MCP tool endpoints in HelixMcpTools.cs. Verdict: the surface is well-designed for its domain and NOT overly ci-analysis-specific — it's a general-purpose Helix job inspection API that ci-analysis happens to consume. Identified 6 actionable improvements: (1) rename `hlx_logs` → `hlx_log_content`, (2) rename `hlx_download_url` → `hlx_download_file_url`, (3) fix `hlx_batch_status` comma-separated string → proper array parameter, (4) add `hlx_list_work_items` as a missing navigation tool, (5) standardize response envelope with consistent `{data, error?}` shape, (6) fix `hlx_status` inconsistent `all` parameter naming. Priority order: P0 batch_status array fix, P1 list_work_items gap, P2 naming improvements, P3 response envelope standardization.
 **Why:** Larry raised concern that the MCP surface was too tightly coupled to ci-analysis workflows. After thorough review, the tools map to Helix API primitives (jobs, work items, files, logs) rather than ci-analysis-specific orchestrations. The naming uses `hlx_` prefix consistently and maps to Helix domain concepts. However, there are real usability issues that would trip up non-ci-analysis consumers: the comma-separated jobIds string in batch_status is hostile to programmatic callers, the missing list_work_items tool forces consumers to use hlx_status (heavy) just to discover work item names, and some tool names don't self-document well. These fixes would make the API genuinely general-purpose.
+- The backlog audit showed the project was much further along than the old requirements doc implied: 25/30 stories were effectively implemented.
+- At that point the main remaining P2 gap was structured test-failure parsing; other deltas were mostly wording, heuristics, or minor ergonomics.
+
+### 2026-02-13: MCP API design review
+
+- The Helix MCP surface was confirmed as general-purpose rather than ci-analysis-specific, but a few ergonomics fixes were identified: real arrays for batch status, better names, and a possible work-item listing helper.
+- Treat tool names and argument shapes as an API contract for agent consumers.
 
 ### 2026-02-14: Generalize hlx_find_binlogs to hlx_find_files with pattern parameter
-**By:** Dallas
-**Requested by:** Larry Ewing
 
----
+- Core scanning should be generic (`FindFilesAsync(jobId, pattern, maxItems)`), while `hlx_find_binlogs` stays as a convenience alias for the dominant case.
+- Prefer one generic file-discovery tool plus one common-case alias instead of growing per-artifact tool sprawl.
 
 ## Question
 
@@ -1675,12 +1698,12 @@ public async Task FindBinlogs(string jobId, int maxItems = 30)
 **Tests:** Assigned to Lambert (update existing FindBinlogsAsync tests, add FindFilesAsync tests with various patterns)
 **Docs:** Assigned to Kane (update CLI help text, README)
 
-
 ---
 
 ### 2026-02-13: camelCase JSON assertion convention
 
-# Decision: camelCase JSON assertion convention
+- MCP JSON tests must assert camelCase property names because tool serialization uses `JsonNamingPolicy.CamelCase`.
+- This convention applies to all existing and future MCP-surface test files.
 
 **Author:** Lambert  
 **Date:** 2026-02-13  
@@ -1700,7 +1723,8 @@ All test assertions against MCP JSON output must use camelCase property names in
 
 ### 2026-02-15: MCP API Batch — Tests Need CamelCase Update
 
-# MCP API Batch: Tests Need CamelCase Update
+- Batch-status and related MCP tests had to switch from PascalCase assertions to camelCase and from `binlogs` to `files` after the API cleanup.
+- When MCP result shapes change, test assertions should be updated at the same time rather than patched ad hoc later.
 
 **Author:** Ripley
 **Date:** 2026-02-15
@@ -1733,9 +1757,8 @@ Also, `FindBinlogs` MCP tool now delegates to `FindFiles`, so the test on line 2
 
 ### 2025-07-23: STRIDE Threat Model — Completed and Approved
 
-**By:** Ash (analysis), Dallas (review)
-**Date:** 2025-07-23
-**Artifact:** `.ai-team/analysis/threat-model.md`
+- The STRIDE review identified 16 grounded threats; HTTP auth for remote deployment is a pre-GA requirement, while stdio remained secure by default.
+- Immediate hardening priorities were URL-scheme validation and batch-size limits, with broader download allowlisting deferred.
 
 **What:** Completed a STRIDE-based threat model for lewing.helix.mcp covering all 6 categories. Identified 16 specific threats grounded in actual source code. Two are High severity (both related to HTTP MCP server lacking authentication), two are Medium (arbitrary URL download SSRF, unbounded batch size). Path traversal protection and token handling are well-implemented.
 
@@ -1751,9 +1774,8 @@ Also, `FindBinlogs` MCP tool now delegates to `FindFiles`, so the test on line 2
 
 ### 2025-07-23: P1 Security Fixes — E1 URL Scheme Validation + D1 Batch Size Limit
 
-**By:** Ripley
-**Date:** 2025-07-23
-**Requested by:** Larry Ewing (per Dallas-approved threat model action items)
+- Implemented URL scheme validation for direct downloads and capped batch status to 50 job IDs, surfacing the limit in tool descriptions as well.
+- Security fixes of this kind should use `ArgumentException` guards at the service boundary and let tests pin exact boundary behavior.
 
 **E1 — URL scheme validation in `DownloadFromUrlAsync`:**
 - `HelixService.DownloadFromUrlAsync` now validates `uri.Scheme` is `"http"` or `"https"` before making any HTTP request.
@@ -1781,9 +1803,8 @@ Also, `FindBinlogs` MCP tool now delegates to `FindFiles`, so the test on line 2
 
 ### 2026-02-15: Security Validation Test Strategy
 
-**By:** Lambert
-**Date:** 2026-02-15
-**Requested by:** Larry Ewing
+- Security tests accept downstream network failures for valid HTTP/HTTPS URLs and focus only on whether validation rejected or allowed the scheme.
+- Boundary coverage centers on 50/51 batch sizes, and MCP tests should verify that service-layer guards propagate through the tool surface.
 
 **Context:** Threat model identified P1 security findings E1 (SSRF via DownloadFromUrlAsync) and D1 (unbounded batch size in GetBatchStatusAsync). Tests written concurrently with Ripley's production fixes.
 
@@ -1801,10 +1822,8 @@ Also, `FindBinlogs` MCP tool now delegates to `FindFiles`, so the test on line 2
 
 ### 2026-02-13: Remote search and structured file querying — feature design
 
-**By:** Dallas
-**Requested by:** Larry Ewing
-**What:** Feature design for remote search/grep across Helix work item artifacts — general text search, structured TRX/XML querying, and the boundary with external binlog tools.
-**Why:** Users need to find patterns in Helix artifacts without downloading files locally. The current `hlx_search_log` only covers console logs. This design extends search to arbitrary text files and adds structured querying for test results (TRX). It maps to existing backlog (US-22, US-14) and identifies new stories needed.
+- File-content search and TRX parsing are in scope for hlx, built on the same remote-search patterns as console-log search, while binlog analysis stays delegated to the external binlog tool.
+- Keep matching substring-based (no regex), cap in-memory file parsing/search sizes, and phase work as generic file search first, structured test parsing second.
 
 ---
 
@@ -2182,9 +2201,8 @@ From the `find-binlogs → find-files` generalization decision:
 
 ### 2026-02-13: Security analysis — structured file parsing
 
-**By:** Ash
-**What:** STRIDE-aligned security analysis for proposed XML/TRX parsing, text search extension, and binlog parsing features in hlx.
-**Why:** These features introduce new attack surface — untrusted file content from Helix work items will be parsed into structured data. XML parsers have well-known vulnerability classes (XXE, entity expansion DoS), and extending text search to arbitrary files changes the trust boundary. This analysis provides concrete .NET API recommendations and size limits, grounded in the existing codebase patterns.
+- Structured file parsing must use explicit safe `XmlReaderSettings`, 50 MB pre-checks, and the same “treat file content as untrusted input” stance already used for console logs.
+- TRX/XML parsing and text search stay in hlx, but binary/binlog parsing remains delegated to the dedicated external toolchain.
 
 ---
 
@@ -2416,16 +2434,12 @@ internal const int MaxSearchFileSizeBytes = 50 * 1024 * 1024; // 50 MB
 | TRX data exfiltration | Low | Same trust level as console logs (already exposed) |
 | Cache poisoning of parsed results | Low | Existing cache isolation patterns apply |
 
-
-
 ---
 
 ### 2026-02-13: User directive
-**By:** Larry Ewing (via Copilot)
-**What:** Remote file search and structured parsing features (hlx_search_file, hlx_test_results) should be disableable via a configuration setting, as a security safeguard for operators who want to restrict file content access.
-**Why:** User request — defense-in-depth. Operators deploying the HTTP MCP server may want to limit the attack surface by disabling content parsing features while still allowing file listing and download.
 
----
+- Operators must be able to disable remote file-content analysis features as a defense-in-depth control, even while leaving metadata/file-list tooling available.
+- That directive became the basis for the `HLX_DISABLE_FILE_SEARCH` toggle used by search and structured-result parsing.
 
 # US-31: hlx_search_file Phase 1 Implementation
 
@@ -2493,7 +2507,6 @@ Validation throws `ArgumentException` for invalid values. Comparison uses `Strin
 - **Breaking change:** Existing callers using `--all` or `includePassed=true` must update to `filter="all"`.
 - **Tests:** Lambert needs to update tests for the new parameter signature and filter logic.
 
-
 ---
 
 # US-32: TRX Parsing Implementation Notes
@@ -2522,7 +2535,6 @@ Tests needed for:
 - `ParseTrxFile` — valid TRX, empty TRX, error truncation, includePassed filter, maxResults cap
 - `hlx_test_results` MCP tool — URL resolution, config toggle, missing workItem
 - `test-results` CLI command — basic invocation
-
 
 ---
 
@@ -2559,13 +2571,15 @@ Test count: 364 → 369 (net +5). All 15 status tests pass.
 **By:** Kane
 **What:** Added a "Cached data" subsection under Security in README.md. Documents what gets cached (API responses + artifacts), where it lives (SQLite on disk in user profile directory), that auth tokens are never cached (only hash prefix for directory isolation), and recommends `hlx cache clear` for shared machines or security context switches. Addresses threat model items I1 (information disclosure via cached data) and I2 (cache persists after session).
 **Why:** The threat model (`.ai-team/analysis/threat-model.md`) explicitly recommended documenting cache security expectations. Users need to know the cache directory may contain sensitive CI data (console logs with accidental secrets) and understand the auth isolation model. This closes the documentation gap for I1/I2 without requiring code changes.
+### 2025-07-25: Cache security expectations documented in README
+
+- README now documents what hlx caches, where it lives, and why `hlx cache clear` matters on shared or security-sensitive machines.
+- Cache documentation should continue to explain auth isolation and the risk of sensitive CI data lingering on disk.
 
 ### 2026-02-15: Isolate DownloadFilesAsync temp directories per invocation
-**By:** Ripley
-**What:** Changed temp dir from `helix-{idPrefix}` to `helix-{idPrefix}-{Guid}` to prevent cross-process file races
-**Why:** Multiple stdio MCP server processes downloading the same job's files could corrupt each other's output via non-atomic `File.Create` writes to a shared temp directory
 
-# Decision: CI version validation in publish workflow
+- Download temp directories include a per-invocation GUID so concurrent stdio/MCP processes never write into the same folder.
+- Any disk-backed workflow that can run in parallel should avoid predictable shared temp paths.
 
 **Decided by:** Ripley  
 **Date:** 2025-07-23  
@@ -2589,8 +2603,8 @@ The publish workflow triggers on `v*` tags and extracts the version from the tag
 
 ### 2026-02-27: Enhancement layer documentation (consolidated)
 
-**By:** Dallas, Kane
-**Requested by:** Larry Ewing
+- The consolidated enhancement pass documented hlx’s value-add over raw Helix APIs in README and aligned docs cleanup around that framing.
+- Remaining follow-ups were mostly llmstxt/tool-description completeness, not new architectural work.
 
 **What:**
 
@@ -2610,8 +2624,8 @@ The publish workflow triggers on `v*` tags and extracts the version from the tag
 
 ### 2025-07-23: MCP tool descriptions should expose behavioral contracts, not implementation mechanics
 
-**By:** Dallas
-**What:** MCP `[Description]` attributes should describe *what the agent gets* (behavioral contracts), not *how the tool achieves it* (implementation details). Specifically: do NOT add phrases like "parses TRX locally", "results are cached", or "searches without downloading" to tool descriptions. These are implementation details that do not change how a consuming agent selects or invokes a tool.
+- Tool descriptions should tell agents what the tool does, what inputs it accepts, and what it returns — not whether the implementation caches, parses locally, or streams.
+- Implementation details belong in README or deeper docs unless they change invocation behavior (for example, a new parameter or observable contract).
 
 **Why:**
 
@@ -2651,8 +2665,8 @@ They do NOT answer:
 
 ### 2025-07-24: UseStructuredContent refactor — APPROVED with one naming issue noted
 
-**By:** Dallas
-**What:** Approved the refactor of all 12 MCP tools from `Task<string>` with manual JSON serialization to typed return objects with `UseStructuredContent = true`. `hlx_logs` correctly remains `Task<string>` (raw text). New result types live in `McpToolResults.cs`. Error paths throw `McpException` instead of returning `{ error: "..." }` JSON.
+- Structured MCP tools should return typed objects with `UseStructuredContent = true`; `hlx_logs` remains raw text because its value is the plain console output.
+- Use `McpException` for tool-surface failures and keep JSON property names/wire format stable even when internal C# type names change.
 
 **Why:**
 1. The MCP SDK 1.0.0 `UseStructuredContent` feature generates JSON output schemas automatically, which improves tool discovery for LLM consumers. Typed returns are also more maintainable — no more manual `JsonSerializer.Serialize` calls with shared `JsonSerializerOptions`.
@@ -2662,11 +2676,6 @@ They do NOT answer:
 5. Error handling correctly uses `McpException` for tool-level errors (missing work item, no matching files, binary file) and `ArgumentException` for invalid parameters (bad filter value). This matches MCP SDK conventions.
 
 ### 2026-03-01: Release version checklist
-**By:** Larry Ewing (via Copilot — learned the hard way)
-**What:** When bumping versions for a release, ALL three version sources must be updated together:
-1. `src/HelixTool/HelixTool.csproj` → `<Version>`
-2. `src/HelixTool/.mcp/server.json` → top-level `"version"`
-3. `src/HelixTool/.mcp/server.json` → `packages[0].version`
 
 The publish workflow (`publish.yml`) validates all three match the git tag. Missing any one will fail the release.
 **Why:** v0.2.0 release required a force-push to fix because `server.json` wasn't updated alongside the csproj. The workflow caught it, but we should get it right the first time.
@@ -2675,6 +2684,13 @@ The publish workflow (`publish.yml`) validates all three match the git tag. Miss
 **By:** Ripley (Backend Dev)
 **What:** Use `Console.IsInputRedirected` to auto-detect context: interactive terminal defaults to `["--help"]`, redirected stdin defaults to `["mcp"]`. Previously, running `hlx` with no arguments in a terminal would hang waiting for JSON-RPC input.
 **Why:** `Console.IsInputRedirected` is a reliable .NET API — standard idiom for CLI tools that need different behavior in interactive vs. non-interactive contexts. No additional dependencies or platform-specific code required.
+- Every release must update all three version sources together: `HelixTool.csproj`, `.mcp/server.json` top-level `version`, and `packages[0].version`.
+- The publish workflow validates these against the git tag, so partial bumps will fail release automation.
+
+### 2026-03-03: Default CLI behavior based on terminal context
+
+- With no explicit subcommand, `hlx` should inspect `Console.IsInputRedirected`: interactive terminals default to help, redirected stdin defaults to MCP mode.
+- This avoids hanging interactive shells while preserving no-args MCP startup for client launches.
 
 ### 2026-03-07: Helix auth UX — hlx login architecture (consolidated)
 **By:** Ash (analysis), Dallas (architecture)
@@ -3047,9 +3063,8 @@ Ripley is working on SEC-2 (IHttpClientFactory), SEC-3 (streaming), SEC-4 (timeo
 
 ### 2025-07-18: Promoted IsFileSearchDisabled to public visibility
 
-**By:** Ripley
-**What:** Changed `HelixService.IsFileSearchDisabled` from `internal static` to `public static` as part of the Mcp.Tools extraction.
-**Why:** HelixMcpTools moved to a separate assembly (`HelixTool.Mcp.Tools`) and references this property. Making it internal with InternalsVisibleTo would couple Core to the new project. Public is consistent with `MatchesPattern` and `IsTestResultFile` which are already public statics on HelixService used by MCP tools.
+- `HelixService.IsFileSearchDisabled` became public so the extracted `HelixTool.Mcp.Tools` assembly could reuse the same guard without new friend-assembly coupling.
+- Shared static helpers that cross assembly boundaries should either move to a neutral utility type or become intentionally public.
 
 ### 2026-03-08: AzDO Search/Filter Gap Analysis (consolidated)
 
@@ -3301,561 +3316,9 @@ Extracted `LogMatch`, `LogSearchResult`, and `FileContentSearchResult` record ty
 - No breaking changes to MCP tool DTOs (those use their own `SearchMatch`/`SearchLogResult` types in `HelixTool.Mcp.Tools`)
 
 ### 2025-07-14: Incremental log fetching for AzDO build logs
-**By:** Dallas
-**What:** Add `startLine`/`endLine` range support to the AzDO API client so callers can fetch partial logs — enabling server-side tail, incremental polling, and chunked search without downloading entire logs.
-**Why:** Today, `GetBuildLogAsync` always downloads the full log. `AzdoService.GetBuildLogAsync` with `tailLines` downloads 50K+ lines only to keep the last 500. `SearchBuildLogAcrossStepsAsync` downloads entire logs sequentially when errors are nearly always in the last few hundred lines. The AzDO REST API already supports `startLine`/`endLine` query params on `GET _apis/build/builds/{buildId}/logs/{logId}` — we're leaving free optimization on the table.
 
----
-
-## 1. Problem Statement
-
-Three concrete waste patterns exist today:
-
-| Pattern | Waste | Frequency |
-|---------|-------|-----------|
-| **Tail fetch**: `GetBuildLogAsync(url, logId, tailLines: 500)` on a 50K-line log | Downloads 50K lines, discards 49.5K | Every `azdo_get_log` call with `tailLines` |
-| **Cross-step search**: `SearchBuildLogAcrossStepsAsync` downloads full log per step | Downloads 30 full logs; errors are in the last ~200 lines of failed steps | Every `azdo_search_log_across_steps` call |
-| **Live monitoring**: No way to poll only new lines since last check | Must re-download entire log each poll | Future use case (build monitoring) |
-
-The AzDO REST API supports range fetching natively:
-```
-GET _apis/build/builds/{buildId}/logs/{logId}?startLine={N}&endLine={M}&api-version=7.0
-```
-where `startLine` and `endLine` are **0-indexed** line numbers. Omitting either fetches from the beginning or to the end respectively.
-
-We already have `AzdoBuildLogEntry.LineCount` from the logs list metadata endpoint, which gives us total line count without downloading content. This is the key to computing range offsets for tail fetches.
-
-## 2. Design Decisions
-
-### D-1: Extend existing interface method vs. new method
-
-**Decision: Add optional parameters to `IAzdoApiClient.GetBuildLogAsync`.**
-
-```csharp
-Task<string?> GetBuildLogAsync(
-    string org, string project, int buildId, int logId,
-    int? startLine = null, int? endLine = null,
-    CancellationToken ct = default);
-```
-
-**Rationale:**
-- Backward compatible — existing callers pass neither param and get full-log behavior
-- Avoids proliferating method overloads (`GetBuildLogRangeAsync`, `GetBuildLogTailAsync`, etc.)
-- Mirrors the REST API surface 1:1 (same endpoint, same optional query params)
-- The return type stays `string?` — the caller already knows what offset they requested and can compute global line numbers from `startLine`
-
-**Rejected alternative:** A new `GetBuildLogRangeAsync` returning a richer type like `LogChunk { Content, StartLine, EndLine, TotalLines }`. This adds a parallel code path, a new type, and new caching logic for minimal benefit. The caller already has `startLine` (they passed it) and can get `totalLines` from `GetBuildLogsListAsync`. YAGNI.
-
-### D-2: Caching strategy for ranges
-
-**Decision: Hybrid approach (Option C) — serve ranges from cached full log when available; pass range through to API when not cached; never cache partial results.**
-
-Cache behavior matrix:
-
-| Scenario | Full log cached? | Range requested? | Behavior |
-|----------|-----------------|-------------------|----------|
-| Full fetch, not cached | No | No | Fetch full log from API, cache it |
-| Full fetch, cached | Yes | No | Return from cache |
-| Range fetch, full cached | Yes | Any | Extract range from cached full log |
-| Range fetch, not cached | No | Yes | **Pass range to API, do NOT cache result** |
-| Range fetch populates later full | — | — | No — range results are transient |
-
-**Rationale:**
-- Simple: no cache fragmentation, no partial-entry merging
-- Correct: a range response is a *view* into data, not a cacheable unit
-- Efficient for the hot path: once a full log is cached (common in search-across-steps where multiple searches hit the same log), subsequent range requests are free substring operations
-- The only "wasted" download is the first full-log fetch, which is the same cost as today
-
-**Cache key stays the same:** `azdo:{org}:{project}:log:{buildId}:{logId}` always refers to the full log. Range requests against a cached full log do string splitting locally.
-
-**Implementation detail in `CachingAzdoApiClient.GetBuildLogAsync`:**
-```
-if full log is cached:
-    if range requested: extract and return substring
-    else: return full cached content
-else:
-    if range requested: pass through to inner client (no caching)
-    else: fetch full log, cache it, return it
-```
-
-### D-3: Service-layer tail optimization using lineCount
-
-**Decision: Yes — `AzdoService.GetBuildLogAsync` should use `GetBuildLogsListAsync` metadata to compute `startLine` for tail fetches, but only when the optimization is worthwhile.**
-
-Threshold: only optimize when `lineCount > tailLines * 2`. For small logs, the metadata round-trip costs more than just downloading the log.
-
-**Flow:**
-```
-GetBuildLogAsync(buildIdOrUrl, logId, tailLines: 500):
-    1. Fetch log metadata: logEntry = GetBuildLogsListAsync(org, project, buildId)
-    2. Find logEntry by logId → get lineCount
-    3. If lineCount > tailLines * 2:
-         startLine = lineCount - tailLines   (0-indexed)
-         content = _client.GetBuildLogAsync(org, project, buildId, logId, startLine: startLine)
-         return content  // already the tail, no trimming needed
-    4. Else:
-         content = _client.GetBuildLogAsync(org, project, buildId, logId)
-         return last tailLines lines (existing behavior)
-```
-
-**Why `tailLines * 2` threshold?** The metadata call (`GetBuildLogsListAsync`) is cheap and usually cached, but for a 100-line log with `tailLines=500`, the optimization saves nothing. The 2x multiplier ensures we only pay the metadata cost when the savings are significant.
-
-**Note:** The metadata call is itself cached (15s for in-progress, 4h for completed builds), so repeated tail fetches on different logs of the same build share one metadata response.
-
-### D-4: Search-from-end optimization for cross-step search
-
-**Decision: Defer to Phase 2.** The current cross-step search already prioritizes failed steps (which are typically small logs). The main bandwidth waste is in succeeded logs at Bucket 3/4, which are rarely searched in practice due to early termination.
-
-A future Phase 2 could add a "search tail first" strategy for large logs:
-1. Fetch last 500 lines of a log
-2. Search those lines
-3. If matches found, report them (with correct global line numbers using `lineCount - 500 + localLineNumber`)
-4. If no matches and the caller needs exhaustive search, fetch remaining lines
-
-This is more complex (two API calls per log, line number arithmetic) and the current early-termination strategy makes it low priority.
-
-### D-5: Line indexing convention
-
-**Decision: The `IAzdoApiClient` uses 0-indexed line numbers (matching the AzDO REST API). The service layer is responsible for translating to 1-indexed `LogMatch.LineNumber` values.**
-
-| Layer | Indexing | Rationale |
-|-------|----------|-----------|
-| `IAzdoApiClient.GetBuildLogAsync(startLine, endLine)` | 0-based | Matches AzDO REST API. API clients should mirror the upstream API contract. |
-| `LogMatch.LineNumber` | 1-based | Already established convention. User-facing line numbers are 1-based. |
-| `AzdoService` (orchestration) | Translates | Computes `startLine = lineCount - tailLines` (0-based for API), adds offset when constructing `LogMatch` for search results. |
-
-When a range fetch is used for search, the caller must offset `LineNumber` values:
-```csharp
-// After fetching lines startLine..endLine (0-indexed):
-// TextSearchHelper returns 1-based line numbers relative to the fetched chunk
-// Global line number = startLine + localLineNumber
-// (localLineNumber is already 1-based from TextSearchHelper, startLine is 0-based → correct)
-```
-
-### D-6: Append-on-expire caching for in-progress build logs
-
-**Decision: Use delta-append with a freshness marker pattern instead of full re-download on TTL expiry for in-progress build logs.**
-
-AzDO build logs are append-only — once a line is written, it never changes. The current approach (15s TTL → full re-download on expiry) wastes bandwidth on large in-progress logs. Instead, keep the cached content across TTL boundaries and fetch only the new lines (delta).
-
-**Mechanism — two cache keys per in-progress log:**
-
-| Key | TTL | Purpose |
-|-----|-----|---------|
-| `azdo:{org}:{project}:log:{buildId}:{logId}` | 4h | Log content (long-lived to survive refresh cycles) |
-| `azdo:{org}:{project}:log-fresh:{buildId}:{logId}` | 15s | Freshness marker (controls re-fetch cadence) |
-
-**Why two keys instead of extending `ICacheStore`?**
-`ICacheStore.GetMetadataAsync` returns `null` for expired entries — the data is deleted. With a single 15s TTL, the entire cached log content would be destroyed every 15 seconds, defeating the append purpose. The freshness marker pattern uses existing `ICacheStore` primitives — no new methods, no schema changes, no migration. The content key uses a long TTL (4h) so it survives freshness cycles. The freshness key is the timer.
-
-**Flow:**
-```
-GetBuildLogAsync(org, project, buildId, logId):
-  contentKey = "log:{buildId}:{logId}"
-  freshKey   = "log-fresh:{buildId}:{logId}"
-
-  cachedContent = cache.GetMetadata(contentKey)
-
-  if cachedContent is not null:
-      isFresh = cache.GetMetadata(freshKey) is not null
-      if isFresh:
-          return cachedContent                          // fast path — no API call
-
-      // Stale — delta fetch
-      isCompleted = IsBuildCompletedAsync(...)
-      cachedLineCount = CountLines(cachedContent)
-      delta = inner.GetBuildLogAsync(..., startLine: cachedLineCount)
-
-      if delta is not empty:
-          cachedContent = cachedContent + delta
-          cache.SetMetadata(contentKey, cachedContent, 4h)   // update content
-
-      if not isCompleted:
-          cache.SetMetadata(freshKey, "1", 15s)              // reset freshness
-      else:
-          cache.SetMetadata(freshKey, "1", 4h)               // completed: long freshness, no more deltas
-
-      return cachedContent
-
-  // Cache miss — first fetch
-  content = inner.GetBuildLogAsync(org, project, buildId, logId)
-  isCompleted = IsBuildCompletedAsync(...)
-  cache.SetMetadata(contentKey, content, 4h)
-  if not isCompleted:
-      cache.SetMetadata(freshKey, "1", 15s)
-  else:
-      cache.SetMetadata(freshKey, "1", 4h)
-  return content
-```
-
-**How the caching layer knows build status (Option B — query internally):**
-`IsBuildCompletedAsync` already exists in `CachingAzdoApiClient` — used by `GetTimelineAsync` and `GetBuildLogsListAsync`. It queries cached build state (15s TTL for in-progress). No new mechanism needed. This is consistent with the established pattern in this class.
-
-**Rejected alternatives:**
-- **Option A (caller passes `bool isInProgress`):** Forces every caller to track build state. The caching decorator already manages this concern — pushing it outward couples unrelated layers.
-- **Option C (different TTLs, caller decides):** Leaky abstraction. The caching strategy is an implementation detail of the decorator, not a caller concern.
-
-**In-progress → completed transition:**
-1. Build completes between refreshes
-2. Freshness marker expires (15s)
-3. Next request: `IsBuildCompletedAsync` returns `true`
-4. Delta fetch retrieves any final lines (or empty delta — harmless)
-5. Freshness marker set with 4h TTL → no more delta fetches for the content's lifetime
-6. All subsequent requests are served from cache — identical to completed-build behavior
-
-**Interaction with D-2 (range caching):**
-When a range request hits a stale cache (freshness expired), the delta fetch + append happens first to update the full cached content, then the range is extracted from the refreshed content. Both full and range requests trigger freshness-driven refreshes.
-
-## 3. API Changes
-
-### `IAzdoApiClient` — updated signature
-
-```csharp
-/// <summary>
-/// Get build log content. Optionally fetch a line range (0-indexed, inclusive).
-/// When startLine/endLine are null, fetches the entire log.
-/// </summary>
-Task<string?> GetBuildLogAsync(
-    string org, string project, int buildId, int logId,
-    int? startLine = null, int? endLine = null,
-    CancellationToken ct = default);
-```
-
-### `AzdoApiClient` — updated implementation
-
-```csharp
-public async Task<string?> GetBuildLogAsync(
-    string org, string project, int buildId, int logId,
-    int? startLine = null, int? endLine = null,
-    CancellationToken ct = default)
-{
-    var path = $"build/builds/{buildId}/logs/{logId}";
-
-    // Append range query params if specified
-    var rangeParams = new List<string>();
-    if (startLine.HasValue)
-        rangeParams.Add($"startLine={startLine.Value}");
-    if (endLine.HasValue)
-        rangeParams.Add($"endLine={endLine.Value}");
-
-    if (rangeParams.Count > 0)
-        path += "?" + string.Join("&", rangeParams);
-
-    var url = BuildUrl(org, project, path);
-    // ... rest unchanged (request, auth, stream read)
-}
-```
-
-### `CachingAzdoApiClient` — updated wrapper (with append-on-expire)
-
-```csharp
-public async Task<string?> GetBuildLogAsync(
-    string org, string project, int buildId, int logId,
-    int? startLine = null, int? endLine = null,
-    CancellationToken ct = default)
-{
-    if (!_enabled)
-        return await _inner.GetBuildLogAsync(org, project, buildId, logId, startLine, endLine, ct);
-
-    var contentKey = BuildCacheKey(org, project, $"log:{buildId}:{logId}");
-    var freshKey = BuildCacheKey(org, project, $"log-fresh:{buildId}:{logId}");
-
-    var cachedJson = await _cache.GetMetadataAsync(contentKey, ct);
-    string? fullContent = cachedJson is not null
-        ? JsonSerializer.Deserialize<string>(cachedJson)
-        : null;
-
-    if (fullContent is not null)
-    {
-        // Check freshness — stale means the 15s marker expired
-        var isFresh = await _cache.GetMetadataAsync(freshKey, ct) is not null;
-
-        if (!isFresh)
-        {
-            // Stale: delta-append instead of full re-download
-            var isCompleted = await IsBuildCompletedAsync(org, project, buildId, ct);
-            var cachedLineCount = CountLines(fullContent);
-            var delta = await _inner.GetBuildLogAsync(
-                org, project, buildId, logId, startLine: cachedLineCount, ct: ct);
-
-            if (!string.IsNullOrEmpty(delta))
-            {
-                fullContent += delta;
-                await _cache.SetMetadataAsync(contentKey,
-                    JsonSerializer.Serialize(fullContent), ImmutableTtl, ct);
-            }
-
-            if (!isCompleted)
-                await _cache.SetMetadataAsync(freshKey, "\"1\"", InProgressTtl, ct);
-            else
-                await _cache.SetMetadataAsync(freshKey, "\"1\"", ImmutableTtl, ct);
-            // Completed: long freshness TTL prevents further delta fetches
-        }
-
-        // Serve full or range from (possibly refreshed) cached content
-        if (startLine is null && endLine is null)
-            return fullContent;
-
-        return ExtractRange(fullContent, startLine, endLine);
-    }
-
-    // Not cached — range request with no cached full log: pass through, don't cache partial
-    if (startLine is not null || endLine is not null)
-        return await _inner.GetBuildLogAsync(org, project, buildId, logId, startLine, endLine, ct);
-
-    // Full log first fetch
-    var result = await _inner.GetBuildLogAsync(org, project, buildId, logId, ct: ct);
-    if (result is null) return null;
-
-    var completed = await IsBuildCompletedAsync(org, project, buildId, ct);
-    await _cache.SetMetadataAsync(contentKey, JsonSerializer.Serialize(result), ImmutableTtl, ct);
-
-    if (!completed)
-        await _cache.SetMetadataAsync(freshKey, "\"1\"", InProgressTtl, ct);
-    else
-        await _cache.SetMetadataAsync(freshKey, "\"1\"", ImmutableTtl, ct);
-
-    return result;
-}
-
-private static int CountLines(string content)
-    => content.Split('\n').Length;
-
-private static string? ExtractRange(string content, int? startLine, int? endLine)
-{
-    var lines = content.Split('\n');
-    var start = startLine ?? 0;
-    var end = endLine ?? (lines.Length - 1);
-
-    start = Math.Max(0, Math.Min(start, lines.Length - 1));
-    end = Math.Max(start, Math.Min(end, lines.Length - 1));
-
-    return string.Join('\n', lines[start..(end + 1)]);
-}
-```
-
-### `AzdoService.GetBuildLogAsync` — optimized tail
-
-```csharp
-public async Task<string?> GetBuildLogAsync(
-    string buildIdOrUrl, int logId, int? tailLines = null, CancellationToken ct = default)
-{
-    var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
-
-    // Optimization: use lineCount metadata to fetch only the tail
-    if (tailLines is > 0)
-    {
-        var logsList = await _client.GetBuildLogsListAsync(org, project, buildId, ct);
-        var logEntry = logsList.FirstOrDefault(e => e.Id == logId);
-
-        if (logEntry is not null && logEntry.LineCount > tailLines.Value * 2)
-        {
-            var startLine = (int)(logEntry.LineCount - tailLines.Value);
-            return await _client.GetBuildLogAsync(org, project, buildId, logId,
-                startLine: startLine, ct: ct);
-        }
-    }
-
-    // Fallback: fetch full log, trim client-side
-    var content = await _client.GetBuildLogAsync(org, project, buildId, logId, ct: ct);
-
-    if (content is null || tailLines is null or <= 0)
-        return content;
-
-    var lines = content.Split('\n');
-    if (lines.Length <= tailLines.Value)
-        return content;
-
-    return string.Join('\n', lines[^tailLines.Value..]);
-}
-```
-
-## 4. Caching Strategy Summary
-
-| Request type | Build state | Cache state | Behavior | Cache write? |
-|-------------|-------------|-------------|----------|--------------|
-| Full log | Completed | Hit | Return cached | No (already cached) |
-| Full log | Completed | Miss | Fetch full, cache (4h), return | **Yes** (content key, 4h) |
-| Full log | In-progress | Hit + fresh | Return cached | No |
-| Full log | In-progress | Hit + stale | Delta fetch, append, reset freshness, return | **Yes** (content + freshness keys) |
-| Full log | In-progress | Miss | Fetch full, cache content (4h) + freshness (15s) | **Yes** (both keys) |
-| Range | Any | Full cached (fresh) | Extract range from cache | No |
-| Range | Any | Full cached (stale) | Delta first, then extract range | **Yes** (content + freshness) |
-| Range | Any | Not cached | Pass range to API | **No** (partial data) |
-
-**Key invariant:** The cache key `azdo:{org}:{project}:log:{buildId}:{logId}` always maps to the **full** log content. Range parameters never appear in cache keys. This avoids cache fragmentation entirely.
-
-**Freshness marker pattern:** The key `azdo:{org}:{project}:log-fresh:{buildId}:{logId}` is a lightweight sentinel (value `"1"`, TTL 15s) that controls re-fetch cadence for in-progress logs. When it expires, the next request triggers a delta-append — not a full re-download. Completed builds never set a freshness marker; their content key's 4h TTL is sufficient.
-
-**Why not cache ranges?** Cache fragmentation creates correctness risks (overlapping ranges, stale partials) and operational complexity (cache eviction of fragments). The full-log cache is simple, correct, and effective — once warm, all range requests are free.
-
-## 5. Implementation Plan
-
-### Phase 1: API client range support + append-on-expire caching (Ripley)
-
-**Goal:** Wire `startLine`/`endLine` through all three client layers, and implement delta-append caching for in-progress build logs.
-
-1. Update `IAzdoApiClient.GetBuildLogAsync` signature (add optional params)
-2. Update `AzdoApiClient.GetBuildLogAsync` to append query params to URL
-3. Update `CachingAzdoApiClient.GetBuildLogAsync` with:
-   a. Hybrid range cache logic (D-2)
-   b. Two-key freshness marker pattern for in-progress logs (D-6)
-   c. Delta-append on freshness expiry using `startLine = CountLines(cached)`
-   d. `IsBuildCompletedAsync` integration to distinguish in-progress vs completed
-4. Add `ExtractRange` and `CountLines` helpers to `CachingAzdoApiClient`
-5. Verify all existing callers compile without changes (backward compat)
-
-**Risk:** Low–medium. The freshness marker pattern uses existing `ICacheStore` primitives but adds a second cache key per in-progress log. The delta-append logic requires careful sequencing (fetch delta → append → update content → reset freshness).
-
-### Phase 2: Service-layer tail optimization (Ripley)
-
-**Goal:** `AzdoService.GetBuildLogAsync` uses `lineCount` to skip downloading full logs for tail requests.
-
-1. Update `AzdoService.GetBuildLogAsync` to fetch logs list metadata
-2. Compute `startLine` from `lineCount - tailLines` when threshold met
-3. Pass `startLine` to `_client.GetBuildLogAsync`
-4. Keep fallback path for small logs and missing metadata
-
-**Dependency:** Phase 1 complete.
-
-### Phase 3: MCP tool integration (Ripley)
-
-**Goal:** MCP `azdo_get_log` tool benefits from tail optimization transparently (no tool signature change needed — `tailLines` already exists).
-
-1. Verify `azdo_get_log` with `tailLines` uses the optimized path
-2. Update tool description to note the optimization (optional — user doesn't need to know)
-
-### Phase 4 (Future): Incremental search from tail
-
-**Goal:** `SearchBuildLogAcrossStepsAsync` fetches only the tail of large logs for initial search pass.
-
-1. For logs in Bucket 3+ with `lineCount > 10000`:
-   - Fetch last 1000 lines using `startLine`
-   - Search those lines (with adjusted global line numbers)
-   - If matches found, use them; if not, optionally fetch rest
-2. This is a perf optimization, not a correctness change — defer until profiling shows it's needed
-
-### Phase 5 (Future): Live tail / polling
-
-**Goal:** Enable "follow" mode for in-progress build logs.
-
-1. Track `lastLineCount` per log between polls
-2. On poll: fetch `startLine=lastLineCount` to get only new lines
-3. ~~Requires client-side state management (not in current scope)~~ **Partially addressed by D-6** — the cache itself now tracks accumulated content. A "follow" UX would repeatedly call `GetBuildLogAsync`, which triggers delta-appends automatically via the freshness marker. The remaining work is a CLI/MCP presentation layer that streams only the *new* lines to the user, not the full accumulated content.
-
-## 6. Test Surface (for Lambert)
-
-### Unit Tests — `AzdoApiClient`
-
-| ID | Test | Notes |
-|----|------|-------|
-| A-1 | `GetBuildLogAsync` with no range params → URL has no startLine/endLine | Backward compat |
-| A-2 | `GetBuildLogAsync` with `startLine=100` → URL includes `startLine=100` | Query param construction |
-| A-3 | `GetBuildLogAsync` with `endLine=200` → URL includes `endLine=200` | Query param construction |
-| A-4 | `GetBuildLogAsync` with both → URL includes both params | Combined params |
-| A-5 | `GetBuildLogAsync` range request returns 404 → returns null | Same null behavior |
-
-### Unit Tests — `CachingAzdoApiClient`
-
-| ID | Test | Notes |
-|----|------|-------|
-| C-1 | Full fetch, not cached → fetches from inner, caches result | Existing behavior preserved |
-| C-2 | Full fetch, cached → returns from cache, no inner call | Existing behavior preserved |
-| C-3 | Range fetch, full log cached → returns extracted range, no inner call | Key optimization |
-| C-4 | Range fetch, not cached → passes range to inner, does NOT cache | No partial caching |
-| C-5 | `ExtractRange` with `startLine=0, endLine=2` on 5-line content → first 3 lines | Boundary correctness |
-| C-6 | `ExtractRange` with `startLine=3, endLine=null` → last 2 lines of 5 | Open-ended range |
-| C-7 | `ExtractRange` with out-of-bounds endLine → clamps to last line | Defensive bounds |
-| C-8 | Range fetch after full fetch → uses cache (warm cache path) | Sequence test |
-| C-9 | Cache disabled → all range requests pass through | `_enabled=false` path |
-
-### Unit Tests — `CachingAzdoApiClient` append-on-expire (D-6)
-
-| ID | Test | Notes |
-|----|------|-------|
-| C-10 | In-progress first fetch → sets content key (4h TTL) AND freshness key (15s TTL) | Two-key pattern bootstrap |
-| C-11 | Completed first fetch → sets content key only, no freshness key | No delta machinery for completed |
-| C-12 | In-progress, cached + fresh → returns cached content, no inner API call | Fast path — freshness marker present |
-| C-13 | In-progress, cached + stale → inner called with `startLine=cachedLineCount` | Delta fetch fires on freshness expiry |
-| C-14 | Delta returns new lines → appended to cached content, content key updated, freshness reset | Content growth path |
-| C-15 | Delta returns empty string → cached content unchanged, freshness still reset | No new lines edge case |
-| C-16 | Build transitions in-progress → completed → no freshness marker set after delta | State transition: stops refresh cycle |
-| C-17 | Range request on stale cache → delta fetch first, then range extracted from updated content | Range + stale interaction |
-| C-18 | `CountLines` on content with trailing newline → correct count | Helper boundary: `"a\nb\n"` = 3 lines |
-| C-19 | `CountLines` on empty string → returns 1 (single empty line) | Helper boundary: split on empty = `[""]` |
-| C-20 | Completed log hit with freshness key (4h TTL) → returns content, no delta fetch | Completed path: long freshness prevents stale path |
-| C-21 | Multiple stale refreshes accumulate content correctly | Sequence: 100 lines → delta 50 → delta 30 = 180 lines |
-
-### Unit Tests — `AzdoService.GetBuildLogAsync` tail optimization
-
-| ID | Test | Notes |
-|----|------|-------|
-| S-1 | `tailLines=500`, `lineCount=50000` → calls API with `startLine=49500` | Optimization fires |
-| S-2 | `tailLines=500`, `lineCount=600` → fetches full log, trims client-side | Below 2x threshold |
-| S-3 | `tailLines=null` → fetches full log, no metadata call | No optimization needed |
-| S-4 | `logId` not in logs list metadata → falls back to full fetch | Missing metadata graceful |
-| S-5 | `tailLines=500`, `lineCount=500` → fetches full log (exact match, below threshold) | Edge case |
-| S-6 | `tailLines=500`, `lineCount=1001` → calls with `startLine=501` | Exactly at 2x+1 threshold |
-
-### Integration Tests — Line number correctness
-
-| ID | Test | Notes |
-|----|------|-------|
-| L-1 | Tail-fetched content has correct line content (matches full fetch tail) | Content correctness |
-| L-2 | Range `startLine=10, endLine=20` returns exactly 11 lines | Inclusive range semantics |
-| L-3 | `startLine` past end of log → returns empty or last line | API edge case |
-
-### Validation Tests
-
-| ID | Test | Notes |
-|----|------|-------|
-| V-1 | `startLine` negative → passed to API as-is (API decides) | We don't validate; API is authoritative |
-| V-2 | `startLine > endLine` → passed to API as-is | Same rationale |
-
-**Estimated total: ~34 tests.** Focused on the caching hybrid logic, append-on-expire behavior, and tail optimization, which are the three areas with the most behavioral surface.
-
-## 7. Open Questions
-
-### Q-1: Should the `lineCount` from metadata be trusted for in-progress logs?
-
-For in-progress builds, `lineCount` may increase between the metadata call and the log fetch. This means a tail fetch might miss the newest lines. **Acceptable trade-off:** the next poll will pick them up, and the alternative (no optimization) downloads everything every time. **Note:** D-6's append-on-expire caching makes this even less of a concern — the delta-append pattern naturally catches up on each 15s refresh cycle.
-
-### Q-2: Does the AzDO API's `endLine` parameter use inclusive or exclusive semantics?
-
-The REST API documentation says 0-indexed but is ambiguous on inclusive/exclusive. **Mitigation:** Test empirically with a known log. If exclusive, adjust the `ExtractRange` helper to match. The API client should match whatever the upstream API does; the cache extraction helper must match the same convention.
-
-### Q-3: Should we pre-warm the full-log cache for completed builds?
-
-When a tail fetch is the first request for a completed build's log, we could speculatively fetch the full log instead (caching it for 4h) since subsequent requests will likely need it. **Decision: No.** Speculative fetching defeats the purpose of range support. If callers need the full log later, they'll fetch it and it'll be cached then.
-
-### P0 Follow-up: CountLines off-by-one for trailing newlines
-**By:** Dallas
-**Priority:** P0 — correctness bug in delta-fetch path
-**Affects:** `CachingAzdoApiClient.CountLines` and dependent delta-append logic
-
-**Problem:**
-`CountLines("a\nb\n")` returns 3 (`Split('\n').Length`), but the AzDO API considers this content as 2 lines (indices 0–1). When delta-fetching with `startLine=3`, the API skips line 2, permanently losing that line from the cached view.
-
-**Root cause:** `Split('\n')` on content ending with `\n` produces a trailing empty string element, inflating the count by 1.
-
-**Fix (Ripley):**
-```csharp
-internal static int CountLines(string content)
-{
-    if (string.IsNullOrEmpty(content)) return 0;
-    var count = content.Split('\n').Length;
-    if (content.EndsWith('\n')) count--;
-    return count;
-}
-```
-
-**Test updates (Lambert):**
-- C-18: `CountLines("a\nb\n")` should equal 2 (not 3)
-- C-19: `CountLines("")` should equal 0 (not 1)
-- C-13, C-14, C-17, C-21: Update `cachedLineCount` expectations to match corrected CountLines
-- Add new test: `CountLines("a\nb")` (no trailing newline) should equal 2
-
-**Impact without fix:** In-progress build logs lose one boundary line per delta-fetch cycle. The line is never recovered until the 4h content TTL expires. Completed builds are unaffected (no delta path).
+- AzDO log APIs should support optional `startLine`/`endLine` ranges so tail reads, delta refresh, and cross-step search avoid full-log downloads when possible.
+- Caching uses a full-log cache plus a short-lived freshness marker for in-progress builds, appending deltas instead of repeatedly re-downloading the entire log.
 
 ### 2026-03-09: azdo_search_log_across_steps design spec
 **By:** Dallas
@@ -4201,38 +3664,9 @@ Deferred. Sequential downloads are simpler and sufficient for Phase 1. If perfor
 ---
 
 ### 2025-07-18: Performance review findings
-**By:** Ripley
-**What:** Comprehensive perf review of Core, AzDO, Cache, and MCP tool layers identified 17 findings across 8 files. Three patterns account for the majority of avoidable allocations: (1) chained `.Replace()` for line-ending normalization on hot search paths, (2) `Split('\n')` + `Join` for tail-trimming when a span-based reverse scan would be zero-alloc, and (3) substring allocations in `MatchesPattern` called per-file in loops.
-**Why:** The cross-step search path (`SearchBuildLogAcrossStepsAsync`) processes up to 30 multi-MB logs per request, making `NormalizeAndSplit` the single hottest allocation site. Tail-trimming in `GetBuildLogAsync` and `GetConsoleLogContentAsync` is called on every log view with a `tail` parameter. `MatchesPattern` is called N×M times (work items × files per item) in `FindFilesAsync` and the MCP `Files` tool. The JSON serialization of large log strings in `CachingAzdoApiClient` doubles memory usage on every cache hit. Fixing P0+P1 items would meaningfully reduce GC pressure for real-world usage patterns (CI log investigation).
 
-#### P0 — Fix now (hot path)
-| # | File | Line | Issue | Fix |
-|---|------|------|-------|-----|
-| 1 | AzdoService.cs | 461-469 | `NormalizeAndSplit` does `.Replace("\r\n","\n").Replace("\r","\n").Split('\n')` — 3 intermediate full-size strings per log, called up to 30× in cross-step search | Span-based line enumerator handling `\r\n`/`\r`/`\n` in single pass; or at minimum `string.Create` with single-pass normalization |
-
-#### P1 — Worth fixing
-| # | File | Line | Issue | Fix |
-|---|------|------|-------|-----|
-| 2 | AzdoService.cs | 101-106 | Tail-trimming: `Split('\n')` + `Join` allocates full string array just to get last N lines | Reverse-scan for Nth `\n` from end using span, then slice |
-| 3 | HelixService.cs | 229-231 | Same Split+Join tail pattern in `GetConsoleLogContentAsync` | Same fix |
-| 4 | HelixMcpTools.cs | 130-133 | `Files` tool iterates file list 3× with separate `.Where().Select().ToList()` for binlogs/testResults/other | Single-pass categorization loop |
-| 5 | HelixService.cs | 1026 | `MatchesPattern`: `pattern[1..]` allocates substring per call | `name.AsSpan().EndsWith(pattern.AsSpan(1), ...)` |
-| 6 | HelixService.cs | 850 | `MatchesTestResultPattern`: same `pattern[1..]` allocation | Same span fix |
-| 7 | HelixService.cs | 602-606 | `SearchConsoleLogAsync` downloads to disk then reads back — double I/O | Stream directly into memory (StreamReader on API stream) |
-| 8 | CachingAzdoApiClient.cs | 128-130 | `fullContent += '\n'; fullContent += delta;` — two string concats | `string.Concat(fullContent, "\n", delta)` — single allocation |
-| 9 | CachingAzdoApiClient.cs | 108-109,166 | Log content stored as JSON-serialized string; `Deserialize<string>()` re-parses multi-MB content on every cache hit | Store as plain text with metadata flag |
-
-#### P2 — Minor/cosmetic
-| # | File | Line | Issue | Fix |
-|---|------|------|-------|-----|
-| 10 | CacheSecurity.cs | 38-44, 58-62 | Chained `.Replace()` (3 calls) in `SanitizePathSegment`/`SanitizeCacheKeySegment` | `string.Create` with single pass; but strings are short, not hot path |
-| 11 | CachingAzdoApiClient.cs | 297-301 | `HashFilter` creates interpolated string + byte array + hex string + `.ToLowerInvariant()` | Stackalloc + span-based hex; once per cache lookup |
-| 12 | HelixMcpTools.cs | 372-376 | `SelectMany().Where().ToList()` + `GroupBy().ToDictionary()` in `BatchStatus` | Single loop; once per request |
-| 13 | AzdoService.cs | 245 | `new List<string>()` allocated for every timeline record with issues, even if no match | Lazy allocation on first match |
-| 14 | HelixIdResolver.cs | 74 | `knownTrailingSegments` array allocated per call | `static readonly` field |
-| 15 | SqliteCacheStore.cs | 118,173,etc | `DateTimeOffset.ToString()` repeated with same value | Cache formatted string in local var (already done in some methods) |
-| 16 | AzdoService.cs | 151-156 | `GetBuildArtifactsAsync` does `.Where().ToList()` then `.Take().ToList()` — two materializations | `.Where().Take().ToList()` single pass |
-| 17 | AzdoApiClient.cs | 35-57 | `List<string>` + `string.Join` for query params | `StringBuilder`; once per API call |
+- The main allocation hot spots were line-ending normalization, tail trimming, repeated substring work in pattern matching, and serializing large log strings unnecessarily.
+- Prioritize perf fixes on search/log/cache paths where multi-megabyte content is handled repeatedly; minor cache-key and helper allocations are secondary.
 
 ### 2026-03-09: Cache format change — raw: prefix (Ripley perf fixes)
 
@@ -4645,243 +4079,13 @@ These files exemplify the patterns the team should follow:
 
 ### 2025-07-24: Architectural Analysis — Helix vs AzDO File Structure Separation
 
-**By:** Dallas
-**Requested by:** Larry Ewing
-
-#### 1. Current State Map
-
-### Project Dependency Graph
-```
-HelixTool (CLI)  ──→  HelixTool.Core  ←──  HelixTool.Mcp (HTTP server)
-       │                    ↑                       │
-       └──→  HelixTool.Mcp.Tools  ←────────────────┘
-```
-
-### File/Folder Census
-
-| Location | Files | Lines | Contents |
-|----------|-------|-------|----------|
-| `Core/` (root) | 13 .cs | 2,505 | Helix API client, service, ID resolver, auth, credential store, shared utilities |
-| `Core/AzDO/` | 7 .cs | 1,726 | AzDO API client, service, models, ID resolver, caching, token accessor |
-| `Core/Cache/` | 7 .cs | 863 | SQLite cache store, cache options/security/status, ICacheStore, CachingHelixApiClient |
-| `Mcp.Tools/` | 5 .cs | 1,025 | HelixMcpTools, AzdoMcpTools, CiKnowledge (tool+resource), McpToolResults |
-| `Tests/` (root) | 35 .cs | 8,691 | All Helix tests + shared tests (cache, security, CI knowledge, etc.) |
-| `Tests/AzDO/` | 14 .cs | 5,898 | All AzDO tests |
-
-### Namespace Map
-```
-HelixTool.Core          ← 13 Core root files + 7 Cache files (Cache/ has no sub-namespace!)
-HelixTool.Core.AzDO     ← 7 AzDO files (clean sub-namespace)
-HelixTool.Mcp           ← 2 files (middleware, token accessor)
-HelixTool.Mcp.Tools     ← 5 files (mixed Helix + AzDO MCP tools)
-HelixTool.Tests         ← 35 files (all non-AzDO tests)
-HelixTool.Tests.AzDO    ← 14 files (AzDO tests)
-```
-
-#### 2. Pain Points Identified
-
-### P1: Asymmetric organization — AzDO is clean, Helix is scattered
-AzDO code got a dedicated `AzDO/` subfolder from day one with its own sub-namespace (`HelixTool.Core.AzDO`). Helix-specific code sits at the Core root alongside truly shared utilities. You can't tell at a glance which root files are "Helix API" vs "shared infrastructure."
-
-**Root files that are Helix-specific:** HelixService.cs, HelixApiClient.cs, IHelixApiClient.cs, IHelixApiClientFactory.cs, HelixIdResolver.cs, HelixException.cs, IHelixTokenAccessor.cs, ChainedHelixTokenAccessor.cs (8 files, ~1,700 lines)
-
-**Root files that are genuinely shared:** TextSearchHelper.cs, StringHelpers.cs, CiKnowledgeService.cs, ICredentialStore.cs, GitCredentialStore.cs (5 files, ~800 lines)
-
-### P2: CachingHelixApiClient is in `Cache/` but is Helix-specific
-`Cache/CachingHelixApiClient.cs` (191 lines) is the Helix caching decorator. Its sibling `CachingAzdoApiClient.cs` correctly lives in `AzDO/`. This is a consistency violation — the Helix decorator is in the wrong folder.
-
-### P3: Cache folder has no sub-namespace
-All 7 files in `Core/Cache/` use `namespace HelixTool.Core` — no `HelixTool.Core.Cache` sub-namespace. Meanwhile AzDO files correctly use `HelixTool.Core.AzDO`. This means you can't distinguish cache types from Helix types by namespace alone.
-
-### P4: AzDO→Helix coupling via static methods
-`AzdoService.cs` directly calls `HelixService.MatchesPattern()` (line 147) and `HelixService.IsFileSearchDisabled` (lines 168, 309). These are shared utility methods that happen to live on `HelixService`. The AzDO subsystem should not depend on a Helix service class.
-
-### P5: MCP Tools project mixes domains
-`HelixTool.Mcp.Tools/` has 5 files in a flat structure: `HelixMcpTools.cs` (483 lines), `AzdoMcpTools.cs` (307 lines), `CiKnowledgeTool.cs`, `CiKnowledgeResource.cs`, `McpToolResults.cs`. No folder separation between Helix and AzDO tool definitions.
-
-### P6: Test folder mirrors the same asymmetry
-35 test files at root for Helix + shared concerns. 14 test files in `AzDO/` subfolder. The asymmetry makes it hard to identify test coverage gaps per domain.
-
-### P7: Program.cs (CLI) is 1,513 lines
-The CLI's `Program.cs` contains all commands for both Helix and AzDO in a single file. This is the largest file in the repo. Not a structural issue per se, but it would benefit from the same domain separation.
-
-#### 3. Restructuring Options
-
-### Option A: Minimal — Folder-level reorganization within existing projects (LOW RISK)
-
-Add a `Helix/` subfolder in Core (matching `AzDO/`), move CachingHelixApiClient to it, and give Cache its own sub-namespace. Extract shared utilities from HelixService.
-
-**Moves in `HelixTool.Core/`:**
-```
-NEW: Helix/
-  ← HelixService.cs
-  ← HelixApiClient.cs
-  ← IHelixApiClient.cs
-  ← IHelixApiClientFactory.cs
-  ← HelixIdResolver.cs
-  ← HelixException.cs
-  ← IHelixTokenAccessor.cs
-  ← ChainedHelixTokenAccessor.cs
-  ← Cache/CachingHelixApiClient.cs  (move from Cache/)
-
-Cache/ stays with generic cache infra only:
-  SqliteCacheStore.cs, ICacheStore.cs, ICacheStoreFactory.cs,
-  CacheOptions.cs, CacheSecurity.cs, CacheStatus.cs
-
-Root keeps shared utilities:
-  TextSearchHelper.cs, StringHelpers.cs, CiKnowledgeService.cs,
-  ICredentialStore.cs, GitCredentialStore.cs
-```
-
-**Extract from HelixService (prerequisite):**
-- `MatchesPattern()` → `StringHelpers.cs` (or new `PatternHelpers.cs`)
-- `IsFileSearchDisabled` → `StringHelpers.cs` or new shared config class
-
-**Namespace changes:**
-- `HelixTool.Core` → `HelixTool.Core.Helix` for the 9 moved files
-- `HelixTool.Core` → `HelixTool.Core.Cache` for Cache/ files (currently using `HelixTool.Core`)
-- ~20 `using` statement additions across consumers
-
-**Test folder mirroring:**
-```
-Tests/
-  NEW: Helix/
-    ← all Helix-specific test files (~20 files)
-  AzDO/ (unchanged, 14 files)
-  Root keeps shared tests: cache, security, CI knowledge, text search (~15 files)
-```
-
-**MCP Tools folder:**
-```
-Mcp.Tools/
-  NEW: Helix/
-    ← HelixMcpTools.cs
-  NEW: AzDO/
-    ← AzdoMcpTools.cs
-  Root keeps: CiKnowledgeTool.cs, CiKnowledgeResource.cs, McpToolResults.cs
-```
-
-**Impact:**
-- ~50 files touched (namespace updates, using additions)
-- Zero project/csproj changes
-- Zero packaging impact
-- MCP tool registration unchanged (assembly scanning picks up tools regardless of namespace)
-- Build unaffected — same projects, same references
-
-**Risk:** Low. Pure file moves + namespace renames. Mechanical refactor.
-
----
-
-### Option B: Moderate — Option A + split HelixTool.Core into domain-specific libraries (MEDIUM RISK)
-
-Everything in Option A, plus: split `HelixTool.Core` into three projects.
-
-**New project structure:**
-```
-src/
-  HelixTool.Core/              ← shared only: cache, text search, string helpers, credential store, CI knowledge
-  HelixTool.Core.Helix/        ← Helix API client, service, ID resolver, auth, caching decorator
-  HelixTool.Core.AzDO/         ← AzDO API client, service, models, ID resolver, auth, caching decorator
-  HelixTool.Mcp.Tools/         ← (with folder separation per Option A)
-  HelixTool.Mcp/               ← (unchanged)
-  HelixTool/                   ← (unchanged, references all three Core projects)
-  HelixTool.Tests/             ← (with folder separation per Option A)
-```
-
-**Dependency graph:**
-```
-HelixTool.Core.Helix ──→ HelixTool.Core  ←── HelixTool.Core.AzDO
-```
-
-**Impact:**
-- 3 new .csproj files, InternalsVisibleTo updates
-- PackageReference for `Microsoft.DotNet.Helix.Client` moves to `HelixTool.Core.Helix` only
-- `HelixTool.Core` becomes much lighter (no Helix SDK dependency)
-- Test project references expand (3 core projects instead of 1)
-- Enforces no accidental cross-domain dependencies at compile time
-
-**Risk:** Medium. New projects affect solution file, CI, NuGet packaging. Need to verify `PackAsTool` still works when the tool project references 3 core libraries. Also need to split DI registration.
-
----
-
-### Option C: Aggressive — Full domain isolation with separate test projects (HIGH RISK)
-
-Everything in Option B, plus: separate test projects per domain.
-
-**Structure:**
-```
-src/
-  HelixTool.Core/
-  HelixTool.Core.Helix/
-  HelixTool.Core.AzDO/
-  HelixTool.Mcp.Tools/
-  HelixTool.Mcp/
-  HelixTool/
-tests/
-  HelixTool.Core.Tests/
-  HelixTool.Core.Helix.Tests/
-  HelixTool.Core.AzDO.Tests/
-  HelixTool.Mcp.Tests/
-  HelixTool.Mcp.Tools.Tests/
-```
-
-**Impact:**
-- 5 test projects instead of 1
-- Each test project references only its target — compile-time enforcement of test isolation
-- Much more granular test execution (`dotnet test --project tests/HelixTool.Core.AzDO.Tests`)
-- Significant churn: 50 test files redistribute across 5 projects
-- More .csproj files to maintain
-
-**Risk:** High. Massive churn for marginal benefit at current scale. The single test project works fine today. Splitting makes sense at 2,000+ tests or when multiple teams own different domains. We have ~770 tests and one team.
-
-#### 4. Recommendation: Option A (Folder-level reorganization)
-
-**Rationale:**
-
-1. **Right-sized for current scale.** The codebase is ~22K lines across 80 .cs files. Project-level splitting (Options B/C) adds build complexity that doesn't pay for itself until the codebase is 2-3x larger or has multiple teams.
-
-2. **Fixes the actual problem.** Larry's observation is correct — the structure reflects organic growth. AzDO was added later with a clean subfolder, but the original Helix code never got the same treatment. Option A creates symmetry: `Helix/` and `AzDO/` folders at every level.
-
-3. **Eliminates the real coupling bug.** Extracting `MatchesPattern` and `IsFileSearchDisabled` from `HelixService` into shared utilities breaks the AzDO→Helix dependency. This is the one structural problem that causes actual confusion (a "Helix" service being called from AzDO code).
-
-4. **Cache gets its own namespace.** `HelixTool.Core.Cache` makes the cache subsystem's types unambiguous. Moving `CachingHelixApiClient` out of `Cache/` into `Helix/` clarifies that cache infrastructure is generic.
-
-5. **Low risk, high clarity.** The refactor is entirely mechanical (file moves + namespace renames). Zero behavioral changes. Easy to review. Easy to roll back if something breaks.
-
-6. **Leaves the door open for Option B later.** If a third domain arrives (e.g., GitHub Actions), or the AzDO surface area doubles, we can split projects then. The folder structure from Option A maps directly to the project boundaries in Option B.
-
-**Sequencing (if approved):**
-1. Extract `MatchesPattern` + `IsFileSearchDisabled` from `HelixService` → `StringHelpers.cs` (prerequisite, breaks AzDO→Helix coupling)
-2. Create `Helix/` folder in Core, move 9 files, update namespaces
-3. Add `HelixTool.Core.Cache` namespace to Cache/ files
-4. Create `Helix/` and `AzDO/` folders in Mcp.Tools, move tool files
-5. Create `Helix/` folder in Tests, move ~20 test files
-6. Update all `using` statements
-7. Verify build + all tests pass
+- Adopt folder-level symmetry before project splitting: `Core/Helix`, `Core/AzDO`, `Core/Cache`, parallel test folders, and separated MCP tool folders.
+- Shared helpers such as pattern matching and file-search toggles should live outside `HelixService` so AzDO code does not depend on Helix-specific types.
 
 ### 2025-07-24: Restructure Execution Notes — Option A
 
-**By:** Ripley
-**Branch:** `restructure/option-a-folder-reorg`
-
-#### What was done
-
-Executed Option A from Dallas's restructuring proposal. 59 files touched, 0 behavioral changes.
-
-### Namespace changes
-- `HelixTool.Core` → `HelixTool.Core.Helix` for 9 Helix-specific files (now in `Core/Helix/`)
-- `HelixTool.Core` → `HelixTool.Core.Cache` for 6 cache infrastructure files (in `Core/Cache/`)
-- `StringHelpers` promoted from `internal` to `public` (cross-project access needed)
-
-### Shared utility extraction
-- `MatchesPattern()` and `IsFileSearchDisabled` extracted from `HelixService` to `StringHelpers`
-- `HelixService` methods now delegate to `StringHelpers` (backward compatible)
-- `AzdoService`, `HelixMcpTools`, `AzdoMcpTools` updated to call `StringHelpers` directly
-
-### Decision for team awareness
-- **HelixService.MatchesPattern and HelixService.IsFileSearchDisabled still exist** as delegation wrappers for backward compatibility. New code should use `StringHelpers.MatchesPattern` and `StringHelpers.IsFileSearchDisabled` directly.
-- **MCP tool registration is unaffected** — assembly scanning picks up tools regardless of subfolder/namespace.
-- **All 1038 tests pass** with no modifications to test logic.
+- Option A was executed mechanically: Helix-specific files moved under `Core/Helix`, cache infrastructure got its own namespace, and shared helpers moved to `StringHelpers`.
+- Folder and namespace moves should preserve behavior while making domain boundaries visible; use the new helper locations for future work instead of legacy wrapper methods.
 
 ### 2026-03-10: README structure — lead with value prop, promote caching and context reduction
 **By:** Kane
@@ -4907,7 +4111,6 @@ Executed Option A from Dallas's restructuring proposal. 59 files touched, 0 beha
 **By:** Larry Ewing (via Copilot)
 **What:** Treat the knowledgebase as a living document that should be updated from the latest file state rather than preserved as a static snapshot.
 **Why:** User request — captured for team memory
-
 
 # Dallas decisions inbox — Discoverability review (2026-03-10)
 
@@ -5023,3 +4226,33 @@ A plain top-level object gives agents an explicit truncation signal, but changin
 ## Follow-up
 
 If more MCP tools need truncation metadata, prefer reusing this wrapper pattern instead of inventing per-tool response shapes.
+### 2025-07-25: All read-only MCP tools must have Idempotent = true
+
+- Read-only MCP tools should also set `Idempotent = true`; download tools remain idempotent even though they are not read-only because they write files locally.
+- Carry safety annotations forward on every future tool so MCP clients can reason about retries and caching correctly.
+
+### 2025-07-25: Rename "vmr" CI profile key to "dotnet"
+
+- CI knowledge profiles should use repo-shaped keys that agents actually search for, so the VMR profile key became `dotnet`/`dotnet/dotnet` instead of `vmr`.
+- Prefer discoverable names in profile maps and user-facing docs even when the underlying concept has internal shorthand.
+
+### 2026-03-13: README should document MCP resources and idempotent annotations
+**By:** Lambert
+**Requested by:** Larry Ewing
+**What:** Added an `## MCP Resources` section for `ci://profiles` and `ci://profiles/{repo}` with a short resources-vs-tools explainer, and added an “Idempotent annotations” row to the Context-Efficient Design table.
+**Why:** The resource surface should be discoverable alongside tools, and idempotent metadata belongs with the project’s other context-efficiency design choices because it helps clients retry and cache safely without extra jargon.
+
+### 2026-03-13: AzDO auth should use a narrow, scheme-aware credential chain (consolidated)
+**By:** Dallas, Ripley
+**What:** Keep AzDO auth layered as `AZDO_TOKEN` → `AzureCliCredential` → `az account get-access-token` subprocess → anonymous, without `DefaultAzureCredential`. `IAzdoTokenAccessor` should return `AzdoCredential` metadata so callers can choose `Basic` for PATs and `Bearer` for Entra/JWT sources; `AzdoCredential.Token` stays the on-wire header payload while `DisplayToken` preserves the original human-readable token for compatibility-oriented assertions and conversions.
+**Why:** The existing az CLI fallback is the proven escape hatch for WSL/libsecret failures, while a deliberately narrow Azure.Identity probe avoids the latency and opaque failure modes of `DefaultAzureCredential`. PAT handling requires pre-encoding `:{pat}` for Basic auth, so separating display and wire tokens keeps tests and call sites readable without changing request behavior or surfacing secrets.
+
+### 2026-03-13: MCP tool descriptions should stay short and defer repo-specific guidance to helix_ci_guide (consolidated)
+**By:** Ripley
+**What:** The project first embedded repo-specific CI knowledge into selected MCP tool descriptions to improve routing, then tightened 17 `Description()` attributes to ≤35 words and moved repo-specific patterns/task-name guidance back into `helix_ci_guide`. Keep only high-value warnings and routing hints in tool descriptions; keep detailed repo workflows in the on-demand CI guide.
+**Why:** Description text is loaded into every agent context whether the tool is used or not, so verbose repo-specific guidance creates a permanent token tax. Short behavioral descriptions still steer tool selection, while `helix_ci_guide` carries the richer repo detail only when a caller actually needs it.
+
+### 2026-03-13: Helix MCP tool names should reflect actual scope (consolidated)
+**By:** Ripley
+**What:** Renamed MCP-visible tool names from `helix_test_results` to `helix_parse_uploaded_trx` and from `helix_search_log` to `helix_search` across tool registration, docs/help text, tests, and README while keeping the internal/CLI names that still fit (`ParseTrxResultsAsync`, `SearchLog`, `search-log`) stable.
+**Why:** The earlier names were context traps: `helix_test_results` sounded like the universal first stop even though most repos publish structured results to AzDO, and `helix_search_log` no longer matched a tool that can search both console logs and uploaded files. Scope-accurate names improve agent discoverability without unnecessary internal churn.

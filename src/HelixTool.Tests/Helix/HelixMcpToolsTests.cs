@@ -360,6 +360,7 @@ public class HelixMcpToolsTests
 
         Assert.Contains("case-insensitive", description);
         Assert.Contains("console log", description);
+        Assert.Contains("uploaded file", description);
     }
 
     [Fact]

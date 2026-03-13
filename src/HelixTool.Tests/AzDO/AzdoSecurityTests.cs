@@ -13,6 +13,7 @@ using Xunit;
 
 namespace HelixTool.Tests.AzDO;
 
+[Collection("AzdoTokenEnv")]
 public class AzdoSecurityTests
 {
     // ═════════════════════════════════════════════════════════════════════
@@ -266,10 +267,12 @@ public class AzdoSecurityTests
             // because the env var is returned directly, never passed to a shell
             Environment.SetEnvironmentVariable("AZDO_TOKEN", "token; rm -rf /");
             var accessor = new AzCliAzdoTokenAccessor();
-            var token = await accessor.GetAccessTokenAsync();
+            var credential = await accessor.GetAccessTokenAsync();
 
-            // The env var value is returned as-is (not executed)
-            Assert.Equal("token; rm -rf /", token);
+            // The env var value is returned as display text (not executed)
+            Assert.NotNull(credential);
+            Assert.Equal("token; rm -rf /", credential!.DisplayToken);
+            Assert.Equal("AZDO_TOKEN (PAT)", credential.Source);
         }
         finally
         {
@@ -286,9 +289,11 @@ public class AzdoSecurityTests
             // Newlines in token value — should be returned verbatim
             Environment.SetEnvironmentVariable("AZDO_TOKEN", "token\ninjected-header: evil");
             var accessor = new AzCliAzdoTokenAccessor();
-            var token = await accessor.GetAccessTokenAsync();
+            var credential = await accessor.GetAccessTokenAsync();
 
-            Assert.Contains("\n", token);
+            Assert.NotNull(credential);
+            Assert.Contains("\n", credential!.DisplayToken);
+            Assert.Equal("Basic", credential.Scheme);
         }
         finally
         {
@@ -330,8 +335,9 @@ public class AzdoSecurityTests
             cts.Cancel();
 
             // Env var path doesn't check cancellation token
-            var token = await accessor.GetAccessTokenAsync(cts.Token);
-            Assert.Equal("fast-token", token);
+            var credential = await accessor.GetAccessTokenAsync(cts.Token);
+            Assert.NotNull(credential);
+            Assert.Equal("fast-token", credential!.DisplayToken);
         }
         finally
         {
@@ -350,7 +356,7 @@ public class AzdoSecurityTests
     {
         var handler = new CapturingHttpHandler();
         var tokenAccessor = Substitute.For<IAzdoTokenAccessor>();
-        tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns("test-token");
+        tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns(BearerCredential("test-token"));
         var client = new AzdoApiClient(new HttpClient(handler), tokenAccessor);
 
         handler.ResponseContent = JsonSerializer.Serialize(new { id = 1 });
@@ -375,7 +381,7 @@ public class AzdoSecurityTests
     {
         var handler = new CapturingHttpHandler();
         var tokenAccessor = Substitute.For<IAzdoTokenAccessor>();
-        tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns("test-token");
+        tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns(BearerCredential("test-token"));
         var client = new AzdoApiClient(new HttpClient(handler), tokenAccessor);
 
         handler.ResponseContent = JsonSerializer.Serialize(new { id = 1 });
@@ -394,7 +400,7 @@ public class AzdoSecurityTests
     {
         var handler = new CapturingHttpHandler();
         var tokenAccessor = Substitute.For<IAzdoTokenAccessor>();
-        tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns("test-token");
+        tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns(BearerCredential("test-token"));
         var client = new AzdoApiClient(new HttpClient(handler), tokenAccessor);
 
         handler.ResponseContent = JsonSerializer.Serialize(new { id = 1 });
@@ -415,7 +421,7 @@ public class AzdoSecurityTests
         var handler = new CapturingHttpHandler { StatusCode = HttpStatusCode.Unauthorized };
         var tokenAccessor = Substitute.For<IAzdoTokenAccessor>();
         tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>())
-            .Returns("super-secret-bearer-token-xyz123");
+            .Returns(BearerCredential("super-secret-bearer-token-xyz123"));
         var client = new AzdoApiClient(new HttpClient(handler), tokenAccessor);
 
         var ex = await Assert.ThrowsAsync<HttpRequestException>(
@@ -431,7 +437,7 @@ public class AzdoSecurityTests
         var handler = new CapturingHttpHandler { StatusCode = HttpStatusCode.Forbidden };
         var tokenAccessor = Substitute.For<IAzdoTokenAccessor>();
         tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>())
-            .Returns("my-secret-pat-value");
+            .Returns(BasicCredential("my-secret-pat-value"));
         var client = new AzdoApiClient(new HttpClient(handler), tokenAccessor);
 
         var ex = await Assert.ThrowsAsync<HttpRequestException>(
@@ -450,7 +456,7 @@ public class AzdoSecurityTests
         };
         var tokenAccessor = Substitute.For<IAzdoTokenAccessor>();
         tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>())
-            .Returns("bearer-token-in-500-test");
+            .Returns(BearerCredential("bearer-token-in-500-test"));
         var client = new AzdoApiClient(new HttpClient(handler), tokenAccessor);
 
         var ex = await Assert.ThrowsAsync<HttpRequestException>(
@@ -469,7 +475,7 @@ public class AzdoSecurityTests
             ResponseContent = JsonSerializer.Serialize(new { id = 1 })
         };
         var tokenAccessor = Substitute.For<IAzdoTokenAccessor>();
-        tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns((string?)null);
+        tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns((AzdoCredential?)null);
         var client = new AzdoApiClient(new HttpClient(handler), tokenAccessor);
 
         var result = await client.GetBuildAsync("dnceng", "public", 1);
@@ -486,7 +492,7 @@ public class AzdoSecurityTests
             ResponseContent = JsonSerializer.Serialize(new { id = 1 })
         };
         var tokenAccessor = Substitute.For<IAzdoTokenAccessor>();
-        tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns("");
+        tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns(new AzdoCredential("", "Bearer", "Empty credential") { DisplayToken = "" });
         var client = new AzdoApiClient(new HttpClient(handler), tokenAccessor);
 
         await client.GetBuildAsync("dnceng", "public", 1);
@@ -508,7 +514,7 @@ public class AzdoSecurityTests
             ResponseContent = JsonSerializer.Serialize(new { id = 1 })
         };
         var tokenAccessor = Substitute.For<IAzdoTokenAccessor>();
-        tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns("token");
+        tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns(BearerCredential("token"));
         var client = new AzdoApiClient(new HttpClient(handler), tokenAccessor);
 
         // Should not throw — Uri.EscapeDataString handles special chars
@@ -522,6 +528,12 @@ public class AzdoSecurityTests
         }
         // An exception (e.g., UriFormatException) is also acceptable
     }
+
+    private static AzdoCredential BearerCredential(string token, string source = "Test credential")
+        => new(token, "Bearer", source) { DisplayToken = token };
+
+    private static AzdoCredential BasicCredential(string pat, string source = "AZDO_TOKEN (PAT)")
+        => new(Convert.ToBase64String(Encoding.ASCII.GetBytes($":{pat}")), "Basic", source) { DisplayToken = pat };
 
     // ═════════════════════════════════════════════════════════════════════
     // 4. CachingAzdoApiClient — Cache Isolation & Key Safety

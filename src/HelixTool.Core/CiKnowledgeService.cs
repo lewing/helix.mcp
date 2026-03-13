@@ -577,7 +577,7 @@ public sealed class CiKnowledgeService
             ExitCodeMeanings = [],
             KnownGotchas =
             [
-                "⚠️ NOT on dnceng — lives on devdiv.visualstudio.com/DevDiv — standard helix_* AND ado-dnceng-* tools DO NOT WORK",
+                "⚠️ On devdiv/DevDiv, not dnceng-public/public — auth required (`az login` or `AZDO_TOKEN`) before using azdo_* tools",
                 "No Helix at all — tests run directly on Mac agents via 'make -C tests jenkins'",
                 "Uses NUnit (NOT xUnit) — test patterns and result formats differ from all other dotnet repos",
                 "Result format is NUnit XML (vsts-*.xml) — NOT xUnit XML or TRX",
@@ -589,7 +589,7 @@ public sealed class CiKnowledgeService
             ],
             RecommendedInvestigationOrder =
             [
-                "⚠️ Standard dnceng tools won't work — you need devdiv AzDO access",
+                "Authenticate to devdiv first (`az login` or set `AZDO_TOKEN`), then pass the full devdiv build URL to azdo_* tools (bare build IDs default to dnceng-public)",
                 "Look for PublishTestResults tasks in timeline for NUnit XML results",
                 "AzDO test runs on devdiv org are the primary structured result source",
                 "Check HtmlReport.zip artifact for visual test summary",
@@ -610,7 +610,7 @@ public sealed class CiKnowledgeService
             ],
             InvestigationTips =
             [
-                "⚠️ This repo is on devdiv.visualstudio.com — standard dnceng-public tools DO NOT WORK",
+                "Use full devdiv build URLs with azdo_* tools for internal builds — bare build IDs default to dnceng-public/public",
                 "No Helix — skip ALL helix_* tools entirely",
                 "AzDO test runs on devdiv are the primary result source (NUnit XML format)",
                 "Test stages: monotouch_* (Mono runtime), dotnettests_* (.NET runtime), generator, linker, introspection, fsharp, xcframework",
@@ -641,8 +641,8 @@ public sealed class CiKnowledgeService
             ExitCodeMeanings = [],
             KnownGotchas =
             [
-                "⚠️ Primarily on devdiv.visualstudio.com — standard helix_* AND ado-dnceng-* tools DO NOT WORK for internal builds",
-                "Fork PRs go to dnceng-public — standard tools work ONLY for those builds",
+                "⚠️ Internal builds primarily run on devdiv/DevDiv — auth required (`az login` or `AZDO_TOKEN`) before using azdo_* tools there",
+                "Fork PRs go to dnceng-public — bare build IDs naturally target those builds; use full devdiv URLs for internal builds",
                 "No Helix, no XHarness — tests run directly on agents via 'dotnet test'",
                 "Uses NUnit (primary) + xUnit — mixed test framework, unlike most dotnet repos",
                 "Result format is TRX (VSTest) — differs from macios (NUnit XML)",
@@ -654,7 +654,7 @@ public sealed class CiKnowledgeService
             RecommendedInvestigationOrder =
             [
                 "Check which org the build is on — devdiv (internal) vs dnceng-public (fork PRs)",
-                "Standard dnceng tools work for public fork builds ONLY",
+                "For internal devdiv builds, authenticate first and pass the full devdiv build URL to azdo_* tools (bare build IDs default to dnceng-public)",
                 "AzDO test runs (TRX/VSTest format) are the primary result source",
                 "Skip ALL helix_* tools — no Helix usage",
                 "Look for AcquireAndroidTarget task failures for emulator setup issues",
@@ -673,7 +673,7 @@ public sealed class CiKnowledgeService
             ],
             InvestigationTips =
             [
-                "⚠️ This repo is primarily on devdiv.visualstudio.com — standard dnceng-public tools work ONLY for fork PR builds",
+                "Internal builds are on devdiv/DevDiv — use `az login` or `AZDO_TOKEN`, and prefer full devdiv build URLs with azdo_* tools",
                 "No Helix — skip ALL helix_* tools entirely",
                 "AzDO test runs (TRX format) are the primary result source",
                 "Look for emulator issues in AcquireAndroidTarget task logs",
@@ -751,7 +751,7 @@ public sealed class CiKnowledgeService
         lines.Add("- **Partial support exists, but only for specific test legs.** runtime CoreCLR/XHarness tests upload result XML; MAUI device tests (maui-pr-devicetests pipeline) upload testResults.xml.");
         lines.Add("- **Use `helix_search` as the remote-first console path.** The best search pattern varies by repo/test runner; check the repo profile before broad log reads.");
         lines.Add("- **azdo_test_runs + azdo_test_results** is the most reliable path for structured results across all repos.");
-        lines.Add("- **⚠️ macios and android are on devdiv, not dnceng** — standard `helix_*` and `ado-dnceng-*` tools do not work.");
+        lines.Add("- **⚠️ macios and android are on devdiv, not dnceng-public** — authenticate first (`az login` or `AZDO_TOKEN`), and prefer full devdiv build URLs with `azdo_*` tools because bare build IDs default to dnceng-public.");
         lines.Add("- **failedTests=0 is a lie** — always drill into `azdo_test_results`, don't trust run-level summary counts.");
 
         return string.Join('\n', lines);
