@@ -37,6 +37,8 @@
 
 **Remaining docs gaps:** HelixIdResolver XML docs, HelixMcpTools class-level doc comment, LICENSE file missing, llmstxt had missing tools (fixed 2025-07-18).
 
+- **Historical perf note (2025-07-18):** Perf review identified 17 allocation issues. Keep performance-oriented documentation and examples aligned with the project’s lightweight, allocation-conscious posture.
+
 📌 Team update (2025-02-12): PackageId renamed to lewing.helix.mcp — decided by Ripley/Larry
 📌 Team update (2025-02-12): NuGet Trusted Publishing workflow — publish via git tag v*
 📌 Team update (2026-02-12): SQLite cache landed (d62d0d1) — decided by Ripley
@@ -86,8 +88,6 @@
 
 📌 Team update (2026-03-08): `IsFileSearchDisabled` promoted from internal to public on `HelixService` — needed for MCP tools extraction to separate assembly. Consistent with existing public statics `MatchesPattern` and `IsTestResultFile`. — decided by Ripley
 
-📌 Team update (2025-07-18): Perf review identified 17 allocation issues — decided by Ripley
-
 📌 Team update (2026-03-09): CI profile analysis — 14 recommendations for MCP tool descriptions. Tool descriptions in HelixMcpTools.cs and AzdoMcpTools.cs will change. README and llmstxt may need updates once descriptions are implemented. — decided by Ash
 
 📌 Team update (2026-03-10): CiKnowledgeService expanded to 9 repos with 9 new CiRepoProfile properties. MCP tool descriptions now embed repo-specific CI knowledge. 171 new tests added. — decided by Ripley
@@ -114,3 +114,9 @@
 📌 Team update (2026-03-13): Scribe merged decision inbox items covering `dotnet` as the VMR profile key, `helix_search`/`helix_parse_uploaded_trx` naming, tighter MCP descriptions, and explicit truncation metadata (`truncated`, `LimitedResults<T>`). README/docs now also call out `ci://profiles` resources and idempotent annotations.
 - AzDO auth resolution is now `AZDO_TOKEN` (PATs auto-Basic, JWT/Entra tokens auto-Bearer) → `AzureCliCredential` → `az account get-access-token` → anonymous; README should show the concrete 401 remediation example for private orgs.
 - README Authentication now sits immediately after MCP resources/tool discovery, so access requirements are visible before install/config details.
+
+📌 Team update (2026-03-13): AzDO auth is now the narrow chain `AZDO_TOKEN` → `AzureCliCredential` → az CLI → anonymous, with scheme-aware `AzdoCredential` metadata and `DisplayToken` kept separate from the wire token. — decided by Dallas, Ripley
+
+📌 Team update (2026-03-13): MCP-facing Helix names/descriptions should stay scope-accurate and low-context: use `helix_parse_uploaded_trx`, `helix_search`, and keep repo-specific routing in `helix_ci_guide`. — decided by Ripley
+
+📌 Team update (2026-03-13): README/docs should expose MCP resources (`ci://profiles`, `ci://profiles/{repo}`) and treat idempotent annotations as a context-efficiency design point. — decided by Lambert

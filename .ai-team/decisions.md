@@ -416,7 +416,6 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 
 ### 2026-02-12: US-10 (Work Item Detail) and US-23 (Batch Status) Implementation
 
-
 **By:** Ripley
 **Date:** 2026-02-12
 **Status:** Implemented
@@ -432,7 +431,6 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 - `src/HelixTool.Mcp/HelixMcpTools.cs` — same tools for HTTP MCP server
 
 ### 2026-02-12: US-21 Failure Categorization
-
 
 **By:** Ripley
 **Date:** 2026-02-12
@@ -1675,7 +1673,6 @@ public async Task FindBinlogs(string jobId, int maxItems = 30)
 **Tests:** Assigned to Lambert (update existing FindBinlogsAsync tests, add FindFilesAsync tests with various patterns)
 **Docs:** Assigned to Kane (update CLI help text, README)
 
-
 ---
 
 ### 2026-02-13: camelCase JSON assertion convention
@@ -2416,8 +2413,6 @@ internal const int MaxSearchFileSizeBytes = 50 * 1024 * 1024; // 50 MB
 | TRX data exfiltration | Low | Same trust level as console logs (already exposed) |
 | Cache poisoning of parsed results | Low | Existing cache isolation patterns apply |
 
-
-
 ---
 
 ### 2026-02-13: User directive
@@ -2493,7 +2488,6 @@ Validation throws `ArgumentException` for invalid values. Comparison uses `Strin
 - **Breaking change:** Existing callers using `--all` or `includePassed=true` must update to `filter="all"`.
 - **Tests:** Lambert needs to update tests for the new parameter signature and filter logic.
 
-
 ---
 
 # US-32: TRX Parsing Implementation Notes
@@ -2522,7 +2516,6 @@ Tests needed for:
 - `ParseTrxFile` — valid TRX, empty TRX, error truncation, includePassed filter, maxResults cap
 - `hlx_test_results` MCP tool — URL resolution, config toggle, missing workItem
 - `test-results` CLI command — basic invocation
-
 
 ---
 
@@ -4908,7 +4901,6 @@ Executed Option A from Dallas's restructuring proposal. 59 files touched, 0 beha
 **What:** Treat the knowledgebase as a living document that should be updated from the latest file state rather than preserved as a static snapshot.
 **Why:** User request — captured for team memory
 
-
 # Dallas decisions inbox — Discoverability review (2026-03-10)
 
 1. **Do not add a new composite failure-investigation tool in this increment.**
@@ -5023,3 +5015,33 @@ A plain top-level object gives agents an explicit truncation signal, but changin
 ## Follow-up
 
 If more MCP tools need truncation metadata, prefer reusing this wrapper pattern instead of inventing per-tool response shapes.
+### 2025-07-25: All read-only MCP tools must have Idempotent = true
+**By:** Lambert
+**What:** Added `Idempotent = true` to all 22 `[McpServerTool]` attributes that already had `ReadOnly = true`. The two download tools (`helix_download`, `helix_download_url`) correctly keep `Idempotent = true` without `ReadOnly = true` since they write files to disk.
+**Why:** MCP best practices from Anthropic, OpenAI, AWS, and the "smelly descriptions" paper (arxiv 2602.14878) recommend safety annotations (`readOnlyHint`, `destructiveHint`, `idempotent`) on all tools. `Idempotent = true` signals to MCP clients that a tool is safe to retry and cache. Since all our read-only tools are pure queries with no side effects, calling them twice produces the same result — they are inherently idempotent. This convention should apply to any future read-only tools added to the project.
+
+### 2025-07-25: Rename "vmr" CI profile key to "dotnet"
+**By:** Ripley
+**What:** Changed the CI knowledge profile key from `vmr` to `dotnet`, updated `RepoName` to `dotnet/dotnet`, kept `DisplayName` as `dotnet/dotnet (VMR)`, and removed the special-case lookup that mapped `dotnet`/`dotnet/dotnet` back to `vmr`.
+**Why:** Agents search for `dotnet` or `dotnet/dotnet`, not `vmr`. Using the repo-shaped key directly improves profile discoverability and keeps overview output aligned with what agents and users actually call the repo.
+
+### 2026-03-13: README should document MCP resources and idempotent annotations
+**By:** Lambert
+**Requested by:** Larry Ewing
+**What:** Added an `## MCP Resources` section for `ci://profiles` and `ci://profiles/{repo}` with a short resources-vs-tools explainer, and added an “Idempotent annotations” row to the Context-Efficient Design table.
+**Why:** The resource surface should be discoverable alongside tools, and idempotent metadata belongs with the project’s other context-efficiency design choices because it helps clients retry and cache safely without extra jargon.
+
+### 2026-03-13: AzDO auth should use a narrow, scheme-aware credential chain (consolidated)
+**By:** Dallas, Ripley
+**What:** Keep AzDO auth layered as `AZDO_TOKEN` → `AzureCliCredential` → `az account get-access-token` subprocess → anonymous, without `DefaultAzureCredential`. `IAzdoTokenAccessor` should return `AzdoCredential` metadata so callers can choose `Basic` for PATs and `Bearer` for Entra/JWT sources; `AzdoCredential.Token` stays the on-wire header payload while `DisplayToken` preserves the original human-readable token for compatibility-oriented assertions and conversions.
+**Why:** The existing az CLI fallback is the proven escape hatch for WSL/libsecret failures, while a deliberately narrow Azure.Identity probe avoids the latency and opaque failure modes of `DefaultAzureCredential`. PAT handling requires pre-encoding `:{pat}` for Basic auth, so separating display and wire tokens keeps tests and call sites readable without changing request behavior or surfacing secrets.
+
+### 2026-03-13: MCP tool descriptions should stay short and defer repo-specific guidance to helix_ci_guide (consolidated)
+**By:** Ripley
+**What:** The project first embedded repo-specific CI knowledge into selected MCP tool descriptions to improve routing, then tightened 17 `Description()` attributes to ≤35 words and moved repo-specific patterns/task-name guidance back into `helix_ci_guide`. Keep only high-value warnings and routing hints in tool descriptions; keep detailed repo workflows in the on-demand CI guide.
+**Why:** Description text is loaded into every agent context whether the tool is used or not, so verbose repo-specific guidance creates a permanent token tax. Short behavioral descriptions still steer tool selection, while `helix_ci_guide` carries the richer repo detail only when a caller actually needs it.
+
+### 2026-03-13: Helix MCP tool names should reflect actual scope (consolidated)
+**By:** Ripley
+**What:** Renamed MCP-visible tool names from `helix_test_results` to `helix_parse_uploaded_trx` and from `helix_search_log` to `helix_search` across tool registration, docs/help text, tests, and README while keeping the internal/CLI names that still fit (`ParseTrxResultsAsync`, `SearchLog`, `search-log`) stable.
+**Why:** The earlier names were context traps: `helix_test_results` sounded like the universal first stop even though most repos publish structured results to AzDO, and `helix_search_log` no longer matched a tool that can search both console logs and uploaded files. Scope-accurate names improve agent discoverability without unnecessary internal churn.
