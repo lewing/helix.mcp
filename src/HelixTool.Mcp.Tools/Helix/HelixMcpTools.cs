@@ -217,7 +217,7 @@ public sealed class HelixMcpTools
     public async Task<FindFilesResult> FindFiles(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("File name or glob pattern (e.g., *.binlog). Default: all files")] string pattern = "*",
-        [Description("Maximum work items to scan")] int maxItems = 30)
+        [Description("Maximum work items to scan. Default: 50")] int maxItems = 50)
     {
         try
         {
@@ -287,7 +287,7 @@ public sealed class HelixMcpTools
         [Description("File name to search (from helix_files). Omit for console log.")] string? fileName = null,
         [Description("Text pattern to search for (case-insensitive)")] string pattern = "error",
         [Description("Lines of context around each match")] int contextLines = 2,
-        [Description("Maximum matches to return")] int maxMatches = 50)
+        [Description("Maximum matches to return. Default: 100")] int maxMatches = 100)
     {
         if (StringHelpers.IsFileSearchDisabled)
             throw new McpException("File content search is disabled by configuration.");
@@ -338,6 +338,7 @@ public sealed class HelixMcpTools
                 Pattern = pattern,
                 TotalLines = logResult.TotalLines,
                 MatchCount = logResult.Matches.Count,
+                Truncated = logResult.Truncated,
                 Matches = logResult.Matches.Select(m => new SearchMatch
                 {
                     LineNumber = m.LineNumber,

@@ -1,4 +1,7 @@
+using System.Collections;
 using System.ComponentModel;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
@@ -34,10 +37,10 @@ public sealed class AzdoMcpTools
 
     [McpServerTool(Name = "azdo_builds", Title = "AzDO Build List", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("List recent builds for an AzDO project. Filter by PR, branch, or definition. Defaults to dnceng-public/public.")]
-    public async Task<IReadOnlyList<AzdoBuild>> Builds(
+    public async Task<LimitedResults<AzdoBuild>> Builds(
         [Description("Azure DevOps organization")] string org = "dnceng-public",
         [Description("Azure DevOps project")] string project = "public",
-        [Description("Maximum results to return")] int top = 10,
+        [Description("Maximum results to return. Default: 20")] int top = 20,
         [Description("Filter by branch name (e.g., 'refs/heads/main')")] string? branch = null,
         [Description("Filter by pull request number")] string? prNumber = null,
         [Description("Filter by pipeline definition ID")] int? definitionId = null,
@@ -54,7 +57,7 @@ public sealed class AzdoMcpTools
 
         try
         {
-            return await _svc.ListBuildsAsync(org, project, filter);
+            return CreateLimitedResults(await _svc.ListBuildsAsync(org, project, filter), top);
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
         {
@@ -171,14 +174,14 @@ public sealed class AzdoMcpTools
 
     [McpServerTool(Name = "azdo_test_results", Title = "AzDO Test Results", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("Test results for a specific run. Defaults to failed tests only. Primary tool for test failures in most dotnet repos (aspnetcore, sdk, roslyn, efcore).")]
-    public async Task<IReadOnlyList<AzdoTestResult>> TestResults(
+    public async Task<LimitedResults<AzdoTestResult>> TestResults(
         [Description("AzDO build ID or full build URL")] string buildId,
         [Description("Test run ID from azdo_test_runs")] int runId,
-        [Description("Maximum results to return")] int top = 200)
+        [Description("Maximum results to return. Default: 200")] int top = 200)
     {
         try
         {
-            return await _svc.GetTestResultsAsync(buildId, runId, top);
+            return CreateLimitedResults(await _svc.GetTestResultsAsync(buildId, runId, top), top);
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
         {
@@ -188,14 +191,14 @@ public sealed class AzdoMcpTools
 
     [McpServerTool(Name = "azdo_artifacts", Title = "AzDO Build Artifacts", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("List artifacts from an AzDO build (logs, test results, binlogs). Supports glob-style pattern filtering.")]
-    public async Task<IReadOnlyList<AzdoBuildArtifact>> Artifacts(
+    public async Task<LimitedResults<AzdoBuildArtifact>> Artifacts(
         [Description("AzDO build ID or full build URL")] string buildId,
         [Description("Artifact name glob. Default: all")] string pattern = "*",
-        [Description("Maximum results to return")] int top = 50)
+        [Description("Maximum results to return. Default: 100")] int top = 100)
     {
         try
         {
-            return await _svc.GetBuildArtifactsAsync(buildId, pattern, top);
+            return CreateLimitedResults(await _svc.GetBuildArtifactsAsync(buildId, pattern, top), top);
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
         {
@@ -210,8 +213,8 @@ public sealed class AzdoMcpTools
         [Description("Log ID from azdo_timeline")] int? logId = null,
         [Description("Text pattern to search for (case-insensitive)")] string pattern = "error",
         [Description("Lines of context around each match")] int contextLines = 2,
-        [Description("Maximum matches to return")] int maxMatches = 50,
-        [Description("Maximum log steps to search")] int maxLogsToSearch = 30,
+        [Description("Maximum matches to return. Default: 100")] int maxMatches = 100,
+        [Description("Maximum log steps to search. Default: 50")] int maxLogsToSearch = 50,
         [Description("Minimum lines per log to search")] int minLogLines = 5)
     {
         if (StringHelpers.IsFileSearchDisabled)
@@ -231,7 +234,7 @@ public sealed class AzdoMcpTools
                     LogsSearched = 1,
                     LogsSkipped = 0,
                     TotalMatchCount = result.Matches.Count,
-                    StoppedEarly = false,
+                    StoppedEarly = result.Truncated,
                     Steps =
                     [
                         new StepSearchResult
@@ -275,16 +278,16 @@ public sealed class AzdoMcpTools
 
     [McpServerTool(Name = "azdo_test_attachments", Title = "AzDO Test Attachments", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("List attachments for a test result (screenshots, logs, dumps). Requires run ID and result ID from azdo_test_results.")]
-    public async Task<IReadOnlyList<AzdoTestAttachment>> TestAttachments(
+    public async Task<LimitedResults<AzdoTestAttachment>> TestAttachments(
         [Description("Test run ID from azdo_test_runs")] int runId,
         [Description("Test result ID from azdo_test_results")] int resultId,
         [Description("Azure DevOps project")] string project = "public",
         [Description("Azure DevOps organization")] string org = "dnceng-public",
-        [Description("Maximum results to return")] int top = 50)
+        [Description("Maximum results to return. Default: 100")] int top = 100)
     {
         try
         {
-            return await _svc.GetTestAttachmentsAsync(org, project, runId, resultId, top);
+            return CreateLimitedResults(await _svc.GetTestAttachmentsAsync(org, project, runId, resultId, top), top);
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
         {
@@ -292,4 +295,84 @@ public sealed class AzdoMcpTools
         }
     }
 
+    private static LimitedResults<T> CreateLimitedResults<T>(IReadOnlyList<T> results, int top)
+    {
+        var truncated = top > 0 && results.Count >= top;
+        return new LimitedResults<T>(
+            results,
+            truncated,
+            note: truncated ? $"Results limited to {top}. Use a higher 'top' value to see more." : null);
+    }
+}
+
+[JsonConverter(typeof(LimitedResultsJsonConverterFactory))]
+public sealed class LimitedResults<T> : IReadOnlyList<T>
+{
+    public LimitedResults(IReadOnlyList<T> results, bool truncated, int? total = null, string? note = null)
+    {
+        Results = results ?? [];
+        Truncated = truncated;
+        Total = total;
+        Note = note;
+    }
+
+    public IReadOnlyList<T> Results { get; }
+    public bool Truncated { get; }
+    public int? Total { get; }
+    public string? Note { get; }
+
+    [JsonIgnore]
+    public int Count => Results.Count;
+
+    [JsonIgnore]
+    public T this[int index] => Results[index];
+
+    public IEnumerator<T> GetEnumerator() => Results.GetEnumerator();
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+}
+
+public sealed class LimitedResultsJsonConverterFactory : JsonConverterFactory
+{
+    public override bool CanConvert(Type typeToConvert)
+        => typeToConvert.IsGenericType && typeToConvert.GetGenericTypeDefinition() == typeof(LimitedResults<>);
+
+    public override JsonConverter CreateConverter(Type typeToConvert, JsonSerializerOptions options)
+    {
+        var itemType = typeToConvert.GetGenericArguments()[0];
+        var converterType = typeof(LimitedResultsJsonConverter<>).MakeGenericType(itemType);
+        return (JsonConverter)Activator.CreateInstance(converterType)!;
+    }
+}
+
+public sealed class LimitedResultsJsonConverter<T> : JsonConverter<LimitedResults<T>>
+{
+    public override LimitedResults<T>? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        using var document = JsonDocument.ParseValue(ref reader);
+        var root = document.RootElement;
+
+        var results = root.TryGetProperty("results", out var resultsElement)
+            ? JsonSerializer.Deserialize<List<T>>(resultsElement.GetRawText(), options) ?? []
+            : [];
+        var truncated = root.TryGetProperty("truncated", out var truncatedElement) && truncatedElement.GetBoolean();
+        int? total = root.TryGetProperty("total", out var totalElement) && totalElement.ValueKind is JsonValueKind.Number
+            ? totalElement.GetInt32()
+            : null;
+        var note = root.TryGetProperty("note", out var noteElement) ? noteElement.GetString() : null;
+
+        return new LimitedResults<T>(results, truncated, total, note);
+    }
+
+    public override void Write(Utf8JsonWriter writer, LimitedResults<T> value, JsonSerializerOptions options)
+    {
+        writer.WriteStartObject();
+        writer.WritePropertyName("results");
+        JsonSerializer.Serialize(writer, value.Results, options);
+        writer.WriteBoolean("truncated", value.Truncated);
+        if (value.Total.HasValue)
+            writer.WriteNumber("total", value.Total.Value);
+        if (!string.IsNullOrWhiteSpace(value.Note))
+            writer.WriteString("note", value.Note);
+        writer.WriteEndObject();
+    }
 }

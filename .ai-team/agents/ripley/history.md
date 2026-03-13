@@ -146,3 +146,9 @@
 - **Renamed MCP-visible tool name** from `helix_search_log` to `helix_search` because the tool now searches both console logs and uploaded files, so the broader name better matches its scope and improves agent discoverability.
 - **Kept implementation and CLI names stable:** the `SearchLog` C# method and `search-log` CLI command remain unchanged; only MCP-visible and human-facing strings moved to `helix_search`.
 - **Key file paths changed:** `src/HelixTool.Mcp.Tools/Helix/HelixMcpTools.cs`, `src/HelixTool/Program.cs`, `src/HelixTool.Core/CiKnowledgeService.cs`, `src/HelixTool.Core/Helix/HelixService.cs`, `src/HelixTool.Tests/CiKnowledgeServiceTests.cs`, `src/HelixTool.Tests/Helix/HelixMcpToolsTests.cs`, and `README.md`.
+
+## Learnings (default-limit bump and truncation metadata)
+
+- **Shared log-search truncation belongs in `LogSearchResult`.** Adding `Truncated` at the shared `TextSearchHelper.SearchLines` layer fixed Helix console-log MCP responses and also made single-log AzDO CLI/MCP responses surface early-stop state without duplicating search logic.
+- **Raw-list MCP outputs can gain metadata without losing list semantics in tests.** A `LimitedResults<T>` wrapper that implements `IReadOnlyList<T>` but uses a custom JSON converter lets MCP emit `{ results, truncated, note }` while existing direct C# callers still use `Count`, indexers, and `Assert.Single/Empty` naturally.
+- **When defaults change, sync all agent-facing surfaces together.** For these tools that meant MCP parameter defaults, CLI command defaults, XML/help text in `Program.cs`, and human-facing stop-early hints so agents and humans get the same expectations.

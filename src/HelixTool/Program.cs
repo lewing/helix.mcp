@@ -256,9 +256,9 @@ public class Commands
     /// <summary>Scan work items in a job to find files matching a pattern.</summary>
     /// <param name="jobId">Helix job ID or URL.</param>
     /// <param name="pattern">File name or glob pattern (e.g., *.binlog, *.trx, *.dmp).</param>
-    /// <param name="maxItems">Max work items to scan (default 30).</param>
+    /// <param name="maxItems">Max work items to scan (default 50).</param>
     [Command("find-files")]
-    public async Task FindFiles([Argument] string jobId, string pattern = "*", int maxItems = 30)
+    public async Task FindFiles([Argument] string jobId, string pattern = "*", int maxItems = 50)
     {
         Console.WriteLine($"Scanning up to {maxItems} work items for '{pattern}'...");
         var results = await Svc.FindFilesAsync(jobId, pattern, maxItems);
@@ -357,11 +357,11 @@ public class Commands
     /// <param name="workItem">Work item name.</param>
     /// <param name="pattern">Text pattern to search for (case-insensitive substring match).</param>
     /// <param name="context">Number of context lines before and after each match.</param>
-    /// <param name="maxMatches">Maximum number of matches to return (default 50).</param>
+    /// <param name="maxMatches">Maximum number of matches to return (default 100).</param>
     /// <param name="fileName">File name to search (omit for console log).</param>
     [Command("search-log")]
     public async Task SearchLog([Argument] string jobId, [Argument] string workItem,
-        [Argument] string pattern, int context = 2, int maxMatches = 50, string? fileName = null)
+        [Argument] string pattern, int context = 2, int maxMatches = 100, string? fileName = null)
     {
         static void PrintMatches(IReadOnlyList<LogMatch> matches, int contextLines)
         {
@@ -417,7 +417,7 @@ public class Commands
         var result = await Svc.SearchConsoleLogAsync(jobId, workItem, pattern, context, maxMatches);
 
         Console.WriteLine($"Searching for \"{pattern}\" in console log ({result.TotalLines} lines)...");
-        Console.WriteLine($"Found {result.Matches.Count} matches:");
+        Console.WriteLine($"Found {result.Matches.Count} matches{(result.Truncated ? " (truncated)" : "")}:");
         Console.WriteLine();
         PrintMatches(result.Matches, context);
         Console.WriteLine($"{result.Matches.Count} matches found (showing up to {maxMatches}).");
@@ -503,16 +503,16 @@ public class Commands
 
 ### AzDO CLI Commands
 - `hlx azdo build <buildId> [--json]` — Get build details (status, result, branch, timing, URL)
-- `hlx azdo builds [--org ORG] [--project PROJ] [--top N] [--branch B] [--pr-number N] [--definition-id N] [--status S] [--json]` — List builds
+- `hlx azdo builds [--org ORG] [--project PROJ] [--top N] [--branch B] [--pr-number N] [--definition-id N] [--status S] [--json]` — List builds (default top 20)
 - `hlx azdo timeline <buildId> [--filter failed|all] [--json]` — Build timeline (stages, jobs, tasks with log IDs)
 - `hlx azdo log <buildId> <logId> [--tail-lines N]` — Get build log content (last N lines, default 500)
-- `hlx azdo search-log <buildId> [--log-id N] [--pattern P] [--context-lines N] [--max-matches N] [--max-logs N] [--min-lines N] [--json]` — Search one build log or all ranked logs
+- `hlx azdo search-log <buildId> [--log-id N] [--pattern P] [--context-lines N] [--max-matches N] [--max-logs N] [--min-lines N] [--json]` — Search one build log or all ranked logs (defaults: 100 matches, 50 logs)
 - `hlx azdo search-timeline <buildId> <pattern> [--type Stage|Job|Task] [--result failed|all] [--json]` — Search timeline records by name/issue pattern
 - `hlx azdo changes <buildId> [--top N] [--json]` — Commits/changes associated with a build
 - `hlx azdo test-runs <buildId> [--top N] [--json]` — List test runs for a build
 - `hlx azdo test-results <buildId> <runId> [--top N] [--json]` — Test results for a test run (defaults to failed)
-- `hlx azdo artifacts <buildId> [--pattern P] [--top N] [--json]` — List build artifacts with optional pattern filter
-- `hlx azdo test-attachments <runId> <resultId> [--org ORG] [--project PROJ] [--top N] [--json]` — Test result attachments
+- `hlx azdo artifacts <buildId> [--pattern P] [--top N] [--json]` — List build artifacts with optional pattern filter (default top 100)
+- `hlx azdo test-attachments <runId> <resultId> [--org ORG] [--project PROJ] [--top N] [--json]` — Test result attachments (default top 100)
 
 ## MCP Server
 - `hlx mcp` — Start MCP server over stdio (for VS Code, Claude Desktop, etc.)
@@ -531,16 +531,16 @@ public class Commands
 
 ### AzDO MCP Tools
 - `azdo_build` — Get build details by ID or AzDO URL (status, result, branch, timing, web URL)
-- `azdo_builds` — List builds with filters (definition, branch, PR number, status). Defaults to dnceng-public/public
+- `azdo_builds` — List builds with filters (definition, branch, PR number, status). Defaults to dnceng-public/public, top 20
 - `azdo_timeline` — Get build timeline (stages, jobs, tasks) with optional filter ('failed' or 'all'). Returns log IDs for azdo_log
 - `azdo_log` — Get build log content (last N lines, default 500). Use log ID from azdo_timeline
-- `azdo_search_log` — Search one build log by log ID or all ranked build logs for a pattern (case-insensitive)
+- `azdo_search_log` — Search one build log by log ID or all ranked build logs for a pattern (defaults: 100 matches, 50 logs)
 - `azdo_search_timeline` — Search build timeline records by name or issue message pattern. Find specific failed steps or errors
 - `azdo_changes` — Get commits/changes associated with a build
 - `azdo_test_runs` — List test runs for a build (total/passed/failed counts)
 - `azdo_test_results` — Get test results for a test run (outcome, duration, error details). Defaults to failed only (top 200)
-- `azdo_artifacts` — List build artifacts with optional pattern filter (e.g., '*.binlog'). Default top: 50
-- `azdo_test_attachments` — List attachments for a test result (screenshots, logs, dumps). Default top: 50
+- `azdo_artifacts` — List build artifacts with optional pattern filter (e.g., '*.binlog'). Default top: 100
+- `azdo_test_attachments` — List attachments for a test result (screenshots, logs, dumps). Default top: 100
 
 ## Authentication
 Set HELIX_ACCESS_TOKEN env var for internal Helix jobs. Public jobs need no auth.
@@ -940,7 +940,7 @@ public class AzdoCommands
     /// <summary>List recent builds for an Azure DevOps project.</summary>
     /// <param name="org">Azure DevOps organization (default: dnceng-public).</param>
     /// <param name="project">Azure DevOps project (default: public).</param>
-    /// <param name="top">Maximum number of builds to return.</param>
+    /// <param name="top">Maximum number of builds to return (default 20).</param>
     /// <param name="branch">Filter by branch name.</param>
     /// <param name="prNumber">Filter by pull request number.</param>
     /// <param name="definitionId">Filter by pipeline definition ID.</param>
@@ -948,7 +948,7 @@ public class AzdoCommands
     /// <param name="json">Output as structured JSON.</param>
     [Command("azdo builds")]
     public async Task Builds(string org = "dnceng-public", string project = "public",
-        int top = 10, string? branch = null, string? prNumber = null,
+        int top = 20, string? branch = null, string? prNumber = null,
         int? definitionId = null, string? status = null, bool json = false)
     {
         var filter = new AzdoBuildFilter
@@ -1104,15 +1104,15 @@ public class AzdoCommands
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
     /// <param name="pattern">Text pattern to search for (case-insensitive).</param>
     /// <param name="contextLines">Lines of context before and after each match.</param>
-    /// <param name="maxMatches">Maximum number of matches to return.</param>
+    /// <param name="maxMatches">Maximum number of matches to return (default 100).</param>
     /// <param name="logId">Log ID from the timeline record's log reference. Omit to search all ranked logs.</param>
-    /// <param name="maxLogs">Maximum number of log steps to download and search.</param>
+    /// <param name="maxLogs">Maximum number of log steps to download and search (default 50).</param>
     /// <param name="minLines">Minimum line count to include a log in the search.</param>
     /// <param name="json">Output as structured JSON.</param>
     [Command("azdo search-log")]
     public async Task SearchLog([Argument] string buildId,
-        string pattern = "error", int contextLines = 2, int maxMatches = 50,
-        int? logId = null, int maxLogs = 30, int minLines = 5, bool json = false)
+        string pattern = "error", int contextLines = 2, int maxMatches = 100,
+        int? logId = null, int maxLogs = 50, int minLines = 5, bool json = false)
     {
         static void PrintMatches(IReadOnlyList<LogMatch> matches, int context)
         {
@@ -1146,7 +1146,9 @@ public class AzdoCommands
                 return;
             }
 
-            Console.WriteLine($"Search: '{pattern}' in log {logId.Value} — {result.Matches.Count} match(es) in {result.TotalLines} lines");
+            Console.WriteLine($"Search: '{pattern}' in log {logId.Value} — {result.Matches.Count} match(es) in {result.TotalLines} lines{(result.Truncated ? " (truncated)" : "")}");
+            if (result.Truncated)
+                Console.WriteLine("  (stopped early — increase --max-matches to see more)");
             Console.WriteLine();
             PrintMatches(result.Matches, contextLines);
             return;
@@ -1317,11 +1319,11 @@ public class AzdoCommands
     /// <summary>List artifacts produced by a build.</summary>
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
     /// <param name="pattern">Filter artifacts by name using glob-style matching.</param>
-    /// <param name="top">Maximum number of artifacts to return.</param>
+    /// <param name="top">Maximum number of artifacts to return (default 100).</param>
     /// <param name="json">Output as structured JSON.</param>
     [Command("azdo artifacts")]
     public async Task Artifacts([Argument] string buildId, string pattern = "*",
-        int top = 50, bool json = false)
+        int top = 100, bool json = false)
     {
         var artifacts = await _svc.GetBuildArtifactsAsync(buildId, pattern, top);
 
@@ -1427,12 +1429,12 @@ public class AzdoCommands
     /// <param name="resultId">Test result ID from azdo-test-results output.</param>
     /// <param name="org">Azure DevOps organization (default: dnceng-public).</param>
     /// <param name="project">Azure DevOps project (default: public).</param>
-    /// <param name="top">Maximum number of attachments to return.</param>
+    /// <param name="top">Maximum number of attachments to return (default 100).</param>
     /// <param name="json">Output as structured JSON.</param>
     [Command("azdo test-attachments")]
     public async Task TestAttachments([Argument] int runId, [Argument] int resultId,
         string org = "dnceng-public", string project = "public",
-        int top = 50, bool json = false)
+        int top = 100, bool json = false)
     {
         var attachments = await _svc.GetTestAttachmentsAsync(org, project, runId, resultId, top);
 
