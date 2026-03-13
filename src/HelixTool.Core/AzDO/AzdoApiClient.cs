@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using HelixTool.Core.Cache;
 
 namespace HelixTool.Core.AzDO;
 
@@ -28,11 +29,18 @@ public sealed class AzdoApiClient : IAzdoApiClient
 
     private readonly HttpClient _http;
     private readonly IAzdoTokenAccessor _tokenAccessor;
+    private readonly CacheOptions _cacheOptions;
 
     public AzdoApiClient(HttpClient httpClient, IAzdoTokenAccessor tokenAccessor)
+        : this(httpClient, tokenAccessor, new CacheOptions())
+    {
+    }
+
+    public AzdoApiClient(HttpClient httpClient, IAzdoTokenAccessor tokenAccessor, CacheOptions cacheOptions)
     {
         _http = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         _tokenAccessor = tokenAccessor ?? throw new ArgumentNullException(nameof(tokenAccessor));
+        _cacheOptions = cacheOptions ?? throw new ArgumentNullException(nameof(cacheOptions));
     }
 
     public async Task<AzdoBuild?> GetBuildAsync(string org, string project, int buildId, CancellationToken ct = default)
@@ -88,14 +96,15 @@ public sealed class AzdoApiClient : IAzdoApiClient
             path += "?" + string.Join("&", queryParts);
         var url = BuildUrl(org, project, path);
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        var credentialSource = await ApplyAuthAsync(request, ct).ConfigureAwait(false);
+        var credential = await ApplyAuthAsync(request, ct).ConfigureAwait(false);
 
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
 
         if (response.StatusCode == HttpStatusCode.NotFound)
             return null;
 
-        ThrowOnAuthFailure(response, org, project, credentialSource);
+        ThrowOnAuthFailure(response, org, project, credential);
+        CaptureSuccessfulAuthContext(response, credential);
         await ThrowOnUnexpectedError(response, ct).ConfigureAwait(false);
 
         await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
@@ -148,7 +157,7 @@ public sealed class AzdoApiClient : IAzdoApiClient
         return $"https://dev.azure.com/{Uri.EscapeDataString(org)}/{Uri.EscapeDataString(project)}/_apis/{path}{separator}api-version=7.0";
     }
 
-    private async Task<string?> ApplyAuthAsync(HttpRequestMessage request, CancellationToken ct)
+    private async Task<AzdoCredential?> ApplyAuthAsync(HttpRequestMessage request, CancellationToken ct)
     {
         var credential = await _tokenAccessor.GetAccessTokenAsync(ct).ConfigureAwait(false);
         if (credential is null || string.IsNullOrEmpty(credential.Token))
@@ -160,20 +169,21 @@ public sealed class AzdoApiClient : IAzdoApiClient
             _ => new AuthenticationHeaderValue("Bearer", credential.Token)
         };
 
-        return credential.Source;
+        return credential;
     }
 
     private async Task<T?> GetAsync<T>(string org, string project, string url, CancellationToken ct) where T : class
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        var credentialSource = await ApplyAuthAsync(request, ct).ConfigureAwait(false);
+        var credential = await ApplyAuthAsync(request, ct).ConfigureAwait(false);
 
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
 
         if (response.StatusCode == HttpStatusCode.NotFound)
             return null;
 
-        ThrowOnAuthFailure(response, org, project, credentialSource);
+        ThrowOnAuthFailure(response, org, project, credential);
+        CaptureSuccessfulAuthContext(response, credential);
         await ThrowOnUnexpectedError(response, ct).ConfigureAwait(false);
 
         await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
@@ -183,14 +193,15 @@ public sealed class AzdoApiClient : IAzdoApiClient
     private async Task<IReadOnlyList<T>> GetListAsync<T>(string org, string project, string url, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        var credentialSource = await ApplyAuthAsync(request, ct).ConfigureAwait(false);
+        var credential = await ApplyAuthAsync(request, ct).ConfigureAwait(false);
 
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
 
         if (response.StatusCode == HttpStatusCode.NotFound)
             return [];
 
-        ThrowOnAuthFailure(response, org, project, credentialSource);
+        ThrowOnAuthFailure(response, org, project, credential);
+        CaptureSuccessfulAuthContext(response, credential);
         await ThrowOnUnexpectedError(response, ct).ConfigureAwait(false);
 
         await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
@@ -198,12 +209,15 @@ public sealed class AzdoApiClient : IAzdoApiClient
         return wrapper?.Value ?? [];
     }
 
-    private static void ThrowOnAuthFailure(HttpResponseMessage response, string org, string project, string? credentialSource)
+    private void ThrowOnAuthFailure(HttpResponseMessage response, string org, string project, AzdoCredential? credential)
     {
         if (response.StatusCode is not (HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden))
             return;
 
-        var currentAuth = credentialSource ?? "anonymous (no credentials found)";
+        if (credential is not null)
+            _tokenAccessor.InvalidateCachedCredential();
+
+        var currentAuth = credential?.Source ?? "anonymous (no credentials found)";
         throw new HttpRequestException(
             $"Can't access {org}/{project} — authentication required ({(int)response.StatusCode}). Authentication failed.\n\n" +
             $"Current auth: {currentAuth}\n\n" +
@@ -214,6 +228,15 @@ public sealed class AzdoApiClient : IAzdoApiClient
             "• If AZDO_TOKEN is being misclassified, set AZDO_TOKEN_TYPE to 'pat' or 'bearer' to override detection",
             inner: null,
             statusCode: response.StatusCode);
+    }
+
+    private void CaptureSuccessfulAuthContext(HttpResponseMessage response, AzdoCredential? credential)
+    {
+        if (!response.IsSuccessStatusCode || credential is null)
+            return;
+
+        var authHash = CacheOptions.ComputeAuthContextHash(credential.CacheIdentity ?? credential.Source);
+        _cacheOptions.TrySetAuthTokenHash(authHash);
     }
 
     private static async Task ThrowOnUnexpectedError(HttpResponseMessage response, CancellationToken ct)

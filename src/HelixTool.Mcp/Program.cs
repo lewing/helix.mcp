@@ -66,7 +66,8 @@ builder.Services.AddSingleton<IAzdoTokenAccessor, AzCliAzdoTokenAccessor>();
 builder.Services.AddScoped<AzdoApiClient>(sp =>
     new AzdoApiClient(
         sp.GetRequiredService<IHttpClientFactory>().CreateClient("AzDO"),
-        sp.GetRequiredService<IAzdoTokenAccessor>()));
+        sp.GetRequiredService<IAzdoTokenAccessor>(),
+        sp.GetRequiredService<CacheOptions>()));
 builder.Services.AddScoped<IAzdoApiClient>(sp =>
     new CachingAzdoApiClient(
         sp.GetRequiredService<AzdoApiClient>(),

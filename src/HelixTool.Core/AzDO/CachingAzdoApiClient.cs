@@ -31,11 +31,13 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
     private readonly IAzdoApiClient _inner;
     private readonly ICacheStore _cache;
     private readonly bool _enabled;
+    private readonly CacheOptions _options;
 
     public CachingAzdoApiClient(IAzdoApiClient inner, ICacheStore cache, CacheOptions options)
     {
         _inner = inner;
         _cache = cache;
+        _options = options;
         _enabled = options.MaxSizeBytes > 0;
     }
 
@@ -59,6 +61,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
             isCompleted ? BuildStateCompletedTtl : BuildStateTtl, ct);
 
         var ttl = isCompleted ? CompletedTtl : InProgressTtl;
+        key = BuildCacheKey(org, project, $"build:{buildId}");
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), ttl, ct);
 
         return result;
@@ -76,6 +79,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
             return deserialized;
 
         var result = await _inner.ListBuildsAsync(org, project, filter, ct);
+        key = BuildCacheKey(org, project, $"builds:{filterHash}");
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), ListTtl, ct);
 
         return result;
@@ -98,7 +102,10 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
         var result = await _inner.GetTimelineAsync(org, project, buildId, ct);
         if (result is not null)
+        {
+            key = BuildCacheKey(org, project, $"timeline:{buildId}");
             await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), CompletedTtl, ct);
+        }
 
         return result;
     }
@@ -135,6 +142,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
                         : string.Concat(fullContent, delta);
                     // Only write back if our appended result is at least as long as what's
                     // currently cached (guards against concurrent refresh losing lines)
+                    contentKey = BuildCacheKey(org, project, $"log:{buildId}:{logId}");
                     var currentRaw = await _cache.GetMetadataAsync(contentKey, ct);
                     var currentContent = DeserializeLogContent(currentRaw);
                     if (currentContent is null || fullContent.Length >= currentContent.Length)
@@ -144,6 +152,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
                     }
                 }
 
+                freshKey = BuildCacheKey(org, project, $"log-fresh:{buildId}:{logId}");
                 if (!isCompleted)
                     await _cache.SetMetadataAsync(freshKey, "\"1\"", InProgressTtl, ct);
                 else
@@ -166,6 +175,8 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         if (result is null) return null;
 
         var completed = await IsBuildCompletedAsync(org, project, buildId, ct);
+        contentKey = BuildCacheKey(org, project, $"log:{buildId}:{logId}");
+        freshKey = BuildCacheKey(org, project, $"log-fresh:{buildId}:{logId}");
         await _cache.SetMetadataAsync(contentKey, SerializeLogContent(result), ImmutableTtl, ct);
 
         if (!completed)
@@ -187,6 +198,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
             return deserialized;
 
         var result = await _inner.GetBuildChangesAsync(org, project, buildId, top, ct);
+        key = BuildCacheKey(org, project, $"changes:{buildId}:{top}");
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), ImmutableTtl, ct);
 
         return result;
@@ -203,6 +215,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
             return deserialized;
 
         var result = await _inner.GetTestRunsAsync(org, project, buildId, top, ct);
+        key = BuildCacheKey(org, project, $"testruns:{buildId}:{top}");
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
 
         return result;
@@ -219,6 +232,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
             return deserialized;
 
         var result = await _inner.GetTestResultsAsync(org, project, runId, top, ct);
+        key = BuildCacheKey(org, project, $"testresults:{runId}:{top}");
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
 
         return result;
@@ -236,6 +250,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
         var result = await _inner.GetBuildArtifactsAsync(org, project, buildId, ct);
         // Artifacts are immutable once the build publishes them
+        key = BuildCacheKey(org, project, $"artifacts:{buildId}");
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), ImmutableTtl, ct);
 
         return result;
@@ -252,6 +267,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
             return deserialized;
 
         var result = await _inner.GetTestAttachmentsAsync(org, project, runId, resultId, top, ct);
+        key = BuildCacheKey(org, project, $"testattachments:{runId}:{resultId}:{top}");
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
 
         return result;
@@ -270,6 +286,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
             return deserialized;
 
         var result = await _inner.GetBuildLogsListAsync(org, project, buildId, ct);
+        key = BuildCacheKey(org, project, $"logslist:{buildId}");
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), ttl, ct);
 
         return result;
@@ -277,15 +294,23 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
     // ── Helpers ──────────────────────────────────────────────────────
 
-    private static string BuildCacheKey(string org, string project, string suffix)
+    private string BuildCacheKey(string org, string project, string suffix)
     {
         var safeOrg = CacheSecurity.SanitizeCacheKeySegment(org);
         var safeProject = CacheSecurity.SanitizeCacheKeySegment(project);
-        return $"azdo:{safeOrg}:{safeProject}:{suffix}";
+        return string.IsNullOrEmpty(_options.AuthTokenHash)
+            ? $"azdo:{safeOrg}:{safeProject}:{suffix}"
+            : $"azdo:{_options.AuthTokenHash}:{safeOrg}:{safeProject}:{suffix}";
     }
 
-    private static string BuildStateKey(string org, string project, int buildId)
-        => $"azdo-build:{CacheSecurity.SanitizeCacheKeySegment(org)}:{CacheSecurity.SanitizeCacheKeySegment(project)}:{buildId}";
+    private string BuildStateKey(string org, string project, int buildId)
+    {
+        var safeOrg = CacheSecurity.SanitizeCacheKeySegment(org);
+        var safeProject = CacheSecurity.SanitizeCacheKeySegment(project);
+        return string.IsNullOrEmpty(_options.AuthTokenHash)
+            ? $"azdo-build:{safeOrg}:{safeProject}:{buildId}"
+            : $"azdo-build:{_options.AuthTokenHash}:{safeOrg}:{safeProject}:{buildId}";
+    }
 
     private static bool IsCompletedStatus(string? status)
         => status?.Equals("completed", StringComparison.OrdinalIgnoreCase) == true;
