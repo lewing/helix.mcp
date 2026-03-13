@@ -45,6 +45,8 @@
 
 ## Learnings (azdo_search_log_across_steps implementation)
 
+**Archive refresh (2026-03-13):** Detailed notes for CI-knowledge description updates, 9-repo profile expansion, PR #16 review fixes, Option A restructuring, review-fix/security follow-ups, and discoverability routing moved to `history-archive.md`. Durable rules: keep repo-specific guidance in `helix_ci_guide`, preserve the `HelixTool.Core.Helix` / `HelixTool.Core.Cache` split with shared `StringHelpers`, use exact Ordinal root-boundary checks, and prefer explicit fallback routing over composite tools.
+
 - **NormalizeAndSplit extraction:** When two methods share identical preprocessing, extract immediately.
 - **4-bucket ranking:** Logs ranked by failure likelihood (failed → issues → succeededWithIssues → succeeded → orphans), largest first. Matches human scan order.
 - **Early termination:** Two triggers — match budget exhausted OR log search budget exhausted.
@@ -68,63 +70,6 @@
 📌 Team update (2026-03-09): CI profile analysis — 14 tool description/error message recommendations. — Ash
 
 📌 Team update (2025-07-24): Test quality review — ~17 redundant tests deleted, no layer duplication rule. — Dallas
-
-## Learnings (MCP tool description updates with CI knowledge)
-
-- **5 tool descriptions updated** with repo-specific CI knowledge (helix_test_results, helix_search_log, azdo_test_runs, azdo_test_results, azdo_timeline).
-- **warn-before-fail pattern:** helix_test_results warns that 4/6 repos don't upload TRX, directing to azdo_test_runs/results.
-- **Repo-specific search patterns:** runtime=`[FAIL]`, aspnetcore/efcore=`  Failed`, sdk=`error MSB`, roslyn=`aborted`/`Process exited`.
-- **azdo_test_runs:** failedTests=0 can lie — always drill into results. azdo_timeline includes Helix task name mapping per repo.
-
-## Learnings (CiKnowledgeService enrichment — 9-repo knowledge base)
-
-- **CiRepoProfile expanded** with 9 new properties (PipelineNames, OrgProject, ExitCodeMeanings, etc.). Init-only defaults for backward compat. 3 new repos: maui (3 pipelines), macios (devdiv, NUnit), android (devdiv, NUnit+xUnit). Total: 9.
-- **devdiv org repos need ⚠️ warnings** — standard helix_*/ado-dnceng-* tools don't work for macios/android.
-- **MAUI is unique:** 3 separate pipelines with different investigation approaches. Pipeline identity matters for tool selection.
-- **FormatProfile/GetOverview enriched** with org, pipelines, gotchas, exit codes, investigation order columns.
-
-📌 Team update (2026-03-10): CiKnowledgeService enrichment (9 repos, 9 new properties, 171 tests, PR #16). — Ripley
-
-## Learnings (PR #16 review comment fixes)
-
-- **Try-block indentation:** Re-indent body when wrapping in try. Caught in 4 HelixMcpTools methods.
-- **McpException must include inner exception and "Failed to" prefix.** Three AzDO search catch blocks were dropping context.
-- **Error messages: don't hardcode one repo's pattern.** Use multiple patterns + point to `helix_ci_guide`.
-- **Bool→string for nuanced semantics.** `UploadsTestResultsToHelix: bool` → `HelixTestResultAvailability: string` (`"none"`, `"partial"`, `"varies"`).
-- **When renaming record properties, update test assertions too.**
-
-## Learnings (Option A folder restructuring)
-
-- **Moved 9 Helix files** from `Core/` root to `Core/Helix/`: HelixService, HelixApiClient, IHelixApiClient, IHelixApiClientFactory, HelixIdResolver, HelixException, IHelixTokenAccessor, ChainedHelixTokenAccessor, plus CachingHelixApiClient from `Cache/`. Namespace: `HelixTool.Core` → `HelixTool.Core.Helix`.
-- **Added `HelixTool.Core.Cache` namespace** to 6 cache infrastructure files in `Cache/`: SqliteCacheStore, ICacheStore, ICacheStoreFactory, CacheOptions, CacheSecurity, CacheStatus.
-- **Extracted `MatchesPattern` and `IsFileSearchDisabled`** from HelixService to `StringHelpers.cs`. HelixService methods now delegate to StringHelpers. AzdoService, HelixMcpTools, and AzdoMcpTools updated to call StringHelpers directly — breaking the AzDO→Helix coupling.
-- **Moved MCP tools**: HelixMcpTools → `Mcp.Tools/Helix/`, AzdoMcpTools → `Mcp.Tools/AzDO/`.
-- **Moved 24 Helix-specific test files** to `Tests/Helix/`. Kept shared tests (cache, security, CI knowledge, text search, API middleware) at root.
-- **HelixService.cs needed `using HelixTool.Core.Cache;`** — it references `CacheSecurity` for path validation. Initial build failed until this was added. Key learning: when splitting namespaces within the same project, intra-project cross-namespace references are easy to miss.
-- **StringHelpers changed from `internal` to `public`** to support cross-project access (MCP tools project references it).
-- **59 files touched**, 0 behavioral changes, all 1038 tests pass.
-
-📌 Team update (2026-03-10): Option A folder restructuring executed — 9 Helix files moved to Core/Helix/, Cache namespace added, shared utils extracted from HelixService, Helix/AzDO subfolders in Mcp.Tools and Tests. 59 files, 1038 tests pass, zero behavioral changes. PR #17. — decided by Dallas (analysis), Ripley (execution)
-
-## Learnings (security boundary and DI review fixes)
-
-- **Path boundary checks:** For security-sensitive root containment, normalize both paths, preserve the root boundary with `Path.TrimEndingDirectorySeparator(...) + Path.DirectorySeparatorChar`, and compare with `StringComparison.Ordinal`; ignore-case prefix checks can admit case-variant sibling paths on case-sensitive filesystems.
-- **HelixService constructor contract:** `HelixService` should require an injected `HttpClient` and null-guard both constructor dependencies instead of silently allocating a fallback transport.
-- **User preference:** Code-review follow-up fixes should stay surgical, behavior-safe, and avoid unrelated refactoring.
-- **Key file paths:** `src/HelixTool.Core/Cache/CacheSecurity.cs` contains cache/download path traversal guards. `src/HelixTool.Core/Helix/HelixService.cs` owns direct URL download behavior and now depends on caller-provided `HttpClient`. `src/HelixTool/Program.cs` and `src/HelixTool.Mcp/Program.cs` are the production DI registration points for `HelixService`.
-
-📌 Team update (2026-03-10): Review-fix decisions merged — README now leads with value prop, shared caching, and context reduction; cache path containment uses exact Ordinal root-boundary checks; and HelixService requires an injected HttpClient with no implicit fallback. Validation confirmed current CLI/MCP DI sites already comply and focused plus full-suite coverage exists. — decided by Kane, Lambert, Ripley
-
-📌 Team update (2026-03-10): Knowledgebase refresh guidance merged — treat the knowledgebase as a living document aligned to current file state, not a static snapshot; earlier README/cache-security/HelixService review findings are resolved knowledge, and only residual follow-up should stay active (discoverability plus documentation/tool-description synchronization). — requested by Larry Ewing, refreshed by Ash
-
-## Learnings (discoverability routing pass)
-
-- **Behavioral routing beats vague warnings:** For tool-selection surfaces, state when a tool works, when to skip it, and the exact fallback path instead of saying it may fail.
-- **Guide ordering pattern:** A short `Start Here` section before gotchas and inventory makes repo-specific workflow choice discoverable without reading the entire CI profile.
-- **User preference:** Keep discoverability improvements incremental; do not add composite tools or new parameters when wording/order changes can solve the workflow gap.
-- **Key file paths:** `src/HelixTool.Mcp.Tools/Helix/HelixMcpTools.cs` holds MCP tool descriptions, `src/HelixTool.Core/Helix/HelixService.cs` owns `helix_test_results` fallback messaging, `src/HelixTool.Core/CiKnowledgeService.cs` formats repo-specific CI guides, `src/HelixTool.Mcp.Tools/CiKnowledgeTool.cs` describes `helix_ci_guide`, and `src/HelixTool/Program.cs` mirrors MCP guidance in llms-txt/help output.
-
-📌 Team update (2026-03-10): Discoverability routing decisions merged — keep the current tool surface, route repo-specific workflow selection through `helix_ci_guide(repo)`, treat `helix_test_results` as structured Helix-hosted parsing rather than a universal first step, and keep `helix_search_log`/docs/help guidance synchronized across surfaces. — decided by Dallas, Kane, Ripley
 
 ## Learnings (helix_test_results → helix_parse_uploaded_trx rename)
 

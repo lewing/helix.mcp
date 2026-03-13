@@ -1,6 +1,7 @@
 # Decisions
 
 > Shared team decisions — the single source of truth for architectural and process choices.
+
 ### 2025-07-18: Architecture Review — hlx project improvement proposal
 
 **By:** Dallas
@@ -191,27 +192,33 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 ---
 
 **Decision:** This proposal is ready for discussion. No changes should be made until Larry confirms priorities. The P0 items (testability + error handling) should be tackled first as they're foundational — everything else is harder to do safely without tests.
+
 ### 2025-07-17: Documentation improvement proposal *(superseded by 2026-02-12 implementation)*
 
 **By:** Kane
 **What:** Audit identified 15 documentation improvements needed: llmstxt missing MCP tools, public records missing XML doc comments, README missing install instructions, no LICENSE file, llmstxt indentation bug.
 **Status:** Items 1–4 implemented in session 2026-02-11-p1-features. Remaining gaps: HelixIdResolver XML docs, HelixMcpTools class doc, LICENSE file, `dotnet tool install` instructions.
+
 ### 2025-07-14: MatchesPattern exposed via InternalsVisibleTo
 **By:** Lambert
 **What:** Changed `HelixService.MatchesPattern` from `private static` to `internal static` and added `<InternalsVisibleTo Include="HelixTool.Tests" />` to `HelixTool.Core.csproj` to enable direct unit testing.
 **Why:** Cleanest approach for testing private logic — no reflection, no test helpers, no public API surface change. The method stays invisible to external consumers while being testable. If anyone adds more internal methods to Core, they're automatically testable too.
+
 ### 2025-07-14: Caching Strategy for Helix API Responses and Artifacts *(superseded by 2026-02-12 Cache Implementation)*
 
 **By:** Dallas
 **Status:** ⛔ Superseded — see "2026-02-12: Refined Cache Requirements" and "2026-02-12: Cache Implementation Design Review" below.
+
 ### 2025-07-18: Revised Cache TTL Policy *(superseded by 2026-02-12 Cache Implementation)*
 
 **By:** Dallas
 **Status:** ⛔ Superseded — TTL matrix carried forward into the 2026-02-12 refined requirements. Key change: storage moved from in-memory to SQLite-backed (cross-process), max size bumped from 500MB to 1GB, XDG-compliant cache location.
+
 ### 2025-07-18: Requirements backlog formalized — 18 user stories extracted from session 72e659c1
 **By:** Ash
 **What:** Created `.ai-team/requirements.md` with 18 user stories (US-1 through US-18), categorized into Implemented, Planned, Architectural, and Discovered requirements. Prioritized P0–P3 with ownership assignments. P0 items are: layered architecture (US-7), logs-out-of-context principle (US-8), DI/testability (US-12), and error handling (US-13).
 **Why:** The session contained requirements scattered across plan.md, architecture docs, checkpoint notes, and implicit workflow observations. No single source had the full picture. The team needs a single backlog to prioritize from, and the P0 items (testability + error handling) must land before any feature work — Dallas identified this correctly and I'm reinforcing it as the requirements owner. Ripley should not pick up P1/P2 stories until US-12 and US-13 are done.
+
 ### 2026-02-11: P0 Foundation Design Review — IHelixApiClient, DI, HelixException, CancellationToken (D1–D10)
 
 **By:** Dallas
@@ -231,6 +238,7 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 - **D10:** `JsonSerializerOptions` hoisted to static field in `HelixMcpTools`
 
 **Key risks:** MCP SDK may not support instance tool methods; Helix SDK return types may be concrete (may need DTOs).
+
 ### 2026-02-11: P0 Implementation — Runtime Decisions
 
 **By:** Ripley
@@ -240,6 +248,7 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 - **TaskCanceledException timeout detection:** Use `cancellationToken.IsCancellationRequested` (true = real cancellation, false = HTTP timeout), NOT `ex.CancellationToken == cancellationToken`. The equality check fails when both tokens are `CancellationToken.None` (default parameter).
 - **Helix SDK model types are concrete:** `JobDetails`, `WorkItemSummary`, `WorkItemDetails`, `UploadedFile` have no interfaces. Solved with projection interfaces (`IJobDetails`, `IWorkItemSummary`, `IWorkItemDetails`, `IWorkItemFile`) in `IHelixApiClient.cs` and private adapter classes in `HelixApiClient.cs`.
 - **ConsoleAppFramework DI:** CLI uses `ConsoleApp.ServiceProvider = services.BuildServiceProvider()` before `ConsoleApp.Create()`. CAF v5 supports DI natively via this static property pattern.
+
 ### 2026-02-11: P0 Test Infrastructure Decisions
 
 **By:** Lambert
@@ -249,6 +258,7 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 - **NSubstitute 5.* chosen as mocking framework** per Dallas's D9 recommendation. Simpler API than Moq (no `Setup(...).Returns(...)` ceremony, no `.Object` property). `.ThrowsAsync()` from `NSubstitute.ExceptionExtensions` maps cleanly to D6 error handling contract.
 - **HelixIdResolver invalid-input tests updated for D7 breaking change:** Replaced 5 pass-through tests with `ArgumentException` throw assertions. Happy-path GUID/URL extraction tests unchanged.
 - **Proactive parallel test writing validated:** 19 tests written against design spec before implementation existed. All compiled and passed once Ripley's code landed.
+
 ### 2026-02-11: US-1 & US-20 Implementation — Positional Args + Rich Status Output
 
 **By:** Ripley
@@ -258,6 +268,7 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 - **US-20 (Rich Status Output):** Expanded `IWorkItemDetails` with `State`, `MachineName`, `Started`, `Finished`. `WorkItemResult` now includes `State`, `MachineName`, `Duration`. CLI shows `[FAIL] Name (exit code 1, 2m 34s, machine: helix-win-01)`. MCP JSON includes per-work-item `state`, `machineName`, `duration`.
 - **FormatDuration duplication:** Helper is duplicated between CLI and MCP. Acceptable for two consumers; extract to Core if a third appears.
 - **Test impact:** Updated mock setup for new `IWorkItemDetails` fields. 38/38 tests pass.
+
 ### 2026-02-12: Documentation fixes — llmstxt, README, XML doc comments
 
 **By:** Kane
@@ -270,6 +281,7 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 - **XML doc comments** — Added to `IHelixApiClient` (all 6 methods), `HelixApiClient`, `HelixException`, `HelixService` (constructor, all public methods, all 4 public record types).
 - **Decision for team:** The llmstxt content and README now serve as the authoritative docs for the public API surface. When new commands or MCP tools are added, both must be updated together.
 - **Remaining gaps:** `HelixIdResolver` XML docs, `HelixMcpTools` class-level doc comment, LICENSE file, `dotnet tool install` instructions.
+
 ### 2026-02-12: US-4 Authentication Design — HELIX_ACCESS_TOKEN env var, optional token constructor
 
 **By:** Dallas
@@ -283,6 +295,7 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 - **D-AUTH-5:** `HelixService` catches 401/403 with actionable error: "Set HELIX_ACCESS_TOKEN environment variable to access internal builds."
 - **D-AUTH-6:** MCP client config example: `{ "command": "hlx", "args": ["mcp"], "env": { "HELIX_ACCESS_TOKEN": "<token>" } }`
 - **D-AUTH-7:** No token acquisition built into tool. No `hlx auth login`. Token is opaque string from env var. ~35 lines of code, no new dependencies.
+
 ### 2026-02-12: Stdio MCP Transport — `hlx mcp` subcommand (Option B approved)
 
 **By:** Dallas
@@ -296,6 +309,7 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 - **Logging:** All output to stderr via `LogToStandardErrorThreshold = LogLevel.Trace`.
 - **MCP client config:** `{ "command": "hlx", "args": ["mcp"] }`
 - **Risks:** ConsoleAppFramework + Host may conflict; `mcp` command bypasses CAF and runs Host directly. Tool assembly scanning needs explicit assembly reference if tools are in Core.
+
 ### 2026-02-12: Stdio MCP Implementation — Runtime decisions
 
 **By:** Ripley
@@ -307,6 +321,7 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 - HelixTool.Mcp unchanged (HTTP transport stays).
 - Duplication accepted; extract to Core if maintenance burden grows.
 - Build and 55/55 tests pass.
+
 ### 2026-02-12: MCP Tools Test Strategy
 
 **By:** Lambert
@@ -317,6 +332,7 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 - MCP tool methods return JSON strings; tests parse with `JsonDocument` and assert structure/values.
 - Download error path returns `{error: "..."}` JSON rather than throwing.
 - **Impact:** If `HelixMcpTools` is removed from HelixTool.Mcp, test ProjectReference must change.
+
 ### 2026-02-12: US-5 + US-25 Implementation — dotnet tool packaging + ConsoleLogUrl
 
 **By:** Ripley
@@ -397,6 +413,7 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 - JSON output goes to stdout; progress messages (`Fetching job details...`) still go to stderr.
 
 **Impact:** Non-breaking. All 81 tests pass. No new dependencies added. One dependency removed.
+
 ### 2026-02-12: US-10 (Work Item Detail) and US-23 (Batch Status) Implementation
 
 
@@ -413,6 +430,7 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 - `src/HelixTool/Program.cs` — `work-item` and `batch-status` commands
 - `src/HelixTool/HelixMcpTools.cs` — `hlx_work_item` and `hlx_batch_status` tools
 - `src/HelixTool.Mcp/HelixMcpTools.cs` — same tools for HTTP MCP server
+
 ### 2026-02-12: US-21 Failure Categorization
 
 
@@ -447,6 +465,7 @@ Added `FailureCategory` enum and `ClassifyFailure` heuristic classifier to `Heli
 No test modifications needed — all 100 existing tests pass. The new `FailureCategory?` parameter is transparently constructed inside `GetJobStatusAsync`/`GetWorkItemDetailAsync`. Lambert should add tests for `ClassifyFailure` covering all heuristic branches.
 
 ---
+
 ### 2026-02-12: US-22: Console Log Search / Pattern Extraction
 
 **By:** Ripley
@@ -475,6 +494,7 @@ Implemented `SearchConsoleLogAsync` in HelixService to search console log conten
 - `src/HelixTool.Mcp/HelixMcpTools.cs` — Added `hlx_search_log` MCP tool (mirror)
 
 ---
+
 ### 2026-02-12: Consolidate HelixMcpTools into HelixTool.Core
 
 **By:** Ripley
@@ -500,22 +520,27 @@ Both copies contained identical logic and had to be kept in sync manually. Conso
 **Key insight:** `WithToolsFromAssembly()` without arguments only scans the calling assembly. Since `HelixMcpTools` moved to `HelixTool.Core.dll`, both consumers must use `WithToolsFromAssembly(typeof(HelixMcpTools).Assembly)`.
 
 **Verification:** `dotnet build` — 0 errors, 0 warnings. `dotnet test` — 126/126 passed.
+
 ### 2025-07-21: CI workflow added at .github/workflows/ci.yml
 **By:** Ripley
 **What:** Created a GitHub Actions CI workflow that runs on push/PR to main/master. Matrix: ubuntu-latest + windows-latest. Uses .NET 10 preview SDK. Steps: checkout, restore, build, test. NuGet restore uses the repo-root nuget.config which already includes the dotnet-eng Azure Artifacts feed.
 **Why:** The project had no CI. This gives us build+test validation on every PR and push to main branches, on both Linux and Windows, matching the cross-platform nature of the tool.
+
 ### 2026-02-11: McpServer package type support
 **By:** Ripley
 **What:** Added PackageType McpServer and .mcp/server.json to HelixTool.csproj for dnx zero-install support
 **Why:** Enables `dnx hlx mcp` pattern — MCP clients can reference hlx without requiring pre-installation
+
 ### 2025-07-23: Rename NuGet package from `hlx` to `lewing.helix.mcp`
 **By:** Ripley
 **What:** Changed PackageId from `hlx` to `lewing.helix.mcp` in HelixTool.csproj. Updated `.mcp/server.json` to use Chet's 2025-10-17 schema format with `registryType`/`identifier` fields, added `title`, `version`, `websiteUrl`. Added PackageTags, PackageReadmeFile, PublishRepositoryUrl, and Content item to pack README.md. ToolCommandName (`hlx`) is unchanged.
 **Why:** Follows the established `{owner}.{tool}.mcp` naming convention (same as `baronfel.binlog.mcp`). The old bare `hlx` name was too generic for a public NuGet package and didn't convey ownership or purpose. The server.json update aligns with the latest MCP server registry schema that tools like VS Code and Copilot CLI consume for zero-install discovery.
+
 ### 2025-02-12: NuGet Trusted Publishing workflow
 **By:** Ripley
 **What:** Created `.github/workflows/publish.yml` that publishes `lewing.helix.mcp` to nuget.org on `v*` tag push using NuGet Trusted Publishing (OIDC) via `NuGet/login@v1`. Creates a GitHub Release with the nupkg attached. No API key secrets — only `NUGET_USER` is needed. Pattern adapted from baronfel/mcp-binlog-tool.
 **Why:** Trusted Publishing is the modern NuGet approach — OIDC tokens are short-lived and scoped to the workflow, eliminating long-lived API key secrets. The workflow mirrors CI's .NET 10 preview SDK setup for consistency. Using `-o src/HelixTool/nupkg` gives a predictable output path for both the push glob and the release artifact attachment. Changelog support intentionally deferred — simple `Release ${{ github.ref_name }}` body for now.
+
 ### 2026-02-12: Refined Cache Requirements — SQLite-backed, Cross-Process Shared Cache
 **By:** Larry (via Coordinator)
 **What:** Refined caching requirements superseding the original Dallas design. Key changes: SQLite-backed (not in-memory), cross-process shared cache for stdio MCP server instances, XDG-compliant cache location, 1GB default cap (configurable).
@@ -566,6 +591,7 @@ Console logs for running work items are append-only streams. Bypass cache entire
 
 - Max cache size configurable (environment variable or config file — TBD by implementer)
 - Default: 1 GB
+
 ### 2026-02-12: Cache Implementation Design Review
 **By:** Dallas
 **What:** SQLite-backed cross-process caching layer for hlx — interface design, integration strategy, schema, risk assessment, and action items for Ripley (implementation) and Lambert (tests).
@@ -963,11 +989,13 @@ Ripley should target the interfaces first so Lambert can write tests in parallel
 1. **Should HelixTool.Mcp (HTTP project) also get caching?** It's long-lived so in-memory caching matters more there, but SQLite would give persistence across restarts. Recommendation: yes, same DI registration, low incremental effort.
 2. **Should `cache status` show per-job breakdown?** Or just totals? Recommendation: totals only for v1, per-job in v2 if useful.
 3. **Should cache be opt-out?** Currently always on. `HLX_CACHE_MAX_SIZE_MB=0` disables, but should there be `--no-cache` flag on individual commands? Recommendation: defer to v2 unless MCP consumers need it.
+
 ### 2025-02-13: Consolidate MCP config examples in README — one example + file path table
 
 **By:** Kane
 **What:** Replaced three duplicate MCP client config JSON blocks (VS Code, Claude Desktop, Claude Code/Cursor) with a single canonical example plus a table of config file locations and key names. Added `--yes` flag to all `dnx` args. Removed stale "not yet published to nuget.org" notes since v0.1.0 is live.
 **Why:** The three JSON blocks were nearly identical — only the top-level key (`servers` vs `mcpServers`) and file path differed. Duplicating them made maintenance error-prone (changes had to be made in 3+ places) and made the README unnecessarily long. The consolidated format is easier to maintain and scan. The `--yes` flag is required for MCP server definitions because `dnx` runs non-interactively when launched by an MCP client. Pattern established: when configs differ only by file path and a single key name, use one example + a table rather than repeating the full block.
+
 ### 2025-02-12: Cache Test Suite Complete (L-CACHE-1 through L-CACHE-10)
 **By:** Lambert
 **What:** 56 tests covering all 10 Dallas cache test action items, across 3 new test files.
@@ -998,6 +1026,7 @@ Ripley should target the interfaces first so Lambert can write tests in parallel
 
 - The `SchemaCreation_OpenTwice_NoErrors` test opens two `SqliteCacheStore` instances on the same directory. This works because of WAL mode but may show occasional `SQLITE_BUSY` under CI load. If this becomes flaky, consider adding `busy_timeout` to the test or serializing access.
 - The LRU eviction test uses `MaxSizeBytes = 100` with 60-byte artifacts. This verifies the eviction fires but doesn't deeply test the LRU ordering — a more thorough test would need controlled `last_accessed` timestamps.
+
 ### 2026-02-12: Cache Implementation Details
 **By:** Ripley
 **What:** SQLite-backed caching layer implemented per Dallas's design review (R-CACHE-1 through R-CACHE-11).
@@ -1030,6 +1059,7 @@ Ripley should target the interfaces first so Lambert can write tests in parallel
 - `src/HelixTool/Program.cs` (DI, cache commands, llmstxt update)
 
 ---
+
 ### 2026-02-13: Cache Auth Isolation (Security Fix)
 **By:** Ripley
 **Requested by:** Larry Ewing
@@ -1048,6 +1078,7 @@ Where `{hash}` = first 8 hex chars of SHA256 of the token (lowercase, determinis
 - Same token always produces the same hash → cache reuse across restarts. Different tokens → different caches.
 
 ---
+
 ### 2026-02-13: Path Traversal Hardening for Cache and Download Paths (Security Fix)
 **By:** Ripley
 **Requested by:** Larry Ewing
@@ -1065,6 +1096,7 @@ Defense-in-depth against path traversal attacks via crafted inputs (job IDs, wor
 - `HelixService`: 3 download methods (DownloadFilesAsync, DownloadFromUrlAsync, DownloadConsoleLogAsync) sanitize file names and validate output paths.
 
 All 182 existing tests pass unchanged — sanitization is transparent for well-formed inputs.
+
 ### 2026-02-12: HTTP/SSE multi-client auth architecture for HelixTool.Mcp
 
 **By:** Dallas
@@ -1353,6 +1385,7 @@ When implemented, the ordering should be:
 1. **SDK version:** We're on `0.8.0-preview.1`. The `ConfigureSessionOptions`, `ScopeRequests`, and `PerSessionExecutionContext` properties exist in the current codebase on `main`. Verify these are available in our pinned version, or upgrade.
 2. **Helix SDK client lifecycle:** `HelixApi` (from `Microsoft.DotNet.Helix.Client`) — does it hold `HttpClient` instances that should be long-lived? If so, the scoped pattern should use `IHttpClientFactory` internally rather than creating new `HttpClient` per scope. Investigate `HelixApi` internals.
 3. **Token format:** Helix uses `Authorization: token {value}`, not `Bearer`. The `HttpContextHelixTokenAccessor` should accept both formats for flexibility.
+
 ### 2026-02-12: Multi-auth support — defer, current design is sufficient
 
 **By:** Dallas
@@ -1480,14 +1513,17 @@ Re-evaluate if: (a) Helix deploys multiple independent instances that users need
 - Trim whitespace from extracted tokens
 - Fall back to `HELIX_ACCESS_TOKEN` env var when no recognized auth header present
 - Return null when no auth source is available
+
 ### 2025-07-18: US-9 Script Removability Analysis Complete
 **By:** Ash
 **What:** Completed comprehensive function-by-function mapping of ci-analysis Helix API code to hlx equivalents. All 6 core API functions (152 lines) are 100% replaceable. Overall Helix-related coverage is ~85% (217/305 extended lines). Phase 1 migration can proceed immediately with zero blockers — net reduction of ~120 lines. Only meaningful gap is structured test failure extraction (US-22, P2, ~88 lines at ~40% coverage). Analysis delivered at `.ai-team/analysis/us9-script-removability.md`.
 **Why:** This analysis is the prerequisite for ci-analysis adopting hlx. Without quantified coverage and a gap list, the migration plan was aspirational. Now it's actionable: the team knows exactly which functions to replace, which to keep, and which user stories (if any) to promote. The key finding — that NO user stories need promotion for Phase 1 — means migration can start in the next sprint.
+
 ### 2026-02-13: US-6 Download E2E Verification
 **By:** Lambert
 **What:** Created 46 comprehensive tests for DownloadFilesAsync and DownloadFromUrlAsync in `DownloadTests.cs`, organized into 4 test classes: DownloadFilesTests (27), DownloadFromUrlParsingTests (5), DownloadSanitizationTests (6), DownloadPatternTests (8). All 298 tests pass.
 **Why:** Download commands had zero test coverage. Tests verify happy paths (single/multi-file, pattern matching, binary content), security (path traversal via `..`, `/`, `\` — all sanitized by CacheSecurity), error handling (401/403/404/timeout/cancellation), input validation, and edge cases (empty streams, unicode filenames, same-name files, URL-encoded characters). Each test class uses a distinct ValidJobId GUID to prevent temp directory collisions during parallel xUnit execution — a pattern discovered when shared GUIDs caused file contention failures.
+
 ### 2026-02-15: README comprehensive updates (caching, v0.1.3, project structure)
 
 **By:** Kane
@@ -1506,6 +1542,7 @@ Re-evaluate if: (a) Helix deploys multiple independent instances that users need
 - ci-analysis replacement note added in Architecture
 
 **Note for Ripley:** The llmstxt output in Program.cs is now out of sync with the README — it’s missing hlx_search_file, hlx_test_results, and the search-file/	est-results CLI commands. It should be updated to match.
+
 ### 2026-02-13: Requirements audit — P0/P1/P2 completion status
 **By:** Ash
 **What:** Comprehensive audit of all 30 user stories against the actual codebase. Marked 25 stories as ✅ Implemented in requirements.md. Replaced the "Implementation Gaps" section with "Resolved Gaps" (all 8 original gaps fixed) and a new "Remaining Implementation Gaps" section (5 minor items). Updated the feature table from 7 features to 15. Identified 7 acceptance criteria that were NOT met despite the parent feature being functional — left these unchecked with explanatory notes.
@@ -1516,10 +1553,12 @@ Re-evaluate if: (a) Helix deploys multiple independent instances that users need
 2. **US-21 failure categorization** uses heuristics (exit code + state + work item name) rather than log content parsing as originally specified. The log-based criteria (checking for "Traceback", "Failures: 0") were not implemented. Current approach is sufficient for most cases.
 3. **US-17 code organization** is functionally complete (namespaces fixed) but the models-extraction and Display/ cleanup criteria are outstanding — minor refactoring debt.
 4. **US-11 --json flag** doesn't cover `find-binlogs` or `batch-status` — minor gap for power users.
+
 ### 2026-02-13: MCP API design review
 **By:** Dallas
 **What:** Comprehensive API design review of all 9 MCP tool endpoints in HelixMcpTools.cs. Verdict: the surface is well-designed for its domain and NOT overly ci-analysis-specific — it's a general-purpose Helix job inspection API that ci-analysis happens to consume. Identified 6 actionable improvements: (1) rename `hlx_logs` → `hlx_log_content`, (2) rename `hlx_download_url` → `hlx_download_file_url`, (3) fix `hlx_batch_status` comma-separated string → proper array parameter, (4) add `hlx_list_work_items` as a missing navigation tool, (5) standardize response envelope with consistent `{data, error?}` shape, (6) fix `hlx_status` inconsistent `all` parameter naming. Priority order: P0 batch_status array fix, P1 list_work_items gap, P2 naming improvements, P3 response envelope standardization.
 **Why:** Larry raised concern that the MCP surface was too tightly coupled to ci-analysis workflows. After thorough review, the tools map to Helix API primitives (jobs, work items, files, logs) rather than ci-analysis-specific orchestrations. The naming uses `hlx_` prefix consistently and maps to Helix domain concepts. However, there are real usability issues that would trip up non-ci-analysis consumers: the comma-separated jobIds string in batch_status is hostile to programmatic callers, the missing list_work_items tool forces consumers to use hlx_status (heavy) just to discover work item names, and some tool names don't self-document well. These fixes would make the API genuinely general-purpose.
+
 ### 2026-02-14: Generalize hlx_find_binlogs to hlx_find_files with pattern parameter
 **By:** Dallas
 **Requested by:** Larry Ewing
@@ -1638,6 +1677,7 @@ public async Task FindBinlogs(string jobId, int maxItems = 30)
 
 
 ---
+
 ### 2026-02-13: camelCase JSON assertion convention
 
 # Decision: camelCase JSON assertion convention
@@ -1657,6 +1697,7 @@ All test assertions against MCP JSON output must use camelCase property names in
 - Convention must be followed for all future MCP tool tests
 
 ---
+
 ### 2026-02-15: MCP API Batch — Tests Need CamelCase Update
 
 # MCP API Batch: Tests Need CamelCase Update
@@ -1689,6 +1730,7 @@ Also, `FindBinlogs` MCP tool now delegates to `FindFiles`, so the test on line 2
 - `src/HelixTool.Tests/HelixMcpToolsTests.cs`
 - `src/HelixTool.Tests/WorkItemDetailTests.cs` (already fixed for compilation)
 - `src/HelixTool.Tests/JsonOutputTests.cs` (already fixed for compilation)
+
 ### 2025-07-23: STRIDE Threat Model — Completed and Approved
 
 **By:** Ash (analysis), Dallas (review)
@@ -1706,6 +1748,7 @@ Also, `FindBinlogs` MCP tool now delegates to `FindFiles`, so the test on line 2
 2. **E1 (URL scheme validation)** — Ripley should add a scheme check in `DownloadFromUrlAsync` as part of normal hardening. One-liner: reject non-`http`/`https` schemes.
 3. **D1 (batch size limit)** — Add `ArgumentException` guard in `GetBatchStatusAsync` if `idList.Count > 50`. Prevents agent-driven resource exhaustion.
 4. **T2 (domain allowlist for download-url)** — Defer. Too restrictive for a diagnostic tool where blob storage URLs vary. Document the risk instead.
+
 ### 2025-07-23: P1 Security Fixes — E1 URL Scheme Validation + D1 Batch Size Limit
 
 **By:** Ripley
@@ -1735,6 +1778,7 @@ Also, `FindBinlogs` MCP tool now delegates to `FindFiles`, so the test on line 2
   4. `GetBatchStatusAsync` with 51 job IDs → `ArgumentException`
   5. `GetBatchStatusAsync` with 50 job IDs → no error (existing behavior)
   6. `HelixService.MaxBatchSize == 50` (constant value assertion)
+
 ### 2026-02-15: Security Validation Test Strategy
 
 **By:** Lambert
@@ -1754,6 +1798,7 @@ Also, `FindBinlogs` MCP tool now delegates to `FindFiles`, so the test on line 2
 4. **MCP tool tests verify propagation:** `hlx_batch_status` tests confirm that the service-layer `ArgumentException` propagates through the MCP tool method. No separate MCP-layer validation needed — the service enforces the limit.
 
 **Files:** `src/HelixTool.Tests/SecurityValidationTests.cs` — 18 tests (all passing)
+
 ### 2026-02-13: Remote search and structured file querying — feature design
 
 **By:** Dallas
@@ -2134,6 +2179,7 @@ From the `find-binlogs → find-files` generalization decision:
 > "For cross-work-item file scanning, one generic tool + one common-case convenience is the right surface area. Do NOT add per-file-type convenience tools — that's tool sprawl."
 
 `hlx_test_results` is justified as a convenience tool because TRX parsing requires structured XML analysis that cannot be done with text search alone. It's not "another file-type convenience" — it's a fundamentally different operation (structured extraction vs. text matching).
+
 ### 2026-02-13: Security analysis — structured file parsing
 
 **By:** Ash
@@ -2373,6 +2419,7 @@ internal const int MaxSearchFileSizeBytes = 50 * 1024 * 1024; // 50 MB
 
 
 ---
+
 ### 2026-02-13: User directive
 **By:** Larry Ewing (via Copilot)
 **What:** Remote file search and structured parsing features (hlx_search_file, hlx_test_results) should be disableable via a configuration setting, as a security safeguard for operators who want to restrict file content access.
@@ -2506,11 +2553,13 @@ Test naming convention follows the pattern `Status_Filter{Value}_{Assertion}` fo
 ## Impact
 
 Test count: 364 → 369 (net +5). All 15 status tests pass.
+
 ### 2025-07-25: Cache security expectations documented in README
 
 **By:** Kane
 **What:** Added a "Cached data" subsection under Security in README.md. Documents what gets cached (API responses + artifacts), where it lives (SQLite on disk in user profile directory), that auth tokens are never cached (only hash prefix for directory isolation), and recommends `hlx cache clear` for shared machines or security context switches. Addresses threat model items I1 (information disclosure via cached data) and I2 (cache persists after session).
 **Why:** The threat model (`.ai-team/analysis/threat-model.md`) explicitly recommended documenting cache security expectations. Users need to know the cache directory may contain sensitive CI data (console logs with accidental secrets) and understand the auth isolation model. This closes the documentation gap for I1/I2 without requiring code changes.
+
 ### 2026-02-15: Isolate DownloadFilesAsync temp directories per invocation
 **By:** Ripley
 **What:** Changed temp dir from `helix-{idPrefix}` to `helix-{idPrefix}-{Guid}` to prevent cross-process file races
@@ -2537,6 +2586,7 @@ The publish workflow triggers on `v*` tags and extracts the version from the tag
 - All team members must update csproj and server.json version fields before tagging a release.
 - The workflow will fail fast with actionable error messages if versions are out of sync.
 - No CI workflow exists yet (`ci.yml`), so validation is only in the publish workflow.
+
 ### 2026-02-27: Enhancement layer documentation (consolidated)
 
 **By:** Dallas, Kane
@@ -2557,6 +2607,7 @@ The publish workflow triggers on `v*` tags and extracts the version from the tag
 - **P1:** `hlx_status` description should list `failureCategory` as a response field (completeness fix, not implementation disclosure)
 - ~~**P1:** MCP [Description] attributes should flag local enhancements~~ — **Resolved 2026-02-27:** Dallas decided MCP descriptions describe what/inputs/outputs, not implementation details. See "MCP tool descriptions should expose behavioral contracts" decision below.
 - **P3:** Failure categorization heuristic details (exit code→ category mapping) not yet documented
+
 ### 2025-07-23: MCP tool descriptions should expose behavioral contracts, not implementation mechanics
 
 **By:** Dallas
@@ -2597,6 +2648,7 @@ They do NOT answer:
 - DO ensure descriptions accurately list all response fields (the `failureCategory` omission in `hlx_status` is a minor gap)
 - The README's "How hlx Enhances the Helix API" section is the correct home for implementation detail documentation
 - This principle applies to all future MCP tools added to the project
+
 ### 2025-07-24: UseStructuredContent refactor — APPROVED with one naming issue noted
 
 **By:** Dallas
@@ -2608,6 +2660,7 @@ They do NOT answer:
 3. The `FileInfo_` type name (trailing underscore to avoid collision with `System.IO.FileInfo`) is an acceptable pragmatic choice — it's not part of the public MCP wire format (only the `[JsonPropertyName]` matters for serialization), and consumers never see the C# type name. A rename to `HelixFileInfo` would be cleaner but is not blocking.
 4. All `[JsonPropertyName]` attributes use camelCase, matching the previous manual serialization output. No breaking wire-format changes.
 5. Error handling correctly uses `McpException` for tool-level errors (missing work item, no matching files, binary file) and `ArgumentException` for invalid parameters (bad filter value). This matches MCP SDK conventions.
+
 ### 2026-03-01: Release version checklist
 **By:** Larry Ewing (via Copilot — learned the hard way)
 **What:** When bumping versions for a release, ALL three version sources must be updated together:
@@ -2617,10 +2670,12 @@ They do NOT answer:
 
 The publish workflow (`publish.yml`) validates all three match the git tag. Missing any one will fail the release.
 **Why:** v0.2.0 release required a force-push to fix because `server.json` wasn't updated alongside the csproj. The workflow caught it, but we should get it right the first time.
+
 ### 2026-03-03: Default CLI behavior based on terminal context
 **By:** Ripley (Backend Dev)
 **What:** Use `Console.IsInputRedirected` to auto-detect context: interactive terminal defaults to `["--help"]`, redirected stdin defaults to `["mcp"]`. Previously, running `hlx` with no arguments in a terminal would hang waiting for JSON-RPC input.
 **Why:** `Console.IsInputRedirected` is a reliable .NET API — standard idiom for CLI tools that need different behavior in interactive vs. non-interactive contexts. No additional dependencies or platform-specific code required.
+
 ### 2026-03-07: Helix auth UX — hlx login architecture (consolidated)
 **By:** Ash (analysis), Dallas (architecture)
 **Date:** 2026-03-03 (analysis), 2026-03-03 (architecture), consolidated 2026-03-07
@@ -2642,6 +2697,7 @@ The publish workflow (`publish.yml`) validates all three match the git tag. Miss
 - `git credential` is battle-tested, cross-platform, and already familiar to the user base. Zero new dependencies.
 - Env var priority over stored credential preserves backward compatibility and enables CI/CD overrides.
 - Entra auth deferred to Phase 3 (blocked on Helix server adding JWT Bearer support).
+
 ### 2026-03-07: Test result file discovery and xUnit XML support (consolidated)
 **By:** Ripley
 **Date:** 2025-07-24 (xUnit XML), 2026-03-07 (file patterns), consolidated 2026-03-07
@@ -2658,6 +2714,7 @@ The publish workflow (`publish.yml`) validates all three match the git tag. Miss
 **Why:**
 - Runtime CoreCLR tests upload `{name}.testResults.xml.txt` to regular files (not testResults category); iOS/XHarness tests upload `testResults.xml`. Previous code only searched `*.trx` then `*.xml`.
 - ASP.NET Core projects use `--logger xunit` producing `TestResults.xml` in xUnit format, not `.trx`. Without fallback, `hlx_test_results` failed on those work items.
+
 ### 2026-03-07: AzDO pipeline support — architecture and foundation (consolidated)
 **By:** Dallas (architecture), Ripley (implementation)
 **Date:** 2026-03-07
@@ -2681,10 +2738,12 @@ The publish workflow (`publish.yml`) validates all three match the git tag. Miss
 - Shared cache infrastructure (`ICacheStore`, `SqliteCacheStore`) reused.
 - Separate project adds complexity for zero benefit at current scale.
 - Async token accessor avoids blocking with `.GetAwaiter().GetResult()` when callers are already async.
+
 ### 2026-03-07: Future direction — AzDO pipeline wrapping
 **By:** Larry Ewing (via Copilot)
 **What:** After issue #4 is wrapped up, explore wrapping Azure DevOps pipelines as MCP tools, similar to how we wrap Helix today.
 **Why:** User request — captured for team discussion after current work completes.
+
 ### 2026-03-07: AzDO test patterns and conventions (consolidated)
 
 **By:** Lambert, Dallas
@@ -2732,30 +2791,36 @@ The publish workflow (`publish.yml`) validates all three match the git tag. Miss
 - `AzdoApiClient` will need `HttpMessageHandler` injection for mocking (same pattern as `HelixApiClient`)
 - `AzdoService` should take `IAzdoApiClient` via constructor for NSubstitute mocking
 - `AzdoMcpTools` can follow `HelixMcpToolsTests` pattern: mock service, test tool wrappers
+
 ### 2026-03-07: XXE prevention test regression after xUnit XML refactor
 **By:** Lambert
 **What:** `ParseTrx_RejectsXxeDtdDeclaration` test now fails after xUnit XML auto-discovery refactor. `XmlException` is swallowed by `TryParseTestFile`/`DetectTestFileFormat`, returning `HelixException("Found XML files but none were in a recognized format")` instead. DTD content is not processed (safe), but error message no longer indicates security rejection.
 **Why:** Need to verify `DetectTestFileFormat` uses `DtdProcessing.Prohibit` and that the swallowed exception doesn't silently process DTD content. Test should be updated to assert `HelixException` not `XmlException`.
+
 ### 2026-03-08: Use Lazy<T> in CacheStoreFactory to prevent concurrent factory invocation
 **By:** Ripley
 **Status:** Implemented
 **What:** Changed `ConcurrentDictionary<string, ICacheStore>` to `ConcurrentDictionary<string, Lazy<ICacheStore>>`. `Lazy<T>` (default `LazyThreadSafetyMode.ExecutionAndPublication`) guarantees factory runs exactly once per key. `Dispose()` checks `IsValueCreated` before accessing `.Value`.
 **Why:** `ConcurrentDictionary.GetOrAdd(key, factory)` doesn't guarantee single-invocation of the factory. Under contention, multiple `SqliteCacheStore` constructors raced on `InitializeSchema()` for the same SQLite file, producing `ArgumentOutOfRangeException` from SQLitePCL on Windows CI. Standard .NET pattern — use `Lazy<T>` wrapping whenever `ConcurrentDictionary.GetOrAdd` factories have side effects.
+
 ### 2026-03-07: AzDO caching strategy
 **By:** Ripley
 **Status:** Implemented
 **What:** CachingAzdoApiClient decorator for IAzdoApiClient. Cache keys use `azdo:` prefix. Dynamic TTL by build status: completed builds 4h, in-progress 15s, timelines never while running (4h completed), logs/changes 4h, build lists 30s, test runs/results 1h. No DTO layer needed — AzDO model types are `sealed record` with `[JsonPropertyName]`, directly serializable. Reuses `ICacheStore.IsJobCompletedAsync` with composite keys.
 **Why:** Follows CachingHelixApiClient pattern. Dynamic TTL prevents stale data for in-progress builds while minimizing API calls for stable data.
+
 ### 2026-03-07: AzdoService method signatures
 **By:** Ripley
 **Status:** Implemented
 **What:** AzdoService business logic layer — all `buildIdOrUrl` params resolve via `AzdoIdResolver.Resolve()`. `GetBuildSummaryAsync` returns flattened `AzdoBuildSummary` with computed `Duration` and `WebUrl`. `GetBuildLogAsync` has `int? tailLines` for server-side slicing. `ListBuildsAsync` takes raw org/project (no URL resolution). No exception wrapping yet — `HttpRequestException` propagates; will add `AzdoException` when MCP tools need it.
 **Why:** Mirrors HelixService pattern. URL resolution at service layer simplifies MCP tool implementations.
+
 ### 2026-03-07: AzdoMcpTools — return model types directly
 **By:** Ripley
 **What:** AzdoMcpTools returns AzDO model types directly instead of creating separate MCP result wrappers. API model types already have `[JsonPropertyName]` attributes. `azdo_log` returns plain `string` (no UseStructuredContent) matching `hlx_logs` pattern.
 **Why:** Avoids duplicating DTOs that already have correct JSON serialization. If reshaping is needed later, add wrapper types then.
 **Impact:** Lambert — test against `[JsonPropertyName]` names (camelCase). Kane — 7 new MCP tools need docs. Dallas — wrapper types deferred.
+
 ### 2026-03-08: AzDO Security Review Findings
 **By:** Dallas
 **What:** Security review of AzDO integration code (8 files)
@@ -2885,6 +2950,7 @@ The resolver validates the host is either `dev.azure.com` or `*.visualstudio.com
 - **SEC-5/6 (Info)** are correctness and operational concerns, not security vulnerabilities. Document as known limitations.
 
 **Conditional approval: merge after fixing SEC-1.** The remaining findings should be tracked as follow-up work items.
+
 ### 2026-03-08: AzDO MCP Tool Context-Limiting Defaults
 
 **By:** Ripley
@@ -2906,10 +2972,12 @@ The resolver validates the host is either `dev.azure.com` or `*.visualstudio.com
 - Defaults live in MCP tool method signatures (not service code)
 - Cache keys include limit parameters to prevent stale partial results
 - Timeline filtering is client-side (AzDO API has no timeline filter support): identifies non-succeeded records + walks parentId chain for hierarchical context
+
 ### 2026-03-08: User directive — AzDO artifacts must follow Helix patterns
 **By:** Larry Ewing (via Copilot)
 **What:** AzDO artifact and attachment tools must follow the same caching and search patterns as the Helix tools (hlx_files, hlx_find_files, hlx_search_file, hlx_download)
 **Why:** User request — captured for team memory. Consistency between Helix and AzDO tool behavior is important for agent usability.
+
 ### 2026-03-08: AzDO Artifact/Attachment Test Patterns
 
 **By:** Lambert
@@ -2921,26 +2989,32 @@ The resolver validates the host is either `dev.azure.com` or `*.visualstudio.com
 3. Artifact caching uses `ImmutableTtl` (4h). Attachment caching uses `TestTtl` (1h).
 
 **Why:** Documents test conventions and caching decisions for AzDO artifact tools. Total test count: 700.
+
 ### 2026-03-08: AzDO documentation uses subsections within existing README structure
 **By:** Kane
 **What:** AzDO tools are documented as a `### AzDO Tools` subsection under `## MCP Tools`, AzDO auth as `### Azure DevOps` under `## Authentication`, and AzDO TTLs as inline additions under `## Caching` — rather than creating separate top-level sections.
 **Why:** Keeps the README scannable and reinforces that Helix and AzDO are parts of the same tool. The MCP Configuration section needed no changes because the same MCP server serves both tool sets. This pattern should be followed for any future API domains added to hlx.
+
 ### 2026-03-08: llmstxt updated with AzDO tools under a separate "AzDO MCP Tools" subsection
 **By:** Kane
 **What:** The `llmstxt` command output now includes all 9 AzDO MCP tools in a dedicated subsection, plus AzDO auth chain and AzDO-specific caching TTLs.
 **Why:** LLM agents reading `llmstxt` need to know about AzDO tools to use them. Keeping Helix and AzDO tool lists visually separated makes it clear which tools work with which system.
+
 ### 2026-03-08: IHttpClientFactory with named clients for HTTP lifecycle management
 **By:** Ripley
 **What:** Replaced static `HttpClient` in HelixService and `new HttpClient()` in AzdoApiClient DI with IHttpClientFactory named clients ("HelixDownload" and "AzDO"), both configured with 5-minute timeout.
 **Why:** Static HttpClient causes socket exhaustion and blocks DNS refresh. IHttpClientFactory manages handler lifecycle automatically. Named clients allow different timeout/config per use case. The optional `HttpClient?` constructor parameter on HelixService preserves backward compatibility with 17 test files.
+
 ### 2026-03-08: HttpCompletionOption.ResponseHeadersRead for all AzDO HTTP requests
 **By:** Ripley
 **What:** All AzDO API client methods (GetAsync, GetListAsync, GetBuildLogAsync) now use ResponseHeadersRead instead of default ResponseContentRead.
 **Why:** Prevents buffering entire response bodies in memory before processing. Especially important for large build logs. HelixService.DownloadFromUrlAsync already used this pattern — now consistent across both backends.
+
 ### 2026-03-08: AzDO CLI commands mirror MCP tools 1:1
 **By:** Ripley
 **What:** Added 9 `azdo-*` CLI subcommands in a separate `AzdoCommands` class, each calling the same `AzdoService` methods as the MCP tools.
 **Why:** Users without MCP clients can now use all AzDO functionality directly from the command line. Follows the existing Helix pattern (Commands class with ConsoleAppFramework attributes). Timeline filtering logic is duplicated from MCP tools rather than extracted to a shared method — flagging this for Dallas review on whether to extract.
+
 ### 2026-03-08: Proactive Test Patterns for SEC-2/3/4
 
 **By:** Lambert
@@ -2970,12 +3044,12 @@ Ripley is working on SEC-2 (IHttpClientFactory), SEC-3 (streaming), SEC-4 (timeo
 - **SEC-3:** If streaming replaces read-all-to-string, StreamingBehaviorTests may need refactoring
 - **SEC-4:** If explicit timeout is configured in DI, add a test asserting the configured value
 - **CLI:** If AzDO CLI commands are added as a new Commands class, add registration and argument parsing tests
+
 ### 2025-07-18: Promoted IsFileSearchDisabled to public visibility
 
 **By:** Ripley
 **What:** Changed `HelixService.IsFileSearchDisabled` from `internal static` to `public static` as part of the Mcp.Tools extraction.
 **Why:** HelixMcpTools moved to a separate assembly (`HelixTool.Mcp.Tools`) and references this property. Making it internal with InternalsVisibleTo would couple Core to the new project. Public is consistent with `MatchesPattern` and `IsTestResultFile` which are already public statics on HelixService used by MCP tools.
-
 
 ### 2026-03-08: AzDO Search/Filter Gap Analysis (consolidated)
 
@@ -3206,7 +3280,6 @@ The prior analysis identified that `SearchLines()` in `HelixService` should be e
 | **P2** | `azdo_build_summary` | NEW — script replacement path | Get-CIStatus.ps1 core function replicated as MCP tool |
 | **P2** | `azdo_log_error_extract` | NEW — domain-specific search | Script's `Extract-BuildErrors` patterns |
 
-
 ### 2026-03-08: Extract search types to top-level namespace
 
 **By:** Ripley  
@@ -3226,7 +3299,6 @@ Extracted `LogMatch`, `LogSearchResult`, and `FileContentSearchResult` record ty
 - Any code referencing `HelixService.LogSearchResult` etc. needs to drop the `HelixService.` prefix (no existing code used it that way)
 - Tests already had `TextSearchHelperTests.cs` anticipating this extraction
 - No breaking changes to MCP tool DTOs (those use their own `SearchMatch`/`SearchLogResult` types in `HelixTool.Mcp.Tools`)
-
 
 ### 2025-07-14: Incremental log fetching for AzDO build logs
 **By:** Dallas
@@ -4561,8 +4633,6 @@ These files exemplify the patterns the team should follow:
 - Tests remaining: ~759
 - Coverage impact: ZERO (all removed tests are duplicates of retained tests)
 
-
-
 ### 2026-03-10: Enriched CiKnowledgeService with full 9-repo knowledge base
 **By:** Ripley
 **What:** Expanded `CiRepoProfile` record with 9 new properties (PipelineNames, OrgProject, ExitCodeMeanings, WorkItemNamingPattern, KnownGotchas, RecommendedInvestigationOrder, TestFramework, TestRunnerModel, UploadedFiles) and added 3 new repos (maui, macios, android) to the knowledge base. Updated FormatProfile() and GetOverview() to render enriched fields. Updated CiKnowledgeTool.cs description for expanded repo set. Total coverage: 9 repos.
@@ -4572,7 +4642,6 @@ These files exemplify the patterns the team should follow:
 **By:** Ripley
 **What:** Updated 5 MCP tool descriptions (helix_test_results, helix_search_log, azdo_test_runs, azdo_test_results, azdo_timeline) to embed repo-specific CI knowledge from CiKnowledgeService profiles. Added warnings about common failure paths, repo-specific search patterns, Helix task name mappings, and cross-references to helix_ci_guide.
 **Why:** Agents were wasting calls on helix_test_results for repos that don't upload TRX (4/6 major repos), using wrong search patterns, and not knowing which Helix task names to look for in timelines. These description changes are the cheapest possible fix — zero runtime cost, immediate agent behavior improvement. Descriptions are the first thing agents read before deciding which tool to call, so getting them right eliminates entire classes of dead-end investigations.
-
 
 ### 2025-07-24: Architectural Analysis — Helix vs AzDO File Structure Separation
 
@@ -4790,7 +4859,6 @@ tests/
 6. Update all `using` statements
 7. Verify build + all tests pass
 
-
 ### 2025-07-24: Restructure Execution Notes — Option A
 
 **By:** Ripley
@@ -4867,3 +4935,91 @@ Executed Option A from Dallas's restructuring proposal. 59 files touched, 0 beha
 **By:** Ripley
 **What:** MCP descriptions, `helix_test_results` failure text, `helix_ci_guide`, and `Program.cs` help output should explicitly route callers between `helix_test_results`, `azdo_test_runs + azdo_test_results`, `helix_search_log`, and `helix_ci_guide(repo)` without adding a composite tool or new parameters.
 **Why:** Repo-specific CI workflows already exist, but vague warnings still cause wasted tool calls. Concise “use this when / otherwise go here next” wording improves discoverability while preserving the approved incremental surface.
+
+### 2025-07-25: Rename "vmr" profile key to "dotnet"
+
+**By:** Ripley
+**Status:** Implemented
+
+## Context
+
+The CI knowledge profile for dotnet/dotnet used `"vmr"` as its dictionary key and `RepoName`. Agents searching for `dotnet` or `dotnet/dotnet` would miss it unless they knew about a special-case fallback, and overview listings showed `vmr` instead of the repo name agents actually recognize.
+
+## Decision
+
+- Dictionary key changed from `["vmr"]` to `["dotnet"]`
+- `RepoName` changed from `"vmr"` to `"dotnet/dotnet"`
+- `DisplayName` remains `"dotnet/dotnet (VMR)"`
+- The special-case `dotnet`/`dotnet/dotnet` → `vmr` lookup is removed; direct key matching and existing short-name extraction handle the repo now
+- String literals and doc comments referring to the profile key now use `dotnet`; `VMR` is preserved where it describes the product/build context
+
+## Impact
+
+- `GetProfile("dotnet")` now resolves by direct key match
+- `GetProfile("dotnet/dotnet")` now resolves through the existing short-name extraction path
+- `KnownRepos` and overview listings show `dotnet` instead of `vmr`
+- `profile.RepoName` is now `dotnet/dotnet`
+- 196 CI knowledge tests pass
+
+### 2025-07-25: Document MCP resources and idempotent annotations
+
+**By:** Lambert
+**Requested by:** Larry Ewing
+
+## Decision
+
+- Add an `MCP Resources` section to `README.md` after the MCP tools table, documenting `ci://profiles` and `ci://profiles/{repo}` as client-discoverable mirrors of `helix_ci_guide`
+- Add an `Idempotent annotations` row to the README's Context-Efficient Design table so the retry/cache safety contract is documented alongside other client-facing efficiency choices
+- All read-only MCP tools should carry `Idempotent = true`; `helix_download` and `helix_download_url` keep `Idempotent = true` without `ReadOnly = true` because they write files to disk
+
+## Why
+
+- MCP resources deserve the same discoverability in docs as tools because agents can consume them directly
+- `Idempotent = true` is a durable MCP convention for this repo: it lets clients retry and cache tool calls safely, and it should remain paired with all read-only tools going forward
+- README documentation should reflect that safety contract so agents and humans see the same routing guidance
+
+### 2026-03-10: MCP tool description tightening
+
+**By:** Ripley
+
+**What:** Tightened 17 MCP tool `Description()` attributes to ≤35 words each (down from as much as 93 words). Removed repo-specific CI patterns from tool-level descriptions while preserving critical warnings like inaccurate `azdo_test_runs` counts and `azdo_test_results` routing.
+
+**Why:** Tool descriptions are loaded into every agent's context window whether a tool is used or not. Moving repo-specific knowledge out of descriptions and into `helix_ci_guide` saves context tokens on every session while keeping the important routing hints.
+
+### 2026-03-10: Rename helix_test_results to helix_parse_uploaded_trx
+
+**By:** Ripley
+
+**What:** Renamed the MCP tool from `helix_test_results` to `helix_parse_uploaded_trx` and updated its description to steer agents toward `azdo_test_results` first.
+
+**Why:** The generic `helix_test_results` name was a context trap. Most dotnet repos publish structured test results to AzDO rather than raw TRX/XML in Helix, so the narrower name prevents wasted tool calls and better matches the tool's real scope.
+
+### 2026-03-12: Rename MCP tool to helix_search
+
+**By:** Ripley
+
+**What:** Renamed the MCP-visible Helix text-search tool from `helix_search_log` to `helix_search` across registration, guidance, tests, and README, while keeping the `SearchLog` method and `search-log` CLI command unchanged.
+
+**Why:** The tool searches both console logs and uploaded files. `helix_search` is more discoverable and better describes the actual search surface agents can rely on.
+
+### 2026-03-13: AzDO list tools return truncation metadata via LimitedResults<T>
+
+**By:** Ripley
+
+## Context
+
+User feedback from steveisok showed agents were hitting list/search caps and treating capped results as complete.
+
+## Decision
+
+For MCP-only list-style AzDO tools that previously returned raw lists (`azdo_builds`, `azdo_artifacts`, `azdo_test_results`, `azdo_test_attachments`), wrap results in a `LimitedResults<T>` type that:
+- serializes as an object with `results`, `truncated`, and an optional `note`
+- still implements `IReadOnlyList<T>` so direct C# callers and tests keep normal list ergonomics
+
+## Why
+
+A plain top-level object gives agents an explicit truncation signal, but changing local call sites to a non-list type would create unnecessary churn. The wrapper preserves runtime/test compatibility while making capped MCP responses self-describing.
+
+## Follow-up
+
+If more MCP tools need truncation metadata, prefer reusing this wrapper pattern instead of inventing per-tool response shapes.

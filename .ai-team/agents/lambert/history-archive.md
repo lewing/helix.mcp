@@ -252,3 +252,30 @@
 - SearchTimelineAsync returns TimelineSearchResult (in AzdoModels.cs), null timeline throws InvalidOperationException
 - Default resultFilter is "failed"; FormatDuration: >1h "Xh Ym", >1m "Xm Ys", else "Xs"
 - Tests written in parallel with Ripley's implementation, adapted from tuple to final TimelineSearchResult class
+
+## 2026-03-13: Archived from history.md during summarization
+
+### Redundant test cleanup (PR #15)
+- **Deleted `AzdoCliCommandTests.cs`** (22 tests → 19 removed, 3 rescued): The file was written proactively for CLI subcommands that were never implemented. 19 of 22 tests were near-identical duplicates of `AzdoServiceTests` — same mock setup, same assertions, just different variable names. Rescued 3 unique tests (artifact default/pattern filtering, changes with top parameter) into `AzdoServiceTests.cs`.
+- **Removed 3 "ImplementsInterface" / "Constructor_Accepts" tests**: `HelixApiClientFactoryTests.ImplementsIHelixApiClientFactory`, `HttpContextHelixTokenAccessorTests.ImplementsIHelixTokenAccessor`, `HelixMcpToolsTests.Constructor_AcceptsHelixService`. These are compile-time guarantees — if the class doesn't implement the interface, the project won't build.
+- **Merged 2 overlapping filter tests** in `HelixMcpToolsTests`: `Status_FilterFailed_PassedIsNull` and `Status_DefaultFilter_ShowsOnlyFailed` tested the same behavior (default filter is "failed"). Combined into one test that verifies both the default and explicit "failed" filter.
+- **Pattern observed**: Proactive test files written before production code tends to produce near-duplicates of the actual test file once it lands. Worth catching during PR review.
+- **Test count**: 864 → 844 (net -20 tests removed). All 844 pass.
+
+📌 Team updates (2026-03-09 – 2026-03-10 summary): CI profile analysis — 14 tool description/error message recommendations (Ash). Test quality review — net -17 tests, zero coverage loss, prune proactive tests when real tests land (Dallas). CiKnowledgeService expanded to 9 repos, 5 tool descriptions updated (Ripley).
+
+### CiKnowledgeService enrichment tests (2025-07-25)
+- **Expanded `CiKnowledgeServiceTests.cs`** from ~23 tests (14 [Fact] + 9 [Theory] cases) to 57 test methods with 159 InlineData entries covering all 9 repos.
+- **New repo coverage:** maui, macios, android — profile lookup by short name, full path (`dotnet/maui`, `xamarin/macios`, `xamarin/android`), case insensitivity (`MAUI`, `Macios`, `ANDROID`).
+- **Enriched property tests (all 9 repos via Theory):** TestFramework, TestRunnerModel, WorkItemNamingPattern, KnownGotchas, RecommendedInvestigationOrder, PipelineNames, UploadedFiles, CommonFailureCategories — all verified non-empty.
+- **OrgProject correctness:** devdiv/DevDiv for macios + android, dnceng-public/public for the other 7.
+- **UsesHelix matrix:** Theory covering all 9 repos with expected bool values.
+- **ExitCodeMeanings split:** non-empty for Helix repos + vmr, empty for macios/android (no Helix = no exit codes).
+- **Edge cases:** maui has 3 pipelines verified, macios/android KnownGotchas warn about devdiv, android mentions fork PRs, roslyn has empty HelixTaskNames, efcore has lowercase 'Send job to helix'.
+- **FormatProfile rendering:** KnownGotchas section renders for new repos, ExitCodes section omitted when empty, OrgProject/TestFramework rendered, Maui guide lists all 3 pipelines.
+- **GetOverview:** 9 repos in table, devdiv warning present, OrgProject column has both orgs, Quick Reference table format verified.
+- **DisplayName correctness:** xamarin/macios, dotnet/android, dotnet/dotnet (VMR) — verifies non-dotnet org display names.
+- **Key patterns:** [Theory] with all 9 repos for property-existence tests, [Fact] for repo-specific behavioral assertions. No mocking needed — CiKnowledgeService is pure static data.
+- **Test count:** 1038 total (was ~1020 before enrichment, net +~18 test methods but many more test cases via InlineData).
+
+📌 Team update (2026-03-10): CiKnowledgeService expanded from 6 stubs to 9 full repo profiles with 9 new properties. 5 MCP tool descriptions updated with repo-specific CI knowledge. Future test work should cover the enriched CiRepoProfile fields. — decided by Ripley
