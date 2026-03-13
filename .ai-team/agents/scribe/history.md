@@ -30,3 +30,9 @@
 - Merged 3 inbox decisions into `decisions.md` (Dallas discoverability review, Kane discoverability docs note, Ripley fallback-routing note)
 - Propagated a consolidated 2026-03-10 discoverability-routing update to Dallas, Kane, Lambert, and Ripley histories
 - Checked agent history sizes; no summarization/archive action needed
+
+### 2026-03-13: Limits/truncation session bookkeeping
+- Logged `2026-03-13-bump-limits-truncation` for Larry Ewing
+- Merged 7 inbox decisions into `decisions.md`, consolidating Lambert's README/resources and idempotent-annotation notes into one shared block
+- Propagated a consolidated 2026-03-13 team update to Ash, Dallas, Kane, Lambert, and Ripley
+- Summarized Dallas, Lambert, and Ripley histories into archive/context after the size check

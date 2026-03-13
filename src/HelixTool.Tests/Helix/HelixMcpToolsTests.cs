@@ -358,7 +358,7 @@ public class HelixMcpToolsTests
     {
         var description = GetMethodDescription<HelixMcpTools>(nameof(HelixMcpTools.SearchLog));
 
-        Assert.Contains("substring", description);
+        Assert.Contains("case-insensitive", description);
         Assert.Contains("console log", description);
     }
 
@@ -406,7 +406,7 @@ public class HelixMcpToolsTests
         var result = await _tools.FindFiles(ValidJobId, "*.trx");
 
         Assert.Equal("*.trx", result.Pattern);
-        Assert.Equal(30, result.ScannedItems);
+        Assert.Equal(50, result.ScannedItems);
         Assert.Equal(1, result.Found);
 
         Assert.Single(result.Results);

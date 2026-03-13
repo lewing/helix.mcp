@@ -642,9 +642,8 @@ public class HelixService
 
             var allLines = await File.ReadAllLinesAsync(filePath, cancellationToken);
             var searchResult = TextSearchHelper.SearchLines(fileName, allLines, pattern, contextLines, maxMatches);
-            var truncated = searchResult.Matches.Count >= maxMatches;
 
-            return new FileContentSearchResult(fileName, searchResult.Matches, searchResult.TotalLines, truncated, false);
+            return new FileContentSearchResult(fileName, searchResult.Matches, searchResult.TotalLines, searchResult.Truncated, false);
         }
         finally
         {
