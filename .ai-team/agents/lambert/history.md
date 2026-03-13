@@ -7,50 +7,12 @@
 - **Test project:** `src/HelixTool.Tests/HelixTool.Tests.csproj` — xUnit, net10.0, references HelixTool.Core and HelixTool.Mcp
 - **Testable units:** HelixIdResolver (pure functions), MatchesPattern (internal static via InternalsVisibleTo), HelixService (via NSubstitute mocks of IHelixApiClient), HelixMcpTools (through HelixService)
 
-## Core Context (summarized through 2026-03-09)
+## Core Context
 
-> Older history archived to history-archive.md on 2026-03-09.
-
-**Test infrastructure:** xUnit on net10.0 with NSubstitute 5.* for mocking. `MatchesPattern` exposed via `InternalsVisibleTo`. DI test pattern: shared `_mockApi`/`_svc` fields, per-test mock arrangement.
-
-**Mock patterns:**
-- IHelixApiClient projection interfaces: IJobDetails, IWorkItemSummary, IWorkItemDetails, IWorkItemFile
-- NSubstitute gotchas: no nested `.Returns()`, `GetMetadataAsync` default is empty string (not null), lambda pattern `.Returns(_ => new MemoryStream(...))` for fresh streams
-- `ThrowsAny<ArgumentException>` covers both `ArgumentException` and `ArgumentNullException`
-- NSubstitute `.Returns<Stream>(_ => throw new Ex())` for exception testing (ThrowsAsync doesn't compile for Task<Stream>)
-
-**Test suites (812 total through 2026-03-09):**
-- Helix core: HelixIdResolver, MatchesPattern, HelixServiceDI, HelixMcpTools, ConsoleLogUrl, US-24 Download, US-30 Structured JSON, HelixIdResolverUrl, McpInputFlexibility, JsonOutput
-- Cache: 56 tests (CachingHelixApiClient 26, SqliteCacheStore 18, CacheOptions 12) + 24 security + 4 concurrency gap
-- HTTP/SSE auth: 46 tests (HelixTokenAccessor, ApiClientFactory, CacheStoreFactory, ConcurrencyTests, HttpContextTests)
-- Download (US-6): 46 tests + Search (US-31): 17 tests + TRX (US-32): 15 tests + xUnit XML: 43 tests
-- Security: 18 validation + 5 status filter
-- AzDO: AzdoIdResolver (55), AzdoApiClient (51), AzdoSecurity (63), AzdoArtifacts (33), AzdoCli (22), HttpClientConfig (13), StreamingBehavior (18)
-- AzDO Search: TextSearchHelper (20), AzdoSearchLog (21), AzdoSearchTimeline (19), SearchBuildLogAcrossSteps (21)
-
-**Archived session summaries (2026-03-07 — 2026-03-08):**
-- **AzDO Security (63 tests):** 5 categories covering SSRF, token leakage, cache isolation, command injection, input rejection. Patterns: `DoesNotContain` on error messages, host assertions, `DidNotReceive()` guards. Edge cases: query param comma concat, Uri UserInfo, traversal normalization, int overflow.
-- **AzDO Artifacts (33 tests):** API/service/caching/MCP/edge-case coverage. Artifacts=ImmutableTtl (4h), TestAttachments=TestTtl (1h). CamelCase JSON via `root.GetProperty()`.
-- **Proactive SEC-2/3/4 + CLI (53 tests):** HttpClientConfig (13, timeout/cancellation), StreamingBehavior (18, streams/disposal/special chars), AzdoCli (22, build/timeline/log/changes/tests/artifacts). AzdoBuildChange.Author is AzdoChangeAuthor not AzdoIdentityRef.
-- **Search Log & TextSearchHelper (41 tests):** TextSearchHelper is pure static (5 params). AzdoService.SearchBuildLogAsync delegates to it via IsFileSearchDisabled guard. Env var test pattern: save/set/try-finally-restore.
-- **PR #10 Fix:** `[Collection("FileSearchConfig")]` for env var mutation tests. Added formal `FileSearchConfigCollection.cs` definition. Convention: all HLX_DISABLE_FILE_SEARCH mutators use this collection.
-- **Search Timeline (19 tests):** SearchTimelineAsync returns TimelineSearchResult (AzdoModels.cs). Default resultFilter="failed". FormatDuration: >1h "Xh Ym", >1m "Xm Ys", else "Xs". Null timeline → InvalidOperationException.
-
-**Key patterns:**
-- Each test class uses UNIQUE ValidJobId GUID for temp dir isolation
-- Cache tests use temp dirs with GUID; sequential `.Returns()` for miss→hit
-- Security tests: `Record.ExceptionAsync` + `Assert.IsNotType<ArgumentException>` for scheme acceptance
-- `CacheOptions.GetEffectiveCacheRoot()` appends `/public` or `/cache-{hash}`
-- Known race in `GetArtifactAsync`: `File.Exists` and `FileStream` not atomic — tolerate `FileNotFoundException`
-- Write-to-temp-then-rename in `SetArtifactAsync` for atomic writes
-- **FakeHttpMessageHandler** for AzdoApiClient: configurable StatusCode/ResponseContent + LastRequest capture
-- AzdoApiClient errors: 404→null/empty, 401/403→auth hint, 500→body snippet (500 chars)
-- CamelCase JSON verification: `root.GetProperty("camelCaseName").GetXxx()` avoids xUnit2002
-- `[Collection("FileSearchConfig")]` required for all env var mutation tests (HLX_DISABLE_FILE_SEARCH)
-
-- **Historical CI knowledge coverage (2025-07-25):** CiKnowledgeService test coverage expanded to all 9 repo profiles with theory-heavy validation of repo metadata, formatting, and devdiv-specific gotchas.
-- **MCP idempotence convention (2025-07-25):** All read-only MCP tools should carry `Idempotent = true`; download tools stay idempotent but not read-only.
-📌 Team updates (2026-03-01 – 2026-03-09 summary): UseStructuredContent refactor approved (Dallas). Incremental log fetching spec + P0 CountLines fix — 864 tests (Dallas). azdo_search_log_across_steps spec (Dallas). Timeline types in Core (Ripley). Perf review — 17 allocations (Ripley). Cache raw: prefix + StringHelpers shared (Ripley).
+- **Test stack:** `src/HelixTool.Tests/HelixTool.Tests.csproj` targets net10.0 with xUnit + NSubstitute; Helix tests live under `src/HelixTool.Tests/Helix/`, AzDO tests under `src/HelixTool.Tests/AzDO/`, and shared coverage stays at the test-project root.
+- **Assertion conventions:** MCP-surface tests assert camelCase JSON names, env-var mutation tests use `[Collection("FileSearchConfig")]`, and disk-writing tests use unique GUID-based temp roots/job IDs to avoid parallel contention.
+- **Mocking seams:** mock `IHelixApiClient` / `IAzdoApiClient` plus their projection interfaces, use fresh-stream lambdas for file/download tests, and prefer focused test runs before the full suite when reviewing changes.
+- **High-value file paths:** `src/HelixTool.Tests/Helix/HelixMcpToolsTests.cs`, `src/HelixTool.Tests/CiKnowledgeServiceTests.cs`, `src/HelixTool.Tests/CacheSecurityTests.cs`, and `src/HelixTool.Tests/Helix/HelixServiceDITests.cs` are the main regression seams for current architecture decisions.
 
 ## Learnings
 

@@ -7,39 +7,12 @@
 - **Structure:** Three projects — HelixTool.Core (shared library), HelixTool (CLI), HelixTool.Mcp (HTTP MCP server)
 - **Key files:** HelixService.cs (core ops), HelixIdResolver.cs (GUID/URL parsing), HelixMcpTools.cs (MCP tool definitions), Program.cs (CLI commands)
 
-## Core Context (summarized through 2026-03-09)
+## Core Context
 
-> Older history archived to history-archive.md on 2026-03-09.
-
-**Architecture reviews produced:** Initial code review, P0 foundation design (IHelixApiClient, DI, HelixException, CancellationToken), stdio MCP transport (`hlx mcp` subcommand), US-4 auth (HELIX_ACCESS_TOKEN env var), cache design (SQLite, decorator pattern, WAL), HTTP/SSE multi-client auth (IHttpContextAccessor + scoped DI).
-
-**Key design patterns established:**
-- Decorator pattern for caching (CachingHelixApiClient wrapping IHelixApiClient)
-- Console logs for running jobs must never be cached
-- Cache TTL matrix: 15s/30s running, 1h/4h completed
-- Cache isolation by auth token hash (SHA256) → separate SQLite DBs
-- `IHelixTokenAccessor` abstraction: env var for stdio, HttpContext for HTTP
-- MCP tools are thin wrappers over HelixService — business logic stays in HelixService
-- MCP tool naming: `hlx_{verb}`/`hlx_{noun}` with `_` separators; descriptions expose behavioral contracts, not implementation
-- File scanning: one generic tool + one convenience alias (not per-type sprawl)
-
-**MCP API review (2026-02-13):** No `hlx_list_work_items` (N+1 via hlx_status). URL resolution boilerplate across 5/9 tools — tolerable. `hlx_status` should mention `failureCategory`.
-
-**Threat model (2025-07-23):** STRIDE approved. All 10 tools, both transports, cache, filesystem covered. Minor: `%2F` in work item names (correctness, not security).
-
-**Remote search (2026-02-13):** download-search-delete. No regex (ReDoS). TRX needs XXE protection. US-31/32 created.
-
-**Value-add (2025-07-23):** 12 enhancements — 5 major, 3 significant, 3 moderate, 1 minor.
-
-**UseStructuredContent (2025-07-24):** APPROVED. Task<string> → typed returns. Wire-compatible. hlx_logs excluded. Skill at `.ai-team/skills/mcp-structured-content/SKILL.md`.
-
-**AzDO MCP tools design (2026-03-07):** MCP tools return AzDO model types directly — no DTO wrapper layer. Wrapper types deferred until reshaping is needed.
-
-**AzDO security review (2026-03-08):** 5 findings — (1) type-validate or `Uri.EscapeDataString` all user inputs in URLs, (2) `BuildUrl` hardcodes `https://dev.azure.com/` (SSRF-proof), (3) singleton token accessor doesn't handle expiry (fails closed — operational gap), (4) `CacheSecurity.SanitizeCacheKeySegment` required for all subsystems, (5) security review convention: 7 focus areas, SEC-{N} IDs. Full details in history-archive.md.
-
-- **Historical testing guidance (2025-07-24):** Tautological test audit removed ~17 redundant tests with zero coverage loss. Preserve the rules: no layer duplication, one smoke test for passthroughs, and no interface-compliance tests.
-
-📌 Team updates (2026-02-11–03-07): P0 foundation, 30 US backlog, 9 US implemented, PackageId rename, NuGet publishing, HTTP/SSE auth, security fixes, UseStructuredContent, AzDO architecture. — various
+- **Architecture boundaries:** `src/HelixTool.Core/Helix/`, `src/HelixTool.Core/AzDO/`, `src/HelixTool.Core/Cache/`, and `src/HelixTool.Mcp.Tools/{Helix,AzDO}/` are the stable domain folders; composition roots remain `src/HelixTool/Program.cs` and `src/HelixTool.Mcp/Program.cs`.
+- **Design defaults:** keep business logic in services, keep MCP tools thin, use decorators for caching, and prefer behavioral contracts in tool descriptions over implementation details.
+- **Caching/auth:** running console logs are never cached, cache isolation is by auth-token hash, stdio remains the primary transport, and HTTP/SSE auth is a scoped per-request design rather than a CLI concern.
+- **AzDO direction:** model types can be returned directly from MCP tools, `helix_ci_guide` owns repo-specific routing, and the current AzDO auth chain is `AZDO_TOKEN` → `AzureCliCredential` → az CLI → anonymous.
 
 ## Learnings
 
