@@ -4,9 +4,10 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using HelixTool.Core.AzDO;
+using HelixTool.Core.Cache;
 using NSubstitute;
 using Xunit;
-using HelixTool.Core.AzDO;
 
 namespace HelixTool.Tests.AzDO;
 
@@ -326,6 +327,25 @@ public class AzdoApiClientTests
         Assert.Contains("az login", ex.Message);
         Assert.Contains("AZDO_TOKEN", ex.Message);
         Assert.Contains("Build(read) + Test(read)", ex.Message);
+        _mockToken.Received(1).InvalidateCachedCredential();
+    }
+
+    [Fact]
+    public async Task GetBuildAsync_SuccessfulAuthenticatedResponse_SetsAuthTokenHashFromCacheIdentity()
+    {
+        var cacheOptions = new CacheOptions();
+        var credential = new AzdoCredential("entra-token", "Bearer", "AzureCliCredential")
+        {
+            DisplayToken = "entra-token",
+            CacheIdentity = "AzureCliCredential:tenant-id:object-id:subject-id"
+        };
+        _mockToken.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns(credential);
+        _handler.ResponseContent = JsonSerializer.Serialize(new { id = 1 });
+        var client = new AzdoApiClient(new HttpClient(_handler), _mockToken, cacheOptions);
+
+        await client.GetBuildAsync("dnceng", "internal", 1);
+
+        Assert.Equal(CacheOptions.ComputeAuthContextHash(credential.CacheIdentity), cacheOptions.AuthTokenHash);
     }
 
     [Fact]

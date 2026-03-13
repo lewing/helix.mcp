@@ -443,6 +443,91 @@ public class CachingAzdoApiClientTests
             Arg.Any<string>(), Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
     }
 
+    [Fact]
+    public void CacheOptions_AuthTokenHash_CanBeSetAndRead()
+    {
+        var options = new CacheOptions { AuthTokenHash = "auth-hash" };
+
+        Assert.Equal("auth-hash", options.AuthTokenHash);
+    }
+
+    [Fact]
+    public async Task GetBuildAsync_WhenAuthTokenHashSet_IncludesHashInCacheKey()
+    {
+        var inner = Substitute.For<IAzdoApiClient>();
+        var cache = Substitute.For<ICacheStore>();
+        cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((string?)null);
+        inner.GetBuildAsync("org", "proj", 1, Arg.Any<CancellationToken>())
+            .Returns(new AzdoBuild { Id = 1, Status = "completed" });
+        var sut = new CachingAzdoApiClient(inner, cache, new CacheOptions { MaxSizeBytes = 1024, AuthTokenHash = "auth12345" });
+
+        await sut.GetBuildAsync("org", "proj", 1);
+
+        await cache.Received(1).SetMetadataAsync(
+            "azdo:auth12345:org:proj:build:1",
+            Arg.Any<string>(),
+            Arg.Any<TimeSpan>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public async Task GetBuildAsync_WhenAuthTokenHashMissing_UsesBackwardCompatibleCacheKey(string? authTokenHash)
+    {
+        var inner = Substitute.For<IAzdoApiClient>();
+        var cache = Substitute.For<ICacheStore>();
+        cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((string?)null);
+        inner.GetBuildAsync("org", "proj", 1, Arg.Any<CancellationToken>())
+            .Returns(new AzdoBuild { Id = 1, Status = "completed" });
+        var sut = new CachingAzdoApiClient(inner, cache, new CacheOptions { MaxSizeBytes = 1024, AuthTokenHash = authTokenHash });
+
+        await sut.GetBuildAsync("org", "proj", 1);
+
+        await cache.Received(1).SetMetadataAsync(
+            "azdo:org:proj:build:1",
+            Arg.Any<string>(),
+            Arg.Any<TimeSpan>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetBuildAsync_DifferentAuthTokenHashes_UseDifferentCacheKeys()
+    {
+        var innerA = Substitute.For<IAzdoApiClient>();
+        var cacheA = Substitute.For<ICacheStore>();
+        cacheA.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((string?)null);
+        innerA.GetBuildAsync("org", "proj", 1, Arg.Any<CancellationToken>())
+            .Returns(new AzdoBuild { Id = 1, Status = "completed" });
+        var sutA = new CachingAzdoApiClient(innerA, cacheA, new CacheOptions { MaxSizeBytes = 1024, AuthTokenHash = "hash-a" });
+
+        var innerB = Substitute.For<IAzdoApiClient>();
+        var cacheB = Substitute.For<ICacheStore>();
+        cacheB.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((string?)null);
+        innerB.GetBuildAsync("org", "proj", 1, Arg.Any<CancellationToken>())
+            .Returns(new AzdoBuild { Id = 1, Status = "completed" });
+        var sutB = new CachingAzdoApiClient(innerB, cacheB, new CacheOptions { MaxSizeBytes = 1024, AuthTokenHash = "hash-b" });
+
+        await sutA.GetBuildAsync("org", "proj", 1);
+        await sutB.GetBuildAsync("org", "proj", 1);
+
+        await cacheA.Received(1).SetMetadataAsync(
+            "azdo:hash-a:org:proj:build:1",
+            Arg.Any<string>(),
+            Arg.Any<TimeSpan>(),
+            Arg.Any<CancellationToken>());
+        await cacheB.Received(1).SetMetadataAsync(
+            "azdo:hash-b:org:proj:build:1",
+            Arg.Any<string>(),
+            Arg.Any<TimeSpan>(),
+            Arg.Any<CancellationToken>());
+        Assert.NotEqual("azdo:hash-a:org:proj:build:1", "azdo:hash-b:org:proj:build:1");
+    }
+
     // ── GetTimelineAsync: null timeline not cached ──────────────────
 
     [Fact]

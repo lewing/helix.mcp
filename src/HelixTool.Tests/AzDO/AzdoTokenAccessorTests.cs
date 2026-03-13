@@ -3,6 +3,7 @@
 
 using System.Reflection;
 using System.Text;
+using System.Text.Json;
 using HelixTool.Core.AzDO;
 using Xunit;
 
@@ -15,11 +16,14 @@ public class AzdoTokenAccessorTests : IDisposable
     private const string EnvVarTypeName = "AZDO_TOKEN_TYPE";
     private readonly string? _originalEnvValue;
     private readonly string? _originalEnvTypeValue;
+    private readonly string? _originalPathValue;
+    private readonly List<string> _tempDirectories = [];
 
     public AzdoTokenAccessorTests()
     {
         _originalEnvValue = Environment.GetEnvironmentVariable(EnvVarName);
         _originalEnvTypeValue = Environment.GetEnvironmentVariable(EnvVarTypeName);
+        _originalPathValue = Environment.GetEnvironmentVariable("PATH");
         Environment.SetEnvironmentVariable(EnvVarName, null);
         Environment.SetEnvironmentVariable(EnvVarTypeName, null);
     }
@@ -28,6 +32,19 @@ public class AzdoTokenAccessorTests : IDisposable
     {
         Environment.SetEnvironmentVariable(EnvVarName, _originalEnvValue);
         Environment.SetEnvironmentVariable(EnvVarTypeName, _originalEnvTypeValue);
+        Environment.SetEnvironmentVariable("PATH", _originalPathValue);
+
+        foreach (var tempDirectory in _tempDirectories)
+        {
+            try
+            {
+                Directory.Delete(tempDirectory, recursive: true);
+            }
+            catch
+            {
+                // Cleanup is best-effort only.
+            }
+        }
     }
 
     [Fact]
@@ -285,6 +302,186 @@ public class AzdoTokenAccessorTests : IDisposable
     }
 
     [Fact]
+    public void TryGetJwtExpiration_WhenJwtContainsExp_ReturnsExpiration()
+    {
+        var expected = DateTimeOffset.FromUnixTimeSeconds(1_900_000_000);
+        var token = CreateJwt(new Dictionary<string, object?>
+        {
+            ["exp"] = expected.ToUnixTimeSeconds(),
+            ["sub"] = "lambert"
+        });
+
+        var expiration = AzdoCredential.TryGetJwtExpiration(token);
+
+        Assert.Equal(expected, expiration);
+    }
+
+    [Fact]
+    public void TryGetJwtExpiration_WhenJwtMissingExp_ReturnsNull()
+    {
+        var token = CreateJwt(new Dictionary<string, object?>
+        {
+            ["sub"] = "lambert"
+        });
+
+        Assert.Null(AzdoCredential.TryGetJwtExpiration(token));
+    }
+
+    [Fact]
+    public void TryGetJwtExpiration_WhenTokenIsNotJwt_ReturnsNull()
+    {
+        Assert.Null(AzdoCredential.TryGetJwtExpiration("plain-pat-token"));
+    }
+
+    [Fact]
+    public void TryGetJwtExpiration_WhenPayloadIsMalformedBase64_ReturnsNull()
+    {
+        Assert.Null(AzdoCredential.TryGetJwtExpiration("header.%%%%.signature"));
+    }
+
+    [Fact]
+    public void BuildCacheIdentity_WhenJwtContainsStableClaims_IncludesThem()
+    {
+        var token = CreateJwt(new Dictionary<string, object?>
+        {
+            ["tid"] = "tenant-id",
+            ["oid"] = "object-id",
+            ["sub"] = "subject-id"
+        });
+
+        var identity = AzdoCredential.BuildCacheIdentity("AzureCliCredential", token);
+
+        Assert.Equal("AzureCliCredential:tenant-id:object-id:subject-id", identity);
+    }
+
+    [Fact]
+    public void BuildCacheIdentity_WhenTokenIsNotJwt_ReturnsPrefixOnly()
+    {
+        var identity = AzdoCredential.BuildCacheIdentity("env:AZDO_TOKEN:pat", "plain-pat-token");
+
+        Assert.Equal("env:AZDO_TOKEN:pat", identity);
+    }
+
+    [Fact]
+    public async Task GetAccessTokenAsync_WhenEnvJwtContainsIdentityClaims_PopulatesCacheIdentityAndExpiration()
+    {
+        var expiresOn = DateTimeOffset.FromUnixTimeSeconds(1_900_000_123);
+        var token = CreateJwt(new Dictionary<string, object?>
+        {
+            ["tid"] = "tenant-id",
+            ["oid"] = "object-id",
+            ["sub"] = "subject-id",
+            ["exp"] = expiresOn.ToUnixTimeSeconds()
+        });
+        Environment.SetEnvironmentVariable(EnvVarName, token);
+        var accessor = new AzCliAzdoTokenAccessor();
+
+        var credential = await accessor.GetAccessTokenAsync();
+
+        Assert.NotNull(credential);
+        Assert.Equal("env:AZDO_TOKEN:bearer:tenant-id:object-id:subject-id", credential!.CacheIdentity);
+        Assert.Equal(expiresOn, credential.ExpiresOnUtc);
+    }
+
+    [Fact]
+    public async Task GetAccessTokenAsync_WhenCachedFallbackCredentialIsFresh_ReturnsCachedCredential()
+    {
+        ConfigurePathWithoutAz();
+        var accessor = new AzCliAzdoTokenAccessor();
+        var cachedCredential = new AzdoCredential("cached-fallback-token", "Bearer", "Cached fallback")
+        {
+            DisplayToken = "cached-fallback-token",
+            AuthPath = "AzureCliCredential",
+            CacheIdentity = "AzureCliCredential:cached-user",
+            ExpiresOnUtc = DateTimeOffset.UtcNow.AddHours(1)
+        };
+
+        SetCachedFallbackResolution(
+            accessor,
+            cachedCredential,
+            CreateStatus(cachedCredential, looksExpired: false),
+            DateTimeOffset.UtcNow.AddMinutes(10));
+
+        var credential = await accessor.GetAccessTokenAsync();
+
+        Assert.Same(cachedCredential, credential);
+    }
+
+    [Fact]
+    public async Task GetAccessTokenAsync_WhenCachedFallbackCredentialIsExpired_ReacquiresCredential()
+    {
+        ConfigurePathWithoutAz();
+        var accessor = new AzCliAzdoTokenAccessor();
+        var staleCredential = new AzdoCredential("stale-fallback-token", "Bearer", "Stale fallback")
+        {
+            DisplayToken = "stale-fallback-token",
+            AuthPath = "AzureCliCredential",
+            CacheIdentity = "AzureCliCredential:stale-user",
+            ExpiresOnUtc = DateTimeOffset.UtcNow.AddHours(1)
+        };
+
+        SetCachedFallbackResolution(
+            accessor,
+            staleCredential,
+            CreateStatus(staleCredential, looksExpired: false),
+            DateTimeOffset.UtcNow.AddMinutes(-1));
+
+        var credential = await accessor.GetAccessTokenAsync();
+
+        Assert.Null(credential);
+    }
+
+    [Fact]
+    public async Task AuthStatusAsync_WhenEnvVarContainsPat_ReturnsEnvironmentVariableStatus()
+    {
+        Environment.SetEnvironmentVariable(EnvVarName, "plain-pat-token");
+        var accessor = new AzCliAzdoTokenAccessor();
+
+        var status = await accessor.AuthStatusAsync();
+
+        Assert.True(status.IsAuthenticated);
+        Assert.Equal("environment variable", status.Path);
+        Assert.Equal("AZDO_TOKEN (PAT)", status.Source);
+        Assert.Null(status.LooksExpired);
+        Assert.Contains(status.Warnings, warning => warning.Contains("PAT expiry cannot be determined locally.", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task AuthStatusAsync_WhenEnvVarContainsExpiredJwt_ReturnsExpiryWarning()
+    {
+        var token = CreateJwt(new Dictionary<string, object?>
+        {
+            ["sub"] = "lambert",
+            ["exp"] = DateTimeOffset.UtcNow.AddMinutes(-10).ToUnixTimeSeconds()
+        });
+        Environment.SetEnvironmentVariable(EnvVarName, token);
+        var accessor = new AzCliAzdoTokenAccessor();
+
+        var status = await accessor.AuthStatusAsync();
+
+        Assert.True(status.IsAuthenticated);
+        Assert.True(status.LooksExpired);
+        Assert.Equal("environment variable", status.Path);
+        Assert.Equal("AZDO_TOKEN (Bearer)", status.Source);
+        Assert.Contains(status.Warnings, warning => warning.Contains("appears expired", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task AuthStatusAsync_WhenNoCredentialsResolve_ReturnsAnonymousStatus()
+    {
+        ConfigurePathWithoutAz();
+        var accessor = new AzCliAzdoTokenAccessor();
+
+        var status = await accessor.AuthStatusAsync();
+
+        Assert.False(status.IsAuthenticated);
+        Assert.Equal("anonymous", status.Path);
+        Assert.Equal("anonymous", status.Source);
+        Assert.Null(status.LooksExpired);
+        Assert.Contains(status.Warnings, warning => warning.Contains("No AzDO credentials resolved", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ImplementsIAzdoTokenAccessor()
     {
         IAzdoTokenAccessor accessor = new AzCliAzdoTokenAccessor();
@@ -315,6 +512,64 @@ public class AzdoTokenAccessorTests : IDisposable
 
         Assert.True(credential is null || !string.IsNullOrEmpty(credential.Token));
     }
+
+    private void ConfigurePathWithoutAz()
+    {
+        var tempDirectory = CreateTempDirectory("azdo-no-az");
+        Environment.SetEnvironmentVariable("PATH", tempDirectory);
+    }
+
+    private string CreateTempDirectory(string prefix)
+    {
+        var tempDirectory = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDirectory);
+        _tempDirectories.Add(tempDirectory);
+        return tempDirectory;
+    }
+
+    private static void SetCachedFallbackResolution(
+        AzCliAzdoTokenAccessor accessor,
+        AzdoCredential? credential,
+        AzdoAuthStatus status,
+        DateTimeOffset refreshAfterUtc)
+    {
+        var cachedResolutionType = typeof(AzCliAzdoTokenAccessor)
+            .GetNestedType("CachedResolution", BindingFlags.NonPublic)!;
+        var cachedResolution = Activator.CreateInstance(
+            cachedResolutionType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args: [credential, status, refreshAfterUtc],
+            culture: null);
+
+        typeof(AzCliAzdoTokenAccessor)
+            .GetField("_cachedFallbackResolution", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(accessor, cachedResolution);
+    }
+
+    private static AzdoAuthStatus CreateStatus(AzdoCredential credential, bool? looksExpired, params string[] warnings)
+        => new()
+        {
+            IsAuthenticated = true,
+            Path = credential.AuthPath,
+            Source = credential.Source,
+            LooksExpired = looksExpired,
+            ExpiresOnUtc = credential.ExpiresOnUtc,
+            Warnings = warnings
+        };
+
+    private static string CreateJwt(IReadOnlyDictionary<string, object?> claims)
+    {
+        var header = Base64UrlEncode("{\"alg\":\"none\",\"typ\":\"JWT\"}");
+        var payload = Base64UrlEncode(JsonSerializer.Serialize(claims));
+        return $"{header}.{payload}.signature";
+    }
+
+    private static string Base64UrlEncode(string value)
+        => Convert.ToBase64String(Encoding.UTF8.GetBytes(value))
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
 
     private static string EncodePatForBasic(string token)
         => Convert.ToBase64String(Encoding.ASCII.GetBytes($":{token}"));
