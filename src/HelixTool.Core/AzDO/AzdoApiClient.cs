@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace HelixTool.Core.AzDO;
 
@@ -10,10 +11,20 @@ namespace HelixTool.Core.AzDO;
 /// </summary>
 public sealed class AzdoApiClient : IAzdoApiClient
 {
+    private const int ErrorBodySnippetLimit = 500;
     private static readonly JsonSerializerOptions s_jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
     };
+    private static readonly Regex s_secretAssignmentRegex = new(
+        @"(?i)\b(?<name>token|key|password|secret)\s*=\s*(?<value>[^\s&;,]+)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex s_jwtRegex = new(
+        @"\b[A-Za-z0-9_-]{3,}\.[A-Za-z0-9_-]{3,}\.[A-Za-z0-9_-]{3,}\b",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex s_base64Regex = new(
+        @"(?<![A-Za-z0-9+/_-])(?=[A-Za-z0-9+/_-]{41,}={0,2}(?![A-Za-z0-9+/_-]))(?=[A-Za-z0-9+/_-]*[0-9+/=_-])[A-Za-z0-9+/_-]+={0,2}(?![A-Za-z0-9+/_-])",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private readonly HttpClient _http;
     private readonly IAzdoTokenAccessor _tokenAccessor;
@@ -199,7 +210,8 @@ public sealed class AzdoApiClient : IAzdoApiClient
             "To resolve:\n" +
             "• Run 'az login' (if your Azure identity has access to this org)\n" +
             "• Set AZDO_TOKEN to a Personal Access Token with Build(read) + Test(read) scopes\n" +
-            "• Set AZDO_TOKEN to an Entra access token: az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv",
+            "• Set AZDO_TOKEN to an Entra access token: az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv\n" +
+            "• If AZDO_TOKEN is being misclassified, set AZDO_TOKEN_TYPE to 'pat' or 'bearer' to override detection",
             inner: null,
             statusCode: response.StatusCode);
     }
@@ -210,10 +222,21 @@ public sealed class AzdoApiClient : IAzdoApiClient
             return;
 
         var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-        var snippet = body.Length > 500 ? body[..500] + "…" : body;
+        var snippet = body.Length > ErrorBodySnippetLimit ? body[..ErrorBodySnippetLimit] + "…" : body;
+        snippet = RedactSensitiveContent(snippet);
         throw new HttpRequestException(
             $"AzDO API returned {(int)response.StatusCode}: {snippet}",
             inner: null,
             statusCode: response.StatusCode);
+    }
+
+    private static string RedactSensitiveContent(string snippet)
+    {
+        if (string.IsNullOrEmpty(snippet))
+            return snippet;
+
+        var redacted = s_secretAssignmentRegex.Replace(snippet, static match => $"{match.Groups["name"].Value}=[REDACTED]");
+        redacted = s_jwtRegex.Replace(redacted, "[REDACTED-JWT]");
+        return s_base64Regex.Replace(redacted, "[REDACTED-SECRET]");
     }
 }

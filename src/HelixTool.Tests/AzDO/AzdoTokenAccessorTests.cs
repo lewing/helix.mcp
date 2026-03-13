@@ -1,9 +1,9 @@
 // Tests for AzCliAzdoTokenAccessor — AzDO auth chain.
-// Covers AZDO_TOKEN PAT/Bearer detection plus fallback caching behavior.
+// Covers AZDO_TOKEN PAT/Bearer detection, AZDO_TOKEN_TYPE overrides, and fallback caching behavior.
 
 using System.Text;
-using Xunit;
 using HelixTool.Core.AzDO;
+using Xunit;
 
 namespace HelixTool.Tests.AzDO;
 
@@ -11,16 +11,22 @@ namespace HelixTool.Tests.AzDO;
 public class AzdoTokenAccessorTests : IDisposable
 {
     private const string EnvVarName = "AZDO_TOKEN";
+    private const string EnvVarTypeName = "AZDO_TOKEN_TYPE";
     private readonly string? _originalEnvValue;
+    private readonly string? _originalEnvTypeValue;
 
     public AzdoTokenAccessorTests()
     {
         _originalEnvValue = Environment.GetEnvironmentVariable(EnvVarName);
+        _originalEnvTypeValue = Environment.GetEnvironmentVariable(EnvVarTypeName);
+        Environment.SetEnvironmentVariable(EnvVarName, null);
+        Environment.SetEnvironmentVariable(EnvVarTypeName, null);
     }
 
     public void Dispose()
     {
         Environment.SetEnvironmentVariable(EnvVarName, _originalEnvValue);
+        Environment.SetEnvironmentVariable(EnvVarTypeName, _originalEnvTypeValue);
     }
 
     [Fact]
@@ -37,9 +43,6 @@ public class AzdoTokenAccessorTests : IDisposable
         Assert.Equal("Basic", credential.Scheme);
         Assert.Equal("AZDO_TOKEN (PAT)", credential.Source);
         Assert.Equal(pat, credential.DisplayToken);
-
-        string? displayToken = credential;
-        Assert.Equal(pat, displayToken);
     }
 
     [Fact]
@@ -56,6 +59,40 @@ public class AzdoTokenAccessorTests : IDisposable
         Assert.Equal("Bearer", credential.Scheme);
         Assert.Equal("AZDO_TOKEN (Bearer)", credential.Source);
         Assert.Equal(jwt, credential.DisplayToken);
+    }
+
+    [Fact]
+    public async Task GetAccessTokenAsync_WhenTokenTypeOverrideIsPat_SkipsJwtHeuristic()
+    {
+        const string patWithDots = "token.with.dots";
+        Environment.SetEnvironmentVariable(EnvVarName, patWithDots);
+        Environment.SetEnvironmentVariable(EnvVarTypeName, "pat");
+        var accessor = new AzCliAzdoTokenAccessor();
+
+        var credential = await accessor.GetAccessTokenAsync();
+
+        Assert.NotNull(credential);
+        Assert.Equal("Basic", credential!.Scheme);
+        Assert.Equal("AZDO_TOKEN (PAT)", credential.Source);
+        Assert.Equal(EncodePatForBasic(patWithDots), credential.Token);
+        Assert.Equal(patWithDots, credential.DisplayToken);
+    }
+
+    [Fact]
+    public async Task GetAccessTokenAsync_WhenTokenTypeOverrideIsBearer_SkipsJwtHeuristic()
+    {
+        const string token = "plain-token";
+        Environment.SetEnvironmentVariable(EnvVarName, token);
+        Environment.SetEnvironmentVariable(EnvVarTypeName, "BeArEr");
+        var accessor = new AzCliAzdoTokenAccessor();
+
+        var credential = await accessor.GetAccessTokenAsync();
+
+        Assert.NotNull(credential);
+        Assert.Equal("Bearer", credential!.Scheme);
+        Assert.Equal("AZDO_TOKEN (Bearer)", credential.Source);
+        Assert.Equal(token, credential.Token);
+        Assert.Equal(token, credential.DisplayToken);
     }
 
     [Fact]
@@ -86,24 +123,25 @@ public class AzdoTokenAccessorTests : IDisposable
     }
 
     [Fact]
-    public void AzdoCredential_ImplicitConversions_UseDisplayToken()
+    public void AzdoCredential_LegacyStringConversion_PreservesDisplayToken()
     {
         var credential = new AzdoCredential("encoded-pat", "Basic", "AZDO_TOKEN (PAT)")
         {
             DisplayToken = "plain-pat"
         };
 
-        string? displayToken = credential;
-        Assert.Equal("plain-pat", displayToken);
+        Assert.Equal("plain-pat", credential.DisplayToken);
 
+#pragma warning disable CS0618
         AzdoCredential? legacyCredential = "legacy-token";
+        AzdoCredential? nullCredential = (string?)null;
+#pragma warning restore CS0618
+
         Assert.NotNull(legacyCredential);
         Assert.Equal("legacy-token", legacyCredential!.Token);
         Assert.Equal("Bearer", legacyCredential.Scheme);
         Assert.Equal("Legacy string token", legacyCredential.Source);
         Assert.Equal("legacy-token", legacyCredential.DisplayToken);
-
-        AzdoCredential? nullCredential = (string?)null;
         Assert.Null(nullCredential);
     }
 

@@ -137,3 +137,10 @@
 📌 Team update (2026-03-13): AzDO auth is now the narrow chain `AZDO_TOKEN` → `AzureCliCredential` → az CLI → anonymous, with scheme-aware `AzdoCredential` metadata and `DisplayToken` kept separate from the wire token. — decided by Dallas, Ripley
 
 📌 Team update (2026-03-13): README/docs should expose MCP resources (`ci://profiles`, `ci://profiles/{repo}`) and treat idempotent annotations as a context-efficiency design point. — decided by Lambert
+
+## Learnings (AzDO auth threat-model quick wins)
+
+- **AzdoCredential safety boundary:** `AzdoCredential` no longer implicitly converts to `string`; any caller that truly needs the human-readable token must opt into `.DisplayToken`, while the legacy `string` → `AzdoCredential` conversion stays obsolete-only compatibility.
+- **Explicit token-type override beats heuristics:** `AZDO_TOKEN_TYPE=pat|bearer` now short-circuits the two-dot JWT heuristic in `AzCliAzdoTokenAccessor.TryGetEnvCredential`, so ambiguous tokens do not rely solely on shape.
+- **Unexpected AzDO error bodies are sanitized before surfacing:** `AzdoApiClient.ThrowOnUnexpectedError` still truncates to 500 chars, then redacts JWT-like values, long base64-like blobs, and `token=`/`key=`/`password=`/`secret=` assignments before throwing.
+- **Key file paths:** `src/HelixTool.Core/AzDO/IAzdoTokenAccessor.cs` owns credential metadata and env-var auth resolution, `src/HelixTool.Core/AzDO/AzdoApiClient.cs` applies auth headers and sanitizes unexpected error snippets, and `src/HelixTool.Tests/AzDO/AzdoTokenAccessorTests.cs` covers env-var auth behavior and the legacy compatibility path.
