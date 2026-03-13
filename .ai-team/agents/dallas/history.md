@@ -78,3 +78,5 @@ Freshness marker pattern: content key (4h) + sentinel (15s). Delta-append via Co
 - **`DisplayToken` remains the main token-leak footgun.** `ToString()` is redacted and current error paths are careful, but the implicit `AzdoCredential -> string` conversion still yields the raw display token. Preserve the current guarded call-site pattern and prefer removing or heavily warning this conversion if compatibility allows.
 
 📌 Team update (2026-03-13): PR #28 merged the remaining AzDO auth quick wins — fallback Azure CLI/`az` credentials now refresh on deadline/401, cache isolation keys off stable auth-source identity instead of raw token bytes, and `hlx azdo auth-status` exposes safe auth-path metadata. — decided by Ripley
+
+📌 Team update (2026-03-13): Cache roots now stay stable via `CacheRootHash` while mutable `AuthTokenHash` partitions AzDO entries, and AzDO auth hashes are seeded before cached AzDO reads. — decided by Ripley
