@@ -16,7 +16,7 @@ The main residual risks are architectural rather than cryptographic:
 1. **HTTP MCP clients act through a shared server-side AzDO identity.** AzDO auth is process-wide, not per-request.
 2. **Bearer tokens are cached as strings for process lifetime.** That retains secrets in memory and prevents refresh after expiry.
 3. **Failure modes are intentionally quiet.** Silent fallback to anonymous improves resiliency for public repos but obscures auth outages.
-4. **`DisplayToken` remains a sharp edge.** Current call sites are careful, but implicit string conversion still exposes the raw token to future callers.
+4. **`DisplayToken` / implicit string conversion was a sharp edge.** The implicit string conversion has now been removed. ✅ **Addressed in this PR.**
 5. **AzDO cache isolation and AzDO auth are not tightly coupled in CLI/stdio paths.** Tokens stay in memory only, but authenticated AzDO responses can still outlive the process in shared cache directories.
 
 ---
@@ -203,7 +203,7 @@ No env token
 - **Severity:** Medium
 - **Current mitigation:** Misclassified tokens still fail closed at Azure DevOps; PATs sent as Basic are encoded before use.
 - **Residual risk:** The caller has no way to force the intended auth scheme. Misclassification becomes an integrity problem for auth state because the request is constructed incorrectly before it ever reaches AzDO.
-- **Recommendation:** Add an explicit override (`AZDO_TOKEN_TYPE=pat|bearer`) or a stricter heuristic/validation path. At minimum, document the heuristic and its failure mode.
+- **Recommendation:** Add an explicit override (`AZDO_TOKEN_TYPE=pat|bearer`) or a stricter heuristic/validation path. At minimum, document the heuristic and its failure mode. ✅ **Addressed in this PR.** `AZDO_TOKEN_TYPE` override support has been implemented.
 
 ## Repudiation
 
@@ -225,7 +225,7 @@ No env token
 - **Severity:** Medium
 - **Current mitigation:** The body is truncated to 500 characters; common 401/403 paths do not include the token; tests verify the client's own error text does not echo configured tokens.
 - **Residual risk:** Truncation is not redaction. Response bodies can still leak secrets, org names, internal routing details, or reflected header fragments.
-- **Recommendation:** Apply secret-pattern redaction to error-body snippets before surfacing them, or downgrade raw-body inclusion behind a debug flag.
+- **Recommendation:** Apply secret-pattern redaction to error-body snippets before surfacing them, or downgrade raw-body inclusion behind a debug flag. ✅ **Addressed in this PR.** Error-body redaction has been implemented.
 
 ### T-7
 - **Category:** Information Disclosure
@@ -234,7 +234,7 @@ No env token
 - **Severity:** High
 - **Current mitigation:** `ToString()` is redacted, current tests cover `ToString()` safety indirectly, and existing call sites use `credential.Token`/`credential.Source` deliberately.
 - **Residual risk:** The dangerous path is still in the public API surface. The risk is highest for future maintenance, debugging helpers, and external consumers of `AzdoCredential`.
-- **Recommendation:** Remove or obsolete the implicit `string` conversion if compatibility allows. If it must remain, add loud XML-doc warnings and targeted tests proving no production path relies on it for logging or messaging.
+- **Recommendation:** Remove or obsolete the implicit `string` conversion if compatibility allows. If it must remain, add loud XML-doc warnings and targeted tests proving no production path relies on it for logging or messaging. ✅ **Addressed in this PR.** The implicit string conversion has been removed.
 
 ### T-8
 - **Category:** Information Disclosure
@@ -309,11 +309,11 @@ No env token
 
 1. **Fix token refresh for non-env credentials.** This is the highest-value reliability/security improvement for long-lived MCP servers.
 2. **Make AzDO auth scope explicit in HTTP mode.** Either support per-request AzDO auth or document clearly that AzDO is server-scoped.
-3. **Remove or constrain the implicit `string` conversion.** It is the sharpest remaining token-leak footgun.
+3. ✅ **Done in this PR:** Removed the implicit `string` conversion to eliminate this token-leak footgun.
 4. **Add explicit auth-state visibility.** Surface what path succeeded, what failed, and whether the process is currently anonymous.
 5. **Align cache isolation with AzDO auth context.** Otherwise cached private AzDO data can outlive the process in a weaker trust zone than the live credential.
-6. **Add an explicit token-type override or stronger token detection.** Avoid scheme confusion.
-7. **Redact unexpected error bodies before surfacing them to MCP clients.**
+6. ✅ **Done in this PR:** Added an explicit `AZDO_TOKEN_TYPE` override to avoid scheme confusion.
+7. ✅ **Done in this PR:** Redact unexpected error bodies before surfacing them to MCP clients.
 
 ---
 
