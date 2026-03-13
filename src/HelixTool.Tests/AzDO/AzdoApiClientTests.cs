@@ -19,7 +19,7 @@ public class AzdoApiClientTests
     public AzdoApiClientTests()
     {
         _mockToken = Substitute.For<IAzdoTokenAccessor>();
-        _mockToken.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns("test-token");
+        _mockToken.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns(BearerCredential("test-token"));
         _handler = new FakeHttpMessageHandler();
         var httpClient = new HttpClient(_handler);
         _client = new AzdoApiClient(httpClient, _mockToken);
@@ -309,30 +309,23 @@ public class AzdoApiClientTests
         Assert.Empty(result);
     }
 
-    [Fact]
-    public async Task GetBuildAsync_401_ThrowsWithAuthHint()
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task GetBuildAsync_AuthFailure_ThrowsWithCredentialSourceAndActionableHints(HttpStatusCode statusCode)
     {
-        _handler.StatusCode = HttpStatusCode.Unauthorized;
+        _mockToken.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns(BearerCredential("entra-token", "AzureCliCredential"));
+        _handler.StatusCode = statusCode;
 
         var ex = await Assert.ThrowsAsync<HttpRequestException>(
             () => _client.GetBuildAsync("dnceng", "internal", 1));
 
-        Assert.Contains("Authentication failed", ex.Message);
-        Assert.Contains("401", ex.Message);
-        Assert.Contains("AZDO_TOKEN", ex.Message);
-    }
-
-    [Fact]
-    public async Task GetBuildAsync_403_ThrowsWithAuthHint()
-    {
-        _handler.StatusCode = HttpStatusCode.Forbidden;
-
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(
-            () => _client.GetBuildAsync("dnceng", "internal", 1));
-
-        Assert.Contains("Authentication failed", ex.Message);
-        Assert.Contains("403", ex.Message);
+        Assert.Contains("Can't access dnceng/internal", ex.Message);
+        Assert.Contains(((int)statusCode).ToString(), ex.Message);
+        Assert.Contains("Current auth: AzureCliCredential", ex.Message);
         Assert.Contains("az login", ex.Message);
+        Assert.Contains("AZDO_TOKEN", ex.Message);
+        Assert.Contains("Build(read) + Test(read)", ex.Message);
     }
 
     [Fact]
@@ -414,9 +407,9 @@ public class AzdoApiClientTests
     // ── Auth Header ──────────────────────────────────────────────────
 
     [Fact]
-    public async Task Request_WithToken_SetsBearerAuthHeader()
+    public async Task Request_WithBearerCredential_SetsBearerAuthHeader()
     {
-        _mockToken.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns("my-secret-token");
+        _mockToken.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns(BearerCredential("my-secret-token"));
         _handler.ResponseContent = JsonSerializer.Serialize(new { id = 1 });
 
         await _client.GetBuildAsync("dnceng", "internal", 1);
@@ -427,9 +420,22 @@ public class AzdoApiClientTests
     }
 
     [Fact]
-    public async Task Request_WithNullToken_NoAuthHeader()
+    public async Task Request_WithBasicCredential_SetsBasicAuthHeader()
     {
-        _mockToken.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns((string?)null);
+        _mockToken.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns(BasicCredential("my-pat-token"));
+        _handler.ResponseContent = JsonSerializer.Serialize(new { id = 1 });
+
+        await _client.GetBuildAsync("dnceng", "internal", 1);
+
+        Assert.NotNull(_handler.LastRequest);
+        Assert.Equal("Basic", _handler.LastRequest!.Headers.Authorization?.Scheme);
+        Assert.Equal(Convert.ToBase64String(Encoding.ASCII.GetBytes(":my-pat-token")), _handler.LastRequest.Headers.Authorization?.Parameter);
+    }
+
+    [Fact]
+    public async Task Request_WithNullCredential_NoAuthHeader()
+    {
+        _mockToken.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns((AzdoCredential?)null);
         _handler.ResponseContent = JsonSerializer.Serialize(new { id = 1 });
 
         await _client.GetBuildAsync("dnceng", "internal", 1);
@@ -439,9 +445,9 @@ public class AzdoApiClientTests
     }
 
     [Fact]
-    public async Task Request_WithEmptyToken_NoAuthHeader()
+    public async Task Request_WithEmptyCredentialToken_NoAuthHeader()
     {
-        _mockToken.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns("");
+        _mockToken.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns(new AzdoCredential("", "Bearer", "Empty credential") { DisplayToken = "" });
         _handler.ResponseContent = JsonSerializer.Serialize(new { id = 1 });
 
         await _client.GetBuildAsync("dnceng", "internal", 1);
@@ -724,6 +730,12 @@ public class AzdoApiClientTests
     {
         Assert.Throws<ArgumentNullException>(() => new AzdoApiClient(new HttpClient(), null!));
     }
+
+    private static AzdoCredential BearerCredential(string token, string source = "Test credential")
+        => new(token, "Bearer", source) { DisplayToken = token };
+
+    private static AzdoCredential BasicCredential(string pat, string source = "AZDO_TOKEN (PAT)")
+        => new(Convert.ToBase64String(Encoding.ASCII.GetBytes($":{pat}")), "Basic", source) { DisplayToken = pat };
 
     // ── FakeHttpMessageHandler ───────────────────────────────────────
 

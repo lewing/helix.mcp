@@ -148,6 +148,65 @@ MCP resources are URI-addressable data that clients can discover and read withou
 
 These provide the same CI investigation guides available via the `helix_ci_guide` tool, exposed as client-discoverable resources for browsing and caching.
 
+## Authentication
+
+### Helix
+
+No auth needed for public Helix jobs (dotnet open-source CI). For private jobs:
+
+```bash
+hlx login          # Opens browser, prompts for token, stores via git credential
+hlx auth-status    # Check current auth status
+hlx logout         # Remove stored token
+```
+
+**Token resolution:** `HELIX_ACCESS_TOKEN` env var → stored credential via `git credential` → error with helpful message.
+
+### Azure DevOps
+
+The AzDO tools work anonymously against public projects (for example `dnceng-public/public`). For private orgs (for example `devdiv/DevDiv`), authentication is required.
+
+**Credential chain** (tried in order):
+
+1. **`AZDO_TOKEN` environment variable** — both PATs and Entra access tokens are auto-detected:
+   - PATs (Personal Access Tokens): sent as Basic auth. Needs Build(read) + Test(read) scopes.
+   - Entra/JWT tokens: sent as Bearer auth.
+2. **Azure CLI credential** (`AzureCliCredential` from `Azure.Identity`) — uses your `az login` session. Works for any org your Azure identity has access to.
+3. **`az` CLI subprocess** — falls back to `az account get-access-token` if Azure.Identity isn't available.
+4. **Anonymous** — no auth header. Works for public projects only.
+
+**When auth fails**, the error tells you what was tried and how to fix it:
+
+```text
+Can't access devdiv/DevDiv — authentication required (401).
+
+Current auth: anonymous (no credentials found)
+
+To resolve:
+• Run 'az login' (if your Azure identity has access to this org)
+• Set AZDO_TOKEN to a Personal Access Token with Build(read) + Test(read) scopes
+```
+
+Pass tokens via MCP config:
+
+```json
+{
+  "servers": {
+    "hlx": {
+      "type": "stdio",
+      "command": "dotnet",
+      "args": ["dnx", "--yes", "lewing.helix.mcp"],
+      "env": {
+        "HELIX_ACCESS_TOKEN": "your-helix-token",
+        "AZDO_TOKEN": "your-azdo-pat-or-entra-token"
+      }
+    }
+  }
+}
+```
+
+The HTTP MCP server supports per-request auth via `Authorization: Bearer <token>` headers, with isolated cache per client. Set `HLX_API_KEY` to gate server access.
+
 ## Installation
 
 ### Use with the dotnet-dnceng plugin (recommended)
@@ -225,46 +284,6 @@ For HTTP (remote/shared servers):
   }
 }
 ```
-
-## Authentication
-
-### Helix
-
-No auth needed for public Helix jobs (dotnet open-source CI). For private jobs:
-
-```bash
-hlx login          # Opens browser, prompts for token, stores via git credential
-hlx auth-status    # Check current auth status
-hlx logout         # Remove stored token
-```
-
-**Token resolution:** `HELIX_ACCESS_TOKEN` env var → stored credential via `git credential` → error with helpful message.
-
-### Azure DevOps
-
-No auth needed for public projects (e.g., `dnceng-public/public`). For private projects:
-
-**Token resolution:** `AZDO_TOKEN` env var → Azure CLI (`az account get-access-token`) → anonymous access.
-
-Pass tokens via MCP config:
-
-```json
-{
-  "servers": {
-    "hlx": {
-      "type": "stdio",
-      "command": "dotnet",
-      "args": ["dnx", "--yes", "lewing.helix.mcp"],
-      "env": {
-        "HELIX_ACCESS_TOKEN": "your-helix-token",
-        "AZDO_TOKEN": "your-azdo-pat"
-      }
-    }
-  }
-}
-```
-
-The HTTP MCP server supports per-request auth via `Authorization: Bearer <token>` headers, with isolated cache per client. Set `HLX_API_KEY` to gate server access.
 
 ## Security
 

@@ -6,7 +6,7 @@ namespace HelixTool.Core.AzDO;
 
 /// <summary>
 /// HTTP-based implementation of <see cref="IAzdoApiClient"/>.
-/// Uses Azure DevOps REST API v7.0 with Bearer token auth.
+/// Uses Azure DevOps REST API v7.0 with Bearer or Basic auth.
 /// </summary>
 public sealed class AzdoApiClient : IAzdoApiClient
 {
@@ -27,7 +27,7 @@ public sealed class AzdoApiClient : IAzdoApiClient
     public async Task<AzdoBuild?> GetBuildAsync(string org, string project, int buildId, CancellationToken ct = default)
     {
         var url = BuildUrl(org, project, $"build/builds/{buildId}");
-        return await GetAsync<AzdoBuild>(url, ct);
+        return await GetAsync<AzdoBuild>(org, project, url, ct);
     }
 
     public async Task<IReadOnlyList<AzdoBuild>> ListBuildsAsync(string org, string project, AzdoBuildFilter filter, CancellationToken ct = default)
@@ -44,7 +44,9 @@ public sealed class AzdoApiClient : IAzdoApiClient
             queryParams.Add($"branchName=refs/pull/{prNum}/merge");
         }
         else if (!string.IsNullOrEmpty(filter.Branch))
+        {
             queryParams.Add($"branchName={Uri.EscapeDataString(filter.Branch)}");
+        }
 
         if (filter.DefinitionId is > 0)
             queryParams.Add($"definitions={filter.DefinitionId}");
@@ -56,13 +58,13 @@ public sealed class AzdoApiClient : IAzdoApiClient
 
         var path = "build/builds?" + string.Join("&", queryParams);
         var url = BuildUrl(org, project, path);
-        return await GetListAsync<AzdoBuild>(url, ct);
+        return await GetListAsync<AzdoBuild>(org, project, url, ct);
     }
 
     public async Task<AzdoTimeline?> GetTimelineAsync(string org, string project, int buildId, CancellationToken ct = default)
     {
         var url = BuildUrl(org, project, $"build/builds/{buildId}/timeline");
-        return await GetAsync<AzdoTimeline>(url, ct);
+        return await GetAsync<AzdoTimeline>(org, project, url, ct);
     }
 
     public async Task<string?> GetBuildLogAsync(string org, string project, int buildId, int logId, int? startLine = null, int? endLine = null, CancellationToken ct = default)
@@ -75,26 +77,26 @@ public sealed class AzdoApiClient : IAzdoApiClient
             path += "?" + string.Join("&", queryParts);
         var url = BuildUrl(org, project, path);
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        await ApplyAuthAsync(request, ct);
+        var credentialSource = await ApplyAuthAsync(request, ct).ConfigureAwait(false);
 
-        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
 
         if (response.StatusCode == HttpStatusCode.NotFound)
             return null;
 
-        await ThrowOnAuthFailure(response);
-        await ThrowOnUnexpectedError(response);
+        ThrowOnAuthFailure(response, org, project, credentialSource);
+        await ThrowOnUnexpectedError(response, ct).ConfigureAwait(false);
 
-        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
         using var reader = new StreamReader(stream);
-        return await reader.ReadToEndAsync(ct);
+        return await reader.ReadToEndAsync(ct).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<AzdoBuildChange>> GetBuildChangesAsync(string org, string project, int buildId, int? top = null, CancellationToken ct = default)
     {
         var topParam = top is > 0 ? $"?$top={top}" : "";
         var url = BuildUrl(org, project, $"build/builds/{buildId}/changes{topParam}");
-        return await GetListAsync<AzdoBuildChange>(url, ct);
+        return await GetListAsync<AzdoBuildChange>(org, project, url, ct);
     }
 
     public async Task<IReadOnlyList<AzdoTestRun>> GetTestRunsAsync(string org, string project, int buildId, int? top = null, CancellationToken ct = default)
@@ -102,105 +104,116 @@ public sealed class AzdoApiClient : IAzdoApiClient
         var buildUri = Uri.EscapeDataString($"vstfs:///Build/Build/{buildId}");
         var topParam = top is > 0 ? $"&$top={top}" : "";
         var url = BuildUrl(org, project, $"test/runs?buildUri={buildUri}{topParam}");
-        return await GetListAsync<AzdoTestRun>(url, ct);
+        return await GetListAsync<AzdoTestRun>(org, project, url, ct);
     }
 
     public async Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(string org, string project, int runId, int top = 200, CancellationToken ct = default)
     {
         var url = BuildUrl(org, project, $"test/runs/{runId}/results?$top={top}&outcomes=Failed");
-        return await GetListAsync<AzdoTestResult>(url, ct);
+        return await GetListAsync<AzdoTestResult>(org, project, url, ct);
     }
 
     public async Task<IReadOnlyList<AzdoBuildArtifact>> GetBuildArtifactsAsync(string org, string project, int buildId, CancellationToken ct = default)
     {
         var url = BuildUrl(org, project, $"build/builds/{buildId}/artifacts");
-        return await GetListAsync<AzdoBuildArtifact>(url, ct);
+        return await GetListAsync<AzdoBuildArtifact>(org, project, url, ct);
     }
 
     public async Task<IReadOnlyList<AzdoTestAttachment>> GetTestAttachmentsAsync(string org, string project, int runId, int resultId, int top = 50, CancellationToken ct = default)
     {
         var url = BuildUrl(org, project, $"test/runs/{runId}/results/{resultId}/attachments");
-        return await GetListAsync<AzdoTestAttachment>(url, ct);
+        return await GetListAsync<AzdoTestAttachment>(org, project, url, ct);
     }
 
     public async Task<IReadOnlyList<AzdoBuildLogEntry>> GetBuildLogsListAsync(string org, string project, int buildId, CancellationToken ct = default)
     {
         var url = BuildUrl(org, project, $"build/builds/{buildId}/logs");
-        return await GetListAsync<AzdoBuildLogEntry>(url, ct);
+        return await GetListAsync<AzdoBuildLogEntry>(org, project, url, ct);
     }
-
-    // ── Helpers ──────────────────────────────────────────────────────
 
     private static string BuildUrl(string org, string project, string path)
     {
-        // path may already contain query params (e.g. "test/runs?buildUri=...")
         var separator = path.Contains('?') ? "&" : "?";
         return $"https://dev.azure.com/{Uri.EscapeDataString(org)}/{Uri.EscapeDataString(project)}/_apis/{path}{separator}api-version=7.0";
     }
 
-    private async Task ApplyAuthAsync(HttpRequestMessage request, CancellationToken ct)
+    private async Task<string?> ApplyAuthAsync(HttpRequestMessage request, CancellationToken ct)
     {
-        var token = await _tokenAccessor.GetAccessTokenAsync(ct);
-        if (!string.IsNullOrEmpty(token))
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var credential = await _tokenAccessor.GetAccessTokenAsync(ct).ConfigureAwait(false);
+        if (credential is null || string.IsNullOrEmpty(credential.Token))
+            return null;
+
+        request.Headers.Authorization = credential.Scheme switch
+        {
+            "Basic" => new AuthenticationHeaderValue("Basic", credential.Token),
+            _ => new AuthenticationHeaderValue("Bearer", credential.Token)
+        };
+
+        return credential.Source;
     }
 
-    private async Task<T?> GetAsync<T>(string url, CancellationToken ct) where T : class
+    private async Task<T?> GetAsync<T>(string org, string project, string url, CancellationToken ct) where T : class
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        await ApplyAuthAsync(request, ct);
+        var credentialSource = await ApplyAuthAsync(request, ct).ConfigureAwait(false);
 
-        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
 
         if (response.StatusCode == HttpStatusCode.NotFound)
             return null;
 
-        await ThrowOnAuthFailure(response);
-        await ThrowOnUnexpectedError(response);
+        ThrowOnAuthFailure(response, org, project, credentialSource);
+        await ThrowOnUnexpectedError(response, ct).ConfigureAwait(false);
 
-        await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        return await JsonSerializer.DeserializeAsync<T>(stream, s_jsonOptions, ct);
+        await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+        return await JsonSerializer.DeserializeAsync<T>(stream, s_jsonOptions, ct).ConfigureAwait(false);
     }
 
-    private async Task<IReadOnlyList<T>> GetListAsync<T>(string url, CancellationToken ct)
+    private async Task<IReadOnlyList<T>> GetListAsync<T>(string org, string project, string url, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        await ApplyAuthAsync(request, ct);
+        var credentialSource = await ApplyAuthAsync(request, ct).ConfigureAwait(false);
 
-        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
 
         if (response.StatusCode == HttpStatusCode.NotFound)
             return [];
 
-        await ThrowOnAuthFailure(response);
-        await ThrowOnUnexpectedError(response);
+        ThrowOnAuthFailure(response, org, project, credentialSource);
+        await ThrowOnUnexpectedError(response, ct).ConfigureAwait(false);
 
-        await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        var wrapper = await JsonSerializer.DeserializeAsync<AzdoListResponse<T>>(stream, s_jsonOptions, ct);
+        await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+        var wrapper = await JsonSerializer.DeserializeAsync<AzdoListResponse<T>>(stream, s_jsonOptions, ct).ConfigureAwait(false);
         return wrapper?.Value ?? [];
     }
 
-    private static async Task ThrowOnAuthFailure(HttpResponseMessage response)
+    private static void ThrowOnAuthFailure(HttpResponseMessage response, string org, string project, string? credentialSource)
     {
-        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-        {
-            throw new HttpRequestException(
-                $"Authentication failed ({(int)response.StatusCode}). Set AZDO_TOKEN env var or run 'az login'.",
-                inner: null,
-                statusCode: response.StatusCode);
-        }
+        if (response.StatusCode is not (HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden))
+            return;
+
+        var currentAuth = credentialSource ?? "anonymous (no credentials found)";
+        throw new HttpRequestException(
+            $"Can't access {org}/{project} — authentication required ({(int)response.StatusCode}). Authentication failed.\n\n" +
+            $"Current auth: {currentAuth}\n\n" +
+            "To resolve:\n" +
+            "• Run 'az login' (if your Azure identity has access to this org)\n" +
+            "• Set AZDO_TOKEN to a Personal Access Token with Build(read) + Test(read) scopes\n" +
+            "• Set AZDO_TOKEN to an Entra access token: az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv",
+            inner: null,
+            statusCode: response.StatusCode);
     }
 
-    private static async Task ThrowOnUnexpectedError(HttpResponseMessage response)
+    private static async Task ThrowOnUnexpectedError(HttpResponseMessage response, CancellationToken ct)
     {
-        if (!response.IsSuccessStatusCode)
-        {
-            var body = await response.Content.ReadAsStringAsync();
-            var snippet = body.Length > 500 ? body[..500] + "…" : body;
-            throw new HttpRequestException(
-                $"AzDO API returned {(int)response.StatusCode}: {snippet}",
-                inner: null,
-                statusCode: response.StatusCode);
-        }
+        if (response.IsSuccessStatusCode)
+            return;
+
+        var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        var snippet = body.Length > 500 ? body[..500] + "…" : body;
+        throw new HttpRequestException(
+            $"AzDO API returned {(int)response.StatusCode}: {snippet}",
+            inner: null,
+            statusCode: response.StatusCode);
     }
 }

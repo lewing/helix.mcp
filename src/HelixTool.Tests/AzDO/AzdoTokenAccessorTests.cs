@@ -1,13 +1,14 @@
 // Tests for AzCliAzdoTokenAccessor — AzDO auth chain.
-// Tests the env-var path (AZDO_TOKEN) which is unit-testable.
-// The az CLI subprocess path returns null on failure (no exception).
-// Env var is checked on every call (not cached); only az CLI result is cached.
+// Covers AZDO_TOKEN PAT/Bearer detection plus fallback caching behavior.
 
+using System.Reflection;
+using System.Text;
 using Xunit;
 using HelixTool.Core.AzDO;
 
 namespace HelixTool.Tests.AzDO;
 
+[Collection("AzdoTokenEnv")]
 public class AzdoTokenAccessorTests : IDisposable
 {
     private const string EnvVarName = "AZDO_TOKEN";
@@ -23,48 +24,104 @@ public class AzdoTokenAccessorTests : IDisposable
         Environment.SetEnvironmentVariable(EnvVarName, _originalEnvValue);
     }
 
-    // --- Env var path (AZDO_TOKEN) ---
-
     [Fact]
-    public async Task GetAccessTokenAsync_WhenEnvVarSet_ReturnsEnvVarValue()
+    public async Task GetAccessTokenAsync_WhenEnvVarContainsPat_ReturnsBasicCredential()
     {
-        Environment.SetEnvironmentVariable(EnvVarName, "my-azdo-pat-token");
+        const string pat = "my-azdo-pat-token";
+        Environment.SetEnvironmentVariable(EnvVarName, pat);
         var accessor = new AzCliAzdoTokenAccessor();
 
-        var token = await accessor.GetAccessTokenAsync();
+        var credential = await accessor.GetAccessTokenAsync();
 
-        Assert.Equal("my-azdo-pat-token", token);
+        Assert.NotNull(credential);
+        Assert.Equal(EncodePatForBasic(pat), credential!.Token);
+        Assert.Equal("Basic", credential.Scheme);
+        Assert.Equal("AZDO_TOKEN (PAT)", credential.Source);
+        Assert.Equal(pat, credential.DisplayToken);
+
+        string? displayToken = credential;
+        Assert.Equal(pat, displayToken);
     }
 
     [Fact]
-    public async Task GetAccessTokenAsync_WhenEnvVarEmpty_FallsThroughToAzCli()
+    public async Task GetAccessTokenAsync_WhenEnvVarLooksLikeJwt_ReturnsBearerCredential()
     {
-        // Empty string is treated as "not set" per string.IsNullOrEmpty
-        Environment.SetEnvironmentVariable(EnvVarName, "");
+        const string jwt = "header.payload.signature";
+        Environment.SetEnvironmentVariable(EnvVarName, jwt);
         var accessor = new AzCliAzdoTokenAccessor();
 
-        // Falls through to az CLI, which returns null if not available
-        var token = await accessor.GetAccessTokenAsync();
+        var credential = await accessor.GetAccessTokenAsync();
 
-        // In CI without az CLI, null is expected (graceful failure)
-        // The key assertion: empty env var does NOT return ""
-        Assert.NotEqual("", token);
+        Assert.NotNull(credential);
+        Assert.Equal(jwt, credential!.Token);
+        Assert.Equal("Bearer", credential.Scheme);
+        Assert.Equal("AZDO_TOKEN (Bearer)", credential.Source);
+        Assert.Equal(jwt, credential.DisplayToken);
     }
 
     [Fact]
-    public async Task GetAccessTokenAsync_WhenEnvVarNotSet_FallsThroughToAzCli()
+    public void AzdoCredential_RecordPropertiesEqualityAndNullHandling_Work()
     {
-        Environment.SetEnvironmentVariable(EnvVarName, null);
-        var accessor = new AzCliAzdoTokenAccessor();
+        var credential = new AzdoCredential("encoded-token", "Basic", "AZDO_TOKEN (PAT)")
+        {
+            DisplayToken = "pat-token"
+        };
+        var same = new AzdoCredential("encoded-token", "Basic", "AZDO_TOKEN (PAT)")
+        {
+            DisplayToken = "pat-token"
+        };
+        var different = new AzdoCredential("encoded-token", "Basic", "AZDO_TOKEN (PAT)")
+        {
+            DisplayToken = "different-display-token"
+        };
 
-        // Returns null if az CLI is not available (no exception thrown)
-        var token = await accessor.GetAccessTokenAsync();
+        Assert.Equal("encoded-token", credential.Token);
+        Assert.Equal("Basic", credential.Scheme);
+        Assert.Equal("AZDO_TOKEN (PAT)", credential.Source);
+        Assert.Equal("pat-token", credential.DisplayToken);
+        Assert.Equal(credential, same);
+        Assert.NotEqual(credential, different);
 
-        // Either az CLI returned a token, or null — both are valid
-        // Key contract: does NOT throw on az CLI failure
+        AzdoCredential? nullableCredential = null;
+        Assert.Null(nullableCredential);
     }
 
-    // --- Env var is read on EVERY call (not cached) ---
+    [Fact]
+    public void AzdoCredential_ImplicitConversions_UseDisplayToken()
+    {
+        var credential = new AzdoCredential("encoded-pat", "Basic", "AZDO_TOKEN (PAT)")
+        {
+            DisplayToken = "plain-pat"
+        };
+
+        string? displayToken = credential;
+        Assert.Equal("plain-pat", displayToken);
+
+        AzdoCredential? legacyCredential = "legacy-token";
+        Assert.NotNull(legacyCredential);
+        Assert.Equal("legacy-token", legacyCredential!.Token);
+        Assert.Equal("Bearer", legacyCredential.Scheme);
+        Assert.Equal("Legacy string token", legacyCredential.Source);
+        Assert.Equal("legacy-token", legacyCredential.DisplayToken);
+
+        AzdoCredential? nullCredential = (string?)null;
+        Assert.Null(nullCredential);
+    }
+
+    [Fact]
+    public async Task GetAccessTokenAsync_WhenEnvVarSet_DoesNotResolveFallbackChain()
+    {
+        Environment.SetEnvironmentVariable(EnvVarName, "priority-pat");
+        var accessor = new AzCliAzdoTokenAccessor();
+
+        var credential = await accessor.GetAccessTokenAsync();
+
+        Assert.NotNull(credential);
+        Assert.False(GetPrivateField<bool>(accessor, "_resolved"));
+        Assert.False(GetPrivateField<bool>(accessor, "_azureIdentityResolved"));
+        Assert.Null(GetPrivateField<AzdoCredential?>(accessor, "_cachedCredential"));
+        Assert.Null(GetPrivateField<AzdoCredential?>(accessor, "_cachedAzureIdentityCredential"));
+    }
 
     [Fact]
     public async Task GetAccessTokenAsync_EnvVarCheckedEveryCall()
@@ -73,38 +130,45 @@ public class AzdoTokenAccessorTests : IDisposable
         var accessor = new AzCliAzdoTokenAccessor();
 
         var first = await accessor.GetAccessTokenAsync();
-        Assert.Equal("first-token", first);
+        Assert.NotNull(first);
+        Assert.Equal("AZDO_TOKEN (PAT)", first!.Source);
+        Assert.Equal("first-token", first.DisplayToken);
 
-        // Change env var between calls — should be reflected immediately
-        Environment.SetEnvironmentVariable(EnvVarName, "second-token");
+        Environment.SetEnvironmentVariable(EnvVarName, "header.payload.signature");
         var second = await accessor.GetAccessTokenAsync();
-        Assert.Equal("second-token", second);
+
+        Assert.NotNull(second);
+        Assert.Equal("AZDO_TOKEN (Bearer)", second!.Source);
+        Assert.Equal("header.payload.signature", second.Token);
+        Assert.Equal("header.payload.signature", second.DisplayToken);
     }
 
-    // --- Caching (az CLI path only) ---
-
     [Fact]
-    public async Task GetAccessTokenAsync_AzCliResultIsCached()
+    public async Task GetAccessTokenAsync_AfterFallbackResolution_UsesCachedCredential()
     {
-        // Clear env var so it falls through to az CLI
         Environment.SetEnvironmentVariable(EnvVarName, null);
         var accessor = new AzCliAzdoTokenAccessor();
 
-        // First call hits az CLI (or returns null)
-        var first = await accessor.GetAccessTokenAsync();
-        // Second call uses cached result (_resolved flag)
+        _ = await accessor.GetAccessTokenAsync();
+
+        Assert.True(GetPrivateField<bool>(accessor, "_resolved"));
+
+        var cachedCredential = new AzdoCredential("cached-token", "Bearer", "Injected cached credential")
+        {
+            DisplayToken = "cached-token"
+        };
+        SetPrivateField(accessor, "_cachedCredential", cachedCredential);
+
         var second = await accessor.GetAccessTokenAsync();
 
-        // Both should return the same value (null or token)
-        Assert.Equal(first, second);
+        Assert.Same(cachedCredential, second);
     }
 
-    // --- Concurrency ---
-
     [Fact]
-    public async Task GetAccessTokenAsync_ConcurrentCalls_AllReturnSameEnvToken()
+    public async Task GetAccessTokenAsync_ConcurrentCalls_AllReturnSameEnvCredential()
     {
-        Environment.SetEnvironmentVariable(EnvVarName, "concurrent-token");
+        const string pat = "concurrent-token";
+        Environment.SetEnvironmentVariable(EnvVarName, pat);
         var accessor = new AzCliAzdoTokenAccessor();
 
         var tasks = Enumerable.Range(0, 10)
@@ -113,30 +177,14 @@ public class AzdoTokenAccessorTests : IDisposable
 
         var results = await Task.WhenAll(tasks);
 
-        Assert.All(results, token => Assert.Equal("concurrent-token", token));
+        Assert.All(results, credential =>
+        {
+            Assert.NotNull(credential);
+            Assert.Equal("Basic", credential!.Scheme);
+            Assert.Equal(EncodePatForBasic(pat), credential.Token);
+            Assert.Equal(pat, credential.DisplayToken);
+        });
     }
-
-    [Fact]
-    public async Task GetAccessTokenAsync_ConcurrentCallsWithoutEnvVar_DoNotThrow()
-    {
-        // Without env var, concurrent calls hit az CLI path
-        // The _resolved flag isn't thread-safe, but the behavior should be stable
-        Environment.SetEnvironmentVariable(EnvVarName, null);
-        var accessor = new AzCliAzdoTokenAccessor();
-
-        var tasks = Enumerable.Range(0, 5)
-            .Select(_ => accessor.GetAccessTokenAsync())
-            .ToArray();
-
-        // Should not throw even if az CLI isn't available
-        var results = await Task.WhenAll(tasks);
-
-        // All results should be the same (null or token)
-        var first = results[0];
-        Assert.All(results, token => Assert.Equal(first, token));
-    }
-
-    // --- Interface contract ---
 
     [Fact]
     public void ImplementsIAzdoTokenAccessor()
@@ -145,8 +193,6 @@ public class AzdoTokenAccessorTests : IDisposable
         Assert.NotNull(accessor);
     }
 
-    // --- CancellationToken ---
-
     [Fact]
     public async Task GetAccessTokenAsync_WithCancellationToken_EnvVarPath_ReturnsImmediately()
     {
@@ -154,57 +200,38 @@ public class AzdoTokenAccessorTests : IDisposable
         var accessor = new AzCliAzdoTokenAccessor();
         using var cts = new CancellationTokenSource();
 
-        var token = await accessor.GetAccessTokenAsync(cts.Token);
+        var credential = await accessor.GetAccessTokenAsync(cts.Token);
 
-        Assert.Equal("cancel-test-token", token);
+        Assert.NotNull(credential);
+        Assert.Equal("cancel-test-token", credential!.DisplayToken);
+        Assert.Equal("AZDO_TOKEN (PAT)", credential.Source);
     }
 
-    // --- Nullable return type ---
-
     [Fact]
-    public async Task GetAccessTokenAsync_ReturnTypeIsNullable()
+    public async Task GetAccessTokenAsync_ReturnTypeIsNullableCredential()
     {
-        // Verify the contract: return type is string? (nullable)
         Environment.SetEnvironmentVariable(EnvVarName, null);
         var accessor = new AzCliAzdoTokenAccessor();
 
-        // When both env var and az CLI unavailable, null is valid
-        string? token = await accessor.GetAccessTokenAsync();
-        // token may be null — that's the expected contract for anonymous access
+        AzdoCredential? credential = await accessor.GetAccessTokenAsync();
+
+        Assert.True(credential is null || !string.IsNullOrEmpty(credential.Token));
     }
 
-    // -----------------------------------------------------------------------
-    // INTEGRATION TEST NOTES (not implemented — require az CLI subprocess)
-    //
-    // The following scenarios require integration testing with a real az CLI:
-    //
-    // 1. When AZDO_TOKEN is not set and az CLI is authenticated:
-    //    → GetAccessTokenAsync returns a valid Bearer token (non-null, non-empty)
-    //    → Token is a JWT (starts with "eyJ")
-    //    → az CLI is called with: az account get-access-token
-    //        --resource 499b84ac-1321-427f-aa17-267ca6975798
-    //        --query accessToken -o tsv
-    //
-    // 2. When AZDO_TOKEN is not set and az CLI is NOT authenticated:
-    //    → GetAccessTokenAsync returns null (graceful fallback)
-    //    → No exception thrown (catch-all in TryGetAzCliTokenAsync)
-    //
-    // 3. When az CLI is not installed:
-    //    → Process.Start returns null or throws Win32Exception
-    //    → GetAccessTokenAsync returns null
-    //
-    // 4. Token caching behavior:
-    //    → After first az CLI call, _resolved is set to true
-    //    → Subsequent calls with no env var return _cachedToken without subprocess
-    //    → NOTE: _resolved flag is not thread-safe (potential race on first call)
-    //
-    // 5. CancellationToken on az CLI path:
-    //    → ReadToEndAsync and WaitForExitAsync both accept ct
-    //    → Pre-cancelled token should throw OperationCanceledException
-    //
-    // To run manual integration tests:
-    //   az login
-    //   unset AZDO_TOKEN
-    //   dotnet test --filter "Category=Integration"
-    // -----------------------------------------------------------------------
+    private static T GetPrivateField<T>(AzCliAzdoTokenAccessor accessor, string fieldName)
+    {
+        var field = typeof(AzCliAzdoTokenAccessor).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        return (T)field!.GetValue(accessor)!;
+    }
+
+    private static void SetPrivateField<T>(AzCliAzdoTokenAccessor accessor, string fieldName, T value)
+    {
+        var field = typeof(AzCliAzdoTokenAccessor).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        field!.SetValue(accessor, value);
+    }
+
+    private static string EncodePatForBasic(string token)
+        => Convert.ToBase64String(Encoding.ASCII.GetBytes($":{token}"));
 }

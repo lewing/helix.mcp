@@ -97,3 +97,11 @@
 - **Shared log-search truncation belongs in `LogSearchResult`.** Adding `Truncated` at the shared `TextSearchHelper.SearchLines` layer fixed Helix console-log MCP responses and also made single-log AzDO CLI/MCP responses surface early-stop state without duplicating search logic.
 - **Raw-list MCP outputs can gain metadata without losing list semantics in tests.** A `LimitedResults<T>` wrapper that implements `IReadOnlyList<T>` but uses a custom JSON converter lets MCP emit `{ results, truncated, note }` while existing direct C# callers still use `Count`, indexers, and `Assert.Single/Empty` naturally.
 - **When defaults change, sync all agent-facing surfaces together.** For these tools that meant MCP parameter defaults, CLI command defaults, XML/help text in `Program.cs`, and human-facing stop-early hints so agents and humans get the same expectations.
+## Learnings (AzDO Azure.Identity credential chain)
+
+- **AzDO auth chain order is now** `AZDO_TOKEN` → `AzureCliCredential` → `az account get-access-token` subprocess → anonymous. `DefaultAzureCredential` stays out of the path to avoid slow probing/timeouts.
+- **`IAzdoTokenAccessor` now returns `AzdoCredential` metadata** so callers can distinguish `Bearer` vs `Basic` and surface a safe auth source string in errors.
+- **PAT handling is pre-encoded at the accessor boundary:** non-JWT `AZDO_TOKEN` values are treated as PATs and converted to the Basic header payload for `:{pat}`. `AzdoApiClient` just applies the declared scheme.
+- **`AzdoCredential.DisplayToken` exists for compatibility** so older string-based tests/mocks still compile and compare human-readable token values while `Token` remains the on-wire header payload.
+- **AzDO auth failures now include request context** (`org/project` plus credential source) so 401/403 errors explain which auth path was attempted and how to recover.
+- **Validation:** `dotnet build HelixTool.slnx --nologo` passes, and the AzDO-focused test slice passes with serial xUnit runsettings because the env-var auth tests mutate global process state.

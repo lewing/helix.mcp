@@ -112,3 +112,5 @@
 📌 Team update (2026-03-10): Discoverability routing decisions merged — keep the current tool surface, route repo-specific workflow selection through `helix_ci_guide(repo)`, treat `helix_test_results` as structured Helix-hosted parsing rather than a universal first step, and keep `helix_search_log`/docs/help guidance synchronized across surfaces. — decided by Dallas, Kane, Ripley
 
 📌 Team update (2026-03-13): Scribe merged decision inbox items covering `dotnet` as the VMR profile key, `helix_search`/`helix_parse_uploaded_trx` naming, tighter MCP descriptions, and explicit truncation metadata (`truncated`, `LimitedResults<T>`). README/docs now also call out `ci://profiles` resources and idempotent annotations.
+- AzDO auth resolution is now `AZDO_TOKEN` (PATs auto-Basic, JWT/Entra tokens auto-Bearer) → `AzureCliCredential` → `az account get-access-token` → anonymous; README should show the concrete 401 remediation example for private orgs.
+- README Authentication now sits immediately after MCP resources/tool discovery, so access requirements are visible before install/config details.
