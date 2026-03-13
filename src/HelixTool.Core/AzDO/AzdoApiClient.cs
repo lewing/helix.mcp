@@ -104,7 +104,6 @@ public sealed class AzdoApiClient : IAzdoApiClient
             return null;
 
         ThrowOnAuthFailure(response, org, project, credential);
-        CaptureSuccessfulAuthContext(response, credential);
         await ThrowOnUnexpectedError(response, ct).ConfigureAwait(false);
 
         await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
@@ -163,6 +162,9 @@ public sealed class AzdoApiClient : IAzdoApiClient
         if (credential is null || string.IsNullOrEmpty(credential.Token))
             return null;
 
+        var authHash = CacheOptions.ComputeAuthContextHash(credential.CacheIdentity ?? credential.Source);
+        _cacheOptions.TrySetAuthTokenHash(authHash);
+
         request.Headers.Authorization = credential.Scheme switch
         {
             "Basic" => new AuthenticationHeaderValue("Basic", credential.Token),
@@ -183,7 +185,6 @@ public sealed class AzdoApiClient : IAzdoApiClient
             return null;
 
         ThrowOnAuthFailure(response, org, project, credential);
-        CaptureSuccessfulAuthContext(response, credential);
         await ThrowOnUnexpectedError(response, ct).ConfigureAwait(false);
 
         await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
@@ -201,7 +202,6 @@ public sealed class AzdoApiClient : IAzdoApiClient
             return [];
 
         ThrowOnAuthFailure(response, org, project, credential);
-        CaptureSuccessfulAuthContext(response, credential);
         await ThrowOnUnexpectedError(response, ct).ConfigureAwait(false);
 
         await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
@@ -228,15 +228,6 @@ public sealed class AzdoApiClient : IAzdoApiClient
             "• If AZDO_TOKEN is being misclassified, set AZDO_TOKEN_TYPE to 'pat' or 'bearer' to override detection",
             inner: null,
             statusCode: response.StatusCode);
-    }
-
-    private void CaptureSuccessfulAuthContext(HttpResponseMessage response, AzdoCredential? credential)
-    {
-        if (!response.IsSuccessStatusCode || credential is null)
-            return;
-
-        var authHash = CacheOptions.ComputeAuthContextHash(credential.CacheIdentity ?? credential.Source);
-        _cacheOptions.TrySetAuthTokenHash(authHash);
     }
 
     private static async Task ThrowOnUnexpectedError(HttpResponseMessage response, CancellationToken ct)

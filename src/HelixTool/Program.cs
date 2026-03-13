@@ -58,7 +58,8 @@ services.AddSingleton<IAzdoApiClient>(sp =>
     new CachingAzdoApiClient(
         sp.GetRequiredService<AzdoApiClient>(),
         sp.GetRequiredService<ICacheStore>(),
-        sp.GetRequiredService<CacheOptions>()));
+        sp.GetRequiredService<CacheOptions>(),
+        sp.GetRequiredService<IAzdoTokenAccessor>()));
 services.AddSingleton<AzdoService>();
 
 ConsoleApp.ServiceProvider = services.BuildServiceProvider();
@@ -625,7 +626,8 @@ Available as `failureCategory` in JSON and MCP output.
             new CachingAzdoApiClient(
                 sp.GetRequiredService<AzdoApiClient>(),
                 sp.GetRequiredService<ICacheStore>(),
-                sp.GetRequiredService<CacheOptions>()));
+                sp.GetRequiredService<CacheOptions>(),
+                sp.GetRequiredService<IAzdoTokenAccessor>()));
         builder.Services.AddSingleton<AzdoService>();
 
         builder.Services
@@ -920,6 +922,9 @@ public class AzdoCommands
     {
         var status = await _tokenAccessor.AuthStatusAsync();
 
+        if (!status.IsAuthenticated)
+            Environment.ExitCode = 1;
+
         if (json)
         {
             Console.WriteLine(JsonSerializer.Serialize(status, s_jsonOptions));
@@ -935,9 +940,6 @@ public class AzdoCommands
 
         foreach (var warning in status.Warnings)
             Console.WriteLine($"Warning:        {warning}");
-
-        if (!status.IsAuthenticated)
-            Environment.ExitCode = 1;
     }
 
     /// <summary>Get details of a specific Azure DevOps build.</summary>

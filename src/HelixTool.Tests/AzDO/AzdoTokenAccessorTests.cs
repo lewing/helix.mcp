@@ -355,11 +355,11 @@ public class AzdoTokenAccessorTests : IDisposable
     }
 
     [Fact]
-    public void BuildCacheIdentity_WhenTokenIsNotJwt_ReturnsPrefixOnly()
+    public void BuildCacheIdentity_WhenTokenIsNotJwt_AppendsShortTokenHash()
     {
         var identity = AzdoCredential.BuildCacheIdentity("env:AZDO_TOKEN:pat", "plain-pat-token");
 
-        Assert.Equal("env:AZDO_TOKEN:pat", identity);
+        Assert.Equal("env:AZDO_TOKEN:pat:c9c19750", identity);
     }
 
     [Fact]

@@ -32,18 +32,27 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
     private readonly ICacheStore _cache;
     private readonly bool _enabled;
     private readonly CacheOptions _options;
+    private readonly IAzdoTokenAccessor? _tokenAccessor;
 
     public CachingAzdoApiClient(IAzdoApiClient inner, ICacheStore cache, CacheOptions options)
+        : this(inner, cache, options, tokenAccessor: null)
+    {
+    }
+
+    public CachingAzdoApiClient(IAzdoApiClient inner, ICacheStore cache, CacheOptions options, IAzdoTokenAccessor? tokenAccessor)
     {
         _inner = inner;
         _cache = cache;
         _options = options;
+        _tokenAccessor = tokenAccessor;
         _enabled = options.MaxSizeBytes > 0;
     }
 
     public async Task<AzdoBuild?> GetBuildAsync(string org, string project, int buildId, CancellationToken ct = default)
     {
         if (!_enabled) return await _inner.GetBuildAsync(org, project, buildId, ct);
+
+        await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
 
         var key = BuildCacheKey(org, project, $"build:{buildId}");
         var cached = await _cache.GetMetadataAsync(key, ct);
@@ -71,6 +80,8 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
     {
         if (!_enabled) return await _inner.ListBuildsAsync(org, project, filter, ct);
 
+        await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
+
         var filterHash = HashFilter(filter);
         var key = BuildCacheKey(org, project, $"builds:{filterHash}");
         var cached = await _cache.GetMetadataAsync(key, ct);
@@ -88,6 +99,8 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
     public async Task<AzdoTimeline?> GetTimelineAsync(string org, string project, int buildId, CancellationToken ct = default)
     {
         if (!_enabled) return await _inner.GetTimelineAsync(org, project, buildId, ct);
+
+        await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
 
         // Never cache timeline while the build is running — it changes constantly
         var isCompleted = await IsBuildCompletedAsync(org, project, buildId, ct);
@@ -114,6 +127,8 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
     {
         if (!_enabled)
             return await _inner.GetBuildLogAsync(org, project, buildId, logId, startLine, endLine, ct);
+
+        await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
 
         var contentKey = BuildCacheKey(org, project, $"log:{buildId}:{logId}");
         var freshKey = BuildCacheKey(org, project, $"log-fresh:{buildId}:{logId}");
@@ -191,6 +206,8 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
     {
         if (!_enabled) return await _inner.GetBuildChangesAsync(org, project, buildId, top, ct);
 
+        await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
+
         var key = BuildCacheKey(org, project, $"changes:{buildId}:{top}");
         var cached = await _cache.GetMetadataAsync(key, ct);
         var deserialized = TryDeserialize<List<AzdoBuildChange>>(cached);
@@ -207,6 +224,8 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
     public async Task<IReadOnlyList<AzdoTestRun>> GetTestRunsAsync(string org, string project, int buildId, int? top = null, CancellationToken ct = default)
     {
         if (!_enabled) return await _inner.GetTestRunsAsync(org, project, buildId, top, ct);
+
+        await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
 
         var key = BuildCacheKey(org, project, $"testruns:{buildId}:{top}");
         var cached = await _cache.GetMetadataAsync(key, ct);
@@ -225,6 +244,8 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
     {
         if (!_enabled) return await _inner.GetTestResultsAsync(org, project, runId, top, ct);
 
+        await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
+
         var key = BuildCacheKey(org, project, $"testresults:{runId}:{top}");
         var cached = await _cache.GetMetadataAsync(key, ct);
         var deserialized = TryDeserialize<List<AzdoTestResult>>(cached);
@@ -241,6 +262,8 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
     public async Task<IReadOnlyList<AzdoBuildArtifact>> GetBuildArtifactsAsync(string org, string project, int buildId, CancellationToken ct = default)
     {
         if (!_enabled) return await _inner.GetBuildArtifactsAsync(org, project, buildId, ct);
+
+        await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
 
         var key = BuildCacheKey(org, project, $"artifacts:{buildId}");
         var cached = await _cache.GetMetadataAsync(key, ct);
@@ -260,6 +283,8 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
     {
         if (!_enabled) return await _inner.GetTestAttachmentsAsync(org, project, runId, resultId, top, ct);
 
+        await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
+
         var key = BuildCacheKey(org, project, $"testattachments:{runId}:{resultId}:{top}");
         var cached = await _cache.GetMetadataAsync(key, ct);
         var deserialized = TryDeserialize<List<AzdoTestAttachment>>(cached);
@@ -276,6 +301,8 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
     public async Task<IReadOnlyList<AzdoBuildLogEntry>> GetBuildLogsListAsync(string org, string project, int buildId, CancellationToken ct = default)
     {
         if (!_enabled) return await _inner.GetBuildLogsListAsync(org, project, buildId, ct);
+
+        await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
 
         var isCompleted = await IsBuildCompletedAsync(org, project, buildId, ct);
         var ttl = isCompleted ? CompletedTtl : InProgressTtl;
@@ -294,22 +321,42 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
     // ── Helpers ──────────────────────────────────────────────────────
 
+    private async Task EnsureAuthTokenHashAsync(CancellationToken ct)
+    {
+        if (!string.IsNullOrEmpty(_options.AuthTokenHash) || _tokenAccessor is null)
+            return;
+
+        var credential = await _tokenAccessor.GetAccessTokenAsync(ct).ConfigureAwait(false);
+        var authHash = CacheOptions.ComputeAuthContextHash(credential?.CacheIdentity ?? credential?.Source);
+        _options.TrySetAuthTokenHash(authHash);
+    }
+
     private string BuildCacheKey(string org, string project, string suffix)
     {
         var safeOrg = CacheSecurity.SanitizeCacheKeySegment(org);
         var safeProject = CacheSecurity.SanitizeCacheKeySegment(project);
-        return string.IsNullOrEmpty(_options.AuthTokenHash)
+        var authHash = GetSafeAuthTokenHash();
+        return string.IsNullOrEmpty(authHash)
             ? $"azdo:{safeOrg}:{safeProject}:{suffix}"
-            : $"azdo:{_options.AuthTokenHash}:{safeOrg}:{safeProject}:{suffix}";
+            : $"azdo:{authHash}:{safeOrg}:{safeProject}:{suffix}";
     }
 
     private string BuildStateKey(string org, string project, int buildId)
     {
         var safeOrg = CacheSecurity.SanitizeCacheKeySegment(org);
         var safeProject = CacheSecurity.SanitizeCacheKeySegment(project);
-        return string.IsNullOrEmpty(_options.AuthTokenHash)
+        var authHash = GetSafeAuthTokenHash();
+        return string.IsNullOrEmpty(authHash)
             ? $"azdo-build:{safeOrg}:{safeProject}:{buildId}"
-            : $"azdo-build:{_options.AuthTokenHash}:{safeOrg}:{safeProject}:{buildId}";
+            : $"azdo-build:{authHash}:{safeOrg}:{safeProject}:{buildId}";
+    }
+
+    private string? GetSafeAuthTokenHash()
+    {
+        if (string.IsNullOrEmpty(_options.AuthTokenHash))
+            return null;
+
+        return CacheSecurity.SanitizeCacheKeySegment(_options.AuthTokenHash).Replace(':', '_');
     }
 
     private static bool IsCompletedStatus(string? status)

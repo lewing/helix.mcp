@@ -18,7 +18,7 @@ public sealed class CacheStoreFactory : ICacheStoreFactory, IDisposable
 
     public ICacheStore GetOrCreate(CacheOptions options)
     {
-        var key = options.AuthTokenHash ?? "public";
+        var key = options.CacheRootHash ?? options.AuthTokenHash ?? "public";
         return _stores.GetOrAdd(key, _ => new Lazy<ICacheStore>(
             () => new SqliteCacheStore(options))).Value;
     }

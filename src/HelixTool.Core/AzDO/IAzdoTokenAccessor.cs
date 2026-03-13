@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Azure.Core;
@@ -58,7 +59,8 @@ public sealed record AzdoCredential(string Token, string Scheme, string Source)
                 return identity;
         }
 
-        return prefix;
+        var tokenHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)))[..8].ToLowerInvariant();
+        return $"{prefix}:{tokenHash}";
     }
 
     internal static DateTimeOffset? TryGetJwtExpiration(string token)

@@ -16,9 +16,16 @@ public record CacheOptions
     public TimeSpan ArtifactMaxAge { get; init; } = TimeSpan.FromDays(7);
 
     /// <summary>
-    /// Optional auth-context hash used to isolate cache data per auth context.
-    /// For Helix this is derived from HELIX_ACCESS_TOKEN; for AzDO it is derived from stable credential-source identity metadata.
-    /// Null means unauthenticated (public cache).
+    /// Optional stable cache-root partition hash established before the cache store is created.
+    /// Used by Helix request-scoped hosts to keep different token contexts on separate cache roots.
+    /// Null means the shared public cache root.
+    /// </summary>
+    public string? CacheRootHash { get; init; }
+
+    /// <summary>
+    /// Optional AzDO auth-context hash used to isolate AzDO cache keys inside a cache store.
+    /// This is intentionally mutable so AzDO can establish its key partition after selecting a credential.
+    /// Null means unauthenticated/public AzDO cache keys.
     /// </summary>
     public string? AuthTokenHash { get; set; }
 
@@ -35,16 +42,16 @@ public record CacheOptions
     }
 
     /// <summary>
-    /// Resolve the auth-context-specific cache root.
-    /// Unauthenticated: {base}/public
-    /// Authenticated:   {base}/cache-{hash}
+    /// Resolve the stable cache root for this cache store instance.
+    /// Shared/public: {base}/public
+    /// Partitioned:   {base}/cache-{hash}
     /// </summary>
     public string GetEffectiveCacheRoot()
     {
         var baseRoot = GetBaseCacheRoot();
-        if (string.IsNullOrEmpty(AuthTokenHash))
+        if (string.IsNullOrEmpty(CacheRootHash))
             return Path.Combine(baseRoot, "public");
-        return Path.Combine(baseRoot, $"cache-{AuthTokenHash}");
+        return Path.Combine(baseRoot, $"cache-{CacheRootHash}");
     }
 
     /// <summary>
@@ -70,7 +77,7 @@ public record CacheOptions
     }
 
     /// <summary>
-    /// Compute a short deterministic hash of an access token for cache isolation.
+    /// Compute a short deterministic hash of an access token or auth context for cache partitioning.
     /// Returns null if token is null/empty.
     /// </summary>
     public static string? ComputeTokenHash(string? token) => ComputeAuthContextHash(token);
