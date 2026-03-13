@@ -75,7 +75,7 @@ public class HttpClientConfigurationTests
             Timeout = TimeSpan.FromMilliseconds(50) // Very short timeout
         };
         var tokenAccessor = Substitute.For<IAzdoTokenAccessor>();
-        tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns("test-token");
+        tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns(new AzdoCredential("test-token", "Bearer", "test"));
         var client = new AzdoApiClient(httpClient, tokenAccessor);
 
         // TaskCanceledException is expected when timeout fires
@@ -91,7 +91,7 @@ public class HttpClientConfigurationTests
         var handler = new DelayingHttpMessageHandler(TimeSpan.FromSeconds(10));
         var httpClient = new HttpClient(handler);
         var tokenAccessor = Substitute.For<IAzdoTokenAccessor>();
-        tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns("test-token");
+        tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns(new AzdoCredential("test-token", "Bearer", "test"));
         var client = new AzdoApiClient(httpClient, tokenAccessor);
 
         using var cts = new CancellationTokenSource();

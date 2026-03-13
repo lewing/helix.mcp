@@ -18,7 +18,7 @@ public class AzdoApiClientRangeTests
     public AzdoApiClientRangeTests()
     {
         var mockToken = Substitute.For<IAzdoTokenAccessor>();
-        mockToken.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns("test-token");
+        mockToken.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns(new AzdoCredential("test-token", "Bearer", "test"));
         _handler = new FakeHttpMessageHandler();
         var httpClient = new HttpClient(_handler);
         _client = new AzdoApiClient(httpClient, mockToken);

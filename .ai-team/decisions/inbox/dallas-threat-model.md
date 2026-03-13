@@ -1,4 +1,0 @@
-### 2026-03-13: AzDO auth chain threat model
-**By:** Dallas
-**What:** Completed a STRIDE threat model for the PR #19 AzDO auth chain (`AZDO_TOKEN` → `AzureCliCredential` → `az` CLI → anonymous) covering CLI and MCP server usage. Key findings: the chain is strong on HTTPS-only transport, redacted `ToString()`, and shell-safe `az` invocation, but has four follow-up priorities — shared server-side AzDO identity in HTTP MCP mode, process-lifetime caching of raw bearer tokens (no refresh after expiry), silent fallback to anonymous that obscures auth outages, and the lingering `DisplayToken`/implicit-string leak footgun. The review also found a coupled cache risk: authenticated AzDO responses can persist outside an AzDO-keyed cache context in CLI/stdio paths even though the auth chain itself keeps tokens in memory only.
-**Why:** Security review of new auth chain before merging to main

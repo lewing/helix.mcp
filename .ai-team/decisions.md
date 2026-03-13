@@ -218,16 +218,6 @@ Every invocation hits the Helix API fresh. Job details don't change once a job c
 **By:** Ash
 **What:** Created `.ai-team/requirements.md` with 18 user stories (US-1 through US-18), categorized into Implemented, Planned, Architectural, and Discovered requirements. Prioritized P0–P3 with ownership assignments. P0 items are: layered architecture (US-7), logs-out-of-context principle (US-8), DI/testability (US-12), and error handling (US-13).
 **Why:** The session contained requirements scattered across plan.md, architecture docs, checkpoint notes, and implicit workflow observations. No single source had the full picture. The team needs a single backlog to prioritize from, and the P0 items (testability + error handling) must land before any feature work — Dallas identified this correctly and I'm reinforcing it as the requirements owner. Ripley should not pick up P1/P2 stories until US-12 and US-13 are done.
-### 2025-07-14: MatchesPattern exposed via InternalsVisibleTo
-
-- `MatchesPattern` was made `internal` and `HelixTool.Tests` was added to `InternalsVisibleTo` so matching logic can be tested without widening the public API.
-- Established the convention that shared internal helpers may stay non-public when tests can reach them through the project friendship boundary.
-
-### 2025-07-18: Requirements backlog formalized — 18 user stories extracted from session 72e659c1
-
-- Created `.ai-team/requirements.md` with 18 user stories and P0–P3 prioritization so architectural and feature work could be sequenced from one backlog.
-- P0 remained layered architecture, logs-out-of-context, DI/testability, and error handling; feature work should follow those foundations.
-
 ### 2026-02-11: P0 Foundation Design Review — IHelixApiClient, DI, HelixException, CancellationToken (D1–D10)
 
 - Foundation contract: `IHelixApiClient` is the single mock boundary; `HelixService` uses constructor injection; `HelixException`, input validation, and `CancellationToken` support are standard across async APIs.
@@ -537,26 +527,6 @@ Both copies contained identical logic and had to be kept in sync manually. Conso
 **By:** Ripley
 **What:** Created `.github/workflows/publish.yml` that publishes `lewing.helix.mcp` to nuget.org on `v*` tag push using NuGet Trusted Publishing (OIDC) via `NuGet/login@v1`. Creates a GitHub Release with the nupkg attached. No API key secrets — only `NUGET_USER` is needed. Pattern adapted from baronfel/mcp-binlog-tool.
 **Why:** Trusted Publishing is the modern NuGet approach — OIDC tokens are short-lived and scoped to the workflow, eliminating long-lived API key secrets. The workflow mirrors CI's .NET 10 preview SDK setup for consistency. Using `-o src/HelixTool/nupkg` gives a predictable output path for both the push glob and the release artifact attachment. Changelog support intentionally deferred — simple `Release ${{ github.ref_name }}` body for now.
-### 2025-07-21: CI workflow added at .github/workflows/ci.yml
-
-- GitHub Actions CI runs restore, build, and test on Ubuntu and Windows for pushes/PRs, using the repo-root `nuget.config` and .NET 10 preview.
-- Cross-platform validation is part of the normal maintenance bar for the tool.
-
-### 2026-02-11: McpServer package type support
-
-- Added the `McpServer` package type and `.mcp/server.json` so clients can use the `dnx hlx mcp` zero-install path.
-- Package metadata should continue to support both normal dotnet-tool installs and MCP registry discovery.
-
-### 2025-07-23: Rename NuGet package from `hlx` to `lewing.helix.mcp`
-
-- The package identity is `lewing.helix.mcp` while the command name remains `hlx`; server metadata was updated to the newer MCP registry schema.
-- Use the owner-scoped package naming pattern for public discovery instead of short generic IDs.
-
-### 2025-02-12: NuGet Trusted Publishing workflow
-
-- Publishing uses GitHub Actions OIDC / NuGet Trusted Publishing on `v*` tags, avoiding long-lived nuget.org API keys.
-- The workflow also creates a GitHub Release and attaches the produced nupkg artifact.
-
 ### 2026-02-12: Refined Cache Requirements — SQLite-backed, Cross-Process Shared Cache
 
 - Cache requirements settled on SQLite metadata + disk artifacts, XDG-compliant roots, a 1 GB default cap, and cross-process sharing for stdio MCP processes.
@@ -1008,11 +978,6 @@ Ripley should target the interfaces first so Lambert can write tests in parallel
 **By:** Kane
 **What:** Replaced three duplicate MCP client config JSON blocks (VS Code, Claude Desktop, Claude Code/Cursor) with a single canonical example plus a table of config file locations and key names. Added `--yes` flag to all `dnx` args. Removed stale "not yet published to nuget.org" notes since v0.1.0 is live.
 **Why:** The three JSON blocks were nearly identical — only the top-level key (`servers` vs `mcpServers`) and file path differed. Duplicating them made maintenance error-prone (changes had to be made in 3+ places) and made the README unnecessarily long. The consolidated format is easier to maintain and scan. The `--yes` flag is required for MCP server definitions because `dnx` runs non-interactively when launched by an MCP client. Pattern established: when configs differ only by file path and a single key name, use one example + a table rather than repeating the full block.
-### 2025-02-13: Consolidate MCP config examples in README — one example + file path table
-
-- When MCP config examples differ only by file path or top-level key, keep one canonical JSON example and a table of target files instead of duplicating blocks.
-- For `dnx`-based configs, include `--yes` because MCP launches are non-interactive.
-
 ### 2025-02-12: Cache Test Suite Complete (L-CACHE-1 through L-CACHE-10)
 
 - The first cache test pass covered the decorator, SQLite store, and options with 56 tests and established temp-dir + sequential-return patterns for cache-hit simulation.
@@ -1534,16 +1499,6 @@ Re-evaluate if: (a) Helix deploys multiple independent instances that users need
 **By:** Lambert
 **What:** Created 46 comprehensive tests for DownloadFilesAsync and DownloadFromUrlAsync in `DownloadTests.cs`, organized into 4 test classes: DownloadFilesTests (27), DownloadFromUrlParsingTests (5), DownloadSanitizationTests (6), DownloadPatternTests (8). All 298 tests pass.
 **Why:** Download commands had zero test coverage. Tests verify happy paths (single/multi-file, pattern matching, binary content), security (path traversal via `..`, `/`, `\` — all sanitized by CacheSecurity), error handling (401/403/404/timeout/cancellation), input validation, and edge cases (empty streams, unicode filenames, same-name files, URL-encoded characters). Each test class uses a distinct ValidJobId GUID to prevent temp directory collisions during parallel xUnit execution — a pattern discovered when shared GUIDs caused file contention failures.
-### 2025-07-18: US-9 Script Removability Analysis Complete
-
-- ci-analysis can replace roughly 85% of its Helix-specific script logic with hlx immediately, with no Phase 1 blockers for migration.
-- The only meaningful gap at the time was structured test-failure extraction, which later work addressed through file parsing and search guidance.
-
-### 2026-02-13: US-6 Download E2E Verification
-
-- Download coverage grew to 46 tests spanning happy paths, sanitization, error handling, and direct-URL parsing.
-- Disk-writing test classes should use distinct job IDs so temp directories do not collide under parallel xUnit execution.
-
 ### 2026-02-15: README comprehensive updates (caching, v0.1.3, project structure)
 
 - README was expanded to cover caching, auth, security, project structure, and the fuller tool surface as the product matured.
@@ -1577,11 +1532,6 @@ Re-evaluate if: (a) Helix deploys multiple independent instances that users need
 **Why:** Larry raised concern that the MCP surface was too tightly coupled to ci-analysis workflows. After thorough review, the tools map to Helix API primitives (jobs, work items, files, logs) rather than ci-analysis-specific orchestrations. The naming uses `hlx_` prefix consistently and maps to Helix domain concepts. However, there are real usability issues that would trip up non-ci-analysis consumers: the comma-separated jobIds string in batch_status is hostile to programmatic callers, the missing list_work_items tool forces consumers to use hlx_status (heavy) just to discover work item names, and some tool names don't self-document well. These fixes would make the API genuinely general-purpose.
 - The backlog audit showed the project was much further along than the old requirements doc implied: 25/30 stories were effectively implemented.
 - At that point the main remaining P2 gap was structured test-failure parsing; other deltas were mostly wording, heuristics, or minor ergonomics.
-
-### 2026-02-13: MCP API design review
-
-- The Helix MCP surface was confirmed as general-purpose rather than ci-analysis-specific, but a few ergonomics fixes were identified: real arrays for batch status, better names, and a possible work-item listing helper.
-- Treat tool names and argument shapes as an API contract for agent consumers.
 
 ### 2026-02-14: Generalize hlx_find_binlogs to hlx_find_files with pattern parameter
 
@@ -2571,11 +2521,6 @@ Test count: 364 → 369 (net +5). All 15 status tests pass.
 **By:** Kane
 **What:** Added a "Cached data" subsection under Security in README.md. Documents what gets cached (API responses + artifacts), where it lives (SQLite on disk in user profile directory), that auth tokens are never cached (only hash prefix for directory isolation), and recommends `hlx cache clear` for shared machines or security context switches. Addresses threat model items I1 (information disclosure via cached data) and I2 (cache persists after session).
 **Why:** The threat model (`.ai-team/analysis/threat-model.md`) explicitly recommended documenting cache security expectations. Users need to know the cache directory may contain sensitive CI data (console logs with accidental secrets) and understand the auth isolation model. This closes the documentation gap for I1/I2 without requiring code changes.
-### 2025-07-25: Cache security expectations documented in README
-
-- README now documents what hlx caches, where it lives, and why `hlx cache clear` matters on shared or security-sensitive machines.
-- Cache documentation should continue to explain auth isolation and the risk of sensitive CI data lingering on disk.
-
 ### 2026-02-15: Isolate DownloadFilesAsync temp directories per invocation
 
 - Download temp directories include a per-invocation GUID so concurrent stdio/MCP processes never write into the same folder.
@@ -2686,11 +2631,6 @@ The publish workflow (`publish.yml`) validates all three match the git tag. Miss
 **Why:** `Console.IsInputRedirected` is a reliable .NET API — standard idiom for CLI tools that need different behavior in interactive vs. non-interactive contexts. No additional dependencies or platform-specific code required.
 - Every release must update all three version sources together: `HelixTool.csproj`, `.mcp/server.json` top-level `version`, and `packages[0].version`.
 - The publish workflow validates these against the git tag, so partial bumps will fail release automation.
-
-### 2026-03-03: Default CLI behavior based on terminal context
-
-- With no explicit subcommand, `hlx` should inspect `Console.IsInputRedirected`: interactive terminals default to help, redirected stdin defaults to MCP mode.
-- This avoids hanging interactive shells while preserving no-args MCP startup for client launches.
 
 ### 2026-03-07: Helix auth UX — hlx login architecture (consolidated)
 **By:** Ash (analysis), Dallas (architecture)
@@ -4244,8 +4184,8 @@ If more MCP tools need truncation metadata, prefer reusing this wrapper pattern 
 
 ### 2026-03-13: AzDO auth should use a narrow, scheme-aware credential chain (consolidated)
 **By:** Dallas, Ripley
-**What:** Keep AzDO auth layered as `AZDO_TOKEN` → `AzureCliCredential` → `az account get-access-token` subprocess → anonymous, without `DefaultAzureCredential`. `IAzdoTokenAccessor` should return `AzdoCredential` metadata so callers can choose `Basic` for PATs and `Bearer` for Entra/JWT sources; `AzdoCredential.Token` stays the on-wire header payload while `DisplayToken` preserves the original human-readable token for compatibility-oriented assertions and conversions.
-**Why:** The existing az CLI fallback is the proven escape hatch for WSL/libsecret failures, while a deliberately narrow Azure.Identity probe avoids the latency and opaque failure modes of `DefaultAzureCredential`. PAT handling requires pre-encoding `:{pat}` for Basic auth, so separating display and wire tokens keeps tests and call sites readable without changing request behavior or surfacing secrets.
+**What:** Keep AzDO auth layered as `AZDO_TOKEN` → `AzureCliCredential` → `az account get-access-token` subprocess → anonymous, without `DefaultAzureCredential`. `IAzdoTokenAccessor` should return `AzdoCredential` metadata so callers can choose `Basic` for PATs and `Bearer` for Entra/JWT sources; `AzdoCredential.Token` stays the on-wire header payload while `DisplayToken` remains compatibility-only, the implicit `AzdoCredential` → `string` conversion stays removed, `AZDO_TOKEN_TYPE=pat|bearer` acts as an explicit override ahead of the JWT heuristic, and token-like material from unexpected AzDO error-response snippets must be redacted before surfacing.
+**Why:** The existing az CLI fallback is the proven escape hatch for WSL/libsecret failures, while a deliberately narrow Azure.Identity probe avoids the latency and opaque failure modes of `DefaultAzureCredential`. PAT handling still requires pre-encoded `:{pat}` Basic payloads. A STRIDE review of PR #19 confirmed the chain is strong on HTTPS-only transport, redacted `ToString()`, and shell-safe `az` invocation, while flagging follow-ups around shared HTTP MCP identity, process-lifetime bearer-token caching without refresh, silent fallback to anonymous, and AzDO auth-context cache isolation. Tightening compatibility helpers and error redaction closes the low-effort leak/ambiguity cases from that review: accidental credential stringification, dotted PATs being misread as bearer tokens, and server/proxy error echoes exposing secrets in CLI or MCP-visible exceptions.
 
 ### 2026-03-13: MCP tool descriptions should stay short and defer repo-specific guidance to helix_ci_guide (consolidated)
 **By:** Ripley

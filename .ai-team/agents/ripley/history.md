@@ -14,6 +14,8 @@
 - **Implementation layout:** service code lives under `src/HelixTool.Core/Helix/` and `src/HelixTool.Core/AzDO/`; MCP tool definitions live under `src/HelixTool.Mcp.Tools/Helix/` and `src/HelixTool.Mcp.Tools/AzDO/`.
 - **Cache/search primitives:** `CachingHelixApiClient`, `CachingAzdoApiClient`, `StringHelpers`, and `TextSearchHelper` are the shared implementation seams; `HLX_CACHE_MAX_SIZE_MB=0` disables caching and `HLX_DISABLE_FILE_SEARCH` disables file-content search.
 - **Wire-format conventions:** structured MCP tools use `UseStructuredContent=true`, camelCase JSON/property names remain stable, and descriptions stay behavior-first with repo-specific guidance routed to `helix_ci_guide`.
+- **Hot-path log rules:** keep large-log search/tail work span-based, overflow-safe, and semantically aligned with server behavior; when tagging raw cached payloads, prefer collision-proof sentinels over human-readable prefixes.
+- **Test/routing defaults:** avoid layer-duplicate or passthrough-only tests, and keep repo-specific workflow guidance in `helix_ci_guide` instead of bloating always-loaded tool descriptions.
 - **Auth/runtime:** Helix auth remains env-var based, while AzDO auth now uses the narrow chain `AZDO_TOKEN` → `AzureCliCredential` → az CLI → anonymous with metadata carried by `AzdoCredential`.
 
 ## Learnings (azdo_search_log_across_steps implementation)
@@ -28,11 +30,6 @@
 
 📌 Team updates (2026-03-08–09): AzDO search, incremental log (PR #13), search_across_steps spec, test quality cleanup (PR #15). — Ash/Dallas/Lambert
 
-## Learnings (perf & review fixes)
-
-- **PR #13/14 fixes:** Integer overflow guards, allocation-free `CountLines`, `SearchValues<char>`, cache `raw:` prefix migration, CRLF normalization, sentinel collision fix via NUL byte.
-- **Version 0.3.0:** AzDO integration, perf optimizations, incremental log support.
-
 ## Learnings (MCP error surfacing)
 
 - **McpException wrapping pattern:** `catch (Exception ex) when (ex is X or Y) { throw new McpException($"Failed to {action}: {ex.Message}", ex); }` — MCP SDK only surfaces McpException.Message; unhandled → generic error.
@@ -41,7 +38,6 @@
 
 📌 Team update (2026-03-09): CI profile analysis — 14 tool description/error message recommendations. — Ash
 
-📌 Team update (2025-07-24): Test quality review — ~17 redundant tests deleted, no layer duplication rule. — Dallas
 ## Learnings (MCP tool description updates with CI knowledge)
 
 - **5 tool descriptions updated** with repo-specific CI knowledge (helix_test_results, helix_search_log, azdo_test_runs, azdo_test_results, azdo_timeline).
