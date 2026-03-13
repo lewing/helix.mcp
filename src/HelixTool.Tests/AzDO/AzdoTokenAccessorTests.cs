@@ -1,6 +1,7 @@
 // Tests for AzCliAzdoTokenAccessor — AzDO auth chain.
 // Covers AZDO_TOKEN PAT/Bearer detection, AZDO_TOKEN_TYPE overrides, and fallback caching behavior.
 
+using System.Reflection;
 using System.Text;
 using HelixTool.Core.AzDO;
 using Xunit;
@@ -95,6 +96,40 @@ public class AzdoTokenAccessorTests : IDisposable
         Assert.Equal(token, credential.DisplayToken);
     }
 
+    [Theory]
+    [InlineData("oauth", "header.payload.signature", "Bearer", "AZDO_TOKEN (Bearer)")]
+    [InlineData("", "plain-pat", "Basic", "AZDO_TOKEN (PAT)")]
+    public async Task GetAccessTokenAsync_WhenTokenTypeOverrideIsUnknownOrEmpty_FallsBackToHeuristic(
+        string overrideValue,
+        string token,
+        string expectedScheme,
+        string expectedSource)
+    {
+        Environment.SetEnvironmentVariable(EnvVarName, token);
+        Environment.SetEnvironmentVariable(EnvVarTypeName, overrideValue);
+        var accessor = new AzCliAzdoTokenAccessor();
+
+        var credential = await accessor.GetAccessTokenAsync();
+
+        Assert.NotNull(credential);
+        Assert.Equal(expectedScheme, credential!.Scheme);
+        Assert.Equal(expectedSource, credential.Source);
+        Assert.Equal(token, credential.DisplayToken);
+        Assert.Equal(expectedScheme == "Basic" ? EncodePatForBasic(token) : token, credential.Token);
+    }
+
+    [Fact]
+    public void TryGetEnvCredential_WhenTokenTypeOverrideSetWithoutToken_ReturnsNull()
+    {
+        Environment.SetEnvironmentVariable(EnvVarTypeName, "pat");
+
+        var credential = (AzdoCredential?)typeof(AzCliAzdoTokenAccessor)
+            .GetMethod("TryGetEnvCredential", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, null);
+
+        Assert.Null(credential);
+    }
+
     [Fact]
     public void AzdoCredential_RecordPropertiesEqualityAndNullHandling_Work()
     {
@@ -143,6 +178,40 @@ public class AzdoTokenAccessorTests : IDisposable
         Assert.Equal("Legacy string token", legacyCredential.Source);
         Assert.Equal("legacy-token", legacyCredential.DisplayToken);
         Assert.Null(nullCredential);
+    }
+
+    [Fact]
+    public void AzdoCredential_DoesNotExposeImplicitConversionToString()
+    {
+        var implicitOperators = typeof(AzdoCredential)
+            .GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Where(method => method.Name == "op_Implicit")
+            .ToArray();
+
+        Assert.DoesNotContain(implicitOperators, method =>
+        {
+            var parameters = method.GetParameters();
+            return method.ReturnType == typeof(string)
+                && parameters.Length == 1
+                && parameters[0].ParameterType == typeof(AzdoCredential);
+        });
+    }
+
+    [Fact]
+    public void AzdoCredential_StringConversion_IsMarkedObsolete()
+    {
+        var fromStringOperator = typeof(AzdoCredential)
+            .GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Single(method => method.Name == "op_Implicit"
+                && method.ReturnType == typeof(AzdoCredential)
+                && method.GetParameters().Length == 1
+                && method.GetParameters()[0].ParameterType == typeof(string));
+
+        var obsolete = fromStringOperator.GetCustomAttribute<ObsoleteAttribute>();
+
+        Assert.NotNull(obsolete);
+        Assert.Contains("legacy compatibility", obsolete!.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("avoid accidental token exposure", obsolete.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
