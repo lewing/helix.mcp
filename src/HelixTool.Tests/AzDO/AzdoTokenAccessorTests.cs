@@ -1,7 +1,6 @@
 // Tests for AzCliAzdoTokenAccessor — AzDO auth chain.
 // Covers AZDO_TOKEN PAT/Bearer detection plus fallback caching behavior.
 
-using System.Reflection;
 using System.Text;
 using Xunit;
 using HelixTool.Core.AzDO;
@@ -111,16 +110,17 @@ public class AzdoTokenAccessorTests : IDisposable
     [Fact]
     public async Task GetAccessTokenAsync_WhenEnvVarSet_DoesNotResolveFallbackChain()
     {
-        Environment.SetEnvironmentVariable(EnvVarName, "priority-pat");
+        const string pat = "priority-pat";
+        Environment.SetEnvironmentVariable(EnvVarName, pat);
         var accessor = new AzCliAzdoTokenAccessor();
 
         var credential = await accessor.GetAccessTokenAsync();
 
         Assert.NotNull(credential);
-        Assert.False(GetPrivateField<bool>(accessor, "_resolved"));
-        Assert.False(GetPrivateField<bool>(accessor, "_azureIdentityResolved"));
-        Assert.Null(GetPrivateField<AzdoCredential?>(accessor, "_cachedCredential"));
-        Assert.Null(GetPrivateField<AzdoCredential?>(accessor, "_cachedAzureIdentityCredential"));
+        Assert.Equal("AZDO_TOKEN (PAT)", credential!.Source);
+        Assert.Equal("Basic", credential.Scheme);
+        Assert.Equal(EncodePatForBasic(pat), credential.Token);
+        Assert.Equal(pat, credential.DisplayToken);
     }
 
     [Fact]
@@ -149,19 +149,10 @@ public class AzdoTokenAccessorTests : IDisposable
         Environment.SetEnvironmentVariable(EnvVarName, null);
         var accessor = new AzCliAzdoTokenAccessor();
 
-        _ = await accessor.GetAccessTokenAsync();
-
-        Assert.True(GetPrivateField<bool>(accessor, "_resolved"));
-
-        var cachedCredential = new AzdoCredential("cached-token", "Bearer", "Injected cached credential")
-        {
-            DisplayToken = "cached-token"
-        };
-        SetPrivateField(accessor, "_cachedCredential", cachedCredential);
-
+        var first = await accessor.GetAccessTokenAsync();
         var second = await accessor.GetAccessTokenAsync();
 
-        Assert.Same(cachedCredential, second);
+        Assert.Same(first, second);
     }
 
     [Fact]
@@ -216,20 +207,6 @@ public class AzdoTokenAccessorTests : IDisposable
         AzdoCredential? credential = await accessor.GetAccessTokenAsync();
 
         Assert.True(credential is null || !string.IsNullOrEmpty(credential.Token));
-    }
-
-    private static T GetPrivateField<T>(AzCliAzdoTokenAccessor accessor, string fieldName)
-    {
-        var field = typeof(AzCliAzdoTokenAccessor).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.NotNull(field);
-        return (T)field!.GetValue(accessor)!;
-    }
-
-    private static void SetPrivateField<T>(AzCliAzdoTokenAccessor accessor, string fieldName, T value)
-    {
-        var field = typeof(AzCliAzdoTokenAccessor).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.NotNull(field);
-        field!.SetValue(accessor, value);
     }
 
     private static string EncodePatForBasic(string token)

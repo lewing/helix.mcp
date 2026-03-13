@@ -181,7 +181,7 @@ public sealed class AzCliAzdoTokenAccessor : IAzdoTokenAccessor
                 ? null
                 : new AzdoCredential(token, "Bearer", "az CLI") { DisplayToken = token };
         }
-        catch
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // az not installed, not in PATH, or any other failure — fall through to anonymous
             return null;
