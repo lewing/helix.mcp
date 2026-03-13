@@ -55,7 +55,7 @@ public sealed record AzdoCredential(string Token, string Scheme, string Source)
             .Where(static part => !string.IsNullOrWhiteSpace(part));
 
             var identity = string.Join(':', parts);
-            if (!string.IsNullOrWhiteSpace(identity))
+            if (!string.IsNullOrWhiteSpace(identity) && !string.Equals(identity, prefix, StringComparison.Ordinal))
                 return identity;
         }
 

@@ -2,12 +2,16 @@
 // Covers AZDO_TOKEN PAT/Bearer detection, AZDO_TOKEN_TYPE overrides, and fallback caching behavior.
 
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HelixTool.Core.AzDO;
 using Xunit;
 
 namespace HelixTool.Tests.AzDO;
+
+[CollectionDefinition("AzdoTokenEnv", DisableParallelization = true)]
+public class AzdoTokenEnvCollection { }
 
 [Collection("AzdoTokenEnv")]
 public class AzdoTokenAccessorTests : IDisposable
@@ -352,6 +356,29 @@ public class AzdoTokenAccessorTests : IDisposable
         var identity = AzdoCredential.BuildCacheIdentity("AzureCliCredential", token);
 
         Assert.Equal("AzureCliCredential:tenant-id:object-id:subject-id", identity);
+    }
+
+    [Fact]
+    public void BuildCacheIdentity_WhenJwtMissingStableClaims_FallsBackToShortTokenHash()
+    {
+        var token = CreateJwt(new Dictionary<string, object?>
+        {
+            ["name"] = "lambert",
+            ["preferred_username"] = "lambert@example.com"
+        });
+        var secondToken = CreateJwt(new Dictionary<string, object?>
+        {
+            ["name"] = "bishop",
+            ["preferred_username"] = "bishop@example.com"
+        });
+        var expectedHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)))[..8].ToLowerInvariant();
+
+        var identity = AzdoCredential.BuildCacheIdentity("AzureCliCredential", token);
+        var secondIdentity = AzdoCredential.BuildCacheIdentity("AzureCliCredential", secondToken);
+
+        Assert.Equal($"AzureCliCredential:{expectedHash}", identity);
+        Assert.NotEqual("AzureCliCredential", identity);
+        Assert.NotEqual(identity, secondIdentity);
     }
 
     [Fact]
