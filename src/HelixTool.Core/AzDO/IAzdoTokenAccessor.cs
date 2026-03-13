@@ -10,7 +10,8 @@ namespace HelixTool.Core.AzDO;
 /// Scheme: "Bearer" for Entra/JWT tokens, "Basic" for PATs.
 /// Source: human-readable label for error messages.
 /// </summary>
-public sealed record AzdoCredential(string Token, string Scheme, string Source) : IEnumerable<char>
+[DebuggerDisplay("{Scheme} credential from {Source}")]
+public sealed record AzdoCredential(string Token, string Scheme, string Source)
 {
     public string DisplayToken { get; init; } = Token;
 
@@ -21,9 +22,7 @@ public sealed record AzdoCredential(string Token, string Scheme, string Source) 
             ? null
             : new AzdoCredential(token, "Bearer", "Legacy string token") { DisplayToken = token };
 
-    public IEnumerator<char> GetEnumerator() => DisplayToken.GetEnumerator();
-
-    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    public override string ToString() => $"AzdoCredential {{ Scheme = {Scheme}, Source = {Source}, Token = [REDACTED] }}";
 }
 
 /// <summary>
@@ -47,26 +46,17 @@ public sealed class AzCliAzdoTokenAccessor : IAzdoTokenAccessor
     private readonly AzureCliCredential _azureCliCredential = new();
     private readonly SemaphoreSlim _resolutionLock = new(1, 1);
     private readonly SemaphoreSlim _azureIdentityLock = new(1, 1);
-    private readonly AzdoCredential? _constructionEnvCredential;
 
     private AzdoCredential? _cachedCredential;
     private bool _resolved;
     private AzdoCredential? _cachedAzureIdentityCredential;
     private bool _azureIdentityResolved;
 
-    public AzCliAzdoTokenAccessor()
-    {
-        _constructionEnvCredential = TryGetEnvCredential();
-    }
-
     public async Task<AzdoCredential?> GetAccessTokenAsync(CancellationToken cancellationToken = default)
     {
         var envCredential = TryGetEnvCredential();
         if (envCredential is not null)
             return envCredential;
-
-        if (cancellationToken.IsCancellationRequested && _constructionEnvCredential is not null)
-            return _constructionEnvCredential;
 
         if (_resolved)
             return _cachedCredential;
