@@ -24,10 +24,16 @@ public record CacheOptions
 
     /// <summary>
     /// Optional AzDO auth-context hash used to isolate AzDO cache keys inside a cache store.
-    /// This is intentionally mutable so AzDO can establish its key partition after selecting a credential.
+    /// This is intentionally mutable so AzDO can update its key partition when the resolved credential changes.
     /// Null means unauthenticated/public AzDO cache keys.
     /// </summary>
     public string? AuthTokenHash { get; set; }
+
+    /// <summary>
+    /// Last resolved stable auth-context identity used to derive <see cref="AuthTokenHash"/>.
+    /// Null means the current AzDO cache partition is the shared public context.
+    /// </summary>
+    public string? AuthCacheIdentity { get; private set; }
 
     /// <summary>Resolve the base cache directory (before auth context subdivision).</summary>
     public string GetBaseCacheRoot()
@@ -55,14 +61,30 @@ public record CacheOptions
     }
 
     /// <summary>
-    /// Set the auth-context hash if it has not already been established for this cache options instance.
+    /// Set the auth-context hash when a new non-empty value is established for this cache options instance.
     /// </summary>
     public void TrySetAuthTokenHash(string? hash)
     {
-        if (string.IsNullOrEmpty(hash) || !string.IsNullOrEmpty(AuthTokenHash))
+        if (string.IsNullOrEmpty(hash) || string.Equals(AuthTokenHash, hash, StringComparison.Ordinal))
             return;
 
         AuthTokenHash = hash;
+    }
+
+    /// <summary>
+    /// Update the resolved AzDO auth context and the derived cache-key hash.
+    /// </summary>
+    public void UpdateAuthContext(string? authContext)
+    {
+        var authHash = ComputeAuthContextHash(authContext);
+        if (string.Equals(AuthCacheIdentity, authContext, StringComparison.Ordinal) &&
+            string.Equals(AuthTokenHash, authHash, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        AuthCacheIdentity = authContext;
+        AuthTokenHash = authHash;
     }
 
     /// <summary>

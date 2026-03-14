@@ -435,8 +435,14 @@ public sealed class AzCliAzdoTokenAccessor : IAzdoTokenAccessor
             return true;
         }
 
-        return DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture,
-            DateTimeStyles.AssumeLocal | DateTimeStyles.AllowWhiteSpaces, out expiresOn);
+        if (!DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeLocal | DateTimeStyles.AllowWhiteSpaces, out expiresOn))
+        {
+            return false;
+        }
+
+        expiresOn = expiresOn.ToUniversalTime();
+        return true;
     }
 
     private static AzdoCredential CreateCredential(

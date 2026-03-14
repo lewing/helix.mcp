@@ -323,12 +323,12 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
     private async Task EnsureAuthTokenHashAsync(CancellationToken ct)
     {
-        if (!string.IsNullOrEmpty(_options.AuthTokenHash) || _tokenAccessor is null)
+        if (_tokenAccessor is null)
             return;
 
         var credential = await _tokenAccessor.GetAccessTokenAsync(ct).ConfigureAwait(false);
-        var authHash = CacheOptions.ComputeAuthContextHash(credential?.CacheIdentity ?? credential?.Source);
-        _options.TrySetAuthTokenHash(authHash);
+        var authContext = credential?.CacheIdentity ?? credential?.Source;
+        _options.UpdateAuthContext(authContext);
     }
 
     private string BuildCacheKey(string org, string project, string suffix)

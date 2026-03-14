@@ -525,7 +525,6 @@ public class CachingAzdoApiClientTests
             Arg.Any<string>(),
             Arg.Any<TimeSpan>(),
             Arg.Any<CancellationToken>());
-        Assert.NotEqual("azdo:hash-a:org:proj:build:1", "azdo:hash-b:org:proj:build:1");
     }
 
     // ── GetTimelineAsync: null timeline not cached ──────────────────
