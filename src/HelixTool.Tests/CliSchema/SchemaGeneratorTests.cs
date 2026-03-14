@@ -1,6 +1,7 @@
-using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HelixTool.Core.AzDO;
+using HelixTool.Core.CliSchema;
 using Xunit;
 
 namespace HelixTool.Tests;
@@ -36,7 +37,7 @@ public class SchemaGeneratorTests
     }
 
     [Fact]
-    public void GenerateSchema_SimpleObject_ReturnsFlatPocoWithPascalCasePropertyNames()
+    public void GenerateSchema_SimpleObject_WithoutJsonPropertyName_UsesPropertyNames()
     {
         var schema = GenerateSchema<SimpleDto>();
         var root = ParseSchema(schema);
@@ -45,6 +46,22 @@ public class SchemaGeneratorTests
         Assert.Equal(0, root.GetProperty(nameof(SimpleDto.RetryCount)).GetInt32());
         Assert.False(root.GetProperty(nameof(SimpleDto.IsEnabled)).GetBoolean());
         Assert.Contains($"\n  \"{nameof(SimpleDto.DisplayName)}\"", schema, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GenerateSchema_HonorsJsonPropertyName()
+    {
+        var schema = GenerateSchema<JsonPropertyNameDto>();
+        var root = ParseSchema(schema);
+
+        Assert.Equal("<string>", root.GetProperty("customName").GetString());
+        Assert.Equal(0, root.GetProperty("another_name").GetInt32());
+        Assert.Equal("<string>", root.GetProperty(nameof(JsonPropertyNameDto.NoAttribute)).GetString());
+        Assert.Contains("\"customName\"", schema, StringComparison.Ordinal);
+        Assert.Contains("\"another_name\"", schema, StringComparison.Ordinal);
+        Assert.Contains($"\"{nameof(JsonPropertyNameDto.NoAttribute)}\"", schema, StringComparison.Ordinal);
+        Assert.DoesNotContain($"\"{nameof(JsonPropertyNameDto.PropertyOne)}\"", schema, StringComparison.Ordinal);
+        Assert.DoesNotContain($"\"{nameof(JsonPropertyNameDto.PropertyTwo)}\"", schema, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -112,19 +129,31 @@ public class SchemaGeneratorTests
     }
 
     [Fact]
-    public void GenerateSchema_RealDtoSmokeTest_UsesCliSerializedCoreType()
+    public void GenerateSchema_RealDtoSmokeTest_UsesJsonPropertyNamesForSerializedCoreType()
     {
-        var root = ParseSchema<AzdoAuthStatus>();
+        var root = ParseSchema<AzdoBuild>();
 
-        Assert.False(root.GetProperty(nameof(AzdoAuthStatus.IsAuthenticated)).GetBoolean());
-        Assert.Equal("<string>", root.GetProperty(nameof(AzdoAuthStatus.Path)).GetString());
-        Assert.Equal("<string>", root.GetProperty(nameof(AzdoAuthStatus.Source)).GetString());
-        Assert.False(root.GetProperty(nameof(AzdoAuthStatus.LooksExpired)).GetBoolean());
-        Assert.Equal("<datetime>", root.GetProperty(nameof(AzdoAuthStatus.ExpiresOnUtc)).GetString());
+        Assert.Equal(0, root.GetProperty("id").GetInt32());
+        Assert.Equal("<string>", root.GetProperty("buildNumber").GetString());
+        Assert.Equal("<string>", root.GetProperty("status").GetString());
+        Assert.Equal("<string>", root.GetProperty("result").GetString());
+        Assert.Equal("<string>", root.GetProperty("sourceBranch").GetString());
+        Assert.Equal("<string>", root.GetProperty("sourceVersion").GetString());
+        Assert.Equal("<datetime>", root.GetProperty("queueTime").GetString());
+        Assert.Equal("<datetime>", root.GetProperty("startTime").GetString());
+        Assert.Equal("<datetime>", root.GetProperty("finishTime").GetString());
+        Assert.Equal("<string>", root.GetProperty("url").GetString());
 
-        var warnings = root.GetProperty(nameof(AzdoAuthStatus.Warnings));
-        Assert.Single(warnings.EnumerateArray());
-        Assert.Equal("<string>", warnings[0].GetString());
+        var definition = root.GetProperty("definition");
+        Assert.Equal(0, definition.GetProperty("id").GetInt32());
+        Assert.Equal("<string>", definition.GetProperty("name").GetString());
+
+        var requestedFor = root.GetProperty("requestedFor");
+        Assert.Equal("<string>", requestedFor.GetProperty("displayName").GetString());
+
+        var triggerInfo = root.GetProperty("triggerInfo");
+        Assert.Equal("<string>", triggerInfo.GetProperty("ci.message").GetString());
+        Assert.Equal("<string>", triggerInfo.GetProperty("pr.number").GetString());
     }
 
     [Fact]
@@ -143,47 +172,10 @@ public class SchemaGeneratorTests
         => JsonDocument.Parse(schema).RootElement.Clone();
 
     private static string GenerateSchema<T>()
-    {
-        var method = GetSchemaGeneratorType()
-            .GetMethods(BindingFlags.Public | BindingFlags.Static)
-            .SingleOrDefault(candidate =>
-                candidate.Name == "GenerateSchema" &&
-                candidate.IsGenericMethodDefinition &&
-                candidate.GetGenericArguments().Length == 1 &&
-                candidate.GetParameters().Length == 0);
-
-        Assert.NotNull(method);
-
-        var schema = method!
-            .MakeGenericMethod(typeof(T))
-            .Invoke(null, null) as string;
-
-        Assert.NotNull(schema);
-        return schema!;
-    }
+        => SchemaGenerator.GenerateSchema<T>();
 
     private static string GenerateSchema(Type type)
-    {
-        var method = GetSchemaGeneratorType().GetMethod(
-            "GenerateSchema",
-            BindingFlags.Public | BindingFlags.Static,
-            binder: null,
-            types: [typeof(Type)],
-            modifiers: null);
-
-        Assert.NotNull(method);
-
-        var schema = method!.Invoke(null, [type]) as string;
-        Assert.NotNull(schema);
-        return schema!;
-    }
-
-    private static Type GetSchemaGeneratorType()
-    {
-        var schemaGeneratorType = typeof(AzdoAuthStatus).Assembly.GetType("HelixTool.Core.CliSchema.SchemaGenerator");
-        Assert.NotNull(schemaGeneratorType);
-        return schemaGeneratorType!;
-    }
+        => SchemaGenerator.GenerateSchema(type);
 
     public enum SampleState
     {
@@ -197,6 +189,17 @@ public class SchemaGeneratorTests
         public string DisplayName { get; init; } = string.Empty;
         public int RetryCount { get; init; }
         public bool IsEnabled { get; init; }
+    }
+
+    public sealed class JsonPropertyNameDto
+    {
+        [JsonPropertyName("customName")]
+        public string PropertyOne { get; init; } = string.Empty;
+
+        [JsonPropertyName("another_name")]
+        public int PropertyTwo { get; init; }
+
+        public string NoAttribute { get; init; } = string.Empty;
     }
 
     public sealed class NestedParentDto
