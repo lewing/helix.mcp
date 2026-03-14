@@ -71,3 +71,5 @@
 - `.github/skills/helix-cli/SKILL.md` now mirrors the maestro-cli skill structure: frontmatter, CLI-vs-MCP routing, auth/discovery guidance, jq workflows, and cache behavior for using `hlx` via bash.
 - The helix-cli skill treats `hlx llms-txt` as the CLI discovery surface and references MCP-only `helix_ci_guide(repo)` / `ci://profiles` as secondary routing because there is no shipped `hlx ci-guide` command yet.
 - `.github/skills/helix-cli/references/helix-cli-reference.md` documents the full CLI↔MCP mapping plus jq-critical output details: `hlx azdo builds --json` returns a bare array, `hlx azdo search-log --json` has different single-log and cross-step schemas, and `hlx search-log` is still text-only in the CLI so its structured fields are documented as underlying/core parity.
+
+📌 Team update (2026-03-14): helix-cli skill docs must reflect shipped CLI behavior: use `hlx llms-txt` for CLI discovery, note no `hlx ci-guide` command yet, and keep `hlx search-log` CLI docs text-only. — decided by Kane

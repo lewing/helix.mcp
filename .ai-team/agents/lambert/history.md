@@ -64,3 +64,5 @@
 - Edge cases discovered: JWT helpers should treat non-JWT text, missing `exp`, and malformed base64url payloads as non-fatal nulls; auth-status on env PATs should surface `environment variable` + PAT expiry warning, while anonymous fallback must still report a user-facing "No AzDO credentials resolved" warning.
 
 📌 Team update (2026-03-13): Cache roots now stay stable via `CacheRootHash` while mutable `AuthTokenHash` partitions AzDO entries, and AzDO auth hashes are seeded before cached AzDO reads. — decided by Ripley
+
+📌 Team update (2026-03-14): helix-cli skill docs must reflect shipped CLI behavior: use `hlx llms-txt` for CLI discovery, note no `hlx ci-guide` command yet, and keep `hlx search-log` CLI docs text-only. — decided by Kane

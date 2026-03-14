@@ -4381,3 +4381,9 @@ The auth-hash partition can no longer be treated as write-once because long-runn
 - Source-only fallback identities can collapse different principals onto the same AzDO cache partition and reuse cached responses across distinct authenticated contexts.
 - A single `UpdateAuthContext(...)` path keeps identity/hash updates coherent across layers and removes drift between callers.
 - Centralized, range-checked Unix-time parsing hardens both credential sources against invalid expiration values and keeps failure behavior deterministic.
+
+### 2026-03-14: helix-cli skill docs must stay behavior-accurate (consolidated)
+
+**By:** Kane
+**What:** The `helix-cli` skill and `.github/skills/helix-cli/references/helix-cli-reference.md` must document shipped CLI behavior only: route CLI discovery through `hlx llms-txt`, explicitly note there is no `hlx ci-guide` command yet, and describe `hlx search-log` as text-only in the CLI even when the underlying/core field shape is documented separately.
+**Why:** Skill docs are an execution surface for agents. Behavior-accurate docs preserve the approved discovery path and avoid broken CLI workflows caused by aspirational parity claims, while still leaving future CLI/MCP convergence easy to document once it actually ships.
