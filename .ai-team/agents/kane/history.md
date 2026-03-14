@@ -68,3 +68,6 @@
 📌 Team update (2026-03-13): README/docs should expose MCP resources (`ci://profiles`, `ci://profiles/{repo}`) and treat idempotent annotations as a context-efficiency design point. — decided by Lambert
 
 📌 Team update (2026-03-13): PR #28 merged the remaining AzDO auth quick wins — fallback Azure CLI/`az` credentials now refresh on deadline/401, cache isolation keys off stable auth-source identity instead of raw token bytes, and `hlx azdo auth-status` exposes safe auth-path metadata for docs/threat-model follow-up. — decided by Ripley
+- `.github/skills/helix-cli/SKILL.md` now mirrors the maestro-cli skill structure: frontmatter, CLI-vs-MCP routing, auth/discovery guidance, jq workflows, and cache behavior for using `hlx` via bash.
+- The helix-cli skill treats `hlx llms-txt` as the CLI discovery surface and references MCP-only `helix_ci_guide(repo)` / `ci://profiles` as secondary routing because there is no shipped `hlx ci-guide` command yet.
+- `.github/skills/helix-cli/references/helix-cli-reference.md` documents the full CLI↔MCP mapping plus jq-critical output details: `hlx azdo builds --json` returns a bare array, `hlx azdo search-log --json` has different single-log and cross-step schemas, and `hlx search-log` is still text-only in the CLI so its structured fields are documented as underlying/core parity.
