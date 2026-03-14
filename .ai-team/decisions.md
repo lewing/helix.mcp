@@ -4352,3 +4352,15 @@ If more MCP tools need truncation metadata, prefer reusing this wrapper pattern 
 **By:** Ripley
 **What:** Renamed MCP-visible tool names from `helix_test_results` to `helix_parse_uploaded_trx` and from `helix_search_log` to `helix_search` across tool registration, docs/help text, tests, and README while keeping the internal/CLI names that still fit (`ParseTrxResultsAsync`, `SearchLog`, `search-log`) stable.
 **Why:** The earlier names were context traps: `helix_test_results` sounded like the universal first stop even though most repos publish structured results to AzDO, and `helix_search_log` no longer matched a tool that can search both console logs and uploaded files. Scope-accurate names improve agent discoverability without unnecessary internal churn.
+
+### 2026-03-14: PR #29 review round 3 — AzDO auth cache identity updates
+
+**By:** Ripley
+
+## Decision
+
+Store the resolved AzDO auth cache identity on `CacheOptions` and let both `CachingAzdoApiClient` and `AzdoApiClient` update the shared auth context through `UpdateAuthContext(...)`.
+
+## Why
+
+The auth-hash partition can no longer be treated as write-once because long-running processes may observe Azure CLI or `az` credential changes. Keeping the last resolved identity next to the derived hash lets both layers react consistently when the principal changes, while `CacheStoreFactory` now keys stores strictly by the stable effective cache root so auth-key churn never creates duplicate `SqliteCacheStore` instances for the same database path.
