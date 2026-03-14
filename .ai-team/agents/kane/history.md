@@ -73,3 +73,6 @@
 - `.github/skills/helix-cli/references/helix-cli-reference.md` documents the full CLI↔MCP mapping plus jq-critical output details: `hlx azdo builds --json` returns a bare array, `hlx azdo search-log --json` has different single-log and cross-step schemas, and `hlx search-log` is still text-only in the CLI so its structured fields are documented as underlying/core parity.
 
 📌 Team update (2026-03-14): helix-cli skill docs must reflect shipped CLI behavior: use `hlx llms-txt` for CLI discovery, note no `hlx ci-guide` command yet, and keep `hlx search-log` CLI docs text-only. — decided by Kane
+- PR #30 review feedback removed the static `references/helix-cli-reference.md`; the skill should stay lean and rely on `hlx llms-txt`, command help, and inline jq field hints instead.
+- Do not document unshipped CLI JSON field shapes in the skill. For Helix `hlx search-log`, keep the CLI docs text-only and route structured consumers to MCP `helix_search`.
+- `hlx <command> --schema` should be tracked as a product issue rather than backfilled with a long static reference doc.
