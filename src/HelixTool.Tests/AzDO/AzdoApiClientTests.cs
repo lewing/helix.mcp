@@ -349,6 +349,25 @@ public class AzdoApiClientTests
     }
 
     [Fact]
+    public async Task GetBuildAsync_WhenCacheIdentityMissing_UsesDisplayTokenFallbackForAuthContext()
+    {
+        var cacheOptions = new CacheOptions();
+        var credential = new AzdoCredential("wire-token", "Bearer", "AzureCliCredential")
+        {
+            DisplayToken = "fallback-token"
+        };
+        _mockToken.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns(credential);
+        _handler.ResponseContent = JsonSerializer.Serialize(new { id = 1 });
+        var client = new AzdoApiClient(new HttpClient(_handler), _mockToken, cacheOptions);
+        var expectedIdentity = AzdoCredential.BuildCacheIdentity(credential.Source, credential.DisplayToken);
+
+        await client.GetBuildAsync("dnceng", "internal", 1);
+
+        Assert.Equal(expectedIdentity, cacheOptions.AuthCacheIdentity);
+        Assert.Equal(CacheOptions.ComputeAuthContextHash(expectedIdentity), cacheOptions.AuthTokenHash);
+    }
+
+    [Fact]
     public async Task ListBuildsAsync_401_ThrowsWithAuthHint()
     {
         _handler.StatusCode = HttpStatusCode.Unauthorized;

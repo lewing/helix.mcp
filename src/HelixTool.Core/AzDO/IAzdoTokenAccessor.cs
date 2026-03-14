@@ -68,13 +68,34 @@ public sealed record AzdoCredential(string Token, string Scheme, string Source)
         if (!TryGetJwtClaims(token, out var claims) || !claims.TryGetProperty("exp", out var expElement))
             return null;
 
-        if (expElement.ValueKind == JsonValueKind.Number && expElement.TryGetInt64(out var expSeconds))
-            return DateTimeOffset.FromUnixTimeSeconds(expSeconds);
+        if (expElement.ValueKind == JsonValueKind.Number && expElement.TryGetInt64(out var expSeconds) &&
+            TryFromUnixTimeSeconds(expSeconds, out var expiresOn))
+        {
+            return expiresOn;
+        }
 
-        if (expElement.ValueKind == JsonValueKind.String && long.TryParse(expElement.GetString(), out expSeconds))
-            return DateTimeOffset.FromUnixTimeSeconds(expSeconds);
+        if (expElement.ValueKind == JsonValueKind.String &&
+            long.TryParse(expElement.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out expSeconds) &&
+            TryFromUnixTimeSeconds(expSeconds, out expiresOn))
+        {
+            return expiresOn;
+        }
 
         return null;
+    }
+
+    internal static bool TryFromUnixTimeSeconds(long seconds, out DateTimeOffset result)
+    {
+        try
+        {
+            result = DateTimeOffset.FromUnixTimeSeconds(seconds);
+            return true;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            result = default;
+            return false;
+        }
     }
 
     private static bool TryGetJwtClaims(string token, out JsonElement claims)
@@ -417,10 +438,7 @@ public sealed class AzCliAzdoTokenAccessor : IAzdoTokenAccessor
             return false;
 
         if (value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var unixSeconds))
-        {
-            expiresOn = DateTimeOffset.FromUnixTimeSeconds(unixSeconds);
-            return true;
-        }
+            return AzdoCredential.TryFromUnixTimeSeconds(unixSeconds, out expiresOn);
 
         if (value.ValueKind != JsonValueKind.String)
             return false;
@@ -430,10 +448,7 @@ public sealed class AzCliAzdoTokenAccessor : IAzdoTokenAccessor
             return false;
 
         if (long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out unixSeconds))
-        {
-            expiresOn = DateTimeOffset.FromUnixTimeSeconds(unixSeconds);
-            return true;
-        }
+            return AzdoCredential.TryFromUnixTimeSeconds(unixSeconds, out expiresOn);
 
         if (!DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture,
             DateTimeStyles.AssumeLocal | DateTimeStyles.AllowWhiteSpaces, out expiresOn))

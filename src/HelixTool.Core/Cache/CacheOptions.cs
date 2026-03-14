@@ -61,17 +61,6 @@ public record CacheOptions
     }
 
     /// <summary>
-    /// Set the auth-context hash when a new non-empty value is established for this cache options instance.
-    /// </summary>
-    public void TrySetAuthTokenHash(string? hash)
-    {
-        if (string.IsNullOrEmpty(hash) || string.Equals(AuthTokenHash, hash, StringComparison.Ordinal))
-            return;
-
-        AuthTokenHash = hash;
-    }
-
-    /// <summary>
     /// Update the resolved AzDO auth context and the derived cache-key hash.
     /// </summary>
     public void UpdateAuthContext(string? authContext)

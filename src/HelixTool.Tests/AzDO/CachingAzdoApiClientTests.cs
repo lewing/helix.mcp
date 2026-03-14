@@ -494,6 +494,38 @@ public class CachingAzdoApiClientTests
     }
 
     [Fact]
+    public async Task GetBuildAsync_WhenCacheIdentityMissing_UsesDisplayTokenFallbackForAuthHash()
+    {
+        var inner = Substitute.For<IAzdoApiClient>();
+        var cache = Substitute.For<ICacheStore>();
+        var tokenAccessor = Substitute.For<IAzdoTokenAccessor>();
+        var credential = new AzdoCredential("wire-token", "Bearer", "AzureCliCredential")
+        {
+            DisplayToken = "fallback-token"
+        };
+        cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((string?)null);
+        inner.GetBuildAsync("org", "proj", 1, Arg.Any<CancellationToken>())
+            .Returns(new AzdoBuild { Id = 1, Status = "completed" });
+        tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>())
+            .Returns(credential);
+        var options = new CacheOptions { MaxSizeBytes = 1024 };
+        var sut = new CachingAzdoApiClient(inner, cache, options, tokenAccessor);
+        var expectedIdentity = AzdoCredential.BuildCacheIdentity(credential.Source, credential.DisplayToken);
+        var expectedHash = CacheOptions.ComputeAuthContextHash(expectedIdentity);
+
+        await sut.GetBuildAsync("org", "proj", 1);
+
+        Assert.Equal(expectedIdentity, options.AuthCacheIdentity);
+        Assert.Equal(expectedHash, options.AuthTokenHash);
+        await cache.Received(1).SetMetadataAsync(
+            $"azdo:{expectedHash}:org:proj:build:1",
+            Arg.Any<string>(),
+            Arg.Any<TimeSpan>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task GetBuildAsync_DifferentAuthTokenHashes_UseDifferentCacheKeys()
     {
         var innerA = Substitute.For<IAzdoApiClient>();

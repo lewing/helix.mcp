@@ -344,6 +344,31 @@ public class AzdoTokenAccessorTests : IDisposable
     }
 
     [Fact]
+    public void TryGetJwtExpiration_WhenExpIsOutOfRange_ReturnsNull()
+    {
+        var token = CreateJwt(new Dictionary<string, object?>
+        {
+            ["exp"] = long.MaxValue,
+            ["sub"] = "lambert"
+        });
+
+        Assert.Null(AzdoCredential.TryGetJwtExpiration(token));
+    }
+
+    [Theory]
+    [InlineData("{\"expiresOn\":9223372036854775807}")]
+    [InlineData("{\"expiresOn\":\"9223372036854775807\"}")]
+    public void TryGetAzCliExpiration_WhenUnixSecondsOutOfRange_ReturnsNull(string payload)
+    {
+        using var document = JsonDocument.Parse(payload);
+        var expiration = (DateTimeOffset?)typeof(AzCliAzdoTokenAccessor)
+            .GetMethod("TryGetAzCliExpiration", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, [document.RootElement]);
+
+        Assert.Null(expiration);
+    }
+
+    [Fact]
     public void BuildCacheIdentity_WhenJwtContainsStableClaims_IncludesThem()
     {
         var token = CreateJwt(new Dictionary<string, object?>
