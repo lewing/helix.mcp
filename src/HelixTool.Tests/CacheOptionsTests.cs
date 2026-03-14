@@ -136,6 +136,17 @@ public class CacheOptionsTests
         }
     }
 
+    [Fact]
+    public void UpdateAuthContext_SetsIdentityAndHashTogether()
+    {
+        var opts = new CacheOptions();
+
+        opts.UpdateAuthContext("AzureCliCredential:user-1");
+
+        Assert.Equal("AzureCliCredential:user-1", opts.AuthCacheIdentity);
+        Assert.Equal(CacheOptions.ComputeAuthContextHash("AzureCliCredential:user-1"), opts.AuthTokenHash);
+    }
+
     // =========================================================================
     // CacheOptions defaults
     // =========================================================================

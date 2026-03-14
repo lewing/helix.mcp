@@ -3,9 +3,9 @@ using System.Collections.Concurrent;
 namespace HelixTool.Core.Cache;
 
 /// <summary>
-/// Factory for obtaining cache stores by auth context.
+/// Factory for obtaining cache stores by stable cache-root partition.
 /// Needed for HTTP mode where multiple auth contexts coexist in one process.
-/// Thread-safe: concurrent requests with the same token share the same cache store.
+/// Thread-safe: concurrent requests with the same effective cache root share the same cache store.
 /// </summary>
 public interface ICacheStoreFactory
 {
@@ -18,7 +18,7 @@ public sealed class CacheStoreFactory : ICacheStoreFactory, IDisposable
 
     public ICacheStore GetOrCreate(CacheOptions options)
     {
-        var key = options.AuthTokenHash ?? "public";
+        var key = options.GetEffectiveCacheRoot();
         return _stores.GetOrAdd(key, _ => new Lazy<ICacheStore>(
             () => new SqliteCacheStore(options))).Value;
     }

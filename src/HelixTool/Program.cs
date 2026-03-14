@@ -52,12 +52,14 @@ services.AddSingleton<IAzdoTokenAccessor, AzCliAzdoTokenAccessor>();
 services.AddSingleton<AzdoApiClient>(sp =>
     new AzdoApiClient(
         sp.GetRequiredService<IHttpClientFactory>().CreateClient("AzDO"),
-        sp.GetRequiredService<IAzdoTokenAccessor>()));
+        sp.GetRequiredService<IAzdoTokenAccessor>(),
+        sp.GetRequiredService<CacheOptions>()));
 services.AddSingleton<IAzdoApiClient>(sp =>
     new CachingAzdoApiClient(
         sp.GetRequiredService<AzdoApiClient>(),
         sp.GetRequiredService<ICacheStore>(),
-        sp.GetRequiredService<CacheOptions>()));
+        sp.GetRequiredService<CacheOptions>(),
+        sp.GetRequiredService<IAzdoTokenAccessor>()));
 services.AddSingleton<AzdoService>();
 
 ConsoleApp.ServiceProvider = services.BuildServiceProvider();
@@ -618,12 +620,14 @@ Available as `failureCategory` in JSON and MCP output.
         builder.Services.AddSingleton<AzdoApiClient>(sp =>
             new AzdoApiClient(
                 sp.GetRequiredService<IHttpClientFactory>().CreateClient("AzDO"),
-                sp.GetRequiredService<IAzdoTokenAccessor>()));
+                sp.GetRequiredService<IAzdoTokenAccessor>(),
+                sp.GetRequiredService<CacheOptions>()));
         builder.Services.AddSingleton<IAzdoApiClient>(sp =>
             new CachingAzdoApiClient(
                 sp.GetRequiredService<AzdoApiClient>(),
                 sp.GetRequiredService<ICacheStore>(),
-                sp.GetRequiredService<CacheOptions>()));
+                sp.GetRequiredService<CacheOptions>(),
+                sp.GetRequiredService<IAzdoTokenAccessor>()));
         builder.Services.AddSingleton<AzdoService>();
 
         builder.Services
@@ -902,10 +906,40 @@ public class AzdoCommands
     private static readonly JsonSerializerOptions s_jsonOptions = new() { WriteIndented = true };
 
     private readonly AzdoService _svc;
+    private readonly IAzdoTokenAccessor _tokenAccessor;
 
-    public AzdoCommands(AzdoService svc)
+    public AzdoCommands(AzdoService svc, IAzdoTokenAccessor tokenAccessor)
     {
         _svc = svc;
+        _tokenAccessor = tokenAccessor;
+    }
+
+
+    /// <summary>Show the currently resolved Azure DevOps authentication path without making an AzDO API request.</summary>
+    /// <param name="json">Output as structured JSON instead of human-readable text.</param>
+    [Command("azdo auth-status")]
+    public async Task AuthStatus(bool json = false)
+    {
+        var status = await _tokenAccessor.AuthStatusAsync();
+
+        if (!status.IsAuthenticated)
+            Environment.ExitCode = 1;
+
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(status, s_jsonOptions));
+            return;
+        }
+
+        Console.WriteLine($"Path:           {status.Path}");
+        Console.WriteLine($"Credential:     {status.Source}");
+        Console.WriteLine($"Authenticated:  {(status.IsAuthenticated ? "yes" : "no")}");
+        Console.WriteLine($"Looks expired:  {FormatExpirationStatus(status.LooksExpired)}");
+        if (status.ExpiresOnUtc.HasValue)
+            Console.WriteLine($"Expires:        {status.ExpiresOnUtc.Value:u}");
+
+        foreach (var warning in status.Warnings)
+            Console.WriteLine($"Warning:        {warning}");
     }
 
     /// <summary>Get details of a specific Azure DevOps build.</summary>
@@ -1460,4 +1494,13 @@ public class AzdoCommands
             Console.WriteLine();
         }
     }
+
+    private static string FormatExpirationStatus(bool? looksExpired)
+        => looksExpired switch
+        {
+            true => "yes",
+            false => "no",
+            _ => "unknown"
+        };
+
 }

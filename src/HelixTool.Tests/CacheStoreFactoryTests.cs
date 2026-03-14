@@ -1,7 +1,6 @@
 // Tests for ICacheStoreFactory (L-HTTP-3).
-// CacheStoreFactory maps token hashes to shared ICacheStore instances.
+// CacheStoreFactory maps stable cache-root partitions to shared ICacheStore instances.
 // Uses ConcurrentDictionary internally — thread safety is critical.
-// Will compile once Ripley's ICacheStoreFactory.cs and implementation land.
 
 using HelixTool.Core;
 using HelixTool.Core.Cache;
@@ -41,10 +40,10 @@ public class CacheStoreFactoryTests : IDisposable
     }
 
     [Fact]
-    public void GetOrCreate_DifferentTokenHashes_ReturnsDifferentInstances()
+    public void GetOrCreate_DifferentCacheRootHashes_ReturnsDifferentInstances()
     {
-        var opts1 = new CacheOptions { CacheRoot = _tempDir, AuthTokenHash = "hash_aaa" };
-        var opts2 = new CacheOptions { CacheRoot = _tempDir, AuthTokenHash = "hash_bbb" };
+        var opts1 = new CacheOptions { CacheRoot = _tempDir, CacheRootHash = "hash_aaa", AuthTokenHash = "ignored-a" };
+        var opts2 = new CacheOptions { CacheRoot = _tempDir, CacheRootHash = "hash_bbb", AuthTokenHash = "ignored-b" };
 
         var store1 = _factory.GetOrCreate(opts1);
         var store2 = _factory.GetOrCreate(opts2);
@@ -66,7 +65,7 @@ public class CacheStoreFactoryTests : IDisposable
     }
 
     [Fact]
-    public void GetOrCreate_NullTokenHash_DifferentFromExplicitHash()
+    public void GetOrCreate_SameCacheRoot_IgnoresAuthTokenHash()
     {
         var publicOpts = new CacheOptions { CacheRoot = _tempDir, AuthTokenHash = null };
         var authOpts = new CacheOptions { CacheRoot = _tempDir, AuthTokenHash = "abc12345" };
@@ -74,7 +73,7 @@ public class CacheStoreFactoryTests : IDisposable
         var publicStore = _factory.GetOrCreate(publicOpts);
         var authStore = _factory.GetOrCreate(authOpts);
 
-        Assert.NotSame(publicStore, authStore);
+        Assert.Same(publicStore, authStore);
     }
 
     [Fact]
@@ -96,7 +95,7 @@ public class CacheStoreFactoryTests : IDisposable
     }
 
     [Fact]
-    public void GetOrCreate_ThreadSafety_DifferentKeys_AllSucceed()
+    public void GetOrCreate_ThreadSafety_DifferentCacheRoots_AllSucceed()
     {
         var stores = new ICacheStore[10];
 
@@ -105,7 +104,8 @@ public class CacheStoreFactoryTests : IDisposable
             var opts = new CacheOptions
             {
                 CacheRoot = _tempDir,
-                AuthTokenHash = $"thread-{i:D4}"
+                CacheRootHash = $"thread-{i:D4}",
+                AuthTokenHash = $"ignored-{i:D4}"
             };
             stores[i] = _factory.GetOrCreate(opts);
         });
@@ -114,7 +114,7 @@ public class CacheStoreFactoryTests : IDisposable
         foreach (var store in stores)
             Assert.NotNull(store);
 
-        // All stores should be distinct (different hashes)
+        // All stores should be distinct (different cache roots)
         var distinct = stores.Distinct().Count();
         Assert.Equal(stores.Length, distinct);
     }

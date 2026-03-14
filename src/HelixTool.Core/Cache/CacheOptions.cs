@@ -16,11 +16,24 @@ public record CacheOptions
     public TimeSpan ArtifactMaxAge { get; init; } = TimeSpan.FromDays(7);
 
     /// <summary>
-    /// Optional auth token hash used to isolate cache data per auth context.
-    /// Derived from HELIX_ACCESS_TOKEN via <see cref="ComputeTokenHash"/>.
-    /// Null means unauthenticated (public cache).
+    /// Optional stable cache-root partition hash established before the cache store is created.
+    /// Used by Helix request-scoped hosts to keep different token contexts on separate cache roots.
+    /// Null means the shared public cache root.
     /// </summary>
-    public string? AuthTokenHash { get; init; }
+    public string? CacheRootHash { get; init; }
+
+    /// <summary>
+    /// Optional AzDO auth-context hash used to isolate AzDO cache keys inside a cache store.
+    /// This is intentionally mutable so AzDO can update its key partition when the resolved credential changes.
+    /// Null means unauthenticated/public AzDO cache keys.
+    /// </summary>
+    public string? AuthTokenHash { get; set; }
+
+    /// <summary>
+    /// Last resolved stable auth-context identity used to derive <see cref="AuthTokenHash"/>.
+    /// Null means the current AzDO cache partition is the shared public context.
+    /// </summary>
+    public string? AuthCacheIdentity { get; private set; }
 
     /// <summary>Resolve the base cache directory (before auth context subdivision).</summary>
     public string GetBaseCacheRoot()
@@ -35,26 +48,48 @@ public record CacheOptions
     }
 
     /// <summary>
-    /// Resolve the auth-context-specific cache root.
-    /// Unauthenticated: {base}/public
-    /// Authenticated:   {base}/cache-{hash}
+    /// Resolve the stable cache root for this cache store instance.
+    /// Shared/public: {base}/public
+    /// Partitioned:   {base}/cache-{hash}
     /// </summary>
     public string GetEffectiveCacheRoot()
     {
         var baseRoot = GetBaseCacheRoot();
-        if (string.IsNullOrEmpty(AuthTokenHash))
+        if (string.IsNullOrEmpty(CacheRootHash))
             return Path.Combine(baseRoot, "public");
-        return Path.Combine(baseRoot, $"cache-{AuthTokenHash}");
+        return Path.Combine(baseRoot, $"cache-{CacheRootHash}");
     }
 
     /// <summary>
-    /// Compute a short deterministic hash of an access token for cache isolation.
-    /// Returns null if token is null/empty.
+    /// Update the resolved AzDO auth context and the derived cache-key hash.
     /// </summary>
-    public static string? ComputeTokenHash(string? token)
+    public void UpdateAuthContext(string? authContext)
     {
-        if (string.IsNullOrEmpty(token)) return null;
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(token));
+        var authHash = ComputeAuthContextHash(authContext);
+        if (string.Equals(AuthCacheIdentity, authContext, StringComparison.Ordinal) &&
+            string.Equals(AuthTokenHash, authHash, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        AuthCacheIdentity = authContext;
+        AuthTokenHash = authHash;
+    }
+
+    /// <summary>
+    /// Compute a short deterministic hash for any stable auth-context string.
+    /// Returns null if the input is null/empty.
+    /// </summary>
+    public static string? ComputeAuthContextHash(string? authContext)
+    {
+        if (string.IsNullOrEmpty(authContext)) return null;
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(authContext));
         return Convert.ToHexString(hash)[..8].ToLowerInvariant();
     }
+
+    /// <summary>
+    /// Compute a short deterministic hash of an access token or auth context for cache partitioning.
+    /// Returns null if token is null/empty.
+    /// </summary>
+    public static string? ComputeTokenHash(string? token) => ComputeAuthContextHash(token);
 }

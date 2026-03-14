@@ -241,3 +241,13 @@
 ## 2026-03-13: Archived older learnings from history.md
 
 📌 Team update (2025-07-24): Test quality review — ~17 redundant tests deleted, no layer duplication rule. — Dallas
+
+## Archived from history.md (2026-03-13 auth-remaining summarization)
+
+### 2026-03-08 through 2026-03-13 (pre-PR-28)
+- AzDO search/log work established the 4-bucket ranking, concurrent metadata fetch, and the `McpException` wrapping pattern for MCP-visible failures.
+- CI-routing guidance converged on short behavioral tool descriptions, repo-specific detail in `helix_ci_guide`, and scope-accurate MCP names (`helix_search`, `helix_parse_uploaded_trx`).
+- Option A restructuring moved Helix code under `Core/Helix`, split cache infrastructure into `HelixTool.Core.Cache`, and extracted shared helpers into `StringHelpers`.
+- Security hardening locked exact Ordinal path-boundary checks, required injected `HttpClient` for `HelixService`, and added explicit truncation metadata for capped MCP responses.
+- Early AzDO auth hardening established the narrow chain, scheme-aware `AzdoCredential` metadata, explicit `AZDO_TOKEN_TYPE` override, and redaction of unexpected error snippets.
+

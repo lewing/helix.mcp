@@ -28,7 +28,7 @@ builder.Services.AddScoped<CacheOptions>(sp =>
     var token = sp.GetRequiredService<IHelixTokenAccessor>().GetAccessToken();
     var opts = new CacheOptions
     {
-        AuthTokenHash = CacheOptions.ComputeTokenHash(token)
+        CacheRootHash = CacheOptions.ComputeTokenHash(token)
     };
     var maxStr = Environment.GetEnvironmentVariable("HLX_CACHE_MAX_SIZE_MB");
     if (int.TryParse(maxStr, out var mb))
@@ -66,12 +66,14 @@ builder.Services.AddSingleton<IAzdoTokenAccessor, AzCliAzdoTokenAccessor>();
 builder.Services.AddScoped<AzdoApiClient>(sp =>
     new AzdoApiClient(
         sp.GetRequiredService<IHttpClientFactory>().CreateClient("AzDO"),
-        sp.GetRequiredService<IAzdoTokenAccessor>()));
+        sp.GetRequiredService<IAzdoTokenAccessor>(),
+        sp.GetRequiredService<CacheOptions>()));
 builder.Services.AddScoped<IAzdoApiClient>(sp =>
     new CachingAzdoApiClient(
         sp.GetRequiredService<AzdoApiClient>(),
         sp.GetRequiredService<ICacheStore>(),
-        sp.GetRequiredService<CacheOptions>()));
+        sp.GetRequiredService<CacheOptions>(),
+        sp.GetRequiredService<IAzdoTokenAccessor>()));
 builder.Services.AddScoped<AzdoService>();
 
 builder.Services
