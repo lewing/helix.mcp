@@ -68,3 +68,11 @@
 📌 Team update (2026-03-13): README/docs should expose MCP resources (`ci://profiles`, `ci://profiles/{repo}`) and treat idempotent annotations as a context-efficiency design point. — decided by Lambert
 
 📌 Team update (2026-03-13): PR #28 merged the remaining AzDO auth quick wins — fallback Azure CLI/`az` credentials now refresh on deadline/401, cache isolation keys off stable auth-source identity instead of raw token bytes, and `hlx azdo auth-status` exposes safe auth-path metadata for docs/threat-model follow-up. — decided by Ripley
+- `.github/skills/helix-cli/SKILL.md` now mirrors the maestro-cli skill structure: frontmatter, CLI-vs-MCP routing, auth/discovery guidance, jq workflows, and cache behavior for using `hlx` via bash.
+- The helix-cli skill treats `hlx llms-txt` as the CLI discovery surface and references MCP-only `helix_ci_guide(repo)` / `ci://profiles` as secondary routing because there is no shipped `hlx ci-guide` command yet.
+- A companion reference doc was drafted during PR #30, then removed in review. The final skill keeps jq-critical details inline in `SKILL.md`, including that `hlx azdo builds --json` returns a bare array and `hlx search-log` remains text-only in the CLI.
+
+📌 Team update (2026-03-14): helix-cli skill docs must reflect shipped CLI behavior: use `hlx llms-txt` for CLI discovery, note no `hlx ci-guide` command yet, and keep `hlx search-log` CLI docs text-only. — decided by Kane
+- PR #30 review feedback finalized the skill as a single-source doc: rely on `hlx llms-txt`, command help, and inline jq field hints instead of a separate static reference file.
+- Do not document unshipped CLI JSON field shapes in the skill. For Helix `hlx search-log`, keep the CLI docs text-only and route structured consumers to MCP `helix_search`.
+- `hlx <command> --schema` should be tracked as a product issue rather than backfilled with a long static reference doc.

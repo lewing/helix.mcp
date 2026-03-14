@@ -37,3 +37,5 @@ Detailed notes for AzDO search/log ranking, MCP error surfacing, CI-knowledge de
 - **Cache-key hygiene and CLI auth-status exits were tightened together:** `CachingAzdoApiClient` sanitizes the auth-hash segment before composing cache/state keys, and `hlx azdo auth-status` now sets a non-zero exit code for anonymous status even on the `--json` path.
 - **JWT cache identities now fall back to fingerprints when stable claims are missing:** `AzdoCredential.BuildCacheIdentity` only returns claim-based identities when at least one of `tid`, `oid`, `appid`, or `sub` is present; otherwise JWTs use the same SHA256 suffix path as non-JWT tokens so cache partitioning stays per-principal instead of collapsing to the bare prefix.
 - **AzDO token env-var tests are now serialized:** the `AzdoTokenEnv` xUnit collection now has `DisableParallelization = true`, which keeps PATH-mutation tests from racing unrelated tests that spawn external processes.
+
+📌 Team update (2026-03-14): helix-cli skill docs must reflect shipped CLI behavior: use `hlx llms-txt` for CLI discovery, note no `hlx ci-guide` command yet, and keep `hlx search-log` CLI docs text-only. — decided by Kane
