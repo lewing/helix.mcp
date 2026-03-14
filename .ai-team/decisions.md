@@ -4385,5 +4385,7 @@ The auth-hash partition can no longer be treated as write-once because long-runn
 ### 2026-03-14: helix-cli skill docs must stay behavior-accurate (consolidated)
 
 **By:** Kane
-**What:** The `helix-cli` skill and `.github/skills/helix-cli/references/helix-cli-reference.md` must document shipped CLI behavior only: route CLI discovery through `hlx llms-txt`, explicitly note there is no `hlx ci-guide` command yet, and describe `hlx search-log` as text-only in the CLI even when the underlying/core field shape is documented separately.
-**Why:** Skill docs are an execution surface for agents. Behavior-accurate docs preserve the approved discovery path and avoid broken CLI workflows caused by aspirational parity claims, while still leaving future CLI/MCP convergence easy to document once it actually ships.
+**Requested by:** Larry Ewing
+**What:** Delete the static `.github/skills/helix-cli/references/helix-cli-reference.md` doc and keep `.github/skills/helix-cli/SKILL.md` lean, documenting shipped CLI behavior only. Route CLI discovery through `hlx llms-txt`, command `--help`, and inline jq field hints; explicitly note there is no `hlx ci-guide` command yet; and describe `hlx search-log` as text-only in the CLI while routing structured Helix log consumers to MCP `helix_search`.
+**Why:** Skill docs are an execution surface for agents. Behavior-accurate docs preserve the approved discovery path and avoid broken CLI workflows caused by aspirational parity claims. The static reference doc would also go stale, duplicate information already discoverable from shipped surfaces, and risk documenting unshipped CLI JSON for `hlx search-log`.
+**Follow-up:** Track `hlx <command> --schema` as the long-term fix for per-command JSON field discovery; until then, the skill should only document shipped CLI behavior and point structured Helix log consumers to MCP `helix_search`.
