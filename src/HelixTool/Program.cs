@@ -283,7 +283,7 @@ public class Commands
             Console.WriteLine();
         }
 
-        Console.WriteLine("Use 'hlx describe <command>' for parameters and output details.");
+        Console.WriteLine("Use 'hlx describe <command>' for MCP-equivalent command parameters and --schema hints.");
     }
 
     private static void PrintCommandDetail(string route)

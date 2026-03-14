@@ -13,7 +13,7 @@ description: >
 Investigate Helix and Azure DevOps CI failures with `hlx` when you want shell pipelines, `--json`, and `jq` without loading the MCP toolset into context.
 ## When to Use This Skill
 Use this skill when:
-- You want `hlx describe` as the fastest first step to understand which commands exist before drilling into help or schemas.
+- You want `hlx describe` as the fastest first step to understand which MCP-equivalent investigation commands exist before drilling into help or schemas.
 - Helix/AzDO MCP tools are not loaded, but `hlx` is installed or available via `dotnet run`.
 - You want to script investigations with shell pipelines, `--json`, and optionally `jq`.
 - You need to move quickly through a build → timeline → logs → tests workflow without paying the context cost of loading many tools.
@@ -45,7 +45,7 @@ hlx azdo search-log --schema
 hlx azdo search-log --help
 ```
 1. `hlx describe` — routing: which command handles what?
-2. `hlx describe <command>` — usage: parameters, defaults, output fields.
+2. `hlx describe <command>` — usage: parameters, defaults, and `--schema` hints.
 3. `hlx <command> --schema` — full JSON output shape (when you need exact nesting).
 4. `<command> --help` — all flags and arguments.
 `hlx llms-txt` still exists for compact CLI notes, but `describe` is now the recommended discovery path for agents. There is no `hlx ci-guide` CLI command yet; use `helix_ci_guide(repo)` / `ci://profiles` when MCP is available.
