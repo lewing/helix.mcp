@@ -13,4 +13,4 @@ Here's who's on the team:
 | **Ash** | Product Analyst | Threat modeling, security analysis, product strategy |
 | **Scribe** | *(silent)* | Session memory, decision logs, history tracking |
 
-Each agent has a charter in `.ai-team/agents/<name>/charter.md` that defines their responsibilities and boundaries. Agents communicate through shared decision logs and history files, and defer to each other based on expertise.
+Each agent has a charter in `.squad/agents/<name>/charter.md` that defines their responsibilities and boundaries. Agents communicate through shared decision logs and history files, and defer to each other based on expertise.
