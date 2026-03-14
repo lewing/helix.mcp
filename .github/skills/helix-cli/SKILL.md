@@ -93,12 +93,12 @@ Do this early when a public build works for others but fails locally.
 ## Chaining with jq
 Examples below assume `jq` is available; if it is not, plain CLI output is still useful.
 ```bash
-# Failed work items (.failed[].name, .failed[].failureCategory, .failed[].consoleLogUrl)
+# Failed work items (.failed[].Name, .failed[].failureCategory, .failed[].ConsoleLogUrl)
 hlx status "$JOB" all --json \
-  | jq -r '.failed[] | [.name, .failureCategory, .consoleLogUrl] | @tsv'
+  | jq -r '.failed[] | [.Name, .failureCategory, .ConsoleLogUrl] | @tsv'
 # Recent builds (.[] .id, .definition.name, .sourceBranch, .triggerInfo["pr.number"])
 hlx azdo builds --pr-number 118282 --top 20 --json \
-  | jq -r '.[] | select(.result == "failed") | [.id, .definition.name, .sourceBranch, (.triggerInfo["pr.number"] // "-")] | @tsv'
+  | jq -r '.[] | select(.result == "failed") | [.id, .definition.name, .sourceBranch, (.triggerInfo // {} | .["pr.number"] // "-")] | @tsv'
 # Failed timeline records (.records[].type, .records[].name, .records[].log.id)
 hlx azdo timeline "$BUILD" --filter failed --json \
   | jq -r '.records[] | select(.log != null) | [.type, .name, (.log.id | tostring)] | @tsv'
