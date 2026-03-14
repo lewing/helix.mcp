@@ -90,30 +90,17 @@ public class Commands
 
     private sealed class StatusJsonResult
     {
-        [JsonPropertyName("job")]
         public StatusJobJsonResult Job { get; init; } = new();
-
-        [JsonPropertyName("totalWorkItems")]
         public int TotalWorkItems { get; init; }
-
-        [JsonPropertyName("failedCount")]
         public int FailedCount { get; init; }
-
-        [JsonPropertyName("passedCount")]
         public int PassedCount { get; init; }
-
-        [JsonPropertyName("failed")]
         public IReadOnlyList<StatusWorkItemJsonResult>? Failed { get; init; }
-
-        [JsonPropertyName("passed")]
         public IReadOnlyList<StatusWorkItemJsonResult>? Passed { get; init; }
     }
 
     private sealed class StatusJobJsonResult
     {
-        [JsonPropertyName("jobId")]
         public string JobId { get; init; } = "";
-
         public string Name { get; init; } = "";
         public string QueueId { get; init; } = "";
         public string Creator { get; init; } = "";
@@ -128,25 +115,15 @@ public class Commands
         public int ExitCode { get; init; }
         public string? State { get; init; }
         public string? MachineName { get; init; }
-
-        [JsonPropertyName("duration")]
         public string? Duration { get; init; }
-
         public string ConsoleLogUrl { get; init; } = "";
-
-        [JsonPropertyName("failureCategory")]
         public string? FailureCategory { get; init; }
     }
 
     private sealed class FilesJsonResult
     {
-        [JsonPropertyName("binlogs")]
         public IReadOnlyList<HelixFileJsonResult> Binlogs { get; init; } = [];
-
-        [JsonPropertyName("testResults")]
         public IReadOnlyList<HelixFileJsonResult> TestResults { get; init; } = [];
-
-        [JsonPropertyName("other")]
         public IReadOnlyList<HelixFileJsonResult> Other { get; init; } = [];
     }
 
@@ -158,28 +135,13 @@ public class Commands
 
     private sealed class WorkItemJsonResult
     {
-        [JsonPropertyName("name")]
         public string Name { get; init; } = "";
-
-        [JsonPropertyName("exitCode")]
         public int ExitCode { get; init; }
-
-        [JsonPropertyName("state")]
         public string? State { get; init; }
-
-        [JsonPropertyName("machineName")]
         public string? MachineName { get; init; }
-
-        [JsonPropertyName("duration")]
         public string? Duration { get; init; }
-
-        [JsonPropertyName("consoleLogUrl")]
         public string ConsoleLogUrl { get; init; } = "";
-
-        [JsonPropertyName("failureCategory")]
         public string? FailureCategory { get; init; }
-
-        [JsonPropertyName("files")]
         public IReadOnlyList<HelixFileJsonResult> Files { get; init; } = [];
     }
 

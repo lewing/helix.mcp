@@ -58,7 +58,10 @@ public static class SchemaGenerator
 
             var schema = new Dictionary<string, object?>();
             foreach (var property in properties)
-                schema[property.Name] = CreateSchemaValue(property.PropertyType, visited, depth + 1);
+            {
+                var jsonName = property.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name ?? property.Name;
+                schema[jsonName] = CreateSchemaValue(property.PropertyType, visited, depth + 1);
+            }
 
             return schema;
         }

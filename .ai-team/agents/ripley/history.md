@@ -28,6 +28,9 @@ Detailed notes for AzDO search/log ranking, MCP error surfacing, CI-knowledge de
 
 ## Learnings (remaining AzDO auth threat-model follow-ups)
 
+- **CLI schema generation now respects explicit JSON property names:** `src/HelixTool.Core/CliSchema/SchemaGenerator.cs` uses `JsonPropertyNameAttribute` values when present, so `--schema` matches the actual `System.Text.Json` wire names instead of always reflecting raw CLR property names.
+- **CLI-only JSON DTOs should keep serializer defaults unless the external wire format truly requires overrides:** the private `status`, `files`, and `work-item` DTOs in `src/HelixTool/Program.cs` are meant to preserve the CLI's historical PascalCase output, so adding camelCase `[JsonPropertyName]` attributes there changes the public wire contract.
+
 - **Refreshable fallback credentials now carry expiry metadata:** `AzCliAzdoTokenAccessor` caches Azure CLI and `az`-subprocess credentials with a refresh deadline (`min(expiresOn - 5m, now + 45m)`) instead of pinning the first token for the full process lifetime; 401/403 responses now invalidate that cached fallback so the next request re-resolves auth.
 - **Stable cache isolation uses source identity, not token bytes:** `AzdoCredential.CacheIdentity` is derived from the auth path plus stable JWT claims (`tid`/`oid`/`appid`/`sub`) when available, and `AzdoApiClient` stores `CacheOptions.AuthTokenHash` from that stable identity after the first successful authenticated AzDO response. `CachingAzdoApiClient` then prefixes all AzDO cache/state keys with that hash when present.
 - **Auth visibility is now first-class metadata:** `IAzdoTokenAccessor.AuthStatusAsync` reports the resolved path, credential source, expiry signal, and warnings without making an AzDO request; `hlx azdo auth-status` prints or serializes that safe metadata for operators.
