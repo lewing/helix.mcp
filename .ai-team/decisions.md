@@ -4364,3 +4364,20 @@ Store the resolved AzDO auth cache identity on `CacheOptions` and let both `Cach
 ## Why
 
 The auth-hash partition can no longer be treated as write-once because long-running processes may observe Azure CLI or `az` credential changes. Keeping the last resolved identity next to the derived hash lets both layers react consistently when the principal changes, while `CacheStoreFactory` now keys stores strictly by the stable effective cache root so auth-key churn never creates duplicate `SqliteCacheStore` instances for the same database path.
+
+### 2026-03-14: PR #29 review round 4 — AzDO auth fallback identity and expiration parsing hardening
+
+**By:** Ripley
+**Requested by:** Larry Ewing
+
+## Decision
+
+- When an `AzdoCredential` arrives without `CacheIdentity`, derive the fallback identity with `AzdoCredential.BuildCacheIdentity(Source, DisplayToken)` instead of using the bare source label. This preserves principal-specific AzDO cache partitioning for PATs and JWTs that do not already carry a precomputed identity.
+- Remove `TrySetAuthTokenHash`; callers now update the shared AzDO auth context consistently through `UpdateAuthContext(...)`.
+- Use a shared `AzdoCredential.TryFromUnixTimeSeconds` helper for both JWT `exp` parsing and az CLI `expiresOn*` parsing so out-of-range Unix timestamps fail closed consistently instead of throwing.
+
+## Why
+
+- Source-only fallback identities can collapse different principals onto the same AzDO cache partition and reuse cached responses across distinct authenticated contexts.
+- A single `UpdateAuthContext(...)` path keeps identity/hash updates coherent across layers and removes drift between callers.
+- Centralized, range-checked Unix-time parsing hardens both credential sources against invalid expiration values and keeps failure behavior deterministic.
