@@ -4389,3 +4389,25 @@ The auth-hash partition can no longer be treated as write-once because long-runn
 **What:** Keep the helix-cli docs in `.github/skills/helix-cli/SKILL.md` only, documenting shipped CLI behavior and dynamic discovery surfaces. Route CLI discovery through `hlx llms-txt`, command `--help`, and inline jq field hints; explicitly note there is no `hlx ci-guide` command yet; and describe `hlx search-log` as text-only in the CLI while routing structured Helix log consumers to MCP `helix_search`.
 **Why:** Skill docs are an execution surface for agents. Behavior-accurate docs preserve the approved discovery path and avoid broken CLI workflows caused by aspirational parity claims. A second static reference surface would go stale, duplicate information already discoverable from shipped surfaces, and risk documenting unshipped CLI JSON for `hlx search-log`.
 **Follow-up:** Track `hlx <command> --schema` as the long-term fix for per-command JSON field discovery; until then, the skill should stay single-source in `SKILL.md` and point structured Helix log consumers to MCP `helix_search`.
+
+### 2026-03-14: `azdo search-log --schema` is mode-sensitive
+**By:** Ripley
+**What:** The new CLI `--schema` support prints `LogSearchResult` when `hlx azdo search-log` is scoped to a specific `--log-id`, and prints `CrossStepSearchResult` when the command is searching across ranked build logs.
+**Why:** `azdo search-log` already has two distinct JSON payload shapes depending on whether `--log-id` is present. Schema discovery needs to mirror the active wire format instead of inventing a third shape or flattening both modes into one inaccurate contract.
+
+### 2026-03-14: Source generator-backed CLI describe registry
+
+**By:** Ripley
+
+## Decision
+Use a Roslyn source generator in `src/HelixTool.Generators/` to emit `HelixTool.Generated.CommandRegistry` for `hlx describe`.
+
+## Why
+- MCP `[Description]` attributes in `HelixTool.Mcp.Tools` remain the single source of truth for agent-facing command descriptions.
+- CLI commands opt in with `[McpEquivalent("...")]`, which keeps the CLI/MCP mapping explicit without introducing shared description constants.
+- `hlx describe` can stay runtime-light and strongly typed because it consumes generated data instead of reflecting over command metadata at startup.
+
+## Key files
+- `src/HelixTool.Generators/DescribeGenerator.cs`
+- `src/HelixTool.Core/McpEquivalentAttribute.cs`
+- `src/HelixTool/Program.cs`
