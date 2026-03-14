@@ -1,0 +1,21 @@
+{
+  "universe_usage_history": [
+    {
+      "assignment_id": "2026-02-11-hlx-helix-tool",
+      "universe": "Alien",
+      "timestamp": "2026-02-11T04:50:22Z"
+    }
+  ],
+  "assignment_cast_snapshots": {
+    "2026-02-11-hlx-helix-tool": {
+      "universe": "Alien",
+      "agent_map": {
+        "dallas": "Dallas",
+        "ripley": "Ripley",
+        "lambert": "Lambert",
+        "kane": "Kane"
+      },
+      "created_at": "2026-02-11T04:50:22Z"
+    }
+  }
+}
