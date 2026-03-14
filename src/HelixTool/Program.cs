@@ -1,7 +1,9 @@
 ﻿using System.Text.Json;
+using System.Text.Json.Serialization;
 using ConsoleAppFramework;
 using HelixTool;
 using HelixTool.Core;
+using HelixTool.Core.CliSchema;
 using HelixTool.Core.Cache;
 using HelixTool.Core.Helix;
 using HelixTool.Core.AzDO;
@@ -78,6 +80,108 @@ public class Commands
 {
     private static readonly JsonSerializerOptions s_jsonOptions = new() { WriteIndented = true };
 
+    internal static bool TryPrintSchema<T>(bool schema)
+    {
+        if (!schema) return false;
+        Console.WriteLine(SchemaGenerator.GenerateSchema<T>());
+        return true;
+    }
+
+    private sealed class StatusJsonResult
+    {
+        [JsonPropertyName("job")]
+        public StatusJobJsonResult Job { get; init; } = new();
+
+        [JsonPropertyName("totalWorkItems")]
+        public int TotalWorkItems { get; init; }
+
+        [JsonPropertyName("failedCount")]
+        public int FailedCount { get; init; }
+
+        [JsonPropertyName("passedCount")]
+        public int PassedCount { get; init; }
+
+        [JsonPropertyName("failed")]
+        public IReadOnlyList<StatusWorkItemJsonResult>? Failed { get; init; }
+
+        [JsonPropertyName("passed")]
+        public IReadOnlyList<StatusWorkItemJsonResult>? Passed { get; init; }
+    }
+
+    private sealed class StatusJobJsonResult
+    {
+        [JsonPropertyName("jobId")]
+        public string JobId { get; init; } = "";
+
+        public string Name { get; init; } = "";
+        public string QueueId { get; init; } = "";
+        public string Creator { get; init; } = "";
+        public string Source { get; init; } = "";
+        public string? Created { get; init; }
+        public string? Finished { get; init; }
+    }
+
+    private sealed class StatusWorkItemJsonResult
+    {
+        public string Name { get; init; } = "";
+        public int ExitCode { get; init; }
+        public string? State { get; init; }
+        public string? MachineName { get; init; }
+
+        [JsonPropertyName("duration")]
+        public string? Duration { get; init; }
+
+        public string ConsoleLogUrl { get; init; } = "";
+
+        [JsonPropertyName("failureCategory")]
+        public string? FailureCategory { get; init; }
+    }
+
+    private sealed class FilesJsonResult
+    {
+        [JsonPropertyName("binlogs")]
+        public IReadOnlyList<HelixFileJsonResult> Binlogs { get; init; } = [];
+
+        [JsonPropertyName("testResults")]
+        public IReadOnlyList<HelixFileJsonResult> TestResults { get; init; } = [];
+
+        [JsonPropertyName("other")]
+        public IReadOnlyList<HelixFileJsonResult> Other { get; init; } = [];
+    }
+
+    private sealed class HelixFileJsonResult
+    {
+        public string Name { get; init; } = "";
+        public string Uri { get; init; } = "";
+    }
+
+    private sealed class WorkItemJsonResult
+    {
+        [JsonPropertyName("name")]
+        public string Name { get; init; } = "";
+
+        [JsonPropertyName("exitCode")]
+        public int ExitCode { get; init; }
+
+        [JsonPropertyName("state")]
+        public string? State { get; init; }
+
+        [JsonPropertyName("machineName")]
+        public string? MachineName { get; init; }
+
+        [JsonPropertyName("duration")]
+        public string? Duration { get; init; }
+
+        [JsonPropertyName("consoleLogUrl")]
+        public string ConsoleLogUrl { get; init; } = "";
+
+        [JsonPropertyName("failureCategory")]
+        public string? FailureCategory { get; init; }
+
+        [JsonPropertyName("files")]
+        public IReadOnlyList<HelixFileJsonResult> Files { get; init; } = [];
+    }
+
     private readonly Lazy<HelixService> _lazySvc;
     private readonly ICredentialStore _credentialStore;
     private readonly ChainedHelixTokenAccessor _tokenAccessor;
@@ -96,8 +200,11 @@ public class Commands
     /// <param name="filter">Filter: 'failed' (default), 'passed', or 'all'.</param>
     /// <param name="json">Output as structured JSON instead of human-readable text.</param>
     [Command("status")]
-    public async Task Status([Argument] string jobId, [Argument] string filter = "failed", bool json = false)
+    public async Task Status([Argument] string jobId, [Argument] string filter = "failed", bool json = false, bool schema = false)
     {
+        if (TryPrintSchema<StatusJsonResult>(schema))
+            return;
+
         if (!filter.Equals("failed", StringComparison.OrdinalIgnoreCase) &&
             !filter.Equals("passed", StringComparison.OrdinalIgnoreCase) &&
             !filter.Equals("all", StringComparison.OrdinalIgnoreCase))
@@ -114,14 +221,45 @@ public class Commands
 
         if (json)
         {
-            var result = new
+            var result = new StatusJsonResult
             {
-                job = new { jobId = summary.JobId, summary.Name, summary.QueueId, summary.Creator, summary.Source, summary.Created, summary.Finished },
-                totalWorkItems = summary.TotalCount,
-                failedCount = summary.Failed.Count,
-                passedCount = summary.Passed.Count,
-                failed = showFailed ? summary.Failed.Select(f => new { f.Name, f.ExitCode, f.State, f.MachineName, duration = f.Duration?.ToString(), f.ConsoleLogUrl, failureCategory = f.FailureCategory?.ToString() }) : null,
-                passed = showPassed ? summary.Passed.Select(p => new { p.Name, p.ExitCode, p.State, p.MachineName, duration = p.Duration?.ToString(), p.ConsoleLogUrl, failureCategory = (string?)null }) : null
+                Job = new StatusJobJsonResult
+                {
+                    JobId = summary.JobId,
+                    Name = summary.Name,
+                    QueueId = summary.QueueId,
+                    Creator = summary.Creator,
+                    Source = summary.Source,
+                    Created = summary.Created,
+                    Finished = summary.Finished
+                },
+                TotalWorkItems = summary.TotalCount,
+                FailedCount = summary.Failed.Count,
+                PassedCount = summary.Passed.Count,
+                Failed = showFailed
+                    ? summary.Failed.Select(f => new StatusWorkItemJsonResult
+                    {
+                        Name = f.Name,
+                        ExitCode = f.ExitCode,
+                        State = f.State,
+                        MachineName = f.MachineName,
+                        Duration = f.Duration?.ToString(),
+                        ConsoleLogUrl = f.ConsoleLogUrl,
+                        FailureCategory = f.FailureCategory?.ToString()
+                    }).ToList()
+                    : null,
+                Passed = showPassed
+                    ? summary.Passed.Select(p => new StatusWorkItemJsonResult
+                    {
+                        Name = p.Name,
+                        ExitCode = p.ExitCode,
+                        State = p.State,
+                        MachineName = p.MachineName,
+                        Duration = p.Duration?.ToString(),
+                        ConsoleLogUrl = p.ConsoleLogUrl,
+                        FailureCategory = null
+                    }).ToList()
+                    : null
             };
             Console.WriteLine(JsonSerializer.Serialize(result, s_jsonOptions));
             return;
@@ -201,17 +339,26 @@ public class Commands
     /// <param name="workItem">Work item name.</param>
     /// <param name="json">Output as structured JSON instead of human-readable text.</param>
     [Command("files")]
-    public async Task Files([Argument] string jobId, [Argument] string workItem, bool json = false)
+    public async Task Files([Argument] string jobId, [Argument] string workItem, bool json = false, bool schema = false)
     {
+        if (TryPrintSchema<FilesJsonResult>(schema))
+            return;
+
         var files = await Svc.GetWorkItemFilesAsync(jobId, workItem);
 
         if (json)
         {
-            var result = new
+            var result = new FilesJsonResult
             {
-                binlogs = files.Where(f => HelixService.MatchesPattern(f.Name, "*.binlog")).Select(f => new { f.Name, f.Uri }),
-                testResults = files.Where(f => HelixService.IsTestResultFile(f.Name)).Select(f => new { f.Name, f.Uri }),
-                other = files.Where(f => !HelixService.MatchesPattern(f.Name, "*.binlog") && !HelixService.IsTestResultFile(f.Name)).Select(f => new { f.Name, f.Uri })
+                Binlogs = files.Where(f => HelixService.MatchesPattern(f.Name, "*.binlog"))
+                    .Select(f => new HelixFileJsonResult { Name = f.Name, Uri = f.Uri })
+                    .ToList(),
+                TestResults = files.Where(f => HelixService.IsTestResultFile(f.Name))
+                    .Select(f => new HelixFileJsonResult { Name = f.Name, Uri = f.Uri })
+                    .ToList(),
+                Other = files.Where(f => !HelixService.MatchesPattern(f.Name, "*.binlog") && !HelixService.IsTestResultFile(f.Name))
+                    .Select(f => new HelixFileJsonResult { Name = f.Name, Uri = f.Uri })
+                    .ToList()
             };
             Console.WriteLine(JsonSerializer.Serialize(result, s_jsonOptions));
             return;
@@ -280,22 +427,25 @@ public class Commands
     /// <param name="workItem">Work item name.</param>
     /// <param name="json">Output as structured JSON instead of human-readable text.</param>
     [Command("work-item")]
-    public async Task WorkItem([Argument] string jobId, [Argument] string workItem, bool json = false)
+    public async Task WorkItem([Argument] string jobId, [Argument] string workItem, bool json = false, bool schema = false)
     {
+        if (TryPrintSchema<WorkItemJsonResult>(schema))
+            return;
+
         var detail = await Svc.GetWorkItemDetailAsync(jobId, workItem);
 
         if (json)
         {
-            var result = new
+            var result = new WorkItemJsonResult
             {
-                detail.Name,
-                detail.ExitCode,
-                detail.State,
-                detail.MachineName,
-                duration = detail.Duration?.ToString(),
-                detail.ConsoleLogUrl,
-                failureCategory = detail.FailureCategory?.ToString(),
-                files = detail.Files.Select(f => new { f.Name, f.Uri })
+                Name = detail.Name,
+                ExitCode = detail.ExitCode,
+                State = detail.State,
+                MachineName = detail.MachineName,
+                Duration = detail.Duration?.ToString(),
+                ConsoleLogUrl = detail.ConsoleLogUrl,
+                FailureCategory = detail.FailureCategory?.ToString(),
+                Files = detail.Files.Select(f => new HelixFileJsonResult { Name = f.Name, Uri = f.Uri }).ToList()
             };
             Console.WriteLine(JsonSerializer.Serialize(result, s_jsonOptions));
             return;
@@ -918,8 +1068,11 @@ public class AzdoCommands
     /// <summary>Show the currently resolved Azure DevOps authentication path without making an AzDO API request.</summary>
     /// <param name="json">Output as structured JSON instead of human-readable text.</param>
     [Command("azdo auth-status")]
-    public async Task AuthStatus(bool json = false)
+    public async Task AuthStatus(bool json = false, bool schema = false)
     {
+        if (Commands.TryPrintSchema<AzdoAuthStatus>(schema))
+            return;
+
         var status = await _tokenAccessor.AuthStatusAsync();
 
         if (!status.IsAuthenticated)
@@ -946,8 +1099,11 @@ public class AzdoCommands
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
     /// <param name="json">Output as structured JSON instead of human-readable text.</param>
     [Command("azdo build")]
-    public async Task Build([Argument] string buildId, bool json = false)
+    public async Task Build([Argument] string buildId, bool json = false, bool schema = false)
     {
+        if (Commands.TryPrintSchema<AzdoBuildSummary>(schema))
+            return;
+
         var summary = await _svc.GetBuildSummaryAsync(buildId);
 
         if (json)
@@ -983,8 +1139,11 @@ public class AzdoCommands
     [Command("azdo builds")]
     public async Task Builds(string org = "dnceng-public", string project = "public",
         int top = 20, string? branch = null, string? prNumber = null,
-        int? definitionId = null, string? status = null, bool json = false)
+        int? definitionId = null, string? status = null, bool json = false, bool schema = false)
     {
+        if (Commands.TryPrintSchema<IReadOnlyList<AzdoBuild>>(schema))
+            return;
+
         var filter = new AzdoBuildFilter
         {
             PrNumber = prNumber,
@@ -1037,8 +1196,11 @@ public class AzdoCommands
     /// <param name="filter">Filter: 'failed' (default) or 'all'.</param>
     /// <param name="json">Output as structured JSON.</param>
     [Command("azdo timeline")]
-    public async Task Timeline([Argument] string buildId, string filter = "failed", bool json = false)
+    public async Task Timeline([Argument] string buildId, string filter = "failed", bool json = false, bool schema = false)
     {
+        if (Commands.TryPrintSchema<AzdoTimeline>(schema))
+            return;
+
         if (!filter.Equals("failed", StringComparison.OrdinalIgnoreCase) &&
             !filter.Equals("all", StringComparison.OrdinalIgnoreCase))
         {
@@ -1146,8 +1308,15 @@ public class AzdoCommands
     [Command("azdo search-log")]
     public async Task SearchLog([Argument] string buildId,
         string pattern = "error", int contextLines = 2, int maxMatches = 100,
-        int? logId = null, int maxLogs = 50, int minLines = 5, bool json = false)
+        int? logId = null, int maxLogs = 50, int minLines = 5, bool json = false, bool schema = false)
     {
+        if (logId.HasValue
+            ? Commands.TryPrintSchema<LogSearchResult>(schema)
+            : Commands.TryPrintSchema<CrossStepSearchResult>(schema))
+        {
+            return;
+        }
+
         static void PrintMatches(IReadOnlyList<LogMatch> matches, int context)
         {
             foreach (var m in matches)
@@ -1235,8 +1404,11 @@ public class AzdoCommands
     /// <param name="top">Maximum number of changes to return.</param>
     /// <param name="json">Output as structured JSON.</param>
     [Command("azdo changes")]
-    public async Task Changes([Argument] string buildId, int top = 20, bool json = false)
+    public async Task Changes([Argument] string buildId, int top = 20, bool json = false, bool schema = false)
     {
+        if (Commands.TryPrintSchema<IReadOnlyList<AzdoBuildChange>>(schema))
+            return;
+
         var changes = await _svc.GetBuildChangesAsync(buildId, top);
 
         if (json)
@@ -1265,8 +1437,11 @@ public class AzdoCommands
     /// <param name="top">Maximum number of test runs to return.</param>
     /// <param name="json">Output as structured JSON.</param>
     [Command("azdo test-runs")]
-    public async Task TestRuns([Argument] string buildId, int top = 50, bool json = false)
+    public async Task TestRuns([Argument] string buildId, int top = 50, bool json = false, bool schema = false)
     {
+        if (Commands.TryPrintSchema<IReadOnlyList<AzdoTestRun>>(schema))
+            return;
+
         var runs = await _svc.GetTestRunsAsync(buildId, top);
 
         if (json)
@@ -1308,8 +1483,11 @@ public class AzdoCommands
     /// <param name="json">Output as structured JSON.</param>
     [Command("azdo test-results")]
     public async Task TestResults([Argument] string buildId, [Argument] int runId,
-        int top = 200, bool json = false)
+        int top = 200, bool json = false, bool schema = false)
     {
+        if (Commands.TryPrintSchema<IReadOnlyList<AzdoTestResult>>(schema))
+            return;
+
         var results = await _svc.GetTestResultsAsync(buildId, runId, top);
 
         if (json)
@@ -1357,8 +1535,11 @@ public class AzdoCommands
     /// <param name="json">Output as structured JSON.</param>
     [Command("azdo artifacts")]
     public async Task Artifacts([Argument] string buildId, string pattern = "*",
-        int top = 100, bool json = false)
+        int top = 100, bool json = false, bool schema = false)
     {
+        if (Commands.TryPrintSchema<IReadOnlyList<AzdoBuildArtifact>>(schema))
+            return;
+
         var artifacts = await _svc.GetBuildArtifactsAsync(buildId, pattern, top);
 
         if (json)
@@ -1390,8 +1571,11 @@ public class AzdoCommands
     /// <param name="json">Output as structured JSON.</param>
     [Command("azdo search-timeline")]
     public async Task SearchTimeline([Argument] string buildId, [Argument] string pattern,
-        string? type = null, string result = "failed", bool json = false)
+        string? type = null, string result = "failed", bool json = false, bool schema = false)
     {
+        if (Commands.TryPrintSchema<TimelineSearchResult>(schema))
+            return;
+
         if (type is not null &&
             !type.Equals("Stage", StringComparison.OrdinalIgnoreCase) &&
             !type.Equals("Job", StringComparison.OrdinalIgnoreCase) &&
@@ -1468,8 +1652,11 @@ public class AzdoCommands
     [Command("azdo test-attachments")]
     public async Task TestAttachments([Argument] int runId, [Argument] int resultId,
         string org = "dnceng-public", string project = "public",
-        int top = 100, bool json = false)
+        int top = 100, bool json = false, bool schema = false)
     {
+        if (Commands.TryPrintSchema<IReadOnlyList<AzdoTestAttachment>>(schema))
+            return;
+
         var attachments = await _svc.GetTestAttachmentsAsync(org, project, runId, resultId, top);
 
         if (json)
