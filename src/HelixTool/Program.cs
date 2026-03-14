@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using ConsoleAppFramework;
 using HelixTool;
 using HelixTool.Core;
+using HelixTool.Generated;
 using HelixTool.Core.CliSchema;
 using HelixTool.Core.Cache;
 using HelixTool.Core.Helix;
@@ -195,10 +196,160 @@ public class Commands
         _tokenAccessor = tokenAccessor;
     }
 
+    private static int GetCategoryOrder(string category)
+        => category switch
+        {
+            "Helix" => 0,
+            "AzDO" => 1,
+            _ => 2
+        };
+
+    private static string NormalizeRoute(string route)
+        => string.Join(" ", route.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+
+    private static string ToKebabCase(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return value;
+
+        var builder = new System.Text.StringBuilder(value.Length + 4);
+        for (var i = 0; i < value.Length; i++)
+        {
+            var ch = value[i];
+            if (char.IsUpper(ch))
+            {
+                if (i > 0)
+                    builder.Append('-');
+
+                builder.Append(char.ToLowerInvariant(ch));
+                continue;
+            }
+
+            builder.Append(ch);
+        }
+
+        return builder.ToString();
+    }
+
+    private static string GetParameterLabel(CommandRegistry.ParamInfo parameter)
+    {
+        if (parameter.IsPositional)
+        {
+            return parameter.Type.EndsWith("[]", StringComparison.Ordinal)
+                ? $"<{parameter.Name}...>"
+                : $"<{parameter.Name}>";
+        }
+
+        return $"--{ToKebabCase(parameter.Name)}";
+    }
+
+    private static string GetParameterDetail(CommandRegistry.ParamInfo parameter)
+    {
+        if (parameter.Default is null)
+            return $"{parameter.Type} (required)";
+
+        if (string.Equals(parameter.Default, "null", StringComparison.OrdinalIgnoreCase))
+            return $"{parameter.Type} (optional)";
+
+        return $"{parameter.Type} (default: {parameter.Default})";
+    }
+
+    private static string ToSummaryDescription(string? description)
+    {
+        if (string.IsNullOrWhiteSpace(description))
+            return "(no description)";
+
+        var text = description.Trim();
+        var firstSentenceEnd = text.IndexOf(". ", StringComparison.Ordinal);
+        if (firstSentenceEnd >= 0)
+            return text[..(firstSentenceEnd + 1)];
+
+        return text.Length <= 72 ? text : text[..69] + "...";
+    }
+
+    private static void PrintCommandSummary()
+    {
+        var categories = CommandRegistry.Commands
+            .GroupBy(command => command.Category)
+            .OrderBy(group => GetCategoryOrder(group.Key));
+
+        foreach (var category in categories)
+        {
+            var commands = category.ToArray();
+            if (commands.Length == 0)
+                continue;
+
+            var width = commands.Max(command => command.Route.Length) + 2;
+            Console.WriteLine($"{category.Key} Commands:");
+            foreach (var command in commands)
+            {
+                Console.Write("  ");
+                Console.Write(command.Route.PadRight(width));
+                Console.WriteLine(ToSummaryDescription(command.Description));
+            }
+
+            Console.WriteLine();
+        }
+
+        Console.WriteLine("Use 'hlx describe <command>' for parameters and output details.");
+    }
+
+    private static void PrintCommandDetail(string route)
+    {
+        var normalizedRoute = NormalizeRoute(route);
+        var command = CommandRegistry.Get(normalizedRoute);
+        if (command is null)
+        {
+            Console.Error.WriteLine($"Unknown command '{route}'.");
+            Console.Error.WriteLine("Use 'hlx describe' to list available commands.");
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        Console.WriteLine($"{command.Route} — {command.Description ?? "No description available."}");
+        Console.WriteLine();
+        Console.WriteLine("Parameters:");
+
+        if (command.Parameters.Length == 0)
+        {
+            Console.WriteLine("  (none)");
+        }
+        else
+        {
+            var labels = command.Parameters.Select(GetParameterLabel).ToArray();
+            var width = labels.Max(label => label.Length) + 2;
+            for (var i = 0; i < command.Parameters.Length; i++)
+            {
+                Console.Write("  ");
+                Console.Write(labels[i].PadRight(width));
+                Console.WriteLine(GetParameterDetail(command.Parameters[i]));
+            }
+        }
+
+        if (command.Parameters.Any(parameter => string.Equals(parameter.Name, "schema", StringComparison.OrdinalIgnoreCase)))
+        {
+            Console.WriteLine();
+            Console.WriteLine($"Use 'hlx {command.Route} --schema' for full JSON output shape.");
+        }
+    }
+
+    [Command("describe")]
+    public void Describe([Argument] params string[] command)
+    {
+        if (command.Length == 0)
+        {
+            PrintCommandSummary();
+            return;
+        }
+
+        PrintCommandDetail(string.Join(" ", command));
+    }
+
     /// <summary>Show work item summary for a Helix job.</summary>
     /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
     /// <param name="filter">Filter: 'failed' (default), 'passed', or 'all'.</param>
     /// <param name="json">Output as structured JSON instead of human-readable text.</param>
+    [McpEquivalent("helix_status")]
     [Command("status")]
     public async Task Status([Argument] string jobId, [Argument] string filter = "failed", bool json = false, bool schema = false)
     {
@@ -327,6 +478,7 @@ public class Commands
     /// <summary>Download console log for a work item to a temp file.</summary>
     /// <param name="jobId">Helix job ID or URL.</param>
     /// <param name="workItem">Work item name.</param>
+    [McpEquivalent("helix_logs")]
     [Command("logs")]
     public async Task Logs([Argument] string jobId, [Argument] string workItem)
     {
@@ -338,6 +490,7 @@ public class Commands
     /// <param name="jobId">Helix job ID or URL.</param>
     /// <param name="workItem">Work item name.</param>
     /// <param name="json">Output as structured JSON instead of human-readable text.</param>
+    [McpEquivalent("helix_files")]
     [Command("files")]
     public async Task Files([Argument] string jobId, [Argument] string workItem, bool json = false, bool schema = false)
     {
@@ -378,6 +531,7 @@ public class Commands
     /// <param name="workItem">Work item name.</param>
     /// <param name="pattern">File name or glob pattern (e.g., *.binlog).</param>
     /// <param name="url">Direct file URL to download (bypasses jobId/workItem).</param>
+    [McpEquivalent("helix_download")]
     [Command("download")]
     public async Task Download([Argument] string? jobId = null, [Argument] string? workItem = null,
         string pattern = "*", string? url = null)
@@ -406,6 +560,7 @@ public class Commands
     /// <param name="jobId">Helix job ID or URL.</param>
     /// <param name="pattern">File name or glob pattern (e.g., *.binlog, *.trx, *.dmp).</param>
     /// <param name="maxItems">Max work items to scan (default 50).</param>
+    [McpEquivalent("helix_find_files")]
     [Command("find-files")]
     public async Task FindFiles([Argument] string jobId, string pattern = "*", int maxItems = 50)
     {
@@ -426,6 +581,7 @@ public class Commands
     /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
     /// <param name="workItem">Work item name.</param>
     /// <param name="json">Output as structured JSON instead of human-readable text.</param>
+    [McpEquivalent("helix_work_item")]
     [Command("work-item")]
     public async Task WorkItem([Argument] string jobId, [Argument] string workItem, bool json = false, bool schema = false)
     {
@@ -478,6 +634,7 @@ public class Commands
 
     /// <summary>Get status for multiple Helix jobs at once.</summary>
     /// <param name="jobIds">One or more Helix job IDs or URLs.</param>
+    [McpEquivalent("helix_batch_status")]
     [Command("batch-status")]
     public async Task BatchStatus([Argument] params string[] jobIds)
     {
@@ -511,6 +668,7 @@ public class Commands
     /// <param name="context">Number of context lines before and after each match.</param>
     /// <param name="maxMatches">Maximum number of matches to return (default 100).</param>
     /// <param name="fileName">File name to search (omit for console log).</param>
+    [McpEquivalent("helix_search")]
     [Command("search-log")]
     public async Task SearchLog([Argument] string jobId, [Argument] string workItem,
         [Argument] string pattern, int context = 2, int maxMatches = 100, string? fileName = null)
@@ -581,6 +739,7 @@ public class Commands
     /// <param name="fileName">Specific TRX file name (optional - auto-discovers all .trx files if not set).</param>
     /// <param name="includePassed">Include passed tests in output (default: false).</param>
     /// <param name="maxResults">Maximum number of test results to return (default: 200).</param>
+    [McpEquivalent("helix_parse_uploaded_trx")]
     [Command("parse-uploaded-trx")]
     public async Task TestResults([Argument] string jobId, [Argument] string workItem,
         string? fileName = null, bool includePassed = false, int maxResults = 200)
@@ -1098,6 +1257,7 @@ public class AzdoCommands
     /// <summary>Get details of a specific Azure DevOps build.</summary>
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
     /// <param name="json">Output as structured JSON instead of human-readable text.</param>
+    [McpEquivalent("azdo_build")]
     [Command("azdo build")]
     public async Task Build([Argument] string buildId, bool json = false, bool schema = false)
     {
@@ -1136,6 +1296,7 @@ public class AzdoCommands
     /// <param name="definitionId">Filter by pipeline definition ID.</param>
     /// <param name="status">Filter by build status.</param>
     /// <param name="json">Output as structured JSON.</param>
+    [McpEquivalent("azdo_builds")]
     [Command("azdo builds")]
     public async Task Builds(string org = "dnceng-public", string project = "public",
         int top = 20, string? branch = null, string? prNumber = null,
@@ -1195,6 +1356,7 @@ public class AzdoCommands
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
     /// <param name="filter">Filter: 'failed' (default) or 'all'.</param>
     /// <param name="json">Output as structured JSON.</param>
+    [McpEquivalent("azdo_timeline")]
     [Command("azdo timeline")]
     public async Task Timeline([Argument] string buildId, string filter = "failed", bool json = false, bool schema = false)
     {
@@ -1284,6 +1446,7 @@ public class AzdoCommands
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
     /// <param name="logId">Log ID from the timeline record's log reference.</param>
     /// <param name="tailLines">Number of lines from the end to return.</param>
+    [McpEquivalent("azdo_log")]
     [Command("azdo log")]
     public async Task Log([Argument] string buildId, [Argument] int logId, int? tailLines = 500)
     {
@@ -1305,6 +1468,7 @@ public class AzdoCommands
     /// <param name="maxLogs">Maximum number of log steps to download and search (default 50).</param>
     /// <param name="minLines">Minimum line count to include a log in the search.</param>
     /// <param name="json">Output as structured JSON.</param>
+    [McpEquivalent("azdo_search_log")]
     [Command("azdo search-log")]
     public async Task SearchLog([Argument] string buildId,
         string pattern = "error", int contextLines = 2, int maxMatches = 100,
@@ -1403,6 +1567,7 @@ public class AzdoCommands
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
     /// <param name="top">Maximum number of changes to return.</param>
     /// <param name="json">Output as structured JSON.</param>
+    [McpEquivalent("azdo_changes")]
     [Command("azdo changes")]
     public async Task Changes([Argument] string buildId, int top = 20, bool json = false, bool schema = false)
     {
@@ -1436,6 +1601,7 @@ public class AzdoCommands
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
     /// <param name="top">Maximum number of test runs to return.</param>
     /// <param name="json">Output as structured JSON.</param>
+    [McpEquivalent("azdo_test_runs")]
     [Command("azdo test-runs")]
     public async Task TestRuns([Argument] string buildId, int top = 50, bool json = false, bool schema = false)
     {
@@ -1481,6 +1647,7 @@ public class AzdoCommands
     /// <param name="runId">Test run ID from azdo-test-runs output.</param>
     /// <param name="top">Maximum number of test results to return.</param>
     /// <param name="json">Output as structured JSON.</param>
+    [McpEquivalent("azdo_test_results")]
     [Command("azdo test-results")]
     public async Task TestResults([Argument] string buildId, [Argument] int runId,
         int top = 200, bool json = false, bool schema = false)
@@ -1533,6 +1700,7 @@ public class AzdoCommands
     /// <param name="pattern">Filter artifacts by name using glob-style matching.</param>
     /// <param name="top">Maximum number of artifacts to return (default 100).</param>
     /// <param name="json">Output as structured JSON.</param>
+    [McpEquivalent("azdo_artifacts")]
     [Command("azdo artifacts")]
     public async Task Artifacts([Argument] string buildId, string pattern = "*",
         int top = 100, bool json = false, bool schema = false)
@@ -1569,6 +1737,7 @@ public class AzdoCommands
     /// <param name="type">Filter by record type: Stage, Job, or Task.</param>
     /// <param name="result">Result filter: 'failed' (default — includes non-succeeded records or records with timeline issues, same as 'azdo timeline') or 'all'.</param>
     /// <param name="json">Output as structured JSON.</param>
+    [McpEquivalent("azdo_search_timeline")]
     [Command("azdo search-timeline")]
     public async Task SearchTimeline([Argument] string buildId, [Argument] string pattern,
         string? type = null, string result = "failed", bool json = false, bool schema = false)
@@ -1649,6 +1818,7 @@ public class AzdoCommands
     /// <param name="project">Azure DevOps project (default: public).</param>
     /// <param name="top">Maximum number of attachments to return (default 100).</param>
     /// <param name="json">Output as structured JSON.</param>
+    [McpEquivalent("azdo_test_attachments")]
     [Command("azdo test-attachments")]
     public async Task TestAttachments([Argument] int runId, [Argument] int resultId,
         string org = "dnceng-public", string project = "public",

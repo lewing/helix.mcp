@@ -33,6 +33,7 @@
     <PackageReference Include="ModelContextProtocol" Version="1.0.0" />
     <ProjectReference Include="..\HelixTool.Core\HelixTool.Core.csproj" />
     <ProjectReference Include="..\HelixTool.Mcp.Tools\HelixTool.Mcp.Tools.csproj" />
+    <ProjectReference Include="..\HelixTool.Generators\HelixTool.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     <PackageReference Include="ConsoleAppFramework" Version="5.7.13" />
   </ItemGroup>
 
