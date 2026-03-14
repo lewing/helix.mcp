@@ -4394,3 +4394,20 @@ The auth-hash partition can no longer be treated as write-once because long-runn
 **By:** Ripley
 **What:** The new CLI `--schema` support prints `LogSearchResult` when `hlx azdo search-log` is scoped to a specific `--log-id`, and prints `CrossStepSearchResult` when the command is searching across ranked build logs.
 **Why:** `azdo search-log` already has two distinct JSON payload shapes depending on whether `--log-id` is present. Schema discovery needs to mirror the active wire format instead of inventing a third shape or flattening both modes into one inaccurate contract.
+
+### 2026-03-14: Source generator-backed CLI describe registry
+
+**By:** Ripley
+
+## Decision
+Use a Roslyn source generator in `src/HelixTool.Generators/` to emit `HelixTool.Generated.CommandRegistry` for `hlx describe`.
+
+## Why
+- MCP `[Description]` attributes in `HelixTool.Mcp.Tools` remain the single source of truth for agent-facing command descriptions.
+- CLI commands opt in with `[McpEquivalent("...")]`, which keeps the CLI/MCP mapping explicit without introducing shared description constants.
+- `hlx describe` can stay runtime-light and strongly typed because it consumes generated data instead of reflecting over command metadata at startup.
+
+## Key files
+- `src/HelixTool.Generators/DescribeGenerator.cs`
+- `src/HelixTool.Core/McpEquivalentAttribute.cs`
+- `src/HelixTool/Program.cs`
