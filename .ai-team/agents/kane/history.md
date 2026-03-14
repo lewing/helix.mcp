@@ -76,3 +76,5 @@
 - PR #30 review feedback finalized the skill as a single-source doc: rely on `hlx llms-txt`, command help, and inline jq field hints instead of a separate static reference file.
 - Do not document unshipped CLI JSON field shapes in the skill. For Helix `hlx search-log`, keep the CLI docs text-only and route structured consumers to MCP `helix_search`.
 - `hlx <command> --schema` should be tracked as a product issue rather than backfilled with a long static reference doc.
+
+📌 Team update (2026-03-14): `hlx azdo search-log --schema` must mirror the active JSON payload: `LogSearchResult` with `--log-id`, `CrossStepSearchResult` otherwise. — decided by Ripley

@@ -66,3 +66,7 @@
 📌 Team update (2026-03-13): Cache roots now stay stable via `CacheRootHash` while mutable `AuthTokenHash` partitions AzDO entries, and AzDO auth hashes are seeded before cached AzDO reads. — decided by Ripley
 
 📌 Team update (2026-03-14): helix-cli skill docs must reflect shipped CLI behavior: use `hlx llms-txt` for CLI discovery, note no `hlx ci-guide` command yet, and keep `hlx search-log` CLI docs text-only. — decided by Kane
+- Added TDD-style schema coverage in `src/HelixTool.Tests/CliSchema/SchemaGeneratorTests.cs` for the planned `HelixTool.Core.CliSchema.SchemaGenerator` API: primitives, DateTime/DateTimeOffset, Guid, enums, flat/nested POCOs, collections, nullable unwraps, circular references, max-depth cutoff, `AzdoAuthStatus` smoke coverage, and generic-vs-Type overload parity.
+- Key pattern for pre-implementation testability: call `SchemaGenerator.GenerateSchema<T>()` / `GenerateSchema(Type)` via reflection, then parse the returned JSON with `JsonDocument` and assert placeholder values and array/object shape. That keeps `dotnet build src/HelixTool.Tests/HelixTool.Tests.csproj --nologo` green before the production type exists while still giving Ripley runtime-red TDD coverage once the implementation lands.
+
+📌 Team update (2026-03-14): `hlx azdo search-log --schema` must mirror the active JSON payload: `LogSearchResult` with `--log-id`, `CrossStepSearchResult` otherwise. — decided by Ripley
