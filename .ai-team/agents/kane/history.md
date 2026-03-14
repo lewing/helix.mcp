@@ -78,3 +78,8 @@
 - `hlx <command> --schema` should be tracked as a product issue rather than backfilled with a long static reference doc.
 
 📌 Team update (2026-03-14): `hlx azdo search-log --schema` must mirror the active JSON payload: `LogSearchResult` with `--log-id`, `CrossStepSearchResult` otherwise. — decided by Ripley
+- `.github/skills/helix-cli/SKILL.md` should use `hlx describe` as the agent-first discovery path: top-level routing, then `hlx describe <command>`, then `<command> --schema`, then `<command> --help`.
+- `hlx llms-txt` still exists, but in the helix-cli skill it should be a secondary note rather than the recommended discovery chain.
+- Keep the helix-cli skill narrowly scoped to shipped CLI behavior; preserve the existing jq workflows, auth guidance, and cache section unless the shipped surface changed.
+- Key doc file: `.github/skills/helix-cli/SKILL.md` is the single maintained skill doc for agent-facing `hlx` CLI usage and discovery guidance.
+- Key agent log: `.ai-team/agents/kane/history.md` records durable documentation decisions, shipped-surface notes, and file-location reminders for future Kane tasks.
