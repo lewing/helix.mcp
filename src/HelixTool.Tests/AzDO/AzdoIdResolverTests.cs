@@ -73,12 +73,12 @@ public class AzdoIdResolverTests
         Assert.Equal(int.MaxValue, buildId);
     }
 
-    // --- REST API URL format: _apis/build/Builds/{id} ---
+    // --- REST API URL format: _apis/build/builds/{id} ---
 
     [Fact]
     public void Resolve_RestApiUrl_DevAzureCom_ExtractsAllFields()
     {
-        var url = "https://dev.azure.com/dnceng/7ea9116e-9fac-403d-b258-b31fcf1bb293/_apis/build/Builds/2926555";
+        var url = "https://dev.azure.com/dnceng/7ea9116e-9fac-403d-b258-b31fcf1bb293/_apis/build/builds/2926555";
 
         var (org, project, buildId) = AzdoIdResolver.Resolve(url);
 
@@ -90,7 +90,7 @@ public class AzdoIdResolverTests
     [Fact]
     public void Resolve_RestApiUrl_VisualStudioCom_ExtractsAllFields()
     {
-        var url = "https://dnceng.visualstudio.com/internal/_apis/build/Builds/12345";
+        var url = "https://dnceng.visualstudio.com/internal/_apis/build/builds/12345";
 
         var (org, project, buildId) = AzdoIdResolver.Resolve(url);
 
@@ -102,7 +102,7 @@ public class AzdoIdResolverTests
     [Fact]
     public void Resolve_RestApiUrl_WithQueryParams_ExtractsFromPath()
     {
-        var url = "https://dev.azure.com/dnceng-public/public/_apis/build/Builds/999?api-version=7.0";
+        var url = "https://dev.azure.com/dnceng-public/public/_apis/build/builds/999?api-version=7.0";
 
         var (org, project, buildId) = AzdoIdResolver.Resolve(url);
 
@@ -112,9 +112,21 @@ public class AzdoIdResolverTests
     }
 
     [Fact]
+    public void Resolve_RestApiUrl_CapitalBuilds_StillParses()
+    {
+        var url = "https://dev.azure.com/dnceng/internal/_apis/build/Builds/42";
+
+        var (org, project, buildId) = AzdoIdResolver.Resolve(url);
+
+        Assert.Equal("dnceng", org);
+        Assert.Equal("internal", project);
+        Assert.Equal(42, buildId);
+    }
+
+    [Fact]
     public void TryResolve_RestApiUrl_ReturnsTrue()
     {
-        var url = "https://dev.azure.com/dnceng/7ea9116e-9fac-403d-b258-b31fcf1bb293/_apis/build/Builds/2926555";
+        var url = "https://dev.azure.com/dnceng/7ea9116e-9fac-403d-b258-b31fcf1bb293/_apis/build/builds/2926555";
 
         var result = AzdoIdResolver.TryResolve(url, out var org, out var project, out var buildId);
 

@@ -54,7 +54,7 @@ public static class AzdoIdResolver
             if (string.IsNullOrEmpty(buildIdStr) || !int.TryParse(buildIdStr, out buildId))
             {
                 throw new ArgumentException(
-                    $"AzDO URL missing or invalid 'buildId' query parameter: '{input}'",
+                    $"AzDO URL missing or invalid build ID (expected '?buildId=NNN' or '/_apis/build/builds/NNN'): '{input}'",
                     nameof(input));
             }
         }
@@ -103,7 +103,7 @@ public static class AzdoIdResolver
         {
             if (segments[i].Equals("_apis", StringComparison.OrdinalIgnoreCase) &&
                 segments[i + 1].Equals("build", StringComparison.OrdinalIgnoreCase) &&
-                segments[i + 2].Equals("Builds", StringComparison.OrdinalIgnoreCase))
+                segments[i + 2].Equals("builds", StringComparison.OrdinalIgnoreCase))
             {
                 return int.TryParse(segments[i + 3], out buildId);
             }
