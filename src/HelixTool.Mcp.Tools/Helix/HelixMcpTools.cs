@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
+using Microsoft.DotNet.Helix.Client;
 
 using HelixTool.Core;
 using HelixTool.Core.Helix;
@@ -66,7 +67,7 @@ public sealed class HelixMcpTools
                 }).ToList() : null
             };
         }
-        catch (Exception ex) when (ex is HttpRequestException or HelixException or InvalidOperationException or ArgumentException)
+        catch (Exception ex) when (ex is HttpRequestException or HelixException or RestApiException or InvalidOperationException or ArgumentException)
         {
             throw new McpException($"Failed to get job status: {ex.Message}", ex);
         }
@@ -114,7 +115,7 @@ public sealed class HelixMcpTools
         {
             return await _svc.GetConsoleLogContentAsync(jobId, workItem, tail);
         }
-        catch (Exception ex) when (ex is HttpRequestException or HelixException or InvalidOperationException or ArgumentException)
+        catch (Exception ex) when (ex is HttpRequestException or HelixException or RestApiException or InvalidOperationException or ArgumentException)
         {
             throw new McpException($"Failed to get console log: {ex.Message}", ex);
         }
@@ -163,7 +164,7 @@ public sealed class HelixMcpTools
                 Other = other
             };
         }
-        catch (Exception ex) when (ex is HttpRequestException or HelixException or InvalidOperationException or ArgumentException)
+        catch (Exception ex) when (ex is HttpRequestException or HelixException or RestApiException or InvalidOperationException or ArgumentException)
         {
             throw new McpException($"Failed to get work item files: {ex.Message}", ex);
         }
@@ -207,7 +208,7 @@ public sealed class HelixMcpTools
 
             return new DownloadResult { DownloadedFiles = paths };
         }
-        catch (Exception ex) when (ex is HttpRequestException or HelixException or InvalidOperationException or ArgumentException)
+        catch (Exception ex) when (ex is HttpRequestException or HelixException or RestApiException or InvalidOperationException or ArgumentException)
         {
             throw new McpException($"Failed to download files: {ex.Message}", ex);
         }
@@ -235,7 +236,7 @@ public sealed class HelixMcpTools
                 }).ToList()
             };
         }
-        catch (Exception ex) when (ex is HttpRequestException or HelixException or InvalidOperationException or ArgumentException)
+        catch (Exception ex) when (ex is HttpRequestException or HelixException or RestApiException or InvalidOperationException or ArgumentException)
         {
             throw new McpException($"Failed to find files: {ex.Message}", ex);
         }
@@ -274,7 +275,7 @@ public sealed class HelixMcpTools
                 Files = detail.Files.Select(f => new FileInfo_ { Name = f.Name, Uri = f.Uri }).ToList()
             };
         }
-        catch (Exception ex) when (ex is HttpRequestException or HelixException or InvalidOperationException or ArgumentException)
+        catch (Exception ex) when (ex is HttpRequestException or HelixException or RestApiException or InvalidOperationException or ArgumentException)
         {
             throw new McpException($"Failed to get work item details: {ex.Message}", ex);
         }
@@ -347,7 +348,7 @@ public sealed class HelixMcpTools
                 }).ToList()
             };
         }
-        catch (Exception ex) when (ex is HttpRequestException or HelixException or InvalidOperationException or ArgumentException)
+        catch (Exception ex) when (ex is HttpRequestException or HelixException or RestApiException or InvalidOperationException or ArgumentException)
         {
             throw new McpException($"Failed to search: {ex.Message}", ex);
         }
@@ -385,7 +386,7 @@ public sealed class HelixMcpTools
         {
             throw new McpException(ex.Message, ex);
         }
-        catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or ArgumentException)
+        catch (Exception ex) when (ex is HttpRequestException or RestApiException or InvalidOperationException or ArgumentException)
         {
             throw new McpException($"Failed to parse test results: {ex.Message}", ex);
         }
@@ -444,7 +445,7 @@ public sealed class HelixMcpTools
                 FailureBreakdown = failureBreakdown
             };
         }
-        catch (Exception ex) when (ex is HttpRequestException or HelixException or InvalidOperationException or ArgumentException)
+        catch (Exception ex) when (ex is HttpRequestException or HelixException or RestApiException or InvalidOperationException or ArgumentException)
         {
             throw new McpException($"Failed to get batch status: {ex.Message}", ex);
         }

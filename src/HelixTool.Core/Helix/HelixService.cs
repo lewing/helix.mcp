@@ -2,6 +2,7 @@ using System.Net;
 using System.Xml;
 using System.Xml.Linq;
 using HelixTool.Core.Cache;
+using Microsoft.DotNet.Helix.Client;
 
 namespace HelixTool.Core.Helix;
 
@@ -36,6 +37,19 @@ public class HelixService
     {
         _api = api ?? throw new ArgumentNullException(nameof(api));
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+    }
+
+    /// <summary>Convert a Helix SDK <see cref="RestApiException"/> to a <see cref="HelixException"/>
+    /// using the HTTP status code from the response.</summary>
+    private static HelixException ConvertRestApiException(RestApiException ex, string context)
+    {
+        return ex.Response?.Status switch
+        {
+            401 or 403 => new HelixException(
+                "Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex),
+            404 => new HelixException($"{context} not found.", ex),
+            _ => new HelixException($"Helix API error: {ex.Message}", ex),
+        };
     }
 
     /// <summary>Represents a single work item's name and exit code.</summary>
@@ -104,6 +118,10 @@ public class HelixService
         {
             throw new HelixException($"Helix API error: {ex.Message}", ex);
         }
+        catch (RestApiException ex)
+        {
+            throw ConvertRestApiException(ex, $"Job '{id}'");
+        }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
@@ -151,6 +169,10 @@ public class HelixService
         {
             throw new HelixException($"Helix API error: {ex.Message}", ex);
         }
+        catch (RestApiException ex)
+        {
+            throw ConvertRestApiException(ex, $"Work item '{workItem}' in job '{id}'");
+        }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
@@ -195,6 +217,10 @@ public class HelixService
         catch (HttpRequestException ex)
         {
             throw new HelixException($"Helix API error: {ex.Message}", ex);
+        }
+        catch (RestApiException ex)
+        {
+            throw ConvertRestApiException(ex, $"Console log for '{workItem}' in job '{id}'");
         }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -241,6 +267,10 @@ public class HelixService
         catch (HttpRequestException ex)
         {
             throw new HelixException($"Helix API error: {ex.Message}", ex);
+        }
+        catch (RestApiException ex)
+        {
+            throw ConvertRestApiException(ex, $"Console log for '{workItem}' in job '{id}'");
         }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -297,6 +327,10 @@ public class HelixService
         catch (HttpRequestException ex)
         {
             throw new HelixException($"Helix API error: {ex.Message}", ex);
+        }
+        catch (RestApiException ex)
+        {
+            throw ConvertRestApiException(ex, $"Job '{id}'");
         }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -364,6 +398,10 @@ public class HelixService
         {
             throw new HelixException($"Helix API error: {ex.Message}", ex);
         }
+        catch (RestApiException ex)
+        {
+            throw ConvertRestApiException(ex, $"Work item '{workItem}' in job '{id}'");
+        }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
@@ -413,6 +451,10 @@ public class HelixService
         catch (HttpRequestException ex)
         {
             throw new HelixException($"Download error: {ex.Message}", ex);
+        }
+        catch (RestApiException ex)
+        {
+            throw ConvertRestApiException(ex, $"Resource");
         }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -471,6 +513,10 @@ public class HelixService
         catch (HttpRequestException ex)
         {
             throw new HelixException($"Helix API error: {ex.Message}", ex);
+        }
+        catch (RestApiException ex)
+        {
+            throw ConvertRestApiException(ex, $"Work item '{workItem}' in job '{id}'");
         }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -884,6 +930,10 @@ public class HelixService
         catch (HttpRequestException ex)
         {
             throw new HelixException($"Helix API error: {ex.Message}", ex);
+        }
+        catch (RestApiException ex)
+        {
+            throw ConvertRestApiException(ex, $"Work item '{workItem}' in job '{id}'");
         }
 
         // Find test result files matching known patterns
