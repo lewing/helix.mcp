@@ -73,6 +73,57 @@ public class AzdoIdResolverTests
         Assert.Equal(int.MaxValue, buildId);
     }
 
+    // --- REST API URL format: _apis/build/Builds/{id} ---
+
+    [Fact]
+    public void Resolve_RestApiUrl_DevAzureCom_ExtractsAllFields()
+    {
+        var url = "https://dev.azure.com/dnceng/7ea9116e-9fac-403d-b258-b31fcf1bb293/_apis/build/Builds/2926555";
+
+        var (org, project, buildId) = AzdoIdResolver.Resolve(url);
+
+        Assert.Equal("dnceng", org);
+        Assert.Equal("7ea9116e-9fac-403d-b258-b31fcf1bb293", project);
+        Assert.Equal(2926555, buildId);
+    }
+
+    [Fact]
+    public void Resolve_RestApiUrl_VisualStudioCom_ExtractsAllFields()
+    {
+        var url = "https://dnceng.visualstudio.com/internal/_apis/build/Builds/12345";
+
+        var (org, project, buildId) = AzdoIdResolver.Resolve(url);
+
+        Assert.Equal("dnceng", org);
+        Assert.Equal("internal", project);
+        Assert.Equal(12345, buildId);
+    }
+
+    [Fact]
+    public void Resolve_RestApiUrl_WithQueryParams_ExtractsFromPath()
+    {
+        var url = "https://dev.azure.com/dnceng-public/public/_apis/build/Builds/999?api-version=7.0";
+
+        var (org, project, buildId) = AzdoIdResolver.Resolve(url);
+
+        Assert.Equal("dnceng-public", org);
+        Assert.Equal("public", project);
+        Assert.Equal(999, buildId);
+    }
+
+    [Fact]
+    public void TryResolve_RestApiUrl_ReturnsTrue()
+    {
+        var url = "https://dev.azure.com/dnceng/7ea9116e-9fac-403d-b258-b31fcf1bb293/_apis/build/Builds/2926555";
+
+        var result = AzdoIdResolver.TryResolve(url, out var org, out var project, out var buildId);
+
+        Assert.True(result);
+        Assert.Equal("dnceng", org);
+        Assert.Equal("7ea9116e-9fac-403d-b258-b31fcf1bb293", project);
+        Assert.Equal(2926555, buildId);
+    }
+
     // --- Query string edge cases ---
 
     [Fact]

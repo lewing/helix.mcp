@@ -20,7 +20,9 @@ public static class AzdoIdResolver
     /// <list type="bullet">
     ///   <item>Plain integer: <c>"12345"</c> → uses default org/project</item>
     ///   <item>dev.azure.com: <c>https://dev.azure.com/{org}/{project}/_build/results?buildId={id}</c></item>
+    ///   <item>dev.azure.com REST API: <c>https://dev.azure.com/{org}/{project}/_apis/build/builds/{id}</c></item>
     ///   <item>visualstudio.com: <c>https://{org}.visualstudio.com/{project}/_build/results?buildId={id}</c></item>
+    ///   <item>visualstudio.com REST API: <c>https://{org}.visualstudio.com/{project}/_apis/build/builds/{id}</c></item>
     /// </list>
     /// </remarks>
     public static (string Org, string Project, int BuildId) Resolve(string input)
@@ -42,18 +44,22 @@ public static class AzdoIdResolver
         var host = uri.Host;
         var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
 
-        // Extract buildId from query string (?buildId=NNN)
-        var query = HttpUtility.ParseQueryString(uri.Query);
-        var buildIdStr = query["buildId"];
-
-        if (string.IsNullOrEmpty(buildIdStr) || !int.TryParse(buildIdStr, out var buildId))
+        // Try REST API path first: .../_apis/build/builds/{id}
+        // Then fall back to query string: ?buildId=NNN
+        if (!TryExtractBuildIdFromApiPath(segments, out var buildId))
         {
-            throw new ArgumentException(
-                $"AzDO URL missing or invalid 'buildId' query parameter: '{input}'",
-                nameof(input));
+            var query = HttpUtility.ParseQueryString(uri.Query);
+            var buildIdStr = query["buildId"];
+
+            if (string.IsNullOrEmpty(buildIdStr) || !int.TryParse(buildIdStr, out buildId))
+            {
+                throw new ArgumentException(
+                    $"AzDO URL missing or invalid 'buildId' query parameter: '{input}'",
+                    nameof(input));
+            }
         }
 
-        // https://dev.azure.com/{org}/{project}/_build/results?buildId={id}
+        // https://dev.azure.com/{org}/{project}/...
         if (host.Equals("dev.azure.com", StringComparison.OrdinalIgnoreCase))
         {
             if (segments.Length < 2)
@@ -67,7 +73,7 @@ public static class AzdoIdResolver
                 buildId);
         }
 
-        // https://{org}.visualstudio.com/{project}/_build/results?buildId={id}
+        // https://{org}.visualstudio.com/{project}/...
         if (host.EndsWith(".visualstudio.com", StringComparison.OrdinalIgnoreCase))
         {
             var org = host[..host.IndexOf('.')];
@@ -85,6 +91,24 @@ public static class AzdoIdResolver
         throw new ArgumentException(
             $"Unrecognized AzDO host '{host}'. Expected dev.azure.com or *.visualstudio.com: '{input}'",
             nameof(input));
+    }
+
+    /// <summary>
+    /// Extract build ID from REST API path: .../_apis/build/builds/{id}
+    /// </summary>
+    private static bool TryExtractBuildIdFromApiPath(string[] segments, out int buildId)
+    {
+        buildId = 0;
+        for (int i = 0; i + 3 < segments.Length; i++)
+        {
+            if (segments[i].Equals("_apis", StringComparison.OrdinalIgnoreCase) &&
+                segments[i + 1].Equals("build", StringComparison.OrdinalIgnoreCase) &&
+                segments[i + 2].Equals("Builds", StringComparison.OrdinalIgnoreCase))
+            {
+                return int.TryParse(segments[i + 3], out buildId);
+            }
+        }
+        return false;
     }
 
     /// <summary>
