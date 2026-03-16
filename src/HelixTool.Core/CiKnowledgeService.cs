@@ -94,7 +94,8 @@ public sealed class CiKnowledgeService
             ],
             RecommendedInvestigationOrder =
             [
-                "azdo_timeline(buildId, filter='failed') → identify failed jobs",
+                "azdo_search_timeline(buildId, 'error') → find failed steps (compact output, preferred for large builds)",
+                "azdo_timeline(buildId, filter='failed') → full timeline when you need complete record details",
                 "Classify: 'Send to Helix' failed → test failure; 'Build product' failed → build error; exit -4/-3 → infra",
                 "helix_status(jobId) → find failed work items + exit codes",
                 "azdo_test_runs(buildId) → get test run IDs",
@@ -231,7 +232,8 @@ public sealed class CiKnowledgeService
             ],
             RecommendedInvestigationOrder =
             [
-                "azdo_timeline(buildId, filter='failed') → identify failed jobs",
+                "azdo_search_timeline(buildId, 'error') → find failed steps (compact output, preferred for large builds)",
+                "azdo_timeline(buildId, filter='failed') → full timeline when you need complete record details",
                 "Classify: '🟣 Build' failed → SDK build break; '🟣 Run TestBuild Tests' failed → test/infra failure; all tests skipped → upstream build failure",
                 "helix_status(jobId) → exit codes — 130/-4 = infra, 1 = real test failure",
                 "azdo_test_runs(buildId) → get test run IDs",
@@ -303,7 +305,8 @@ public sealed class CiKnowledgeService
             ],
             RecommendedInvestigationOrder =
             [
-                "azdo_timeline(buildId, filter='failed') → identify failed jobs",
+                "azdo_search_timeline(buildId, 'error') → find failed steps (compact output, preferred for large builds)",
+                "azdo_timeline(buildId, filter='failed') → full timeline when you need complete record details",
                 "Read failed 'Run Unit Tests' or 'Test' task log → search for 'has failed' to find Helix job GUIDs",
                 "helix_status(jobId) → exit codes + failureCategory (InfrastructureError = crash)",
                 "If crash: helix_search(jobId, workItem, 'aborted') → crash details",
@@ -379,6 +382,7 @@ public sealed class CiKnowledgeService
             ],
             RecommendedInvestigationOrder =
             [
+                "azdo_search_timeline(buildId, 'error') → find failed steps (compact output, preferred for large builds)",
                 "azdo_timeline(buildId, filter='failed') → which phase failed? (local vs Helix)",
                 "If Helix: find 'Send job to helix' task log → extract Helix job IDs",
                 "helix_status(jobId) → exit codes per work item (all -3 on one queue = infra issue, retry)",
@@ -450,7 +454,8 @@ public sealed class CiKnowledgeService
             ],
             RecommendedInvestigationOrder =
             [
-                "azdo_timeline(buildId, filter='failed') → identify failed verticals",
+                "azdo_search_timeline(buildId, 'error') → find failed steps (compact output, preferred for large builds like VMR)",
+                "azdo_timeline(buildId, filter='failed') → full timeline when you need complete record details",
                 "Classify by stage: 'VMR Vertical Build' = product build, 'VMR Source-Only Build' = source packaging, 'VMR Vertical Build Validation' = smoke test",
                 "Find 'Build' task logId in timeline → read with azdo_log or azdo_search_log",
                 "Search for 'error MSB' to identify which component repo failed",
@@ -473,7 +478,7 @@ public sealed class CiKnowledgeService
             InvestigationTips =
             [
                 "VMR does NOT use Helix — all helix_* tools will fail or return irrelevant data",
-                "Use azdo_timeline to find failed build steps, then azdo_log to read the log",
+                "Use azdo_search_timeline to find failed build steps (compact output), or azdo_timeline for full details, then azdo_log to read the log",
                 "Use azdo_search_log with 'error MSB' for MSBuild failures",
                 "Identify which component repo failed from the error — the fix is in that repo, not the VMR",
                 "Codeflow PRs are automated — check the source repo for the actual failure",
@@ -738,7 +743,7 @@ public sealed class CiKnowledgeService
             {
                 "partial" => "helix_parse_uploaded_trx (supported legs)",
                 "varies" => "check pipeline notes",
-                _ => p.UsesHelix ? "azdo_test_runs → azdo_test_results" : "azdo_timeline → azdo_log"
+                _ => p.UsesHelix ? "azdo_test_runs → azdo_test_results" : "azdo_search_timeline → azdo_log"
             };
             lines.Add($"| {p.DisplayName} | {p.OrgProject} | {helix} | {trxStatus} | {pattern} | {results} |");
         }
@@ -797,7 +802,7 @@ public sealed class CiKnowledgeService
             "partial" => "- Structured results: try `helix_parse_uploaded_trx` for the supported Helix-uploaded test legs below, but use `azdo_test_runs + azdo_test_results` for full coverage.",
             "varies" => "- Structured results: pipeline-dependent. Check the pipeline notes and recommended order below before choosing between `helix_parse_uploaded_trx` and `azdo_test_runs + azdo_test_results`.",
             _ when profile.UsesHelix => "- Structured results: skip `helix_parse_uploaded_trx` for this repo and start with `azdo_test_runs + azdo_test_results`.",
-            _ => "- Structured results: this repo does not use Helix; start with `azdo_timeline` and `azdo_log`."
+            _ => "- Structured results: this repo does not use Helix; start with `azdo_search_timeline` (compact) or `azdo_timeline` (full details) and `azdo_log`."
         });
 
         if (profile.UsesHelix && profile.FailureSearchPatterns.Length > 0)
@@ -884,9 +889,10 @@ public sealed class CiKnowledgeService
                - `'exit code'` — process crashes
 
             ## Getting Build Failures
-            1. Use `azdo_timeline` to find failed steps (filter='failed')
-            2. Use `azdo_log` or `azdo_search_log` to read the failed step's log
-            3. Search for `'error MSB'` for MSBuild errors, `'error NU'` for NuGet errors
+            1. Use `azdo_search_timeline(buildId, 'error')` to find failed steps (compact output, preferred for large builds)
+            2. Use `azdo_timeline(buildId, filter='failed')` for full timeline details when needed
+            3. Use `azdo_log` or `azdo_search_log` to read the failed step's log
+            4. Search for `'error MSB'` for MSBuild errors, `'error NU'` for NuGet errors
 
             ## Known Repos
             Profiles exist for: {string.Join(", ", s_profiles.Values.Select(p => p.DisplayName))}
