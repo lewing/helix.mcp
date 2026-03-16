@@ -158,6 +158,51 @@ public class AzdoMcpToolsTests
         Assert.Null(result);
     }
 
+    [Fact]
+    public async Task Timeline_Truncated_WhenRecordsExceedMax()
+    {
+        // 250 records exceeds MaxTimelineRecords (200)
+        const int totalCount = 250;
+        var records = Enumerable.Range(0, totalCount)
+            .Select(i => new AzdoTimelineRecord { Id = $"r{i}", Name = $"Task {i}", Type = "Task", Result = "succeeded" })
+            .ToList();
+        var timeline = new AzdoTimeline { Id = "tl-big", Records = records };
+
+        _mockApi.GetTimelineAsync("dnceng-public", "public", 10, Arg.Any<CancellationToken>())
+            .Returns(timeline);
+
+        var result = await _tools.Timeline("10", filter: "all");
+
+        Assert.NotNull(result);
+        Assert.True(result!.Truncated);
+        Assert.Equal(totalCount, result.TotalRecords);
+        Assert.Equal(100, result.Records.Count); // TruncatedTimelineBudget
+        Assert.Contains("truncated", result.Note, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("250", result.Note!);
+    }
+
+    [Fact]
+    public async Task Timeline_NotTruncated_WhenRecordsBelowMax()
+    {
+        // 150 records is under MaxTimelineRecords (200)
+        const int totalCount = 150;
+        var records = Enumerable.Range(0, totalCount)
+            .Select(i => new AzdoTimelineRecord { Id = $"r{i}", Name = $"Task {i}", Type = "Task", Result = "succeeded" })
+            .ToList();
+        var timeline = new AzdoTimeline { Id = "tl-small", Records = records };
+
+        _mockApi.GetTimelineAsync("dnceng-public", "public", 10, Arg.Any<CancellationToken>())
+            .Returns(timeline);
+
+        var result = await _tools.Timeline("10", filter: "all");
+
+        Assert.NotNull(result);
+        Assert.False(result!.Truncated);
+        Assert.Null(result.TotalRecords);
+        Assert.Null(result.Note);
+        Assert.Equal(totalCount, result.Records.Count);
+    }
+
     // ── azdo_log (returns plain text, not JSON) ─────────────────────
 
     [Fact]
