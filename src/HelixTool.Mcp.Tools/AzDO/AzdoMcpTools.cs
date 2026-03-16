@@ -65,9 +65,12 @@ public sealed class AzdoMcpTools
         }
     }
 
+    private const int MaxTimelineRecords = 200;
+    private const int TruncatedTimelineBudget = 100;
+
     [McpServerTool(Name = "azdo_timeline", Title = "AzDO Build Timeline", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
-     Description("Build timeline with stages, jobs, and tasks — state, result, timing, log refs, issues. Find failed steps and log IDs for azdo_log. Filter: 'failed' (default) or 'all'.")]
-    public async Task<AzdoTimeline?> Timeline(
+     Description("Build timeline with stages, jobs, and tasks — state, result, timing, log refs, issues. Find failed steps and log IDs for azdo_log. For large builds, consider azdo_search_timeline instead. Filter: 'failed' (default) or 'all'.")]
+    public async Task<TimelineResponse?> Timeline(
         [Description("AzDO build ID or full build URL")] string buildId,
         [Description("Filter: 'failed' (default) or 'all'")] string filter = "failed")
     {
@@ -87,38 +90,68 @@ public sealed class AzdoMcpTools
             throw new McpException($"Failed to get build timeline: {ex.Message}", ex);
         }
 
-        if (timeline is null || filter.Equals("all", StringComparison.OrdinalIgnoreCase))
-            return timeline;
+        if (timeline is null)
+            return null;
 
-        // Filter to non-succeeded records: failed, canceled, partially succeeded, or with issues
-        var failedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var r in timeline.Records)
+        List<AzdoTimelineRecord> records;
+
+        if (filter.Equals("all", StringComparison.OrdinalIgnoreCase))
         {
-            if (r.Id is null) continue;
-            var isFailed = r.Result is not null &&
-                !r.Result.Equals("succeeded", StringComparison.OrdinalIgnoreCase);
-            var hasIssues = r.Issues is { Count: > 0 };
-            if (isFailed || hasIssues)
-                failedIds.Add(r.Id);
+            records = [.. timeline.Records];
         }
-
-        // Include parent records for context (walk up parentId chain)
-        var allIds = new HashSet<string>(failedIds, StringComparer.OrdinalIgnoreCase);
-        var recordById = timeline.Records
-            .Where(r => r.Id is not null)
-            .ToDictionary(r => r.Id!, StringComparer.OrdinalIgnoreCase);
-
-        foreach (var id in failedIds)
+        else
         {
-            var current = recordById.GetValueOrDefault(id);
-            while (current?.ParentId is not null && allIds.Add(current.ParentId))
+            // Filter to non-succeeded records: failed, canceled, partially succeeded, or with issues
+            var failedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var r in timeline.Records)
             {
-                current = recordById.GetValueOrDefault(current.ParentId);
+                if (r.Id is null) continue;
+                var isFailed = r.Result is not null &&
+                    !r.Result.Equals("succeeded", StringComparison.OrdinalIgnoreCase);
+                var hasIssues = r.Issues is { Count: > 0 };
+                if (isFailed || hasIssues)
+                    failedIds.Add(r.Id);
             }
+
+            // Include parent records for context (walk up parentId chain)
+            var allIds = new HashSet<string>(failedIds, StringComparer.OrdinalIgnoreCase);
+            var recordById = timeline.Records
+                .Where(r => r.Id is not null)
+                .ToDictionary(r => r.Id!, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var id in failedIds)
+            {
+                var current = recordById.GetValueOrDefault(id);
+                while (current?.ParentId is not null && allIds.Add(current.ParentId))
+                {
+                    current = recordById.GetValueOrDefault(current.ParentId);
+                }
+            }
+
+            records = timeline.Records.Where(r => r.Id is not null && allIds.Contains(r.Id)).ToList();
         }
 
-        var filtered = timeline.Records.Where(r => r.Id is not null && allIds.Contains(r.Id)).ToList();
-        return new AzdoTimeline { Id = timeline.Id, Records = filtered };
+        // Partial response pattern: truncate if too many records
+        var totalRecords = records.Count;
+        if (totalRecords > MaxTimelineRecords)
+        {
+            records = records.Take(TruncatedTimelineBudget).ToList();
+            return new TimelineResponse
+            {
+                Id = timeline.Id,
+                Records = records,
+                Truncated = true,
+                TotalRecords = totalRecords,
+                Note = $"⚠️ Timeline truncated: showing {TruncatedTimelineBudget} of {totalRecords} records. " +
+                       $"Use azdo_search_timeline(buildId, 'pattern') for targeted search, or azdo_timeline with filter='failed' to reduce results."
+            };
+        }
+
+        return new TimelineResponse
+        {
+            Id = timeline.Id,
+            Records = records
+        };
     }
 
     [McpServerTool(Name = "azdo_log", Title = "AzDO Build Log", ReadOnly = true, Idempotent = true),
@@ -303,6 +336,28 @@ public sealed class AzdoMcpTools
             truncated,
             note: truncated ? $"Results may have been limited to {top}. Use a higher 'top' value if you need more." : null);
     }
+}
+
+/// <summary>Timeline response with optional truncation metadata for the partial response pattern.</summary>
+public sealed record TimelineResponse
+{
+    [JsonPropertyName("id")]
+    public string? Id { get; init; }
+
+    [JsonPropertyName("records")]
+    public IReadOnlyList<AzdoTimelineRecord> Records { get; init; } = [];
+
+    [JsonPropertyName("truncated")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Truncated { get; init; }
+
+    [JsonPropertyName("totalRecords")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? TotalRecords { get; init; }
+
+    [JsonPropertyName("note")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Note { get; init; }
 }
 
 [JsonConverter(typeof(LimitedResultsJsonConverterFactory))]
