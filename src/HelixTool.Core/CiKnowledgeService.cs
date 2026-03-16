@@ -892,7 +892,7 @@ public sealed class CiKnowledgeService
             1. Use `azdo_search_timeline(buildId, 'error')` to find failed steps (compact output, preferred for large builds)
             2. Use `azdo_timeline(buildId, filter='failed')` for full timeline details when needed
             3. Use `azdo_log` or `azdo_search_log` to read the failed step's log
-            3. Search for `'error MSB'` for MSBuild errors, `'error NU'` for NuGet errors
+            4. Search for `'error MSB'` for MSBuild errors, `'error NU'` for NuGet errors
 
             ## Known Repos
             Profiles exist for: {string.Join(", ", s_profiles.Values.Select(p => p.DisplayName))}

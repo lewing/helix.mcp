@@ -143,7 +143,9 @@ public sealed class AzdoMcpTools
                 Truncated = true,
                 TotalRecords = totalRecords,
                 Note = $"⚠️ Timeline truncated: showing {TruncatedTimelineBudget} of {totalRecords} records. " +
-                       $"Use azdo_search_timeline(buildId, 'pattern') for targeted search, or azdo_timeline with filter='failed' to reduce results."
+                       (filter == "failed"
+                           ? $"Use azdo_search_timeline(buildId, 'pattern') for targeted search."
+                           : $"Use azdo_search_timeline(buildId, 'pattern') for targeted search, or azdo_timeline with filter='failed' to reduce results.")
             };
         }
 
