@@ -49,9 +49,9 @@ flowchart LR
     end
 
     subgraph Stdio["hlx stdio MCP servers"]
-        P1["hlx (pid 1)"]
-        P2["hlx (pid 2)"]
-        P3["hlx (pid 3)"]
+        P1["hlx pid 1"]
+        P2["hlx pid 2"]
+        P3["hlx pid 3"]
     end
 
     A1 --> P1
@@ -63,17 +63,15 @@ flowchart LR
     P3 --> Cache
 
     subgraph Cache["Caching Layer"]
-        direction TB
-        Check{"Cache hit?"}
+        Check{"Cache hit"}
     end
 
     Check -- miss --> API["Helix / AzDO API"]
     API -- response --> Check
     Check -- hit --> Result["Cached response"]
 
-    subgraph Store["SQLite + Disk (shared)"]
-        direction TB
-        DB["SQLite DB (WAL mode)"]
+    subgraph Store["SQLite + Disk shared"]
+        DB["SQLite DB WAL mode"]
         Artifacts["Artifact files"]
     end
 
@@ -81,7 +79,6 @@ flowchart LR
     Store --> Cache
 
     subgraph Isolation["Auth isolation"]
-        direction LR
         T1["cache-a1b2c3/"]
         T2["cache-d4e5f6/"]
         T3["public/"]
