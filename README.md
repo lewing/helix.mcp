@@ -64,7 +64,7 @@ flowchart LR
 
     subgraph Cache["Caching Layer"]
         direction TB
-        Check{"Cache<br/>hit?"}
+        Check{"Cache hit?"}
     end
 
     Check -- miss --> API["Helix / AzDO API"]
@@ -73,11 +73,12 @@ flowchart LR
 
     subgraph Store["SQLite + Disk (shared)"]
         direction TB
-        DB["SQLite DB<br/>(WAL mode)"]
+        DB["SQLite DB (WAL mode)"]
         Artifacts["Artifact files"]
     end
 
-    Cache <--> Store
+    Cache --> Store
+    Store --> Cache
 
     subgraph Isolation["Auth isolation"]
         direction LR
