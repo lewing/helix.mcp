@@ -894,6 +894,10 @@ public sealed class CiKnowledgeService
             3. Use `azdo_log` or `azdo_search_log` to read the failed step's log
             4. Search for `'error MSB'` for MSBuild errors, `'error NU'` for NuGet errors
 
+            ## In-Progress Builds
+            In-progress builds may already have failed jobs — AzDO jobs complete independently.
+            Always check `azdo_search_timeline(buildId, 'error')` or `azdo_timeline(buildId, filter='failed')` even for builds that haven't finished.
+
             ## Known Repos
             Profiles exist for: {string.Join(", ", s_profiles.Values.Select(p => p.DisplayName))}
             Use `helix_ci_guide` with a repo name for detailed guidance.
