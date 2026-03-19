@@ -116,7 +116,8 @@ public sealed class AzdoMcpTools
             {
                 if (r.Id is null) continue;
                 var isFailed = r.Result is not null &&
-                    !r.Result.Equals("succeeded", StringComparison.OrdinalIgnoreCase);
+                    !r.Result.Equals("succeeded", StringComparison.OrdinalIgnoreCase) &&
+                    !r.Result.Equals("skipped", StringComparison.OrdinalIgnoreCase);
                 var hasIssues = r.Issues is { Count: > 0 };
                 if (isFailed || hasIssues)
                     failedIds.Add(r.Id);
