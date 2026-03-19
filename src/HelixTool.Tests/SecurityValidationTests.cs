@@ -185,7 +185,7 @@ public class SecurityValidationTests
     [Fact]
     public async Task McpBatchStatus_OverLimit_RejectsLargeArray()
     {
-        var tools = new HelixMcpTools(_svc);
+        var tools = new HelixMcpTools(_svc, Substitute.For<IHelixTokenAccessor>());
 
         var jobIds = Enumerable.Range(0, 51)
             .Select(i => $"{i:x8}-0000-0000-0000-000000000000")
@@ -200,7 +200,7 @@ public class SecurityValidationTests
     [Fact]
     public async Task McpBatchStatus_AtLimit_Accepted()
     {
-        var tools = new HelixMcpTools(_svc);
+        var tools = new HelixMcpTools(_svc, Substitute.For<IHelixTokenAccessor>());
 
         var jobIds = Enumerable.Range(0, 50)
             .Select(i => $"{i:x8}-0000-0000-0000-000000000000")

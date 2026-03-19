@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text.Json.Serialization;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using Microsoft.DotNet.Helix.Client;
@@ -12,10 +13,12 @@ namespace HelixTool.Mcp.Tools;
 public sealed class HelixMcpTools
 {
     private readonly HelixService _svc;
+    private readonly IHelixTokenAccessor _tokenAccessor;
 
-    public HelixMcpTools(HelixService svc)
+    public HelixMcpTools(HelixService svc, IHelixTokenAccessor tokenAccessor)
     {
         _svc = svc;
+        _tokenAccessor = tokenAccessor;
     }
 
     [McpServerTool(Name = "helix_status", Title = "Helix Job Status", ReadOnly = true, Idempotent = true, UseStructuredContent = true), Description("Work item pass/fail summary for a Helix job. Returns failed items with exit codes, state, duration, machine. Filter: 'failed' (default), 'passed', or 'all'.")]
@@ -450,4 +453,46 @@ public sealed class HelixMcpTools
             throw new McpException($"Failed to get batch status: {ex.Message}", ex);
         }
     }
+
+    [McpServerTool(Name = "helix_auth_status", Title = "Helix Auth Status", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
+     Description("Current Helix auth status: authenticated or anonymous, and token source (env var, stored credential).")]
+    public HelixAuthStatus HelixAuth()
+    {
+        var token = _tokenAccessor.GetAccessToken();
+        var hasToken = !string.IsNullOrEmpty(token);
+
+        string source;
+        if (_tokenAccessor is ChainedHelixTokenAccessor chained)
+        {
+            source = chained.Source switch
+            {
+                TokenSource.EnvironmentVariable => "HELIX_ACCESS_TOKEN environment variable",
+                TokenSource.StoredCredential => "stored credential (git credential)",
+                _ => "none"
+            };
+        }
+        else if (hasToken)
+        {
+            source = _tokenAccessor.GetType().Name;
+        }
+        else
+        {
+            source = "none";
+        }
+
+        return new HelixAuthStatus
+        {
+            IsAuthenticated = hasToken,
+            Source = source
+        };
+    }
+}
+
+public sealed record HelixAuthStatus
+{
+    [JsonPropertyName("isAuthenticated")]
+    public bool IsAuthenticated { get; init; }
+
+    [JsonPropertyName("source")]
+    public string Source { get; init; } = "none";
 }

@@ -14,10 +14,12 @@ namespace HelixTool.Mcp.Tools;
 public sealed class AzdoMcpTools
 {
     private readonly AzdoService _svc;
+    private readonly IAzdoTokenAccessor _tokenAccessor;
 
-    public AzdoMcpTools(AzdoService svc)
+    public AzdoMcpTools(AzdoService svc, IAzdoTokenAccessor tokenAccessor)
     {
         _svc = svc;
+        _tokenAccessor = tokenAccessor;
     }
 
     [McpServerTool(Name = "azdo_build", Title = "AzDO Build Details", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
@@ -28,6 +30,10 @@ public sealed class AzdoMcpTools
         try
         {
             return await _svc.GetBuildSummaryAsync(buildId);
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new McpException(AppendNotFoundHint(ex.Message, buildId), ex);
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
         {
@@ -46,6 +52,9 @@ public sealed class AzdoMcpTools
         [Description("Filter by pipeline definition ID")] int? definitionId = null,
         [Description("Filter by build status")] string? status = null)
     {
+        // If org looks like a URL, extract org/project from it
+        (org, project) = TryExtractOrgProjectFromUrl(org, project);
+
         var filter = new AzdoBuildFilter
         {
             PrNumber = prNumber,
@@ -320,6 +329,9 @@ public sealed class AzdoMcpTools
         [Description("Azure DevOps organization")] string org = "dnceng-public",
         [Description("Maximum results to return. Default: 100")] int top = 100)
     {
+        // If org looks like a URL, extract org/project from it
+        (org, project) = TryExtractOrgProjectFromUrl(org, project);
+
         try
         {
             return CreateLimitedResults(await _svc.GetTestAttachmentsAsync(org, project, runId, resultId, top), top);
@@ -330,6 +342,13 @@ public sealed class AzdoMcpTools
         }
     }
 
+    [McpServerTool(Name = "azdo_auth_status", Title = "AzDO Auth Status", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
+     Description("Current AzDO auth method (anonymous, PAT, Entra, az CLI), expiry, and warnings. No API call made.")]
+    public async Task<AzdoAuthStatus> AuthStatus()
+    {
+        return await _tokenAccessor.AuthStatusAsync();
+    }
+
     private static LimitedResults<T> CreateLimitedResults<T>(IReadOnlyList<T> results, int top)
     {
         var truncated = top > 0 && results.Count >= top;
@@ -337,6 +356,42 @@ public sealed class AzdoMcpTools
             results,
             truncated,
             note: truncated ? $"Results may have been limited to {top}. Use a higher 'top' value if you need more." : null);
+    }
+
+    /// <summary>
+    /// If <paramref name="org"/> looks like an AzDO URL, extract org and project from it.
+    /// This handles agents that pass full URLs into the org parameter instead of just the org name.
+    /// </summary>
+    private static (string org, string project) TryExtractOrgProjectFromUrl(string org, string project)
+    {
+        if (org.Contains("dev.azure.com", StringComparison.OrdinalIgnoreCase) ||
+            org.Contains("visualstudio.com", StringComparison.OrdinalIgnoreCase) ||
+            org.Contains("://", StringComparison.Ordinal))
+        {
+            if (AzdoIdResolver.TryResolve(org, out var resolvedOrg, out var resolvedProject, out _))
+            {
+                return (resolvedOrg, resolvedProject);
+            }
+        }
+        return (org, project);
+    }
+
+    /// <summary>
+    /// When a build is not found and the query used default org/project, append an auth hint.
+    /// Internal AzDO projects return 404 (not 401) to unauthenticated callers.
+    /// </summary>
+    private static string AppendNotFoundHint(string message, string buildIdOrUrl)
+    {
+        // Only hint when the build was looked up in the default public org — that's
+        // the scenario where an agent passes a bare build ID from an internal build.
+        if (message.Contains(AzdoIdResolver.DefaultOrg, StringComparison.OrdinalIgnoreCase) &&
+            message.Contains(AzdoIdResolver.DefaultProject, StringComparison.OrdinalIgnoreCase))
+        {
+            return message +
+                " If this is an internal build, pass the full AzDO URL so org/project can be extracted, " +
+                "or use azdo_builds with org='dnceng' and project='internal' (requires auth via 'az login' or AZDO_TOKEN).";
+        }
+        return message;
     }
 }
 

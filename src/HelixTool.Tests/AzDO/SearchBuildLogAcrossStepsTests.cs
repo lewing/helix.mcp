@@ -26,7 +26,7 @@ public class SearchBuildLogAcrossStepsTests
     {
         _client = Substitute.For<IAzdoApiClient>();
         _svc = new AzdoService(_client);
-        _tools = new AzdoMcpTools(_svc);
+        _tools = new AzdoMcpTools(_svc, Substitute.For<IAzdoTokenAccessor>());
     }
 
     // ── Helpers ──────────────────────────────────────────────────────

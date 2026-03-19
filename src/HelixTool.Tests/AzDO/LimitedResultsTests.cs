@@ -150,5 +150,5 @@ public class LimitedResultsTests
     }
 
     private static AzdoMcpTools CreateTools(IAzdoApiClient mockApi)
-        => new(new AzdoService(mockApi));
+        => new(new AzdoService(mockApi), Substitute.For<IAzdoTokenAccessor>());
 }

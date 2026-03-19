@@ -18,7 +18,7 @@ public class StructuredJsonTests
     {
         _mockApi = Substitute.For<IHelixApiClient>();
         _svc = new HelixService(_mockApi, new HttpClient());
-        _tools = new HelixMcpTools(_svc);
+        _tools = new HelixMcpTools(_svc, Substitute.For<IHelixTokenAccessor>());
     }
 
     // --- US-30: Files grouped JSON ---

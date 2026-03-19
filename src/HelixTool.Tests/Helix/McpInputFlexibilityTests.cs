@@ -21,7 +21,7 @@ public class McpInputFlexibilityTests
     {
         _mockApi = Substitute.For<IHelixApiClient>();
         _svc = new HelixService(_mockApi, new HttpClient());
-        _tools = new HelixMcpTools(_svc);
+        _tools = new HelixMcpTools(_svc, Substitute.For<IHelixTokenAccessor>());
     }
 
     [Fact]
