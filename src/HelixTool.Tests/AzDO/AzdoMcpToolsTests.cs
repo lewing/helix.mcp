@@ -339,4 +339,98 @@ public class AzdoMcpToolsTests
             Arg.Is<AzdoBuildFilter>(f => f.PrNumber == "12345"),
             Arg.Any<CancellationToken>());
     }
+
+    // ── azdo_builds — URL-shaped org parameter detection ────────────
+
+    [Fact]
+    public async Task Builds_OrgIsUrl_ExtractsOrgAndProject()
+    {
+        _mockApi.ListBuildsAsync("dnceng", "internal", Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuild>());
+
+        await _tools.Builds(org: "https://dev.azure.com/dnceng/internal/_build/results?buildId=123");
+
+        await _mockApi.Received(1).ListBuildsAsync(
+            "dnceng", "internal", Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Builds_OrgIsPlainString_PassesThroughUnchanged()
+    {
+        _mockApi.ListBuildsAsync("custom-org", "custom-proj", Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuild>());
+
+        await _tools.Builds(org: "custom-org", project: "custom-proj");
+
+        await _mockApi.Received(1).ListBuildsAsync(
+            "custom-org", "custom-proj", Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Builds_OrgIsUrl_OverridesExplicitProject()
+    {
+        // When org is a URL, the URL's project wins over the explicit project param
+        _mockApi.ListBuildsAsync("devdiv", "DevDiv", Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuild>());
+
+        await _tools.Builds(
+            org: "https://dev.azure.com/devdiv/DevDiv/_build/results?buildId=999",
+            project: "should-be-overridden");
+
+        await _mockApi.Received(1).ListBuildsAsync(
+            "devdiv", "DevDiv", Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Builds_OrgIsVisualStudioComUrl_ExtractsOrgFromSubdomain()
+    {
+        _mockApi.ListBuildsAsync("dnceng", "public", Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuild>());
+
+        await _tools.Builds(org: "https://dnceng.visualstudio.com/public/_build/results?buildId=789");
+
+        await _mockApi.Received(1).ListBuildsAsync(
+            "dnceng", "public", Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Builds_OrgIsInvalidUrl_FallsBackToOriginal()
+    {
+        // A URL that doesn't parse as AzDO should fall through to original org/project
+        _mockApi.ListBuildsAsync("https://github.com/foo", "public", Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuild>());
+
+        await _tools.Builds(org: "https://github.com/foo");
+
+        await _mockApi.Received(1).ListBuildsAsync(
+            "https://github.com/foo", "public", Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>());
+    }
+
+    // ── azdo_test_attachments — URL-shaped org parameter detection ──
+
+    [Fact]
+    public async Task TestAttachments_OrgIsUrl_ExtractsOrgAndProject()
+    {
+        _mockApi.GetTestAttachmentsAsync("dnceng", "internal", 1, 2, 100, Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoTestAttachment>());
+
+        await _tools.TestAttachments(
+            runId: 1, resultId: 2,
+            org: "https://dev.azure.com/dnceng/internal/_build/results?buildId=555");
+
+        await _mockApi.Received(1).GetTestAttachmentsAsync(
+            "dnceng", "internal", 1, 2, 100, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TestAttachments_OrgIsPlainString_PassesThroughUnchanged()
+    {
+        _mockApi.GetTestAttachmentsAsync("myorg", "myproj", 1, 2, 100, Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoTestAttachment>());
+
+        await _tools.TestAttachments(runId: 1, resultId: 2, org: "myorg", project: "myproj");
+
+        await _mockApi.Received(1).GetTestAttachmentsAsync(
+            "myorg", "myproj", 1, 2, 100, Arg.Any<CancellationToken>());
+    }
 }

@@ -444,4 +444,116 @@ public class AzdoIdResolverTests
     {
         Assert.Equal("public", AzdoIdResolver.DefaultProject);
     }
+
+    // ===================================================================
+    // Multi-org coverage — real-world URL formats across AzDO orgs
+    // ===================================================================
+
+    [Theory]
+    [InlineData("https://dev.azure.com/dnceng-public/public/_build/results?buildId=12345", "dnceng-public", "public", 12345)]
+    [InlineData("https://dev.azure.com/dnceng/internal/_build/results?buildId=2930070", "dnceng", "internal", 2930070)]
+    [InlineData("https://dev.azure.com/devdiv/DevDiv/_build/results?buildId=99999", "devdiv", "DevDiv", 99999)]
+    [InlineData("https://dev.azure.com/dotnet/dotnet/_build/results?buildId=88888", "dotnet", "dotnet", 88888)]
+    public void Resolve_MultiOrg_ExtractsCorrectOrgAndProject(string url, string expectedOrg, string expectedProject, int expectedBuildId)
+    {
+        var (org, project, buildId) = AzdoIdResolver.Resolve(url);
+
+        Assert.Equal(expectedOrg, org);
+        Assert.Equal(expectedProject, project);
+        Assert.Equal(expectedBuildId, buildId);
+    }
+
+    [Fact]
+    public void Resolve_DevDivOrg_DoesNotDefaultToDncengPublic()
+    {
+        var url = "https://dev.azure.com/devdiv/DevDiv/_build/results?buildId=99999";
+        var (org, project, _) = AzdoIdResolver.Resolve(url);
+
+        // devdiv org must NOT fall back to the default dnceng-public
+        Assert.NotEqual(AzdoIdResolver.DefaultOrg, org);
+        Assert.NotEqual(AzdoIdResolver.DefaultProject, project);
+        Assert.Equal("devdiv", org);
+        Assert.Equal("DevDiv", project);
+    }
+
+    [Fact]
+    public void Resolve_DotnetOrg_DoesNotDefaultToDncengPublic()
+    {
+        var url = "https://dev.azure.com/dotnet/dotnet/_build/results?buildId=88888";
+        var (org, project, _) = AzdoIdResolver.Resolve(url);
+
+        Assert.NotEqual(AzdoIdResolver.DefaultOrg, org);
+        Assert.Equal("dotnet", org);
+        Assert.Equal("dotnet", project);
+    }
+
+    // --- visualstudio.com format with non-default org ---
+
+    [Fact]
+    public void Resolve_VisualStudioCom_InternalOrg_ExtractsFromSubdomain()
+    {
+        var url = "https://dnceng.visualstudio.com/internal/_build/results?buildId=77777";
+
+        var (org, project, buildId) = AzdoIdResolver.Resolve(url);
+
+        Assert.Equal("dnceng", org);
+        Assert.Equal("internal", project);
+        Assert.Equal(77777, buildId);
+    }
+
+    [Fact]
+    public void Resolve_VisualStudioCom_DevDivOrg_ExtractsFromSubdomain()
+    {
+        var url = "https://devdiv.visualstudio.com/DevDiv/_build/results?buildId=55555";
+
+        var (org, project, buildId) = AzdoIdResolver.Resolve(url);
+
+        Assert.Equal("devdiv", org);
+        Assert.Equal("DevDiv", project);
+        Assert.Equal(55555, buildId);
+    }
+
+    // --- REST API format with various orgs ---
+
+    [Theory]
+    [InlineData("https://dev.azure.com/dnceng/internal/_apis/build/builds/66666", "dnceng", "internal", 66666)]
+    [InlineData("https://dev.azure.com/devdiv/DevDiv/_apis/build/builds/44444", "devdiv", "DevDiv", 44444)]
+    [InlineData("https://dev.azure.com/dotnet/dotnet/_apis/build/builds/33333", "dotnet", "dotnet", 33333)]
+    public void Resolve_RestApi_MultiOrg_ExtractsAllFields(string url, string expectedOrg, string expectedProject, int expectedBuildId)
+    {
+        var (org, project, buildId) = AzdoIdResolver.Resolve(url);
+
+        Assert.Equal(expectedOrg, org);
+        Assert.Equal(expectedProject, project);
+        Assert.Equal(expectedBuildId, buildId);
+    }
+
+    // --- URL-encoded project names ---
+
+    [Fact]
+    public void Resolve_UrlEncodedProjectName_ExtractsEncodedSegment()
+    {
+        // URL-encoded spaces: "My Project" → "My%20Project"
+        var url = "https://dev.azure.com/myorg/My%20Project/_build/results?buildId=111";
+
+        var (org, project, buildId) = AzdoIdResolver.Resolve(url);
+
+        Assert.Equal("myorg", org);
+        // The project segment comes from the URL path — it will be URL-decoded by Uri
+        Assert.Equal("My Project", project);
+        Assert.Equal(111, buildId);
+    }
+
+    // --- Additional invalid URL edge cases ---
+
+    [Theory]
+    [InlineData("https://dev.azure.com")] // no path segments
+    [InlineData("https://dev.azure.com/")] // empty path
+    [InlineData("https://dev.azure.com/org")] // only one segment
+    [InlineData("ftp://dev.azure.com/org/proj/_build/results?buildId=1")] // wrong scheme
+    public void TryResolve_MalformedAzdoUrls_ReturnsFalse(string url)
+    {
+        var result = AzdoIdResolver.TryResolve(url, out _, out _, out _);
+        Assert.False(result);
+    }
 }
