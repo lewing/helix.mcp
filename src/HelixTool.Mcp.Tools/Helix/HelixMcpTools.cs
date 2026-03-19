@@ -173,7 +173,7 @@ public sealed class HelixMcpTools
         }
     }
 
-    [McpServerTool(Name = "helix_download", Title = "Download Helix Files or URL", Idempotent = true, UseStructuredContent = true), Description("Download Helix files by pattern or direct URL. Returns local file paths.")]
+    [McpServerTool(Name = "helix_download", Title = "Download Helix Files or URL", Destructive = false, Idempotent = true, UseStructuredContent = true), Description("Download Helix files by pattern or direct URL. Returns local file paths.")]
     public async Task<DownloadResult> Download(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string? jobId = null,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
