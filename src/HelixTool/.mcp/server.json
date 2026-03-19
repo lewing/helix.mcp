@@ -3,13 +3,12 @@
   "name": "io.github.lewing/lewing.helix.mcp",
   "title": "Helix Test Infrastructure MCP Server",
   "description": "CLI tool and MCP server for investigating .NET Helix test results \u2014 diagnosing CI failures in dotnet repos",
-  "version": "0.5.0",
-  "websiteUrl": "https://github.com/lewing/helix.mcp",
+  "version": "0.5.1",
   "packages": [
     {
       "registryType": "nuget",
       "identifier": "lewing.helix.mcp",
-      "version": "0.5.0",
+      "version": "0.5.1",
       "package_arguments": [],
       "environment_variables": []
     }
