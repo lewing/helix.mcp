@@ -301,7 +301,7 @@ public sealed class CiKnowledgeService
                 "azdo_test_runs shows failedTests=0 across ALL runs on crash — crashes are invisible in AzDO structured data",
                 "Work item names are generic (workitem_0, workitem_1) — you cannot tell which tests are in a work item from its name",
                 "Crashes are the dominant failure mode, not assertion failures — search for 'aborted' or 'Process exited', not '[FAIL]'",
-                "Crash dumps are uploaded (unique among dotnet repos): crash.*.dmp, testhost.exe.*.dmp, core.*",
+                "Crash dumps are inconsistently uploaded — some crashed work items have .dmp files, others have only console.*.log. Always check helix_files on crashed work items.",
             ],
             RecommendedInvestigationOrder =
             [
@@ -758,6 +758,26 @@ public sealed class CiKnowledgeService
         lines.Add("- **azdo_test_runs + azdo_test_results** is the most reliable path for structured results across all repos.");
         lines.Add("- **⚠️ macios and android are on devdiv, not dnceng-public** — authenticate first (`az login` or `AZDO_TOKEN`), and prefer full devdiv build URLs with `azdo_*` tools because bare build IDs default to dnceng-public.");
         lines.Add("- **failedTests=0 is a lie** — always drill into `azdo_test_results`, don't trust run-level summary counts.");
+        lines.Add("");
+        lines.Add("## Three-Layer Diagnostic Model");
+        lines.Add("");
+        lines.Add("1. **Helix blob storage** (`helix_files`) — per work item: console logs, crash dumps, binlogs, test results.");
+        lines.Add("2. **Pipeline artifacts** (`azdo_artifacts`) — per build: build logs, test containers, packages.");
+        lines.Add("3. **AzDO test attachments** (`azdo_test_attachments`) — ❌ NEVER has data for dotnet repos, don't use.");
+        lines.Add("");
+        lines.Add("## Diagnostic Location Quick Reference");
+        lines.Add("");
+        lines.Add("- **Test logs** → `helix_files` (console.*.log)");
+        lines.Add("- **Crash dumps** → `helix_files` (*.dmp, core.*)");
+        lines.Add("- **Binlogs** → `helix_files` / `helix_find_files` (*.binlog)");
+        lines.Add("- **Screenshots** → `azdo_artifacts` (MAUI uitests only: `uitest-snapshot-results-*`)");
+        lines.Add("- **Build logs** → `azdo_artifacts` (Logs_Build_*)");
+        lines.Add("");
+        lines.Add("## Test Results Tool Selection");
+        lines.Add("");
+        lines.Add("- `helix_parse_uploaded_trx` works ONLY for: CoreCLR tests (XUnitWrapperGenerator) and XHarness device tests.");
+        lines.Add("- Everything else: use `azdo_test_runs` + `azdo_test_results`.");
+        lines.Add("- `azdo_test_attachments` returns empty arrays across ALL dotnet repos — skip it entirely.");
 
         return string.Join('\n', lines);
     }

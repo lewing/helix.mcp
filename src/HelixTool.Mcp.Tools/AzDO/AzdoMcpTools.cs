@@ -382,8 +382,17 @@ public sealed class AzdoMcpTools
     /// </summary>
     private static string AppendNotFoundHint(string message, string buildIdOrUrl)
     {
-        // Only hint when the build was looked up in the default public org — that's
-        // the scenario where an agent passes a bare build ID from an internal build.
+        // If the input is a URL, try to extract the org/project the agent intended.
+        if (AzdoIdResolver.TryResolve(buildIdOrUrl, out var resolvedOrg, out var resolvedProject, out _) &&
+            !resolvedOrg.Equals(AzdoIdResolver.DefaultOrg, StringComparison.OrdinalIgnoreCase))
+        {
+            // The URL pointed to a non-default org — 404 likely means auth is needed.
+            return message +
+                $" Build not found in {resolvedOrg}/{resolvedProject} — this org may require authentication. " +
+                "Run 'az login' or set AZDO_TOKEN to a PAT with Build(read) scope.";
+        }
+
+        // Bare integer resolved to default org — suggest the agent may have the wrong org.
         if (message.Contains(AzdoIdResolver.DefaultOrg, StringComparison.OrdinalIgnoreCase) &&
             message.Contains(AzdoIdResolver.DefaultProject, StringComparison.OrdinalIgnoreCase))
         {
