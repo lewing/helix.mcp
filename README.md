@@ -40,51 +40,32 @@ Every tool is designed to minimize token consumption in agent context windows:
 
 ## Cross-Process Caching
 
-```mermaid
-flowchart LR
-    subgraph IDEs["IDE / Agent processes"]
-        A1["VS Code"]
-        A2["Copilot CLI"]
-        A3["Other agent"]
-    end
-
-    subgraph Stdio["hlx stdio MCP servers"]
-        P1["hlx pid 1"]
-        P2["hlx pid 2"]
-        P3["hlx pid 3"]
-    end
-
-    A1 --> P1
-    A2 --> P2
-    A3 --> P3
-
-    P1 --> Cache
-    P2 --> Cache
-    P3 --> Cache
-
-    subgraph Cache["Caching Layer"]
-        Check{"Cache hit"}
-    end
-
-    Check -- miss --> API["Helix / AzDO API"]
-    API -- response --> Check
-    Check -- hit --> Result["Cached response"]
-
-    subgraph Store["SQLite + Disk shared"]
-        DB["SQLite DB WAL mode"]
-        Artifacts["Artifact files"]
-    end
-
-    Cache --> Store
-    Store --> Cache
-
-    subgraph Isolation["Auth isolation"]
-        T1["cache-a1b2c3/"]
-        T2["cache-d4e5f6/"]
-        T3["public/"]
-    end
-
-    Store --- Isolation
+```
+ IDE / Agent processes          hlx stdio MCP servers
+┌─────────────┐               ┌──────────────┐
+│  VS Code    │──────────────▶│  hlx pid 1   │──┐
+│  Copilot CLI│──────────────▶│  hlx pid 2   │──┤
+│  Other agent│──────────────▶│  hlx pid 3   │──┤
+└─────────────┘               └──────────────┘  │
+                                                 ▼
+                                          ┌─────────────┐    miss    ┌─────────────────┐
+                                          │ Cache Layer  │──────────▶│ Helix / AzDO API│
+                                          │  Cache hit?  │◀──────────│                 │
+                                          └──────┬───────┘  response └─────────────────┘
+                                            hit  │
+                                                 ▼
+                                     ┌───────────────────────┐
+                                     │  SQLite + Disk shared  │
+                                     │  ┌─────────┬────────┐ │
+                                     │  │SQLite DB │Artifact│ │
+                                     │  │WAL mode  │ files  │ │
+                                     │  └─────────┴────────┘ │
+                                     │                       │
+                                     │  Auth isolation:       │
+                                     │  cache-a1b2c3/         │
+                                     │  cache-d4e5f6/         │
+                                     │  public/               │
+                                     └───────────────────────┘
 ```
 
 - **SQLite WAL mode** — multiple processes read/write the same DB safely with busy timeout
