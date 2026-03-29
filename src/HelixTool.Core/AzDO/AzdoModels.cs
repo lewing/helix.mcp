@@ -53,6 +53,9 @@ public sealed record AzdoBuild
 
     [JsonPropertyName("url")]
     public string? Url { get; init; }
+
+    [JsonPropertyName("tags")]
+    public IReadOnlyList<string>? Tags { get; init; }
 }
 
 /// <summary>Nested build definition reference.</summary>
@@ -342,6 +345,20 @@ public sealed record AzdoTestResult
     public string? AutomatedTestName { get; init; }
 }
 
+/// <summary>A Helix job extracted from a build timeline's "Send to Helix" task records.</summary>
+public sealed record HelixJobFromBuild(
+    string HelixJobId,
+    string ParentJobName,
+    string Result,
+    List<string> FailedWorkItems);
+
+/// <summary>Result of extracting Helix jobs from a build timeline.</summary>
+public sealed record HelixJobsFromBuildResult(
+    string BuildId,
+    int TotalHelixJobs,
+    int FailedHelixJobs,
+    List<HelixJobFromBuild> Jobs);
+
 /// <summary>A single timeline record matching a search pattern.</summary>
 public sealed class TimelineSearchMatch
 {
@@ -412,4 +429,24 @@ public sealed class CrossStepSearchResult
     [JsonPropertyName("totalMatchCount")] public int TotalMatchCount { get; init; }
     [JsonPropertyName("stoppedEarly")] public bool StoppedEarly { get; init; }
     [JsonPropertyName("steps")] public List<StepSearchResult> Steps { get; init; } = [];
+}
+
+/// <summary>Result of Build Analysis known issue extraction from build tags and timeline.</summary>
+public sealed record BuildAnalysisResult
+{
+    [JsonPropertyName("buildId")] public string BuildId { get; init; } = "";
+    [JsonPropertyName("buildResult")] public string? BuildResult { get; init; }
+    [JsonPropertyName("knownIssues")] public List<KnownIssueMatch> KnownIssues { get; init; } = [];
+    [JsonPropertyName("unmatchedFailures")] public List<string> UnmatchedFailures { get; init; } = [];
+    [JsonPropertyName("analysisSource")] public string? AnalysisSource { get; init; }
+}
+
+/// <summary>A known GitHub issue matched to one or more build/test failures by Build Analysis.</summary>
+public sealed record KnownIssueMatch
+{
+    [JsonPropertyName("issueNumber")] public int IssueNumber { get; init; }
+    [JsonPropertyName("repository")] public string Repository { get; init; } = "";
+    [JsonPropertyName("issueUrl")] public string IssueUrl { get; init; } = "";
+    [JsonPropertyName("issueTitle")] public string? IssueTitle { get; init; }
+    [JsonPropertyName("matchedFailures")] public List<string> MatchedFailures { get; init; } = [];
 }

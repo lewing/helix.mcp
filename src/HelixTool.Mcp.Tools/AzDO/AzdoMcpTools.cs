@@ -342,6 +342,45 @@ public sealed class AzdoMcpTools
         }
     }
 
+    [McpServerTool(Name = "azdo_helix_jobs", Title = "Helix Jobs from Build", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
+     Description("Extract Helix job IDs from a build. Bridges AzDO→Helix gap — returns job IDs, parent job names, results, and failed work items. Filter: 'failed' (default) or 'all'.")]
+    public async Task<HelixJobsFromBuildResult> HelixJobs(
+        [Description("AzDO build ID or full build URL")] string buildId,
+        [Description("Filter: 'failed' (default) or 'all'")] string filter = "failed")
+    {
+        try
+        {
+            return await _svc.GetHelixJobsAsync(buildId, filter);
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new McpException(AppendNotFoundHint(ex.Message, buildId), ex);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
+        {
+            throw new McpException($"Failed to extract Helix jobs: {ex.Message}", ex);
+        }
+    }
+
+    [McpServerTool(Name = "azdo_build_analysis", Title = "Build Analysis Known Issues", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
+     Description("Extract Build Analysis known issue matches from a build. Shows which failures are matched to known GitHub issues and which are unmatched. Works for dotnet repos that use Build Analysis.")]
+    public async Task<BuildAnalysisResult> BuildAnalysis(
+        [Description("AzDO build ID or full build URL")] string buildId)
+    {
+        try
+        {
+            return await _svc.GetBuildAnalysisAsync(buildId);
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new McpException(AppendNotFoundHint(ex.Message, buildId), ex);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
+        {
+            throw new McpException($"Failed to get build analysis: {ex.Message}", ex);
+        }
+    }
+
     [McpServerTool(Name = "azdo_auth_status", Title = "AzDO Auth Status", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("Current AzDO auth method (anonymous, PAT, Entra, az CLI), expiry, and warnings. No API call made.")]
     public async Task<AzdoAuthStatus> AuthStatus()

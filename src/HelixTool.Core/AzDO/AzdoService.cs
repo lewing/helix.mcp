@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Text.RegularExpressions;
 
 namespace HelixTool.Core.AzDO;
 
@@ -522,5 +523,253 @@ public class AzdoService
         if (results.Count <= top)
             return results;
         return results.Take(top).ToList();
+    }
+
+    private static readonly Regex s_gitHubIssueUrlRegex = new(
+        @"https://github\.com/(?<repo>[^/]+/[^/]+)/issues/(?<num>\d+)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Extract Build Analysis known issue data from build tags and timeline issue messages.
+    /// Build Analysis (used in dotnet/runtime and other repos) adds tags and timeline annotations
+    /// when test failures match known GitHub issues.
+    /// </summary>
+    public async Task<BuildAnalysisResult> GetBuildAnalysisAsync(string buildIdOrUrl, CancellationToken ct = default)
+    {
+        var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
+
+        var buildTask = _client.GetBuildAsync(org, project, buildId, ct);
+        var timelineTask = _client.GetTimelineAsync(org, project, buildId, ct);
+        await Task.WhenAll(buildTask, timelineTask);
+
+        var build = await buildTask;
+        if (build is null)
+            throw new InvalidOperationException($"Build {buildId} not found in {org}/{project}.");
+
+        var timeline = await timelineTask;
+
+        // Collect known issues from build tags (e.g., "Known test failure: <url>")
+        var knownByUrl = new Dictionary<string, KnownIssueMatch>(StringComparer.OrdinalIgnoreCase);
+        var analysisSources = new List<string>();
+
+        if (build.Tags is { Count: > 0 })
+        {
+            foreach (var tag in build.Tags)
+            {
+                var match = s_gitHubIssueUrlRegex.Match(tag);
+                if (match.Success)
+                {
+                    var issueUrl = match.Value;
+                    if (!knownByUrl.ContainsKey(issueUrl))
+                    {
+                        knownByUrl[issueUrl] = new KnownIssueMatch
+                        {
+                            IssueNumber = int.Parse(match.Groups["num"].Value),
+                            Repository = match.Groups["repo"].Value,
+                            IssueUrl = issueUrl,
+                            IssueTitle = ExtractIssueTitleFromTag(tag, issueUrl),
+                            MatchedFailures = []
+                        };
+                    }
+                }
+            }
+            if (knownByUrl.Count > 0)
+                analysisSources.Add("build tags");
+        }
+
+        // Scan timeline issue messages for Build Analysis annotations with GitHub issue URLs
+        var unmatchedFailures = new List<string>();
+
+        if (timeline?.Records is { Count: > 0 })
+        {
+            foreach (var record in timeline.Records)
+            {
+                if (record.Issues is not { Count: > 0 })
+                    continue;
+
+                foreach (var issue in record.Issues)
+                {
+                    if (issue.Message is null)
+                        continue;
+
+                    var urlMatch = s_gitHubIssueUrlRegex.Match(issue.Message);
+                    if (urlMatch.Success)
+                    {
+                        var issueUrl = urlMatch.Value;
+                        if (!knownByUrl.TryGetValue(issueUrl, out var existing))
+                        {
+                            existing = new KnownIssueMatch
+                            {
+                                IssueNumber = int.Parse(urlMatch.Groups["num"].Value),
+                                Repository = urlMatch.Groups["repo"].Value,
+                                IssueUrl = issueUrl,
+                                MatchedFailures = []
+                            };
+                            knownByUrl[issueUrl] = existing;
+                        }
+                        var failureContext = record.Name ?? issue.Message;
+                        if (!existing.MatchedFailures.Contains(failureContext, StringComparer.OrdinalIgnoreCase))
+                            existing.MatchedFailures.Add(failureContext);
+                    }
+                    else if (issue.Type is "error" &&
+                             record.Result is not null &&
+                             !record.Result.Equals("succeeded", StringComparison.OrdinalIgnoreCase))
+                    {
+                        unmatchedFailures.Add($"[{record.Name}] {issue.Message}");
+                    }
+                }
+            }
+
+            if (knownByUrl.Count > 0 && !analysisSources.Contains("build tags"))
+                analysisSources.Add("timeline issues");
+            else if (knownByUrl.Count > 0 && analysisSources.Contains("build tags"))
+                analysisSources.Add("timeline issues");
+        }
+
+        return new BuildAnalysisResult
+        {
+            BuildId = buildId.ToString(),
+            BuildResult = build.Result,
+            KnownIssues = knownByUrl.Values.ToList(),
+            UnmatchedFailures = unmatchedFailures,
+            AnalysisSource = analysisSources.Count > 0 ? string.Join(", ", analysisSources) : null
+        };
+    }
+
+    /// <summary>
+    /// Try to extract a human-readable issue title from a build tag.
+    /// Tags often look like "Known test failure: Title (url)" or "Known test failure: url".
+    /// </summary>
+    private static string? ExtractIssueTitleFromTag(string tag, string issueUrl)
+    {
+        // Strip the URL from the tag to see if there's a title
+        var withoutUrl = tag.Replace(issueUrl, "", StringComparison.OrdinalIgnoreCase).Trim();
+
+        // Remove common prefixes
+        foreach (var prefix in new[] { "Known test failure:", "Known Build Error:", "Known issue:" })
+        {
+            if (withoutUrl.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                withoutUrl = withoutUrl[prefix.Length..].Trim();
+                break;
+            }
+        }
+
+        // Clean up surrounding punctuation/parentheses
+        withoutUrl = withoutUrl.Trim('(', ')', '-', ' ');
+        return string.IsNullOrWhiteSpace(withoutUrl) ? null : withoutUrl;
+    }
+
+    // Matches Helix job GUIDs in URLs like helix.dot.net/api/.../jobs/{guid}/...
+    private static readonly Regex HelixJobIdRegex = new(
+        @"jobs/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // Matches "Work item {name} in job {guid} has failed"
+    private static readonly Regex FailedWorkItemRegex = new(
+        @"Work item (.+?) in job ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) has failed",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Extract Helix job IDs from a build timeline's "Send to Helix" task records.
+    /// </summary>
+    public async Task<HelixJobsFromBuildResult> GetHelixJobsAsync(
+        string buildIdOrUrl, string filter = "failed", CancellationToken ct = default)
+    {
+        if (filter is not null &&
+            !filter.Equals("failed", StringComparison.OrdinalIgnoreCase) &&
+            !filter.Equals("all", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"Invalid filter '{filter}'. Must be 'failed' or 'all'.", nameof(filter));
+        }
+
+        filter ??= "failed";
+
+        var timeline = await GetTimelineAsync(buildIdOrUrl, ct);
+        if (timeline is null)
+            throw new InvalidOperationException($"No timeline available for build '{buildIdOrUrl}'.");
+
+        var recordById = timeline.Records
+            .Where(r => r.Id is not null)
+            .ToDictionary(r => r.Id!, StringComparer.OrdinalIgnoreCase);
+
+        // Find Task records whose name contains "helix" (covers "Send to Helix", "Send job to helix", etc.)
+        var helixTasks = timeline.Records
+            .Where(r => string.Equals(r.Type, "Task", StringComparison.OrdinalIgnoreCase)
+                        && r.Name is not null
+                        && r.Name.Contains("helix", StringComparison.OrdinalIgnoreCase));
+
+        var jobs = new List<HelixJobFromBuild>();
+
+        foreach (var task in helixTasks)
+        {
+            if (task.Issues is not { Count: > 0 })
+                continue;
+
+            // Collect all job IDs and failed work items from this task's issues
+            var jobIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var failedWorkItems = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var issue in task.Issues)
+            {
+                if (issue.Message is null)
+                    continue;
+
+                // Extract job IDs
+                foreach (Match m in HelixJobIdRegex.Matches(issue.Message))
+                {
+                    var jobId = m.Groups[1].Value;
+                    jobIds.Add(jobId);
+                }
+
+                // Extract failed work item names and associate with their job
+                var wiMatch = FailedWorkItemRegex.Match(issue.Message);
+                if (wiMatch.Success)
+                {
+                    var workItemName = wiMatch.Groups[1].Value;
+                    var jobId = wiMatch.Groups[2].Value;
+                    jobIds.Add(jobId);
+                    if (!failedWorkItems.TryGetValue(jobId, out var items))
+                    {
+                        items = [];
+                        failedWorkItems[jobId] = items;
+                    }
+                    items.Add(workItemName);
+                }
+            }
+
+            // Resolve parent job name for context
+            string parentName = "";
+            if (task.ParentId is not null && recordById.TryGetValue(task.ParentId, out var parent))
+                parentName = parent.Name ?? "";
+
+            string taskResult = task.Result ?? "unknown";
+
+            foreach (var jobId in jobIds)
+            {
+                failedWorkItems.TryGetValue(jobId, out var items);
+                jobs.Add(new HelixJobFromBuild(
+                    HelixJobId: jobId,
+                    ParentJobName: parentName,
+                    Result: taskResult,
+                    FailedWorkItems: items ?? []));
+            }
+        }
+
+        // Apply filter
+        if (filter.Equals("failed", StringComparison.OrdinalIgnoreCase))
+        {
+            jobs = jobs
+                .Where(j => !j.Result.Equals("succeeded", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+
+        int failedCount = jobs.Count(j => !j.Result.Equals("succeeded", StringComparison.OrdinalIgnoreCase));
+
+        return new HelixJobsFromBuildResult(
+            BuildId: buildIdOrUrl,
+            TotalHelixJobs: jobs.Count,
+            FailedHelixJobs: failedCount,
+            Jobs: jobs);
     }
 }
