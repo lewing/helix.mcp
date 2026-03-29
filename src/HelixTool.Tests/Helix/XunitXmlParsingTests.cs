@@ -630,7 +630,66 @@ public class XunitXmlParsingTests
     }
 
     // ========================================================================
-    // 10. Mixed format handling — TRX and xUnit XML together
+    // 10. xUnit v3 schema-version 2 format
+    // ========================================================================
+
+    private const string XunitV3Xml = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <assemblies schema-version="2" id="assembly-run-1">
+          <assembly name="MyTests.dll" test-framework="xUnit.net 3.0.0" id="asm-1"
+                    total="4" passed="2" failed="1" skipped="1">
+            <collection name="Test collection for MyTests" id="col-1"
+                        total="4" passed="2" failed="1" skipped="1">
+              <test name="MyTests.PassingTest1" id="test-1"
+                    type="MyTests" method="PassingTest1"
+                    time="0.0042" result="Pass" />
+              <test name="MyTests.PassingTest2" id="test-2"
+                    type="MyTests" method="PassingTest2"
+                    time="0.0018" result="Pass">
+                <warnings>
+                  <warning>This test method has too many assertions</warning>
+                </warnings>
+              </test>
+              <test name="MyTests.FailingTest" id="test-3"
+                    type="MyTests" method="FailingTest"
+                    time="0.0230" result="Fail">
+                <failure>
+                  <message>Assert.True() Failure: Expected true, got false</message>
+                  <stack-trace>   at MyTests.FailingTest() in /src/MyTests.cs:line 42</stack-trace>
+                </failure>
+              </test>
+              <test name="MyTests.SkippedTest" id="test-4"
+                    type="MyTests" method="SkippedTest"
+                    time="0" result="Skip">
+                <reason><![CDATA[Not supported on this platform]]></reason>
+              </test>
+              <test name="MyTests.NotRunTest" id="test-5"
+                    type="MyTests" method="NotRunTest"
+                    time="0" result="NotRun" />
+            </collection>
+          </assembly>
+        </assemblies>
+        """;
+
+    [Fact]
+    public async Task XunitV3_SchemaVersion2_ParsesAllResultTypes()
+    {
+        SetupFiles(("testResults.xml", XunitV3Xml));
+
+        var results = await _svc.ParseTrxResultsAsync(ValidJobId, WorkItem, includePassed: true);
+
+        var trx = Assert.Single(results);
+        Assert.Equal(5, trx.TotalTests);
+        Assert.Equal(1, trx.Failed);
+        // NotRun is counted in the skipped bucket
+        Assert.Equal(2, trx.Skipped);
+
+        var failedTest = trx.Results.First(r => r.Outcome == "Failed");
+        Assert.Contains("Assert.True() Failure", failedTest.ErrorMessage);
+    }
+
+    // ========================================================================
+    // 11. Mixed format handling — TRX and xUnit XML together
     // ========================================================================
 
     [Fact]

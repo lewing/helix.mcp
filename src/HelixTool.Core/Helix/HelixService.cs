@@ -803,6 +803,7 @@ public class HelixService
                 "Pass" => "Passed",
                 "Fail" => "Failed",
                 "Skip" => "Skipped",
+                "NotRun" => "NotRun",
                 _ => result
             };
 
@@ -810,6 +811,7 @@ public class HelixService
             {
                 case "passed": passed++; break;
                 case "failed": failed++; break;
+                case "notrun": skipped++; break;
                 default: skipped++; break;
             }
 

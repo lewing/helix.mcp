@@ -164,6 +164,7 @@ public sealed class CiKnowledgeService
             ],
             RecommendedInvestigationOrder =
             [
+                "azdo_search_timeline(buildId, 'error') → find failed steps (compact output, preferred for large builds)",
                 "helix_status(jobId) → which work items failed? (maps to test projects)",
                 "azdo_test_runs(buildId) + azdo_test_results(buildId, runId) → structured failures with stack traces",
                 "helix_search(jobId, workItem, '  Failed') → quick cross-reference from console",
@@ -525,6 +526,7 @@ public sealed class CiKnowledgeService
             ],
             RecommendedInvestigationOrder =
             [
+                "azdo_search_timeline(buildId, 'error') → find failed steps (compact output, preferred for large builds)",
                 "Identify which pipeline failed: maui-pr (unit), maui-pr-uitests (UI), maui-pr-devicetests (device)",
                 "For maui-pr (unit): azdo_test_runs + azdo_test_results → structured results; helix_search '[FAIL]' for console; SKIP helix_parse_uploaded_trx",
                 "For maui-pr-uitests (UI): azdo_test_runs + azdo_test_results ONLY — no Helix tools useful; azdo_timeline for control group/platform",
@@ -594,6 +596,7 @@ public sealed class CiKnowledgeService
             ],
             RecommendedInvestigationOrder =
             [
+                "azdo_search_timeline(buildId, 'error') → find failed steps (compact output, preferred for large builds)",
                 "Authenticate to devdiv first (`az login` or set `AZDO_TOKEN`), then pass the full devdiv build URL to azdo_* tools (bare build IDs default to dnceng-public)",
                 "Look for PublishTestResults tasks in timeline for NUnit XML results",
                 "AzDO test runs on devdiv org are the primary structured result source",
@@ -658,6 +661,7 @@ public sealed class CiKnowledgeService
             ],
             RecommendedInvestigationOrder =
             [
+                "azdo_search_timeline(buildId, 'error') → find failed steps (compact output, preferred for large builds)",
                 "Check which org the build is on — devdiv (internal) vs dnceng-public (fork PRs)",
                 "For internal devdiv builds, authenticate first and pass the full devdiv build URL to azdo_* tools (bare build IDs default to dnceng-public)",
                 "AzDO test runs (TRX/VSTest format) are the primary result source",

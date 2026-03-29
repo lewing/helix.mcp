@@ -42,7 +42,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_builds", Title = "AzDO Build List", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
-     Description("List recent builds for an AzDO project. Filter by PR, branch, or definition. Defaults to dnceng-public/public, top 20.")]
+     Description("List recent builds for an AzDO project. Filter by PR, branch, or definition. Defaults to dnceng-public/public, top 20. In-progress builds may already have failed jobs — use azdo_search_timeline to check.")]
     public async Task<LimitedResults<AzdoBuild>> Builds(
         [Description("Azure DevOps organization")] string org = "dnceng-public",
         [Description("Azure DevOps project")] string project = "public",
