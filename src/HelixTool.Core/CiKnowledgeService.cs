@@ -271,7 +271,7 @@ public sealed class CiKnowledgeService
             DisplayName = "dotnet/roslyn",
             UsesHelix = true,
             HelixTestResultAvailability = "none",
-            TestResultLocation = "AzDO test reporting — Helix failures are dominated by crashes; crash dumps uploaded to Helix",
+            TestResultLocation = "AzDO test reporting — Helix failures are dominated by crashes; crash dumps inconsistently uploaded (console.log may be the only artifact)",
             PipelineNames = ["roslyn-CI (95)"],
             OrgProject = "dnceng-public/public",
             TestFramework = "xUnit",
@@ -302,7 +302,7 @@ public sealed class CiKnowledgeService
                 "azdo_test_runs shows failedTests=0 across ALL runs on crash — crashes are invisible in AzDO structured data",
                 "Work item names are generic (workitem_0, workitem_1) — you cannot tell which tests are in a work item from its name",
                 "Crashes are the dominant failure mode, not assertion failures — search for 'aborted' or 'Process exited', not '[FAIL]'",
-                "Crash dumps are inconsistently uploaded — some crashed work items have .dmp files, others have only console.*.log. Always check helix_files on crashed work items.",
+                "Crash dumps are inconsistently uploaded — console.log may be the only artifact. Don't assume .dmp files exist; always check helix_files on crashed work items.",
             ],
             RecommendedInvestigationOrder =
             [
@@ -317,11 +317,11 @@ public sealed class CiKnowledgeService
             ],
             UploadedFiles =
             [
-                "console.*.log (always)",
-                "crash.*.dmp (Windows crashes)",
-                "testhost.exe.*.dmp (Windows crashes)",
-                "crash.*.dotnet.dmp (Linux crashes)",
-                "core.* (Linux core dumps)",
+                "console.*.log (always — only consistently available artifact)",
+                "crash.*.dmp (Windows crashes — inconsistent, may be missing)",
+                "testhost.exe.*.dmp (Windows crashes — inconsistent, may be missing)",
+                "crash.*.dotnet.dmp (Linux crashes — inconsistent, may be missing)",
+                "core.* (Linux core dumps — inconsistent, may be missing)",
                 "Never: *.trx, *.binlog",
             ],
             CommonFailureCategories =
@@ -921,6 +921,15 @@ public sealed class CiKnowledgeService
             ## In-Progress Builds
             In-progress builds may already have failed jobs — AzDO jobs complete independently.
             Always check `azdo_search_timeline(buildId, 'error')` or `azdo_timeline(buildId, filter='failed')` even for builds that haven't finished.
+
+            ## Failure Classification
+            Given a failed Helix work item's exit code and console log, classify:
+            1. exit_code in [-4, 134, 137, 139] OR log contains "createdump" or "SIGABRT" or "core dumped" → **CRASH** (look for dumps via helix_files)
+            2. log contains "Timed Out (timeout" or work item state is "Passed" but exit_code != 0 → **TIMEOUT**
+            3. log contains "[FAIL]" or "Failed:" or "Errors:" with test names → **TEST_FAILURE** (use azdo_test_results for structured data)
+            4. log contains "error CS" or "error MSB" or "error NU" → **BUILD_ERROR** (read the build log via azdo_log)
+            5. exit_code == 0 but log has failures → **REPORTER_FAILED** (infra issue, check test runner)
+            6. else → **UNCLASSIFIED** (read full log via helix_logs)
 
             ## Known Repos
             Profiles exist for: {string.Join(", ", s_profiles.Values.Select(p => p.DisplayName))}
