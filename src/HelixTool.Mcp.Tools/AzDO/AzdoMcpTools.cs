@@ -312,6 +312,19 @@ public sealed class AzdoMcpTools
             ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
     }
 
+    [McpServerTool(Name = "azdo_true_test_count", Title = "AzDO True Test Count",
+        ReadOnly = true, Idempotent = true, Destructive = false, OpenWorld = false, UseStructuredContent = true),
+     Description("Get actual Azure DevOps (AzDO) test counts by expanding parameterized/theory sub-results that AzDO collapses.")]
+    public async Task<TrueTestCountResult> TrueTestCount(
+        [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
+        [Description("Optional Azure DevOps test run ID from azdo_test_runs; omit to count all test runs in the build")] int? runId = null)
+    {
+        return await McpExceptionHandler.RunServiceCallAsync(
+            () => _svc.GetTrueTestCountAsync(buildIdOrUrl, runId),
+            "get true test count",
+            ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
+    }
+
     [McpServerTool(Name = "azdo_auth_status", Title = "AzDO Auth Status", ReadOnly = true, Idempotent = true, OpenWorld = false),
      Description("Current AzDO auth method (anonymous, PAT, Entra, az CLI), expiry, and warnings. No API call made.")]
     public async Task<CallToolResult> AuthStatus()

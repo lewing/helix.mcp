@@ -259,6 +259,47 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         return result;
     }
 
+    public async Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAllOutcomesAsync(string org, string project, int runId, int top = 1000, CancellationToken ct = default)
+    {
+        if (!_enabled) return await _inner.GetTestResultsAllOutcomesAsync(org, project, runId, top, ct);
+
+        await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
+
+        var key = BuildCacheKey(org, project, $"testresults-all:{runId}:{top}");
+        var cached = await _cache.GetMetadataAsync(key, ct);
+        var deserialized = TryDeserialize<List<AzdoTestResult>>(cached);
+        if (deserialized is not null)
+            return deserialized;
+
+        var result = await _inner.GetTestResultsAllOutcomesAsync(org, project, runId, top, ct);
+        key = BuildCacheKey(org, project, $"testresults-all:{runId}:{top}");
+        await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
+
+        return result;
+    }
+
+    public async Task<AzdoTestResult?> GetTestResultWithSubResultsAsync(string org, string project, int runId, int resultId, CancellationToken ct = default)
+    {
+        if (!_enabled) return await _inner.GetTestResultWithSubResultsAsync(org, project, runId, resultId, ct);
+
+        await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
+
+        var key = BuildCacheKey(org, project, $"testresult-sub:{runId}:{resultId}");
+        var cached = await _cache.GetMetadataAsync(key, ct);
+        var deserialized = TryDeserialize<AzdoTestResult>(cached);
+        if (deserialized is not null)
+            return deserialized;
+
+        var result = await _inner.GetTestResultWithSubResultsAsync(org, project, runId, resultId, ct);
+        if (result is not null)
+        {
+            key = BuildCacheKey(org, project, $"testresult-sub:{runId}:{resultId}");
+            await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
+        }
+
+        return result;
+    }
+
     public async Task<IReadOnlyList<AzdoBuildArtifact>> GetBuildArtifactsAsync(string org, string project, int buildId, CancellationToken ct = default)
     {
         if (!_enabled) return await _inner.GetBuildArtifactsAsync(org, project, buildId, ct);
