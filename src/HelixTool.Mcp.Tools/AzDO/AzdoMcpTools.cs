@@ -381,6 +381,29 @@ public sealed class AzdoMcpTools
         }
     }
 
+    [McpServerTool(Name = "azdo_true_test_count", Title = "AzDO True Test Count",
+        ReadOnly = true, Idempotent = true, UseStructuredContent = true),
+     Description("Get the actual number of tests executed in a build, " +
+        "including theory/parameterized test sub-results that AzDO collapses. " +
+        "Compares AzDO's reported count against the true count by expanding dataDriven sub-results.")]
+    public async Task<TrueTestCountResult> TrueTestCount(
+        [Description("AzDO build ID or full build URL")] string buildId,
+        [Description("Optional: scope to a single test run ID")] int? runId = null)
+    {
+        try
+        {
+            return await _svc.GetTrueTestCountAsync(buildId, runId);
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new McpException(AppendNotFoundHint(ex.Message, buildId), ex);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
+        {
+            throw new McpException($"Failed to get true test count: {ex.Message}", ex);
+        }
+    }
+
     [McpServerTool(Name = "azdo_auth_status", Title = "AzDO Auth Status", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("Current AzDO auth method (anonymous, PAT, Entra, az CLI), expiry, and warnings. No API call made.")]
     public async Task<AzdoAuthStatus> AuthStatus()

@@ -73,3 +73,11 @@ Detailed notes for AzDO search/log ranking, MCP error surfacing, CI-knowledge de
 - **404 hint pattern for internal builds:** `AppendNotFoundHint` in `AzdoMcpTools` checks if the "not found" error mentions the default org/project (`dnceng-public`/`public`), and if so appends a hint that the build might be internal — directing the agent to pass the full URL or set `org='dnceng'` and `project='internal'`.
 - **Two new auth-status MCP tools shipped:** `azdo_auth_status` delegates to `IAzdoTokenAccessor.AuthStatusAsync()` (returns `AzdoAuthStatus` record). `helix_auth_status` checks `IHelixTokenAccessor.GetAccessToken()` and resolves `TokenSource` from `ChainedHelixTokenAccessor` when available, returning a `HelixAuthStatus` record.
 - **Key file paths:** `src/HelixTool.Mcp.Tools/AzDO/AzdoMcpTools.cs` (TryExtractOrgProjectFromUrl, AppendNotFoundHint, azdo_auth_status), `src/HelixTool.Mcp.Tools/Helix/HelixMcpTools.cs` (helix_auth_status, HelixAuthStatus record).
+
+## Learnings (True Test Count — 2026-07-25)
+
+- **New IAzdoApiClient methods for theory expansion:** `GetTestResultsAllOutcomesAsync` fetches all test results (not just failed) and `GetTestResultWithSubResultsAsync` fetches a single result with `detailsToInclude=SubResults` to expand dataDriven/orderedTest entries. Both are cached in `CachingAzdoApiClient` with `TestTtl`.
+- **Theory parent identification pattern:** AzDO marks theory/parameterized test parents with `resultGroupType` values `"dataDriven"` or `"orderedTest"`. The sub-result expansion API is per-result (not bulk), requiring parallel expansion with concurrency control.
+- **SemaphoreSlim(10) + 5s per-request timeout for sub-result expansion:** `AzdoService.GetTrueTestCountAsync` limits concurrent sub-result fetches to 10 with a 5-second timeout per request. Failed expansions count as 1 test each (conservative fallback).
+- **Single-object GET already supported:** `AzdoApiClient.GetAsync<T>` handles single JSON objects (not wrapped in `AzdoListResponse`), used for builds, timelines, and now test result sub-result expansion.
+- **Key file paths:** Models in `AzdoModels.cs` (`AzdoTestSubResult`, `TrueTestCountResult`, `TestRunTrueCount`), API methods in `AzdoApiClient.cs` and `IAzdoApiClient.cs`, service logic in `AzdoService.cs` (`GetTrueTestCountAsync`), MCP tool `azdo_true_test_count` in `AzdoMcpTools.cs`.
