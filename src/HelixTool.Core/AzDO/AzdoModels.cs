@@ -343,7 +343,50 @@ public sealed record AzdoTestResult
 
     [JsonPropertyName("automatedTestName")]
     public string? AutomatedTestName { get; init; }
+
+    [JsonPropertyName("resultGroupType")]
+    public string? ResultGroupType { get; init; }
+
+    [JsonPropertyName("subResults")]
+    public IReadOnlyList<AzdoTestSubResult>? SubResults { get; init; }
 }
+
+/// <summary>Sub-result of a parameterized/theory test (part of TestSubResult in AzDO API).</summary>
+public sealed record AzdoTestSubResult
+{
+    [JsonPropertyName("id")]
+    public int Id { get; init; }
+
+    [JsonPropertyName("displayName")]
+    public string? DisplayName { get; init; }
+
+    [JsonPropertyName("outcome")]
+    public string? Outcome { get; init; }
+
+    [JsonPropertyName("durationInMs")]
+    public long? DurationInMs { get; init; }
+
+    [JsonPropertyName("resultGroupType")]
+    public string? ResultGroupType { get; init; }
+}
+
+/// <summary>True test count including theory/parameterized sub-results.</summary>
+public sealed record TrueTestCountResult(
+    int ReportedCount,
+    int TrueCount,
+    int TheoryParentCount,
+    int TheorySubResultTotal,
+    int FailedToExpand,
+    IReadOnlyList<TestRunTrueCount> Runs);
+
+/// <summary>Per-run breakdown of true test count.</summary>
+public sealed record TestRunTrueCount(
+    int RunId,
+    string? RunName,
+    int Reported,
+    int TrueCount,
+    int TheoryParents,
+    int SubResults);
 
 /// <summary>A Helix job extracted from a build timeline's "Send to Helix" task records.</summary>
 public sealed record HelixJobFromBuild(

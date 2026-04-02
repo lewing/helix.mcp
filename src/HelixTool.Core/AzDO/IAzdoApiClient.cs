@@ -13,6 +13,8 @@ public interface IAzdoApiClient
     Task<IReadOnlyList<AzdoBuildChange>> GetBuildChangesAsync(string org, string project, int buildId, int? top = null, CancellationToken ct = default);
     Task<IReadOnlyList<AzdoTestRun>> GetTestRunsAsync(string org, string project, int buildId, int? top = null, CancellationToken ct = default);
     Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(string org, string project, int runId, int top = 200, CancellationToken ct = default);
+    Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAllOutcomesAsync(string org, string project, int runId, int top = 1000, CancellationToken ct = default);
+    Task<AzdoTestResult?> GetTestResultWithSubResultsAsync(string org, string project, int runId, int resultId, CancellationToken ct = default);
     Task<IReadOnlyList<AzdoBuildArtifact>> GetBuildArtifactsAsync(string org, string project, int buildId, CancellationToken ct = default);
     Task<IReadOnlyList<AzdoTestAttachment>> GetTestAttachmentsAsync(string org, string project, int runId, int resultId, int top = 50, CancellationToken ct = default);
 

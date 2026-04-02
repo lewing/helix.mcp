@@ -135,6 +135,104 @@ public class AzdoService
     }
 
     /// <summary>
+    /// Get the actual number of tests executed in a build, expanding theory/parameterized sub-results
+    /// that AzDO collapses into single entries.
+    /// </summary>
+    public async Task<TrueTestCountResult> GetTrueTestCountAsync(
+        string buildIdOrUrl, int? runId = null, CancellationToken ct = default)
+    {
+        var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
+
+        IReadOnlyList<AzdoTestRun> runs;
+        if (runId.HasValue)
+        {
+            var allRuns = await _client.GetTestRunsAsync(org, project, buildId, ct: ct);
+            runs = allRuns.Where(r => r.Id == runId.Value).ToList();
+            if (runs.Count == 0)
+                throw new InvalidOperationException($"Test run {runId.Value} not found for build {buildId}.");
+        }
+        else
+        {
+            runs = await _client.GetTestRunsAsync(org, project, buildId, ct: ct);
+        }
+
+        var runCounts = new List<TestRunTrueCount>();
+        int totalReported = 0, totalTrue = 0, totalTheoryParents = 0, totalSubResults = 0, totalFailedToExpand = 0;
+        var semaphore = new SemaphoreSlim(10, 10);
+
+        foreach (var run in runs)
+        {
+            var results = await _client.GetTestResultsAllOutcomesAsync(org, project, run.Id, top: 10_000, ct);
+
+            var theoryParents = results.Where(r =>
+                string.Equals(r.ResultGroupType, "dataDriven", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(r.ResultGroupType, "orderedTest", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            var nonTheoryCount = results.Count - theoryParents.Count;
+
+            // Expand theory parents in parallel with concurrency limit and per-request timeout
+            var expandTasks = theoryParents.Select(async parent =>
+            {
+                await semaphore.WaitAsync(ct);
+                try
+                {
+                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    cts.CancelAfter(TimeSpan.FromSeconds(5));
+                    var expanded = await _client.GetTestResultWithSubResultsAsync(
+                        org, project, run.Id, parent.Id, cts.Token);
+                    return expanded?.SubResults?.Count ?? 0;
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    return -1; // per-request timeout — mark as failed to expand
+                }
+                catch
+                {
+                    return -1; // any other error — mark as failed to expand
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
+            }).ToList();
+
+            var subResultCounts = await Task.WhenAll(expandTasks);
+
+            int runSubResults = 0, runFailedToExpand = 0;
+            foreach (var count in subResultCounts)
+            {
+                if (count < 0)
+                    runFailedToExpand++;
+                else
+                    runSubResults += count;
+            }
+
+            var runTrue = nonTheoryCount + runSubResults + runFailedToExpand;
+            runCounts.Add(new TestRunTrueCount(
+                RunId: run.Id,
+                RunName: run.Name,
+                Reported: results.Count,
+                TrueCount: runTrue,
+                TheoryParents: theoryParents.Count,
+                SubResults: runSubResults));
+
+            totalReported += results.Count;
+            totalTrue += runTrue;
+            totalTheoryParents += theoryParents.Count;
+            totalSubResults += runSubResults;
+            totalFailedToExpand += runFailedToExpand;
+        }
+
+        return new TrueTestCountResult(
+            ReportedCount: totalReported,
+            TrueCount: totalTrue,
+            TheoryParentCount: totalTheoryParents,
+            TheorySubResultTotal: totalSubResults,
+            FailedToExpand: totalFailedToExpand,
+            Runs: runCounts);
+    }
+
+    /// <summary>
     /// Get build artifacts by build ID or AzDO URL.
     /// Optionally filters by name pattern and limits result count.
     /// </summary>
