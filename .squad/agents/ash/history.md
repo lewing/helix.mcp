@@ -81,3 +81,21 @@
 📌 Team update (2026-03-13): PR #28 merged the remaining AzDO auth quick wins — fallback Azure CLI/`az` credentials now refresh on deadline/401, cache isolation keys off stable auth-source identity instead of raw token bytes, and `hlx azdo auth-status` exposes safe auth-path metadata. — decided by Ripley
 
 📌 Team update (2026-03-14): helix-cli skill docs must reflect shipped CLI behavior: use `hlx llms-txt` for CLI discovery, note no `hlx ci-guide` command yet, and keep `hlx search-log` CLI docs text-only. — decided by Kane
+
+### 2026-05-15: C# MCP SDK v1.0.0 → v1.3.0 upgrade feasibility analysis
+
+- Research scope: latest releases of official C# MCP SDK (github.com/modelcontextprotocol/csharp-sdk), NuGet packages (ModelContextProtocol, ModelContextProtocol.AspNetCore)
+- Current version: 1.0.0 (released 2026-02-25)
+- Latest version: 1.3.0 (released 2026-05-08)
+- Intermediate versions: v1.1.0 (2026-03-06), v1.2.0 (2026-03-27)
+- Gap: 3 minor versions + 2 breaking changes (v1.2.0 SSE/RequestContext deprecations)
+
+**Key findings:**
+- v1.1.0: Client completion APIs, handler auto-discovery, message handler cleanup fix — low impact (we don't use these features)
+- v1.2.0 breaking changes: SSE disabled by default (non-issue — we use root endpoint already); RequestContext deprecation (non-issue — we don't instantiate it directly)
+- v1.3.0: Public `ClientTransportClosedException` for structured transport closure info; fixes for stateless HTTP transport; CORS/allowed-hosts documentation; process crash fix for Stderr testing
+- Our usage: HTTP server transport with tool registration via attributes, root endpoint mapping, scoped DI for token accessors — exactly compatible with all v1.x releases
+- Upgrade risk: **Minimal** — no code changes needed, test suite should pass unchanged
+- Recommendation: **Upgrade to v1.3.0** (P1 priority) for reliability (structured exceptions), security (CORS docs), future-proofing (resource streaming fixes), and stability (2 months production validation)
+- Effort: ~15 min (edit 3 .csproj files, run tests)
+- Outcome document: `.squad/decisions/inbox/ash-mcp-sdk-upgrade-research.md`

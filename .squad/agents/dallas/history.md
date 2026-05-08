@@ -84,3 +84,15 @@ Freshness marker pattern: content key (4h) + sentinel (15s). Delta-append via Co
 📌 Team update (2026-03-14): helix-cli skill docs must reflect shipped CLI behavior: use `hlx llms-txt` for CLI discovery, note no `hlx ci-guide` command yet, and keep `hlx search-log` CLI docs text-only. — decided by Kane
 
 📌 Team update (2026-03-16): MCP timeline truncation + CI guide improvements complete — `azdo_timeline` now implements partial response pattern (200-record threshold, 100 returned + truncation metadata); 5 core repo profiles in `CiKnowledgeService` updated to recommend `azdo_search_timeline` as first investigation step for large builds; cross-references added in tool descriptions. Wire format change from `AzdoTimeline?` to `TimelineResponse?` — review for CLI-side compatibility and threshold configurability. Build clean, 1127 tests pass. — implemented by Ripley
+
+## 2026-XX-XX: MCP SDK usage inventory (for Larry, parallel with Ash's SDK research)
+- Both `ModelContextProtocol` and `ModelContextProtocol.AspNetCore` are pinned to **1.0.0** (no Directory.Packages.props; versions live in csproj).
+- Two transports in use: `WithStdioServerTransport()` in `HelixTool/Program.cs` (CLI `mcp` subcommand) and `WithHttpTransport()` + `MapMcp()` in `HelixTool.Mcp/Program.cs` (ASP.NET Core HTTP server).
+- Tool registration is fully attribute-based (`[McpServerToolType]` + `[McpServerTool]`) discovered via `WithToolsFromAssembly(typeof(HelixMcpTools).Assembly)`. ~28 tools across 3 classes (Helix=11, AzDO=15, CiKnowledgeTool=1, +1 resource type with 2 resources).
+- Resources: only registered in HTTP server (`WithResourcesFromAssembly`), not in stdio CLI server — divergence worth flagging if SDK upgrade changes resource semantics.
+- No prompts. No source generators against MCP SDK (DescribeGenerator inspects `[McpServerTool]` syntax for CLI/MCP cross-reference doc but doesn't depend on SDK runtime types).
+- SDK extension surface is shallow: `McpException` for tool-surface errors, `UseStructuredContent = true` on most tools for auto-generated output schemas, `[Description]` for params, `IHttpContextAccessor`-based per-request token plumbing (HTTP server), custom `ApiKeyMiddleware` runs before `MapMcp()`.
+- Version-pinning rationale (decisions.md): chose 1.0.0 specifically for `UseStructuredContent` schema generation and `McpException` surfacing semantics. No "do not upgrade" guidance recorded.
+- `.mcp/server.json` (packaged with the dotnet tool) ships separately and is version-validated against csproj/tag at release.
+
+📌 Team update (2026-05-08): MCP SDK usage inventory for v1.0.0 → v1.3.0 upgrade assessment — ModelContextProtocol 1.0.0 + ModelContextProtocol.AspNetCore 1.0.0 across 3 csprojs; attribute-based tool registration (~27 tools); identified drift: hardcoded ServerInfo.Version, stdio host missing WithResourcesFromAssembly, no Directory.Packages.props; parallel Ash research recommends v1.3.0 upgrade (low risk, no code changes required).
