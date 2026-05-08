@@ -13,6 +13,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
+using System.Reflection;
 
 var services = new ServiceCollection();
 services.AddHttpClient("HelixDownload", c => c.Timeout = TimeSpan.FromMinutes(5));
@@ -934,10 +935,13 @@ Available as `failureCategory` in JSON and MCP output.
         builder.Services
             .AddMcpServer(options =>
             {
-                options.ServerInfo = new() { Name = "hlx", Version = "1.0.0" };
+                var serverVersion = Assembly.GetExecutingAssembly()
+                    .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0";
+                options.ServerInfo = new() { Name = "hlx", Version = serverVersion };
             })
             .WithStdioServerTransport()
-            .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly);
+            .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly)
+            .WithResourcesFromAssembly(typeof(HelixMcpTools).Assembly);
         await builder.Build().RunAsync();
     }
 

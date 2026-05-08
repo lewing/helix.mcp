@@ -5,6 +5,7 @@ using HelixTool.Core.AzDO;
 using HelixTool.Mcp;
 using HelixTool.Mcp.Tools;
 using ModelContextProtocol.Server;
+using System.Reflection;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -79,7 +80,9 @@ builder.Services.AddScoped<AzdoService>();
 builder.Services
     .AddMcpServer(options =>
     {
-        options.ServerInfo = new() { Name = "hlx", Version = "0.1.2" };
+        var serverVersion = Assembly.GetExecutingAssembly()
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0";
+        options.ServerInfo = new() { Name = "hlx", Version = serverVersion };
     })
     .WithHttpTransport()
     .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly)

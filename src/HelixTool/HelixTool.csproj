@@ -27,14 +27,14 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.3" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.0" />
-    <PackageReference Include="ModelContextProtocol" Version="1.0.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
+    <PackageReference Include="ModelContextProtocol" />
     <ProjectReference Include="..\HelixTool.Core\HelixTool.Core.csproj" />
     <ProjectReference Include="..\HelixTool.Mcp.Tools\HelixTool.Mcp.Tools.csproj" />
     <ProjectReference Include="..\HelixTool.Generators\HelixTool.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
-    <PackageReference Include="ConsoleAppFramework" Version="5.7.13" />
+    <PackageReference Include="ConsoleAppFramework" />
   </ItemGroup>
 
 </Project>
