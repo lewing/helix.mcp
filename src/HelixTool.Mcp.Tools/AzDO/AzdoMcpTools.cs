@@ -259,7 +259,8 @@ public sealed class AzdoMcpTools
         [Description("Lines of context around each match")] int contextLines = 2,
         [Description("Maximum matches to return. Default: 100")] int maxMatches = 100,
         [Description("Maximum log steps to search. Default: 50")] int maxLogsToSearch = 50,
-        [Description("Minimum lines per log to search")] int minLogLines = 5)
+        [Description("Minimum lines per log to search")] int minLogLines = 5,
+        IProgress<ProgressNotificationValue>? progress = null)
     {
         if (StringHelpers.IsFileSearchDisabled)
             throw new McpException("File content search is disabled by configuration.");
@@ -294,7 +295,8 @@ public sealed class AzdoMcpTools
             }
 
             return await _svc.SearchBuildLogAcrossStepsAsync(
-                buildIdOrUrl, pattern, contextLines, maxMatches, maxLogsToSearch, minLogLines);
+                buildIdOrUrl, pattern, contextLines, maxMatches, maxLogsToSearch, minLogLines,
+                McpProgressAdapter.Wrap(progress));
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
         {

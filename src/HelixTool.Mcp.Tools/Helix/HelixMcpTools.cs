@@ -178,13 +178,15 @@ public sealed class HelixMcpTools
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string? jobId = null,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null,
         [Description("File name or glob pattern (e.g., *.binlog). Default: all files")] string pattern = "*",
-        [Description("Direct file URL to download (bypasses jobId/workItem)")] string? url = null)
+        [Description("Direct file URL to download (bypasses jobId/workItem)")] string? url = null,
+        IProgress<ProgressNotificationValue>? progress = null)
     {
+        var sink = McpProgressAdapter.Wrap(progress);
         try
         {
             if (!string.IsNullOrWhiteSpace(url))
             {
-                var path = await _svc.DownloadFromUrlAsync(url);
+                var path = await _svc.DownloadFromUrlAsync(url, sink);
                 return new DownloadResult { DownloadedFiles = [path] };
             }
 
@@ -204,7 +206,7 @@ public sealed class HelixMcpTools
             if (string.IsNullOrEmpty(workItem))
                 throw new McpException("Work item name is required. Provide it as a separate parameter or include it in the Helix URL.");
 
-            var paths = await _svc.DownloadFilesAsync(jobId, workItem, pattern);
+            var paths = await _svc.DownloadFilesAsync(jobId, workItem, pattern, sink);
 
             if (paths.Count == 0)
                 throw new McpException($"No files matching '{pattern}' found.");
@@ -221,11 +223,12 @@ public sealed class HelixMcpTools
     public async Task<FindFilesResult> FindFiles(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("File name or glob pattern (e.g., *.binlog). Default: all files")] string pattern = "*",
-        [Description("Maximum work items to scan. Default: 50")] int maxItems = 50)
+        [Description("Maximum work items to scan. Default: 50")] int maxItems = 50,
+        IProgress<ProgressNotificationValue>? progress = null)
     {
         try
         {
-            var results = await _svc.FindFilesAsync(jobId, pattern, maxItems);
+            var results = await _svc.FindFilesAsync(jobId, pattern, maxItems, McpProgressAdapter.Wrap(progress));
 
             return new FindFilesResult
             {

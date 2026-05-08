@@ -299,6 +299,7 @@ public class AzdoService
         string buildIdOrUrl, string pattern,
         int contextLines = 2, int maxMatches = 50,
         int maxLogsToSearch = 30, int minLogLines = 5,
+        IProgress<ProgressUpdate>? progress = null,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
@@ -395,6 +396,12 @@ public class AzdoService
         var logsSearched = 0;
         var steps = new List<StepSearchResult>();
 
+        // We'll scan up to min(buckets.Count, maxLogsToSearch) entries.
+        var plannedScan = Math.Min(buckets.Count, maxLogsToSearch);
+        var step = ProgressReporter.ItemStep(plannedScan);
+        progress?.Report(new ProgressUpdate(0, plannedScan,
+            plannedScan == 0 ? "No logs to search" : $"Searching up to {plannedScan} log step(s)"));
+
         foreach (var (_, lineCount, logId, record) in buckets)
         {
             if (remainingMatches <= 0 || logsSearched >= maxLogsToSearch)
@@ -435,6 +442,13 @@ public class AzdoService
                 });
 
                 remainingMatches -= searchResult.Matches.Count;
+            }
+
+            if (progress is not null && (logsSearched % step == 0 || logsSearched == plannedScan))
+            {
+                var totalMatchesSoFar = steps.Sum(s => s.MatchCount);
+                progress.Report(new ProgressUpdate(logsSearched, plannedScan,
+                    $"Searched {logsSearched} of {plannedScan} log step(s) ({totalMatchesSoFar} match(es))"));
             }
         }
 

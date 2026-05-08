@@ -391,7 +391,7 @@ public class DownloadFilesTests : IDisposable
             .ThrowsAsync(new TaskCanceledException("canceled", null, cts.Token));
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => _svc.DownloadFilesAsync(ValidJobId, "wi1", "*", cts.Token));
+            () => _svc.DownloadFilesAsync(ValidJobId, "wi1", "*", progress: null, cts.Token));
     }
 
     // ==========================================================================

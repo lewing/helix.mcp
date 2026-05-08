@@ -93,3 +93,58 @@ Detailed notes for AzDO search/log ranking, MCP error surfacing, CI-knowledge de
   Works in both top-level Program.cs (`HelixTool.Mcp`) and class-based commands (`HelixTool`). HelixTool csproj's `<Version>0.5.4</Version>` flows through automatically; HelixTool.Mcp has no `<Version>` so it gets `1.0.0.0` (assembly default), which is fine for an unpacked aspnetcore host.
 - **stdio resources bug:** the `hlx mcp` subcommand registered `WithToolsFromAssembly` but not `WithResourcesFromAssembly` — meaning `ci://profiles` and `ci://profiles/{repo}` resources were silently invisible to stdio clients (Claude Desktop, Cline, etc.) while HTTP clients saw them. Always mirror `WithToolsFromAssembly` and `WithResourcesFromAssembly` calls across hosts; treat divergence as a bug.
 - **MCP SDK 1.0.0 → 1.3.0:** zero code changes required for our usage (root-endpoint HTTP transport, no manual `RequestContext` construction). Per Ash's research, the 1.2.0 breaking changes (legacy SSE off-by-default, RequestContext ctor obsolete) don't affect us.
+
+## 2026 — MCP progress notifications (issue #43)
+- **Branch:** `squad/mcp-progress-notifications` (off main; PR pending).
+- **MCP SDK 1.3.0 server-side progress API — verified surface:**
+  - **The pattern is auto-injection.** Any tool method parameter typed
+    `IProgress<ProgressNotificationValue>` is bound by the SDK at invocation
+    time. If the client included a `_meta.progressToken` in `tools/call`, the
+    SDK manufactures a forwarding sink whose `Report` calls turn into
+    `notifications/progress` JSON-RPC messages with that token. **If the client
+    did NOT include a progress token, the parameter is still injected but
+    bound to a no-op sink** — so emitting progress is always safe.
+  - The parameter is omitted from the tool's JSON schema (clients don't see it).
+  - `ProgressNotificationValue` has init-only `float Progress`, `float? Total`,
+    `string? Message`. Use object-initializer syntax.
+  - Lower-level escape hatch: `McpSession.NotifyProgressAsync(ProgressToken, ProgressNotificationValue, …)` exists for code outside the auto-injection path
+    (e.g. when you have a raw `RequestContext`). We did not need it.
+- **Architecture decision:** Service layer (`HelixService`, `AzdoService`) stays
+  MCP-free. Added `HelixTool.Core/ProgressUpdate.cs` (record struct
+  `(double Current, double? Total, string? Message)`) + `ProgressReporter`
+  static helpers. The MCP tool layer owns a tiny `McpProgressAdapter` that
+  translates `IProgress<ProgressNotificationValue>` → `IProgress<ProgressUpdate>`.
+  Adapter returns `null` when the inner sink is `null` so the no-op fast path
+  doesn't even allocate.
+- **Granularity rule:** ~5–10 emits per long run. `ProgressReporter.ItemStep(total)`
+  returns `max(1, total/10)`. `CopyToWithProgressAsync` emits every 10% of total
+  (or every 1 MiB when `Content-Length` is missing) plus a 250ms throttle so a
+  small file doesn't spam.
+- **Tools instrumented:**
+  - `helix_download` → per-file ("Downloaded N of M files: <name>") for the
+    work-item path; chunked bytes ("Downloaded 42 of 128 MB") for the URL path.
+  - `helix_find_files` → "Scanned N of M work items (K matches)" every ~10%.
+  - `azdo_search_log` → "Searched N of M log steps (K matches)" every ~10%.
+  - `azdo_log` skipped — confirmed it's a single fetch, no streaming.
+- **Smoke test (file-based C# app under throwaway `scratch/` dir, deleted after):**
+  Spun up an in-proc HttpListener serving 4 MiB in 256 KiB chunks with 40ms
+  delays; called `ProgressReporter.CopyToWithProgressAsync` directly; confirmed
+  4 events fired (0%, ~45%, ~89%, 100% — the 250ms throttle suppressed
+  intermediate emits, which is correct behavior). Output bytes match input.
+- **Backward compat:** All public service signatures got an *optional*
+  `IProgress<ProgressUpdate>?` parameter inserted **before** the
+  `CancellationToken`. This is a binary-compatible source change for callers
+  using named args, but **breaks any caller that passed `cancellationToken`
+  positionally as the next argument**. Fixed three internal call sites
+  (`FindBinlogsAsync`, two `DownloadFilesAsync` calls inside HelixService,
+  one test in `DownloadTests.cs`) by passing `progress: null,` explicitly.
+  Lesson: append-at-end is gentler; insert-before-CT only works because we
+  control all callers. **Future progress params should still go before CT to
+  keep CT visually last.**
+- **Working-tree gotcha (one-time):** Mid-task the working tree was switched
+  out from under me to `squad/mcp-tool-annotations-and-cleanup` (the parallel
+  branch) — likely the parallel agent grabbed the same checkout. My MCP tool
+  edits got blown away. Recovered by salvaging diffs to a `.salvage/` dir,
+  switching back to `squad/mcp-progress-notifications`, and reapplying. **In
+  shared workspaces, `git worktree list` early so each squad member can spawn
+  a separate worktree per branch.**

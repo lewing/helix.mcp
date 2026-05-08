@@ -292,7 +292,7 @@ public class HelixService
     /// <param name="cancellationToken">Optional cancellation token.</param>
     /// <returns>A list of <see cref="FileSearchResult"/> for work items that contain matching files.</returns>
     /// <exception cref="HelixException">Thrown when the job is not found or the API is unreachable.</exception>
-    public async Task<List<FileSearchResult>> FindFilesAsync(string jobId, string pattern = "*", int maxItems = 30, CancellationToken cancellationToken = default)
+    public async Task<List<FileSearchResult>> FindFilesAsync(string jobId, string pattern = "*", int maxItems = 30, IProgress<ProgressUpdate>? progress = null, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
         var id = HelixIdResolver.ResolveJobId(jobId);
@@ -303,6 +303,12 @@ public class HelixService
             var toScan = workItems.Take(maxItems).ToList();
             var results = new List<FileSearchResult>();
 
+            int total = toScan.Count;
+            int step = ProgressReporter.ItemStep(total);
+            progress?.Report(new ProgressUpdate(0, total,
+                total == 0 ? "No work items to scan" : $"Scanning {total} work item(s)"));
+
+            int scanned = 0;
             foreach (var wi in toScan)
             {
                 var files = await _api.ListWorkItemFilesAsync(wi.Name, id, cancellationToken);
@@ -312,6 +318,13 @@ public class HelixService
                     .ToList();
                 if (matching.Count > 0)
                     results.Add(new FileSearchResult(wi.Name, matching));
+
+                scanned++;
+                if (progress is not null && (scanned % step == 0 || scanned == total))
+                {
+                    progress.Report(new ProgressUpdate(scanned, total,
+                        $"Scanned {scanned} of {total} work item(s) ({results.Count} match(es))"));
+                }
             }
 
             return results;
@@ -344,7 +357,7 @@ public class HelixService
 
     /// <summary>Scan work items in a job to find which ones contain binlog files.</summary>
     public Task<List<FileSearchResult>> FindBinlogsAsync(string jobId, int maxItems = 30, CancellationToken cancellationToken = default)
-        => FindFilesAsync(jobId, "*.binlog", maxItems, cancellationToken);
+        => FindFilesAsync(jobId, "*.binlog", maxItems, progress: null, cancellationToken);
 
     /// <summary>Download files matching a pattern from a work item to a temp directory.</summary>
     /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
@@ -353,7 +366,7 @@ public class HelixService
     /// <param name="cancellationToken">Optional cancellation token.</param>
     /// <returns>List of absolute paths of downloaded files, or empty if no matches.</returns>
     /// <exception cref="HelixException">Thrown when the work item is not found or the API is unreachable.</exception>
-    public async Task<List<string>> DownloadFilesAsync(string jobId, string workItem, string pattern = "*", CancellationToken cancellationToken = default)
+    public async Task<List<string>> DownloadFilesAsync(string jobId, string workItem, string pattern = "*", IProgress<ProgressUpdate>? progress = null, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
         ArgumentException.ThrowIfNullOrWhiteSpace(workItem);
@@ -372,6 +385,10 @@ public class HelixService
             Directory.CreateDirectory(outDir);
             var paths = new List<string>();
 
+            int total = matching.Count;
+            progress?.Report(new ProgressUpdate(0, total, $"Downloading {total} file(s)"));
+
+            int done = 0;
             foreach (var f in matching)
             {
                 await using var stream = await _api.GetFileAsync(f.Name, workItem, id, cancellationToken);
@@ -382,6 +399,10 @@ public class HelixService
                 await using var file = File.Create(outPath);
                 await stream.CopyToAsync(file, cancellationToken);
                 paths.Add(outPath);
+
+                done++;
+                progress?.Report(new ProgressUpdate(done, total,
+                    $"Downloaded {done} of {total} file(s): {safeName}"));
             }
 
             return paths;
@@ -417,7 +438,7 @@ public class HelixService
     /// <param name="cancellationToken">Optional cancellation token.</param>
     /// <returns>The absolute path of the downloaded file.</returns>
     /// <exception cref="HelixException">Thrown when the download fails.</exception>
-    public async Task<string> DownloadFromUrlAsync(string url, CancellationToken cancellationToken = default)
+    public async Task<string> DownloadFromUrlAsync(string url, IProgress<ProgressUpdate>? progress = null, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(url);
 
@@ -434,9 +455,19 @@ public class HelixService
             using var response = await _httpClient.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             response.EnsureSuccessStatusCode();
 
+            var totalBytes = response.Content.Headers.ContentLength;
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             await using var file = File.Create(path);
-            await stream.CopyToAsync(file, cancellationToken);
+
+            await ProgressReporter.CopyToWithProgressAsync(
+                stream,
+                file,
+                totalBytes,
+                (copied, total) => total is not null
+                    ? $"Downloaded {ProgressReporter.FormatMB(copied)} of {ProgressReporter.FormatMB(total.Value)} ({safeName})"
+                    : $"Downloaded {ProgressReporter.FormatMB(copied)} ({safeName})",
+                progress,
+                cancellationToken);
 
             return path;
         }
@@ -665,7 +696,7 @@ public class HelixService
         ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
         ArgumentException.ThrowIfNullOrWhiteSpace(pattern);
 
-        var downloadedPaths = await DownloadFilesAsync(jobId, workItem, fileName, cancellationToken);
+        var downloadedPaths = await DownloadFilesAsync(jobId, workItem, fileName, progress: null, cancellationToken);
         if (downloadedPaths.Count == 0)
             throw new HelixException($"File '{fileName}' not found in work item '{workItem}'.");
 
@@ -907,7 +938,7 @@ public class HelixService
         if (fileName != null)
         {
             // Specific file requested — download and auto-detect format
-            var downloadedPaths = await DownloadFilesAsync(jobId, workItem, fileName, cancellationToken);
+            var downloadedPaths = await DownloadFilesAsync(jobId, workItem, fileName, progress: null, cancellationToken);
             if (downloadedPaths.Count == 0)
                 throw new HelixException($"File '{fileName}' not found in work item '{workItem}'.");
 
