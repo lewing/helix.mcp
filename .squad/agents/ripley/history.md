@@ -73,3 +73,23 @@ Detailed notes for AzDO search/log ranking, MCP error surfacing, CI-knowledge de
 - **404 hint pattern for internal builds:** `AppendNotFoundHint` in `AzdoMcpTools` checks if the "not found" error mentions the default org/project (`dnceng-public`/`public`), and if so appends a hint that the build might be internal — directing the agent to pass the full URL or set `org='dnceng'` and `project='internal'`.
 - **Two new auth-status MCP tools shipped:** `azdo_auth_status` delegates to `IAzdoTokenAccessor.AuthStatusAsync()` (returns `AzdoAuthStatus` record). `helix_auth_status` checks `IHelixTokenAccessor.GetAccessToken()` and resolves `TokenSource` from `ChainedHelixTokenAccessor` when available, returning a `HelixAuthStatus` record.
 - **Key file paths:** `src/HelixTool.Mcp.Tools/AzDO/AzdoMcpTools.cs` (TryExtractOrgProjectFromUrl, AppendNotFoundHint, azdo_auth_status), `src/HelixTool.Mcp.Tools/Helix/HelixMcpTools.cs` (helix_auth_status, HelixAuthStatus record).
+
+📌 Team update (2026-05-08): MCP SDK v1.0.0 → v1.3.0 upgrade pending — parallel research (Ash) and inventory (Dallas) complete; recommendation to upgrade to v1.3.0 (low risk, no code changes required); awaiting decision to spawn Ripley for upgrade PR. See `.squad/decisions/inbox/*` and `.squad/log/2026-05-08T20-29-00Z-mcp-sdk-upgrade-research.md` for research details and drift items flagged.
+
+## 2025 — MCP SDK 1.3.0 upgrade + Central Package Management migration
+- **Branch:** `squad/mcp-sdk-1.3.0-upgrade`
+- **CPM migration pattern (reusable):**
+  1. Create `Directory.Packages.props` at repo root with `<ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>`.
+  2. Aggregate every `PackageReference Version=` from every csproj into `<PackageVersion Include= Version= />` entries.
+  3. Strip `Version=` from each `PackageReference` (keep `Include=` and any `PrivateAssets`/`OutputItemType` attrs).
+  4. If any project uses floating ranges (`*`, `*-*`), add `<CentralPackageFloatingVersionsEnabled>true</CentralPackageFloatingVersionsEnabled>` — otherwise `NU1011` blocks restore.
+  5. CPM surfaces pre-existing `NU1507` (multiple NuGet sources w/o package source mapping) — note as separate cleanup, don't conflate.
+- **Version-source pattern (replaces hardcoded `ServerInfo.Version`):**
+  ```csharp
+  var serverVersion = System.Reflection.Assembly.GetExecutingAssembly()
+      .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0";
+  options.ServerInfo = new() { Name = "hlx", Version = serverVersion };
+  ```
+  Works in both top-level Program.cs (`HelixTool.Mcp`) and class-based commands (`HelixTool`). HelixTool csproj's `<Version>0.5.4</Version>` flows through automatically; HelixTool.Mcp has no `<Version>` so it gets `1.0.0.0` (assembly default), which is fine for an unpacked aspnetcore host.
+- **stdio resources bug:** the `hlx mcp` subcommand registered `WithToolsFromAssembly` but not `WithResourcesFromAssembly` — meaning `ci://profiles` and `ci://profiles/{repo}` resources were silently invisible to stdio clients (Claude Desktop, Cline, etc.) while HTTP clients saw them. Always mirror `WithToolsFromAssembly` and `WithResourcesFromAssembly` calls across hosts; treat divergence as a bug.
+- **MCP SDK 1.0.0 → 1.3.0:** zero code changes required for our usage (root-endpoint HTTP transport, no manual `RequestContext` construction). Per Ash's research, the 1.2.0 breaking changes (legacy SSE off-by-default, RequestContext ctor obsolete) don't affect us.

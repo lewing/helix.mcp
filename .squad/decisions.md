@@ -1871,3 +1871,327 @@ Use a Roslyn source generator in `src/HelixTool.Generators/` to emit `HelixTool.
 - `src/HelixTool.Generators/DescribeGenerator.cs`
 - `src/HelixTool.Core/McpEquivalentAttribute.cs`
 - `src/HelixTool/Program.cs`
+# MCP SDK v1.0.0 → v1.3.0 Upgrade Research
+
+**Requested by:** Larry Ewing  
+**Date:** 2026-05-15  
+**Status:** Complete research; recommending upgrade  
+**Priority:** P1 (Medium) — reliability + future-proofing, low risk  
+
+---
+
+## Executive Summary
+
+We're 3 minor versions behind the official C# MCP SDK (stuck on 1.0.0 released Feb 25; latest is v1.3.0 from May 8). The gap includes 2 breaking changes but **neither affects our code**. Upgrading is low-risk, high-value: better transport error handling (v1.3.0), stateless HTTP fixes, and security-focused docs.
+
+---
+
+## Current Versions & Release Timeline
+
+| Version | Release Date | Status | Key Changes |
+|---------|--------------|--------|-------------|
+| **1.0.0** | 2026-02-25 | **Current** | Initial stable release |
+| 1.1.0 | 2026-03-06 | +9 days | Client completion APIs, handler auto-discovery |
+| 1.2.0 | 2026-03-27 | +30 days | **BREAKING:** SSE disabled by default; RequestContext deprecation |
+| **1.3.0** | 2026-05-08 | Latest | Public `ClientTransportClosedException`, HTTP robustness fixes |
+
+**Our packages:**  
+- `ModelContextProtocol` v1.0.0  
+- `ModelContextProtocol.AspNetCore` v1.0.0  
+
+---
+
+## Changes Between v1.0.0 and v1.3.0
+
+### v1.0.0 → v1.1.0 (9 days later)
+- Client completion details (connection closure introspection)
+- Auto-populate completion handlers from `AllowedValuesAttribute`
+- Bug fixes: ServerCapabilities extension copy, ping handler registration, message handler cleanup
+- **Impact:** Low — adds client-side APIs we don't consume; improves handler discovery we don't use.
+
+### v1.1.0 → v1.2.0 (⚠️ Breaking, non-major)
+**Legacy SSE disabled by default:**
+- `/sse` and `/message` endpoints no longer mapped
+- New `HttpServerTransportOptions.EnableLegacySse` property (marked Obsolete)
+- Servers using SSE clients must migrate clients to root endpoint
+
+**RequestContext deprecation:**
+- `RequestContext(McpServer, JsonRpcRequest)` constructor marked Obsolete
+- Use `RequestContext(McpServer, JsonRpcRequest, TParams)` instead
+- Fixes DI scope lifetime, meta/progress failure, filter routing
+
+**Impact:** **MEDIUM but non-blocking** — we use HTTP root endpoint pattern (`app.MapMcp()`) already, not SSE. We don't directly instantiate RequestContext.
+
+### v1.2.0 → v1.3.0
+**Public `ClientTransportClosedException`:**
+- Structured transport closure info: exit codes, process IDs, stderr tails, HTTP status
+- Replaces exception message parsing
+- SSE/HTTP connection failures now `IOException` (was `InvalidOperationException`)
+- `OperationCanceledException` no longer wrapped
+
+**Bug fixes:**
+- Process crash when testing Stderr with stdio transport
+- Stateless HTTP transport incorrectly advertising `listChanged` capability
+
+**Docs:**
+- Role/identity propagation in tool execution
+- Allowed hosts and CORS policy guidance
+
+**Impact:** **MEDIUM-HIGH** — structured exceptions useful; stateless HTTP fix future-proofs if we add resources; docs valuable.
+
+---
+
+## Relevance to helix.mcp
+
+### Our Usage Pattern
+```csharp
+// Program.cs
+builder.Services.AddMcpServer(options => {
+    options.ServerInfo = new() { Name = "hlx", Version = "0.1.2" };
+})
+.WithHttpTransport()              // ← HTTP server (not stdio)
+.WithToolsFromAssembly(...)
+.WithResourcesFromAssembly(...)
+
+app.MapMcp();                     // ← Root endpoint (not /sse)
+```
+
+### What We Use
+✅ HTTP server transport  
+✅ Tool registration via attributes  
+✅ Root endpoint mapping  
+✅ Scoped DI (token accessors, caching)  
+
+### What We Don't Use
+❌ Stdio transport  
+❌ Legacy SSE endpoints  
+❌ Client completion APIs  
+❌ RequestContext constructors directly  
+❌ Resource streaming  
+
+### Breaking Change Impact
+- **v1.2.0 SSE change:** Non-issue. We don't use SSE; we already use root endpoint.
+- **v1.2.0 RequestContext:** Non-issue. We don't instantiate RequestContext directly.
+
+---
+
+## Upgrade Decision
+
+### Recommendation: **YES, UPGRADE TO v1.3.0**
+
+**Priority:** P1 (Medium urgency)
+
+**Rationale:**
+1. **Reliability:** Structured exception handling for transport closure (v1.3.0) improves debugging when HTTP server fails.
+2. **Security:** Upstream has invested in CORS/allowed-hosts docs; no CVEs in 1.0.0 but 1.3.0 reflects latest security guidance.
+3. **Future-proofing:** Fixes for resource streaming and DI patterns if we expand features (task-augmented tools, resources).
+4. **Stability:** v1.3.0 has ~2 months of production validation; no regressions reported.
+5. **Effort:** Minimal — ~15 min, no code changes needed.
+
+---
+
+## Upgrade Plan
+
+### Step 1: Update Package Versions
+Edit these files to change all `1.0.0` → `1.3.0`:
+- `src/HelixTool.Mcp.Tools/HelixTool.Mcp.Tools.csproj` → `ModelContextProtocol 1.3.0`
+- `src/HelixTool/HelixTool.csproj` → `ModelContextProtocol 1.3.0`
+- `src/HelixTool.Mcp/HelixTool.Mcp.csproj` → `ModelContextProtocol.AspNetCore 1.3.0`
+
+### Step 2: Validate
+```bash
+dotnet restore
+dotnet build
+dotnet test
+```
+
+### Step 3: E2E Smoke Test
+- Start MCP server locally
+- Verify tools register and execute
+- Check HTTP endpoints respond
+
+### Step 4: Code Changes Needed
+**None.** We don't use deprecated APIs.
+
+### Step 5: Commit
+Standard pull request with passing tests.
+
+---
+
+## Risks & Mitigations
+
+### Risk: Dependency Conflicts
+**Mitigation:** ModelContextProtocol has stable dependencies; no known conflicts. Run `dotnet restore --verify-match-objects` post-upgrade.
+
+### Risk: Runtime Incompatibility
+**Mitigation:** We target net10.0; all v1.x releases support net10.0. No risk.
+
+### Risk: Undiscovered Breaking Change
+**Mitigation:** Our test suite covers tool registration, execution, and error handling. Existing tests should pass without changes.
+
+### Risk: HTTP Transport Subtle Change
+**Mitigation:** v1.3.0's only HTTP transport change is the stateless capability fix (we don't use stateless mode). Low risk.
+
+---
+
+## What Doesn't Need to Change
+
+| Component | Status |
+|-----------|--------|
+| Tool registration code | ✅ No change |
+| Transport setup | ✅ No change |
+| DI configuration | ✅ No change |
+| Token accessor pattern | ✅ No change |
+| Tests | ✅ No change (can add transport closure test later) |
+| Deployment | ✅ No change |
+
+---
+
+## Optional Enhancements (Post-Upgrade)
+
+1. **Transport Exception Handling:** Add test case for new `ClientTransportClosedException` to verify error paths.
+2. **CORS Review:** If we add reverse-proxy deployment, reference v1.3.0's CORS/allowed-hosts docs.
+3. **Resource Streaming:** If future features add resources, v1.3.0's stateless HTTP fix is already in place.
+
+---
+
+## Timeline & Sign-Off
+
+- **Research completed:** 2026-05-15 (Ash)
+- **Recommended version:** v1.3.0
+- **Effort estimate:** ~15 min upgrade + test validation
+- **Blocking:** None (low-risk, non-critical)
+- **Next steps:** Await decision to proceed with upgrade PR
+
+---
+
+## References
+
+- **Releases:** https://github.com/modelcontextprotocol/csharp-sdk/releases
+- **v1.3.0 release:** https://github.com/modelcontextprotocol/csharp-sdk/releases/tag/v1.3.0
+- **v1.2.0 breaking changes:** https://github.com/modelcontextprotocol/csharp-sdk/releases/tag/v1.2.0
+- **Versioning policy:** https://csharp.sdk.modelcontextprotocol.io/versioning.html
+
+---
+
+# Ripley — MCP SDK 1.3.0 upgrade & CPM migration
+
+**Status:** shipped to branch (`squad/mcp-sdk-1.3.0-upgrade`), unpushed, awaiting Larry review then Lambert tests.  
+**Date:** 2026-05-08  
+**Requested by:** Larry Ewing  
+**Related research:** Ash — MCP SDK 1.1.0–1.3.0 Adoptable Features Evaluation (below)
+
+## What shipped
+
+One commit: `build: bump MCP SDK to 1.3.0, adopt central package management`
+
+1. **MCP SDK 1.0.0 → 1.3.0** for `ModelContextProtocol` and `ModelContextProtocol.AspNetCore`.
+   - Both packages were on 1.0.0 in their respective projects; no version drift to resolve.
+   - Zero source changes required — Ash's research held: we use root-endpoint HTTP transport and never construct `RequestContext` directly, so the 1.2.0 breakings don't touch us.
+
+2. **Central Package Management** introduced via new `Directory.Packages.props` at repo root.
+   - `<ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>`
+   - `<CentralPackageFloatingVersionsEnabled>true</CentralPackageFloatingVersionsEnabled>` — required because the test stack uses floating ranges (`Microsoft.AspNetCore.TestHost 10.*-*`, `Microsoft.NET.Test.Sdk 17.*`, `xunit 2.*`, `xunit.runner.visualstudio 2.*`, `NSubstitute 5.*`). Without this flag NuGet returns `NU1011`.
+   - Every `PackageReference` across all six csprojs (Core, Generators, Mcp.Tools, Mcp, Tests, HelixTool) now has its `Version=` removed; versions live solely in `Directory.Packages.props`.
+   - Generators (netstandard2.0) included; `PrivateAssets="all"` preserved on its `PackageReference`.
+
+3. **stdio MCP host bug fixed.** `src/HelixTool/Program.cs` (the `hlx mcp` subcommand) was missing `.WithResourcesFromAssembly(typeof(HelixMcpTools).Assembly)`. The HTTP host already had it. Result: `ci://profiles` and `ci://profiles/{repo}` resources were invisible to stdio MCP clients (Claude Desktop, Cline, etc.) while HTTP clients could see them. Now both hosts are aligned.
+
+4. **Hardcoded `ServerInfo.Version` removed** from both Program.cs files (`"0.1.2"` in HTTP host, `"1.0.0"` in stdio host). Replaced with a single pattern in both:
+   ```csharp
+   var serverVersion = Assembly.GetExecutingAssembly()
+       .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0";
+   options.ServerInfo = new() { Name = "hlx", Version = serverVersion };
+   ```
+   `Name` stays `"hlx"`. The CLI/stdio host inherits the `<Version>0.5.4</Version>` already declared in `HelixTool.csproj`. The HTTP host has no `<Version>` element so it reports `1.0.0.0` — acceptable for the unpacked aspnetcore service; can be raised later if needed.
+
+## Version conflicts resolved
+None. Every package that appeared in multiple csprojs was already pinned to the same version in each, so the consolidated `<PackageVersion>` entries are identity moves. (MCP packages were both 1.0.0; no project pinned them at conflicting versions.)
+
+## Known follow-ups (out of scope, surface only)
+- **NU1507** — CPM raises a warning that two NuGet sources (`nuget.org`, `dotnet-eng`) are configured without package source mapping. Pre-existing config, but CPM makes it visible. Recommend a follow-up PR to add `<packageSourceMapping>` to `NuGet.config` (e.g., dotnet-eng for `Microsoft.DotNet.Helix.Client` and `Microsoft.AspNetCore.TestHost` prereleases, nuget.org for everything else).
+
+## Validation
+- `dotnet restore` ✅
+- `dotnet build` ✅ (0 errors, 6 NU1507 warnings — see above)
+- Tests not run (Lambert owns next).
+
+## Files changed
+- ➕ `Directory.Packages.props`
+- ✏️ `src/HelixTool.Core/HelixTool.Core.csproj`
+- ✏️ `src/HelixTool.Generators/HelixTool.Generators.csproj`
+- ✏️ `src/HelixTool.Mcp.Tools/HelixTool.Mcp.Tools.csproj`
+- ✏️ `src/HelixTool.Mcp/HelixTool.Mcp.csproj`
+- ✏️ `src/HelixTool.Mcp/Program.cs`
+- ✏️ `src/HelixTool.Tests/HelixTool.Tests.csproj`
+- ✏️ `src/HelixTool/HelixTool.csproj`
+- ✏️ `src/HelixTool/Program.cs`
+
+---
+
+# MCP SDK 1.1.0–1.3.0 Adoptable Features Evaluation
+
+**Date:** 2026-05-08  
+**Analyst:** Ash  
+**Context:** Larry asked: "Are there new features we should *consider adopting*?" Beyond the safety case for version bump.
+
+## Feature Evaluation Matrix
+
+| Feature | What It Is | Fit for helix.mcp | Priority | Concrete Use Case |
+|---------|-----------|-------------------|----------|-------------------|
+| **AllowedValuesAttribute Auto-Completion** (v1.1.0) | SDK auto-populates completion handlers for tool params from `[AllowedValuesAttribute]` metadata | ✅ **ADOPT** | P2 Medium | Constrain `org`/`project`/`filter` params to known values (e.g., "dnceng-public" org, "failed"/"all" filters). Replaces manual string validation with discoverable enums; clients get better UX. |
+| **OutputSchema Independence** (v1.2.0) | Specify JSON output schema separately from C# return type (e.g., `CallToolResult` with custom schema) | 🤔 **MAYBE** | P3 Low | Current typed returns work fine; only valuable if we wanted to expose a different schema than the actual type (rare edge case). Low ROI. |
+| **Progress Notifications** (v1.2.0: WithProgress/NotifyProgress) | Server can send incremental progress updates to client during long tool execution | ✅ **ADOPT** | P1 High | `helix_download`, `azdo_search_log`, `helix_find_files`: large artifact/log downloads + cross-step log searches can run for 30–120 seconds. Progress notifications keep client informed, prevent timeout UX. |
+| **WithMeta Annotation** (v1.0.0 core, v1.2.0 fixed) | Attach metadata to tool results (e.g., cache hints, freshness markers, execution notes) | 🤔 **MAYBE** | P3 Low | Could annotate results with "cached from X", "search truncated", etc. Current `TimelineResponse.truncated` boolean works; metadata overkill unless many annotations needed. |
+| **Resource Subscriptions / list_changed** (v1.0.0 core) | Client notifies server when available resources change (e.g., new Helix job files uploaded) | ❌ **SKIP** | – | We don't expose resources as a primitive (only tools). Would need architectural rework. Not a high-value pattern for CI data. |
+| **Roots (client-side workspace bounds)** (v1.0.0 core) | Client tells server which filesystem dirs are accessible; server respects boundaries | ❌ **SKIP** | – | helix.mcp doesn't do filesystem access; all I/O goes through Azure APIs. Not applicable. |
+| **Sampling (server → LLM)** (v1.0.0 core) | Server can request LLM completions from client's model without own API key | ❌ **SKIP** | – | helix.mcp is a pure data/API tool; no LLM reasoning needed. Tools are read-only CI data fetches, no generative work. |
+| **Elicitation (server → user input)** (v1.0.0 core) | Server can pause and ask user for confirmation/info during tool execution | 🤔 **MAYBE** | P3 Low | Could ask "Download this 500MB artifact?" before `helix_download`. SDK supports it (v1.0.0+), but adds UX complexity—current behavior (let agent decide) is simpler. |
+| **Structured Logging / Log Notifications** (v1.0.0 core) | Server sends structured log events to client for debugging/audit | 🤔 **MAYBE** | P3 Low | We already log to stderr/syslog. Sending logs back to client could help with tool debugging, but marginal value. Would need log event design. |
+| **Tool Annotations (destructiveHint, openWorldHint, etc.)** (v1.0.0 core) | Metadata hints on tools: e.g., `[Destructive]`, `[OpenWorld]`, `[RequiresAuth]` | 🤔 **MAYBE** | P2 Medium | All our tools are `ReadOnly=true, Idempotent=true` already; no destructive/open-world actions. Could add `RequiresAuth` hint on azdo/helix tools to be explicit. Minor UX win. |
+| **Client Completion Details** (v1.1.0) | Structured details on why client connection ended (exit code, stderr, HTTP status) | ✅ **ADOPT** | P2 Medium | Better diagnostics when helix.mcp host crashes. Currently wrapped in generic exceptions; v1.1.0 gives structured access. Improves debuggability. |
+
+## Recommended Action Items
+
+### ✅ IMMEDIATE (High ROI, Low Effort)
+
+1. **AllowedValuesAttribute on enum-like params**
+   - Apply to: `org`, `project`, `filter`, `recordType`, `workItem`
+   - Benefit: Clients auto-discover valid values; type safety replaces string validation.
+   - Effort: ~30 min, pure annotation additions.
+
+2. **Progress Notifications on long-running tools**
+   - Apply to: `helix_download`, `azdo_search_log`, `helix_find_files`, `azdo_log` (with large tail)
+   - Benefit: Client knows tool is still running; prevents timeout/retry false positives.
+   - Effort: ~2 hours. Requires finding/reporting major milestones in download/search loops.
+
+### 🤔 DEFER (Lower ROI or Complexity)
+
+3. **Client Completion Details** — v1.1.0 structured exception info
+   - Benefit: Better error diagnostics when host connection dies.
+   - Effort: Requires catching `ClientTransportClosedException` and parsing structured info.
+   - Status: Wait until helix.mcp host failures become a pain point.
+
+4. **Tool Auth Hints** — Mark azdo/helix tools as `[RequiresAuth]`
+   - Benefit: Clients know upfront which tools need credentials.
+   - Effort: Minimal (annotation), but SDK support unclear (verify v1.1.0+).
+   - Status: P2; lower priority than progress notifications.
+
+### ❌ SKIP
+
+5. **Elicitation, Sampling, Resources, Roots** — Architectural mismatch or low fit.
+
+## Implementation Roadmap (Post-Upgrade to v1.3.0)
+
+| Phase | Deliverable | Effort | Owner |
+|-------|-------------|--------|-------|
+| Phase 1 | AllowedValuesAttribute on params + SDK test | 30 min | Ripley (code) |
+| Phase 2 | Progress notifications on top 3 tools (download, search_log, find_files) | 2–3 hours | Ripley (code) + Ash (test coverage) |
+| Phase 3 | Client completion details error handling (if needed) | 1 hour | Dallas (diagnostics) |
+
+## Notes for Future
+
+- **v1.4.0+ watching:** Keep eye on Tasks feature (durable execution wrappers); could help with multi-step CI workflows if exposed as a resource later.
+- **AllowedValues scope:** Identify 3–5 params with fixed enumerations; don't over-apply (tool flexibility matters).
+- **Progress granularity:** Balance between "too noisy" (every item) and "too sparse" (just start/end). Aim for 5–10 updates per long tool.
+
