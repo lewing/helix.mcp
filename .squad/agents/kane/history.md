@@ -86,3 +86,16 @@
 
 📌 Team update (2026-05-08): MCP SDK 1.3.0 upgrade — Central Package Management adopted (Directory.Packages.props), MCP SDK 1.0.0 → 1.3.0 (no source changes required). Note for docs review: ServerInfo.Version now dynamically reads AssemblyInformationalVersionAttribute; CLI/stdio host inherits Version from HelixTool.csproj (0.5.4), HTTP host reports 1.0.0.0. Documentation may need to note source of server version string in future reference sections.
 
+
+📌 Team update (2026-05-08): MCP annotations and progress notifications merged
+
+**Context:** Ripley completed two PRs merging MCP SDK 1.3.0 follow-ups:
+1. **PR #47** — `[AllowedValues]` on enum params, `OpenWorld` annotations (22 network tools = true, 3 static tools = false), `<packageSourceMapping>` for NU1507
+2. **PR #48** — Progress notifications on `helix_download`, `azdo_search_log`, `helix_find_files` via SDK 1.3.0 auto-injected `IProgress<T>`
+
+**Action for docs:** Once PRs merge:
+- Add README section under MCP server docs noting which tools emit progress and example message formats ("Downloaded 42 of 128 MB", "Searched 12 of 50 log steps")
+- Update tool descriptions in HelixMcpTools.cs / AzdoMcpTools.cs if `[AllowedValues]` options or progress behavior needs clarification
+- Consider mentioning `[AllowedValues]` + `OpenWorld=false` annotations in security/capability section if docs cover MCP best practices
+
+**Status:** PRs open, awaiting Dallas code review.

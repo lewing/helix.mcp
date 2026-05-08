@@ -2195,3 +2195,207 @@ None. Every package that appeared in multiple csprojs was already pinned to the 
 - **AllowedValues scope:** Identify 3–5 params with fixed enumerations; don't over-apply (tool flexibility matters).
 - **Progress granularity:** Balance between "too noisy" (every item) and "too sparse" (just start/end). Aim for 5–10 updates per long tool.
 
+
+---
+
+# Decision: MCP tool annotations + NU1507 cleanup batch (PR #47)
+
+**Author:** Ripley  
+**Date:** 2026-05-08  
+**Status:** Open (awaiting Dallas)  
+**Closes:** #42, #44, #45 — shipped together as one PR per Larry's request.
+
+## Context
+
+Three small annotation/config tweaks queued behind the MCP SDK 1.3.0 upgrade. They batched naturally because they all touch the MCP tool surface or the build configuration that the SDK upgrade exposed.
+
+## Decisions
+
+### 1. `[AllowedValues]` on enum-like MCP tool parameters (#42)
+- Added `System.ComponentModel.DataAnnotations.AllowedValuesAttribute` to closed-enum string parameters: `org`, `project`, `filter`/`resultFilter`, `recordType`, and the AzDO build `status` filter.
+- **Skipped** open-ended params (search patterns, IDs/GUIDs, file globs, log IDs, branch names) — these have no closed enumeration and constraining them would break legitimate inputs.
+- The AzDO `status` enum is taken from the official `BuildStatus` API: `all`, `cancelling`, `completed`, `inProgress`, `none`, `notStarted`, `postponed`. Small + stable + officially documented — meets the bar for `[AllowedValues]`.
+
+### 2. `OpenWorld` annotation on network-facing MCP tools (#44)
+- **SDK property name:** `OpenWorld` (not `OpenWorldHint`), matching the existing `ReadOnly`/`Idempotent`/`Destructive` naming style already used in the codebase. Both names exist in the dll for forward/backward compatibility, but `OpenWorld` is the canonical property the SDK has standardized on.
+- **Default value:** `true`, matching the MCP spec. Consequence: simply omitting the property leaves a tool open-world. Tools that should be closed-world must opt out with `OpenWorld = false`.
+- **Applied:** `OpenWorld = true` explicitly on all 22 `azdo_*`/`helix_*` tools that hit the network. Redundant with the default, but adds intent for readers and survives a hypothetical future spec/SDK default flip.
+- **Closed-world (explicit `OpenWorld = false`):** `helix_ci_guide` (static data), `azdo_auth_status`, `helix_auth_status` (local credential resolution only — no outbound HTTP to AzDO/Helix).
+- **Deviation from task instructions:** the issue text said "do NOT add the hint" for `helix_ci_guide`. Because the SDK default is `true`, leaving the attribute off would have produced the *opposite* of the stated intent (open-world for purely-static data). I set `OpenWorld = false` explicitly to honor the *spirit* of the request. Same reasoning for the two `*_auth_status` tools where the task gave no explicit instruction.
+
+### 3. `<packageSourceMapping>` for NU1507 (#45)
+- Mapped `Microsoft.DotNet.*` → `dotnet-eng` (the only package from that feed today is `Microsoft.DotNet.Helix.Client`).
+- Mapped `*` → `nuget.org` for everything else.
+- Longest-prefix-wins means other `Microsoft.*` packages continue to resolve from nuget.org as before — no semantic change to package resolution, just the warning cleared.
+- `dotnet restore --force` was required to re-evaluate after the config change; plain `dotnet restore` returned "up-to-date" and kept emitting NU1507.
+
+## Verification
+- `dotnet restore` — clean, no NU1507.
+- `dotnet build` — 0 warnings, 0 errors.
+- `dotnet test` — 1167/1167 passing (unchanged from baseline).
+- Reflection smoke test on the built `HelixTool.Mcp.Tools.dll`: 22 tools report `OpenWorld=True`, 3 report `OpenWorld=False`, and `[AllowedValues]` is attached to the expected parameters with the expected sets.
+
+## Open questions for Dallas
+- Should the explicit `OpenWorld = true` on the 22 network tools be removed (since it matches the default) to keep attribute lines shorter? My vote: keep — the redundancy documents intent and protects against future default flips.
+- Should we extend `[AllowedValues]` to `helix_download`'s `pattern` for common globs (`*`, `*.binlog`, `*.trx`)? My vote: no — pattern is genuinely open-ended, and constraining it would break legitimate uses like `MyApp.*.log`.
+
+---
+
+# Decision: MCP progress notifications via auto-injected `IProgress<T>`
+
+**Author:** Ripley  
+**Date:** 2026-05-08  
+**Status:** Open (awaiting Dallas review)  
+**Closes:** issue #43.  
+**Branch / PR:** `squad/mcp-progress-notifications`.
+
+## Context
+Long-running tools (`helix_download`, `azdo_search_log`, `helix_find_files`) can take seconds-to-minutes. With no progress signal the client UI stalls and users assume the call is hung. MCP defines `notifications/progress` for exactly this; the SDK 1.3.0 server API is now in our codebase.
+
+## Decision
+
+1. **Use the SDK's parameter auto-injection — don't reach for `McpSession`.**
+   Adding a parameter typed `IProgress<ProgressNotificationValue>` to a
+   `[McpServerTool]` method is sufficient. The SDK handles token correlation,
+   request scoping, and the no-token-no-op case. The parameter is hidden from
+   the JSON schema, so clients don't see it in tool listings.
+
+2. **Service layer stays MCP-free.** Core service methods (`HelixService`,
+   `AzdoService`) accept `IProgress<ProgressUpdate>?` where `ProgressUpdate`
+   is a domain record `(double Current, double? Total, string? Message)` in
+   `HelixTool.Core`. The MCP tool layer holds a tiny `McpProgressAdapter`
+   that maps one to the other. CLI callers pass `null`; tests pass `null`;
+   only the MCP tool methods translate.
+
+3. **Granularity: 5–10 emits per run, no exceptions.**
+   Computed as `max(1, total/10)` for item-based loops; 10% of byte total
+   (or 1 MiB cadence when length unknown) for stream copies. A 250 ms
+   throttle on stream copies prevents tiny files from spamming.
+
+4. **Always include a human-readable `Message`.** Examples:
+   - `"Downloaded 42 of 128 MB (smoke-output.bin)"`
+   - `"Searched 12 of 50 log steps (3 matches)"`
+   - `"Scanned 30 of 50 work item(s) (5 matches)"`
+   The message is what surfaces in clients today; the numeric `Progress`/`Total`
+   is what surfaces in progress bars tomorrow.
+
+5. **Progress is purely additive.** Every new optional `IProgress<>` param
+   defaults to `null` and the existing return contract is unchanged. Clients
+   that don't supply a progress token get exactly the same behavior they did
+   before this change.
+
+## Trade-offs / Alternatives considered
+
+- **Push to `McpSession.NotifyProgressAsync` directly.** Rejected: the
+  auto-injected `IProgress<T>` is shorter, scoped to the request, and
+  short-circuits when there's no token. The session escape hatch is only
+  needed for code outside a tool method's call frame.
+- **Per-byte / per-item emits.** Rejected: violates spec guidance, floods
+  stdio transport, doesn't match how clients render progress.
+- **Append `IProgress<>` after `CancellationToken`.** Considered. We instead
+  inserted it *before* CT (so CT remains visually last in signatures) — at
+  the cost of breaking three internal positional callers. Fixed in this PR
+  by switching them to named args. Future progress params should follow the
+  same convention.
+
+## Verification
+- `dotnet build` clean, `dotnet test` 1167/1167 passing.
+- Smoke test (file-based C# script, since deleted) using a 4 MiB
+  HttpListener payload streamed in 256 KiB chunks confirmed `Progress`,
+  `Total`, and `Message` all populate and that the 250 ms throttle plus
+  10% step yields ~4 events for a small payload (initial 0%, two mid-points,
+  final 100%) — exactly the requested 5–10 band when extrapolated to a
+  multi-tens-of-MB real download.
+
+## Follow-ups
+- Lambert: add unit tests for `ProgressReporter.CopyToWithProgressAsync`
+  (event count band, monotonic progress, null sink no-op) and one
+  end-to-end MCP-stdio test using the SDK client's `WithProgress`.
+- Kane: README section under MCP server docs noting which tools emit
+  progress and what the messages look like.
+- If we later add cancellation messages or partial-result emission via
+  notifications, reuse `ProgressUpdate.Message` rather than inventing a
+  new channel.
+
+---
+
+# Decision: SDK 1.0.0 → 1.3.0 upgrade verdict (Lambert)
+
+**Author:** Lambert (QA)  
+**Date:** 2026-05-08  
+**Status:** ✅ APPROVED  
+**Branch:** `squad/mcp-sdk-1.3.0-upgrade`  
+**Commit under review:** 80bf9f2 (Ripley)
+
+## What was verified
+
+1. **Full test suite:** `dotnet test` from repo root → **1167 passed, 0 failed, 0 skipped, ~3 s**. No regressions vs. prior baseline (last recorded count 1047; growth is from intervening test work, not from this commit).
+2. **Stdio host smoke:** `dotnet run --project src/HelixTool -- mcp --help` exits cleanly. `--version` resolves to **0.5.4** (the assembly's `InformationalVersion`), confirming the hardcoded "0.1.2" is gone and the new `AssemblyInformationalVersionAttribute` lookup works at runtime.
+3. **HTTP host smoke:** `dotnet src/HelixTool.Mcp/bin/Debug/net10.0/HelixTool.Mcp.dll` boots, binds to the requested URL, logs `Application started.` with no DI resolve / missing-type errors. Killed cleanly after a few seconds.
+4. **Version-source change:** Both `src/HelixTool/Program.cs:939` and `src/HelixTool.Mcp/Program.cs:84` use `Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0"`. CLI `--version` confirms it flows through (returned 0.5.4, not the fallback).
+5. **Resource-registration parity:** Both hosts call `.WithResourcesFromAssembly(typeof(HelixMcpTools).Assembly)` — stdio host now matches HTTP host, so `ci://profiles` resources are reachable from CLI/stdio MCP clients.
+
+## Notes / non-blocking
+
+- `NU1507` warning about unmapped NuGet sources (nuget.org + dotnet-eng) is now surfaced under CPM. Pre-existing, called out by Ripley, out of scope for this verdict. Recommend opening a follow-up to add package source mapping.
+- I did not exercise the MCP wire protocol end-to-end (would require a real MCP client). The boot smoke + 1167 green unit/integration tests are sufficient signal for the SDK bump given that no production code calls into renamed/removed SDK surface.
+
+## Recommendation
+
+Merge as-is.
+
+---
+
+# Decision: Parallel squad work should use separate git worktrees
+
+**Author:** Scribe (from Ripley incident report)  
+**Date:** 2026-05-08  
+**Status:** Process learning, recommended for future sprints  
+**Context:** Squad orchestration — two Ripley branches in same working tree
+
+## Incident
+
+During parallel execution of `squad/mcp-tool-annotations-and-cleanup` (PR #47) and `squad/mcp-progress-notifications` (PR #48) in the same working directory:
+
+- Git checkout race occurred mid-task when attempting to switch between branches in sequential steps
+- Ripley had to salvage diffs manually and re-checkout to recover
+- Both PRs completed successfully, but with extra friction
+
+## Decision
+
+**For future parallel squad work:** Use separate `git worktree`s for each independent branch rather than sharing a single working tree.
+
+**Rationale:**
+- Eliminates checkout races entirely; each agent has isolated working state
+- Enables true parallelism without synchronization overhead
+- Recovery from a checkout failure in one worktree doesn't affect others
+- Worktrees are lightweight (shared git dir, isolated working dirs + index)
+
+**Implementation:**
+```bash
+# Instead of:
+git checkout squad/branch-1    # in /path/to/repo
+# ... Ripley works ...
+git checkout squad/branch-2    # race condition possible
+# ... Ripley works ...
+
+# Use:
+git worktree add /path/to/worktree-1 squad/branch-1
+git worktree add /path/to/worktree-2 squad/branch-2
+# Each agent works in isolation
+# Cleanup: git worktree remove /path/to/worktree-N
+```
+
+**When to apply:**
+- Always for parallel multi-branch squad work
+- Coordinator should create worktrees before spawning dependent agents
+- Each agent gets `cd $WORKTREE` as first instruction
+
+**When not needed:**
+- Sequential single-branch work (rare)
+- Long-lived local branches that don't checkin worktrees
+
+## Owner
+
+Dallas (CI/coordination) — recommend baking this into squad orchestration checklist.
+
