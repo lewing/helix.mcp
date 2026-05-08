@@ -8,7 +8,7 @@ namespace HelixTool.Mcp.Tools;
 [McpServerToolType]
 public sealed class CiKnowledgeTool
 {
-    [McpServerTool(Name = "helix_ci_guide", Title = "CI Investigation Guide", ReadOnly = true, Idempotent = true),
+    [McpServerTool(Name = "helix_ci_guide", Title = "CI Investigation Guide", ReadOnly = true, Idempotent = true, OpenWorld = false),
      Description("Repo-specific CI guidance: tool selection, failure patterns, exit codes, pipeline details, gotchas. Covers 9 repos. Omit repo for overview. ⚠️ macios/android use devdiv — auth required.")]
     public string GetGuide(
         [Description("Repository name; omit for overview")] string? repo = null)
