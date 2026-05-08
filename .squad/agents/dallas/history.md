@@ -96,3 +96,6 @@ Freshness marker pattern: content key (4h) + sentinel (15s). Delta-append via Co
 - `.mcp/server.json` (packaged with the dotnet tool) ships separately and is version-validated against csproj/tag at release.
 
 📌 Team update (2026-05-08): MCP SDK usage inventory for v1.0.0 → v1.3.0 upgrade assessment — ModelContextProtocol 1.0.0 + ModelContextProtocol.AspNetCore 1.0.0 across 3 csprojs; attribute-based tool registration (~27 tools); identified drift: hardcoded ServerInfo.Version, stdio host missing WithResourcesFromAssembly, no Directory.Packages.props; parallel Ash research recommends v1.3.0 upgrade (low risk, no code changes required).
+
+📌 Team update (2026-05-08): MCP SDK 1.3.0 upgrade — Ripley shipped Central Package Management migration across 6 csprojs (new Directory.Packages.props), MCP SDK 1.0.0 → 1.3.0 (zero source changes), stdio host resource visibility fix (WithResourcesFromAssembly), ServerInfo.Version de-hardcoding (AssemblyInformationalVersionAttribute pattern). Build validates (0 errors, 6 NU1507 warnings pre-existing). Branch `squad/mcp-sdk-1.3.0-upgrade` ready for Lambert testing.
+

@@ -99,3 +99,24 @@
 - Recommendation: **Upgrade to v1.3.0** (P1 priority) for reliability (structured exceptions), security (CORS docs), future-proofing (resource streaming fixes), and stability (2 months production validation)
 - Effort: ~15 min (edit 3 .csproj files, run tests)
 - Outcome document: `.squad/decisions/inbox/ash-mcp-sdk-upgrade-research.md`
+
+### 2026-05-15: MCP SDK 1.1.0–1.3.0 Feature Adoption Evaluation
+
+- Requested by Larry Ewing: "Are there new features we should *consider adopting*, beyond the safety case for version bump?"
+- Research scope: Feature set in C# MCP SDK v1.1.0, v1.2.0, v1.3.0 and broader MCP spec versions they introduce
+- Features evaluated: AllowedValuesAttribute auto-completion, OutputSchema independence, Progress notifications, WithMeta annotation, Resource subscriptions, Roots, Sampling, Elicitation, Structured logging, Tool annotations, Client completion details
+- Current tool inventory: 27 tools (14 AzDO, 13 Helix), all ReadOnly=true, Idempotent=true, string-based enum params
+
+**Recommendations matrix:**
+- ✅ ADOPT (P1 High): Progress notifications for long-running tools (`helix_download`, `azdo_search_log`, `helix_find_files`) — clients can track 30–120 second operations; prevents timeout false positives
+- ✅ ADOPT (P2 Medium): AllowedValuesAttribute on enum-like params (`org`, `project`, `filter`, `recordType`) — clients auto-discover valid values; type safety + better UX; effort ~30 min
+- ✅ ADOPT (P2 Medium): Client completion details (v1.1.0) — structured exception info when host crashes; improves debuggability; wait until pain point surfaces
+- 🤔 MAYBE (P3 Low): WithMeta annotation, Tool auth hints, Structured logging — marginal ROI or require additional design
+- ❌ SKIP: Elicitation, Sampling, Resources, Roots — architectural mismatch (no LLM reasoning, no filesystem access, no resources primitive)
+
+**Effort estimate (post-upgrade to v1.3.0):**
+- Phase 1 (AllowedValuesAttribute): 30 min
+- Phase 2 (Progress notifications): 2–3 hours
+- Phase 3 (Client completion details): 1 hour (if needed)
+
+- Outcome document: `.squad/decisions/inbox/ash-mcp-sdk-adoptable-features.md`

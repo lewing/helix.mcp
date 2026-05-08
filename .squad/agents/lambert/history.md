@@ -78,3 +78,16 @@
 📌 Team update (2026-03-16): MCP timeline truncation implementation complete — `TimelineResponse` record type introduced for `azdo_timeline` return value when output exceeds 200 records (first 100 returned + truncation metadata). May need test updates if assuming `AzdoTimeline?` return type. See `.squad/decisions/decisions.md#timeline-truncation` for details and design trade-offs. — implemented by Ripley
 
 📌 Team update (2026-05-08): MCP SDK v1.0.0 → v1.3.0 upgrade pending — parallel research (Ash) and inventory (Dallas) complete; recommendation to upgrade to v1.3.0 (low risk, no code changes required). Drift items flagged by Dallas: hardcoded ServerInfo.Version, stdio host missing WithResourcesFromAssembly, no Directory.Packages.props. May need test updates if SDK changes affect existing test coverage. See `.squad/decisions/inbox/*` for details.
+
+📌 Team update (2026-05-08): MCP SDK 1.3.0 upgrade — Ripley shipped branch `squad/mcp-sdk-1.3.0-upgrade` with MCP SDK 1.0.0 → 1.3.0, Central Package Management adoption (Directory.Packages.props), stdio host resource visibility fix, and ServerInfo.Version de-hardcoding. Validation: dotnet restore ✅, dotnet build ✅ (0 errors, 6 NU1507 warnings pre-existing). **Test verification pending** — Lambert owns full suite validation and sign-off before merge.
+
+
+### MCP SDK 1.0.0 → 1.3.0 upgrade verification (2026-05-08)
+- **Branch:** `squad/mcp-sdk-1.3.0-upgrade`, commit 80bf9f2 by Ripley.
+- **Test command:** `dotnet test` from repo root → **1167 passed, 0 failed, 0 skipped, ~3 s** on net10.0. No regressions; no test changes needed for the SDK bump itself.
+- **Stdio smoke:** `dotnet run --project src/HelixTool -- mcp --help` exits cleanly; `dotnet run --project src/HelixTool -- --version` returns **0.5.4**, proving `AssemblyInformationalVersionAttribute` lookup replaces the old hardcoded "0.1.2".
+- **HTTP smoke:** `dotnet src/HelixTool.Mcp/bin/Debug/net10.0/HelixTool.Mcp.dll --urls http://127.0.0.1:18765` boots, binds, logs `Application started.` with zero DI resolve errors. Killed cleanly.
+- **Resource scan parity:** Both `src/HelixTool/Program.cs:944` and `src/HelixTool.Mcp/Program.cs:89` now call `.WithResourcesFromAssembly(typeof(HelixMcpTools).Assembly)` — stdio fix matches HTTP host so `ci://profiles` is reachable from CLI/stdio clients.
+- **Version source:** both Program.cs files use `Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0"` (stdio L939, http L84).
+- **Gotcha:** Pre-existing `NU1507` warning (nuget.org + dotnet-eng without source mapping) is now surfaced under CPM. Out of scope but worth a follow-up. Verdict file: `.squad/decisions/inbox/lambert-mcp-sdk-upgrade-verdict.md`.
+- **Verdict:** ✅ APPROVE.

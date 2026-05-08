@@ -83,3 +83,6 @@
 - Keep the helix-cli skill narrowly scoped to shipped CLI behavior; preserve the existing jq workflows, auth guidance, and cache section unless the shipped surface changed.
 - Key doc file: `.github/skills/helix-cli/SKILL.md` is the single maintained skill doc for agent-facing `hlx` CLI usage and discovery guidance.
 - Key agent log: `.squad/agents/kane/history.md` records durable documentation decisions, shipped-surface notes, and file-location reminders for future Kane tasks.
+
+📌 Team update (2026-05-08): MCP SDK 1.3.0 upgrade — Central Package Management adopted (Directory.Packages.props), MCP SDK 1.0.0 → 1.3.0 (no source changes required). Note for docs review: ServerInfo.Version now dynamically reads AssemblyInformationalVersionAttribute; CLI/stdio host inherits Version from HelixTool.csproj (0.5.4), HTTP host reports 1.0.0.0. Documentation may need to note source of server version string in future reference sections.
+
