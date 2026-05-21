@@ -190,3 +190,9 @@ Detailed notes for AzDO search/log ranking, MCP error surfacing, CI-knowledge de
 
 - Set `<RollForward>Major</RollForward>` only in `src/HelixTool/HelixTool.csproj` so the generated `HelixTool.runtimeconfig.json` for the `hlx` global tool can run on the next installed major runtime when `net10.0` is missing.
 - Do not add `RollForward` to library projects; this startup policy is only consumed by the executable entry point/runtimeconfig.
+
+## Learnings — MCP exception cleanup (2026-05-21)
+
+- Confirmed the MCP tool exception pattern is `catch (Exception ex) when (...)` followed by `throw new McpException($"Failed to {action}: {ex.Message}", ex);`, preserving the original exception as `InnerException` for debugging.
+- `azdo_auth_status` is **not** sync-safe in its current shape: `AzCliAzdoTokenAccessor.AuthStatusAsync()` can await `_resolutionLock.WaitAsync(...)` and perform fallback credential resolution through `AzureCliCredential` or `az account get-access-token` on cache miss, so the MCP tool should stay async unless we add a non-probing snapshot API first.
+- PR #53 tracks the `helix_ci_guide` exception wrap and the auth-status audit follow-up.
