@@ -7,6 +7,12 @@
 
 - Operators must be able to disable remote file-content analysis features as a defense-in-depth control, even while leaving metadata/file-list tooling available.
 - That directive became the basis for the `HLX_DISABLE_FILE_SEARCH` toggle used by search and structured-result parsing.
+### 2026-05-21: HelixTool RollForward Policy
+
+- Use `<RollForward>Major</RollForward>` in `src/HelixTool/HelixTool.csproj`.
+- **Not chosen:** `LatestMajor`, because we want conservative behavior that prefers the exact target runtime when it is installed and only moves to the lowest higher major when the target major is missing.
+- **Rationale:** `hlx` is shipped as a global `dotnet tool`, so its generated runtimeconfig controls whether the executable starts on machines that only have a newer shared framework installed. `Major` allows `net10.0` to run on .NET 11+ when .NET 10 is absent, avoiding startup failures for both the CLI and `hlx mcp serve`.
+- **Scope:** This applies only to the executable project `HelixTool`. Library projects do not produce the tool runtimeconfig and should not be changed for this policy.
 
 # US-31: hlx_search_file Phase 1 Implementation
 
