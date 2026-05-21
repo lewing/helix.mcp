@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
 using HelixTool.Core;
@@ -13,9 +14,16 @@ public sealed class CiKnowledgeTool
     public string GetGuide(
         [Description("Repository name; omit for overview")] string? repo = null)
     {
-        if (string.IsNullOrWhiteSpace(repo))
-            return CiKnowledgeService.GetOverview();
+        try
+        {
+            if (string.IsNullOrWhiteSpace(repo))
+                return CiKnowledgeService.GetOverview();
 
-        return CiKnowledgeService.GetGuide(repo);
+            return CiKnowledgeService.GetGuide(repo);
+        }
+        catch (Exception ex) when (ex is ArgumentException)
+        {
+            throw new McpException($"Failed to get CI guidance: {ex.Message}", ex);
+        }
     }
 }
