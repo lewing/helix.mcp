@@ -185,3 +185,8 @@ Detailed notes for AzDO search/log ranking, MCP error surfacing, CI-knowledge de
 5. Clean build to avoid stale reference errors
 
 📌 Team update (2026-05-21): Pagination Phase 1+2 implemented — wrapped `azdo_changes`/`azdo_test_runs` in `LimitedResults<T>`, added `truncated`/`note` to 8 result types. Build clean (0 warnings, 0 errors). Commit 0a82e58. Full suite: 1180/1180 passing. ⚠️ BRANCH-HYGIENE: committed to local main instead of squad/pagination-standardize per manifest instruction; Larry will handle branch/push decision.
+
+## Learnings — RollForward policy for global tool (2026-05-21)
+
+- Set `<RollForward>Major</RollForward>` only in `src/HelixTool/HelixTool.csproj` so the generated `HelixTool.runtimeconfig.json` for the `hlx` global tool can run on the next installed major runtime when `net10.0` is missing.
+- Do not add `RollForward` to library projects; this startup policy is only consumed by the executable entry point/runtimeconfig.
