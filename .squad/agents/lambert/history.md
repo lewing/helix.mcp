@@ -77,6 +77,20 @@
 📌 Team update (2026-03-16): MCP timeline truncation implementation complete — `TimelineResponse` record type introduced for `azdo_timeline` return value when output exceeds 200 records (first 100 returned + truncation metadata). May need test updates if assuming `AzdoTimeline?` return type. See `.squad/decisions/decisions.md` (section "Timeline Truncation Implementation") for details and design trade-offs. — implemented by Ripley
 📌 Team update (2026-03-16): MCP timeline truncation implementation complete — `TimelineResponse` record type introduced for `azdo_timeline` return value when output exceeds 200 records (first 100 returned + truncation metadata). May need test updates if assuming `AzdoTimeline?` return type. See `.squad/decisions/decisions.md#timeline-truncation` for details and design trade-offs. — implemented by Ripley
 
+📌 Team update (2026-05-20): Pagination standardization audit complete — Dallas audit found 2 🔴 tools (`azdo_changes`, `azdo_test_runs`) returning raw lists with no truncation metadata, 10 🟡 tools with bespoke response shapes. Phase 1 wraps reds in `CreateLimitedResults()` (~30 min). Phase 2 adds `truncated` field to yellows (~2-3 hours). Testing target: verify truncated flag set correctly when results exceed `top` parameter. See `.squad/decisions.md#dallas--pagination-architecture` for inventory table and upstream API reality.
+
+### Pagination contract tests (2026-05-20)
+- **What:** Added 13 contract tests (333 LOC) in `src/HelixTool.Tests/AzDO/PaginationContractTests.cs` verifying pagination standardization per Dallas's spec.
+- **Coverage areas:**
+  1. **CreateLimitedResults helper** (5 tests): truncation logic when count == top, count < top, top=0, empty results, count > top edge case
+  2. **Phase 1 tools** (4 tests): `azdo_changes` and `azdo_test_runs` now return `LimitedResults<T>` with correct truncation flag
+  3. **Default parameters** (4 tests): `azdo_builds`, `azdo_test_results`, `azdo_changes`, `azdo_test_runs` use reasonable defaults (20/50/20/50)
+- **Branch coordination:** Ripley is implementing Phase 1 changes in parallel (modified `AzdoMcpTools.cs`, `HelixMcpTools.cs`, `AzdoModels.cs`). Ripley's work is WIP (incomplete Helix changes causing build errors), but Phase 1 changes to `azdo_changes` and `azdo_test_runs` match the test expectations exactly.
+- **Test status:** Tests compile against `HelixTool.Core`. Full solution build blocked by Ripley's incomplete Helix work — expected and normal for parallel development. Tests will verify Ripley's implementation once complete.
+- **Key file:** `src/HelixTool.Tests/AzDO/PaginationContractTests.cs`
+- **Test count:** 1167 existing + 13 new = 1180 tests (when Ripley completes implementation).
+
+
 📌 Team update (2026-05-08): MCP SDK v1.0.0 → v1.3.0 upgrade pending — parallel research (Ash) and inventory (Dallas) complete; recommendation to upgrade to v1.3.0 (low risk, no code changes required). Drift items flagged by Dallas: hardcoded ServerInfo.Version, stdio host missing WithResourcesFromAssembly, no Directory.Packages.props. May need test updates if SDK changes affect existing test coverage. See `.squad/decisions/inbox/*` for details.
 
 📌 Team update (2026-05-08): MCP SDK 1.3.0 upgrade — Ripley shipped branch `squad/mcp-sdk-1.3.0-upgrade` with MCP SDK 1.0.0 → 1.3.0, Central Package Management adoption (Directory.Packages.props), stdio host resource visibility fix, and ServerInfo.Version de-hardcoding. Validation: dotnet restore ✅, dotnet build ✅ (0 errors, 6 NU1507 warnings pre-existing). **Test verification pending** — Lambert owns full suite validation and sign-off before merge.
