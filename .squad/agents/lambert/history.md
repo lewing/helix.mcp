@@ -105,3 +105,30 @@
 - **Version source:** both Program.cs files use `Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0"` (stdio L939, http L84).
 - **Gotcha:** Pre-existing `NU1507` warning (nuget.org + dotnet-eng without source mapping) is now surfaced under CPM. Out of scope but worth a follow-up. Verdict file: `.squad/decisions/inbox/lambert-mcp-sdk-upgrade-verdict.md`.
 - **Verdict:** ✅ APPROVE.
+
+📌 Team update (2026-05-08): MCP SDK 1.3.0 follow-ups — verification pending
+
+**Context:** Ripley completed two PRs:
+1. **PR #47** — `[AllowedValues]` sweep, `OpenWorld` annotations, `<packageSourceMapping>` (1167 tests pass ✅)
+2. **PR #48** — Progress notifications on long-running tools (1167 tests pass ✅)
+
+**Verification status:**
+- Both PRs passed local test suite (1167/1167)
+- Smoke tests confirmed (build clean, MCP help, version resolution)
+- Awaiting sequential verification per squad orchestration
+
+**Follow-ups from Ripley:**
+- **PR #48:** Add unit tests for `ProgressReporter.CopyToWithProgressAsync` (event count band, monotonic progress, null sink no-op) + one end-to-end MCP-stdio test using SDK client's `WithProgress`
+- **General:** Verify `[AllowedValues]` options match actual enum values in MCP schema generation
+
+**Test count:** 1167 baseline maintained across both PRs.
+
+### PR #47 (annotations + NU1507) and PR #48 (MCP progress notifications) verification (2026-05-08)
+- **PR #47 verdict:** ✅ APPROVE. Build clean (0 warnings — NU1507 gone), 1167/1167 tests pass. Reflection probe over `HelixTool.Mcp.Tools.dll` confirms 25 `[McpServerTool]` methods with `OpenWorld` set explicitly on every one (22 true / 3 false: `azdo_auth_status`, `helix_auth_status`, `helix_ci_guide`). 10 params carry `[AllowedValues]`. Generated descriptors via `McpServerTool.Create()` show `enum` arrays in JSON schema (e.g. `azdo_builds.status.enum = ["all","cancelling","completed","inProgress","none","notStarted","postponed"]`) and `annotations.openWorldHint` in tool annotations.
+- **PR #48 verdict:** ✅ APPROVE. Build clean, 1167/1167 baseline tests pass. Wrote a temporary `src/HelixTool.Tests/ProgressNotificationsSmokeTests.cs` (7 tests) to verify (1) `Download`, `FindFiles`, `SearchLog` declare a default-null `IProgress<ProgressNotificationValue>?` parameter with no `[Description]`, (2) `McpProgressAdapter.Wrap(null) == null` (fast path), (3) `Wrap(sink)` forwards `ProgressUpdate → ProgressNotificationValue` with float coercion, (4) `ProgressReporter.CopyToWithProgressAsync` emits initial+final updates over a 1 MiB stream. With smokes: 1174/1174 pass. Smokes were removed before returning to main (Ripley owns the branch); body preserved in the verdict file for re-use.
+- **Pattern:** `McpProgressAdapter` is `internal` and `HelixTool.Mcp.Tools` has no `InternalsVisibleTo("HelixTool.Tests")`, so any future test of internal seams there must use reflection or land an IVT first. Recommended follow-up: ask Dallas/Ripley to add `[assembly: InternalsVisibleTo("HelixTool.Tests")]` to `HelixTool.Mcp.Tools`.
+- **Probe pattern reused:** building a tiny `Probe` console csproj that `ProjectReference`s `HelixTool.Mcp.Tools` is the cleanest way to inspect MCP tool descriptors out-of-band — `McpServerTool.Create(method, target)` requires a non-null `target` for instance methods (use `RuntimeHelpers.GetUninitializedObject(method.DeclaringType)` when you don't want to construct the real DI graph).
+- **Gotcha:** `HelixMcpTools` and `AzdoMcpTools` live in the flat `HelixTool.Mcp.Tools` namespace despite being under `Helix/` and `AzDO/` folders — don't add `using HelixTool.Mcp.Tools.Helix;`-style usings, they will not compile.
+- **Branch sequencing observation:** during this verification, an external process (likely Scribe) checked out main and committed in the same working tree while Lambert was mid-verify. Sequential single-tree verification is workable but fragile — re-confirm the active branch with `git rev-parse --abbrev-ref HEAD` between stages, or move to git worktrees per the standing recommendation in the SDK 1.3.0 verdict.
+
+📌 Team update (2026-05-21): Pagination contract tests — wrote 13 tests (333 LOC) for Phase 1+2 pagination spec in src/HelixTool.Tests/AzDO/PaginationContractTests.cs. All 13/13 passing; full suite 1180/1180 passing. Commits 181ff5b + d5fde34. ⚠️ BRANCH-HYGIENE: committed to local main instead of squad/pagination-standardize per manifest instruction; Larry will handle branch/push decision.

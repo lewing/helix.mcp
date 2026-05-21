@@ -99,3 +99,13 @@ Freshness marker pattern: content key (4h) + sentinel (15s). Delta-append via Co
 
 📌 Team update (2026-05-08): MCP SDK 1.3.0 upgrade — Ripley shipped Central Package Management migration across 6 csprojs (new Directory.Packages.props), MCP SDK 1.0.0 → 1.3.0 (zero source changes), stdio host resource visibility fix (WithResourcesFromAssembly), ServerInfo.Version de-hardcoding (AssemblyInformationalVersionAttribute pattern). Build validates (0 errors, 6 NU1507 warnings pre-existing). Branch `squad/mcp-sdk-1.3.0-upgrade` ready for Lambert testing.
 
+
+📌 Team update (2026-05-08): Parallel squad work — worktree recommendation
+
+**Context:** Two Ripley branches (`squad/mcp-tool-annotations-and-cleanup` and `squad/mcp-progress-notifications`) ran in parallel in the same working tree, causing a checkout race mid-task.
+
+**Recommendation:** Future parallel squad work should use separate `git worktree`s. Each agent gets isolated working state, eliminating checkout races entirely. Worktrees are lightweight (shared git dir, isolated working dirs). Recovery: `git worktree add /path/to/worktree-N branch-name` before spawning agents; cleanup with `git worktree remove` after.
+
+**Owner:** Dallas (CI/coordination) — recommend baking into squad orchestration checklist for future parallel sprints.
+
+📌 Team update (2026-05-21): Pagination Phase 1+2 implemented and tested — wrapped `azdo_changes` and `azdo_test_runs` in `LimitedResults<T>`; added `truncated`/`note` fields to 8 bespoke result types; 13 contract tests (333 LOC) verify truncation behavior. Full suite: 1180/1180 passing. Closes Dallas's pagination audit spec. — implemented by Ripley, tested by Lambert

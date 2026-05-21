@@ -183,3 +183,5 @@ Detailed notes for AzDO search/log ranking, MCP error surfacing, CI-knowledge de
 3. Update all tool/CLI call sites
 4. Update tests that directly call the service
 5. Clean build to avoid stale reference errors
+
+📌 Team update (2026-05-21): Pagination Phase 1+2 implemented — wrapped `azdo_changes`/`azdo_test_runs` in `LimitedResults<T>`, added `truncated`/`note` to 8 result types. Build clean (0 warnings, 0 errors). Commit 0a82e58. Full suite: 1180/1180 passing. ⚠️ BRANCH-HYGIENE: committed to local main instead of squad/pagination-standardize per manifest instruction; Larry will handle branch/push decision.
