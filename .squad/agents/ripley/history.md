@@ -148,3 +148,40 @@ Detailed notes for AzDO search/log ranking, MCP error surfacing, CI-knowledge de
   switching back to `squad/mcp-progress-notifications`, and reapplying. **In
   shared workspaces, `git worktree list` early so each squad member can spawn
   a separate worktree per branch.**
+## Learnings — Release process (v0.6.0, 2026-05-08)
+- **Version lives in two files only** — bump both:
+  - `src/HelixTool/HelixTool.csproj` → `<Version>X.Y.Z</Version>`
+  - `src/HelixTool/.mcp/server.json` → both `.version` (top-level) and `.packages[0].version`
+- **No `CHANGELOG.md` convention.** Prior releases (v0.5.0 onward) used the release-commit message and the GitHub Release body as the changelog. Don't invent one.
+- **Release notes drafts** now live under `.squad/release-notes/vX.Y.Z.md` (introduced this release for use with `gh release create --notes-file`). Reuse this path going forward.
+- **Tag format:** `vMAJOR.MINOR.PATCH` (e.g. `v0.6.0`). Tag triggers `.github/workflows/publish.yml` (`on: push: tags: v*`) which validates that the tag version matches both `HelixTool.csproj` `<Version>` and the two `server.json` versions before publishing — any mismatch fails the publish job.
+- **Release commit subject style:** `release: vX.Y.Z — <one-line scope>`.
+- **Release branch convention:** `squad/release-vX.Y.Z` PR'd into `main`. Tag is created on the merge commit AFTER the PR lands, never pre-tag.
+- **Co-author trailer** required on the release commit: `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>`.
+- **CI workflows of interest:** `ci.yml` (build/test on PR), `publish.yml` (tag → NuGet/MCP registry publish), `squad-release.yml` (squad-side coordination — not inspected this round).
+
+## Learnings — Pagination Standardization Implementation (2026-05-20, commit 1a2e1d0)
+
+**Files changed:**
+- `src/HelixTool.Mcp.Tools/AzDO/AzdoMcpTools.cs` — wrapped azdo_changes and azdo_test_runs in CreateLimitedResults()
+- `src/HelixTool.Mcp.Tools/McpToolResults.cs` — added truncated+note fields to 5 Helix result types
+- `src/HelixTool.Core/AzDO/AzdoModels.cs` — added truncated+note fields to 3 AzDO result types (HelixJobsFromBuildResult, TimelineSearchResult, BuildAnalysisResult)
+- `src/HelixTool.Core/Helix/HelixService.cs` — added FindFilesResults wrapper record, updated FindFilesAsync to return it with truncation metadata
+- `src/HelixTool.Mcp.Tools/Helix/HelixMcpTools.cs` — wired truncation logic for helix_find_files
+- `src/HelixTool/Program.cs` — updated CLI find-files command to show truncation warning
+- `src/HelixTool.Tests/Helix/WorkItemDetailTests.cs` — fixed test to match new FindFilesResults shape
+
+**Build:** ✅ Succeeded (dotnet build passed clean)  
+**Branch:** `squad/pagination-standardize` (created from main)  
+**Commit:** `1a2e1d0` — "Standardize pagination across MCP tools (Phase 1+2)"
+
+**Deviations from Dallas's spec:** None — all 2 🔴 tools wrapped, all 8 🟡 bespoke result types updated with truncated+note fields (helix_search and azdo_search_log already had truncation, as noted in spec).
+
+**Pattern learned:** When changing service-layer return types, remember to:
+1. Update the record definition (or add new wrapper)
+2. Update the service method signature + implementation
+3. Update all tool/CLI call sites
+4. Update tests that directly call the service
+5. Clean build to avoid stale reference errors
+
+📌 Team update (2026-05-21): Pagination Phase 1+2 implemented — wrapped `azdo_changes`/`azdo_test_runs` in `LimitedResults<T>`, added `truncated`/`note` to 8 result types. Build clean (0 warnings, 0 errors). Commit 0a82e58. Full suite: 1180/1180 passing. ⚠️ BRANCH-HYGIENE: committed to local main instead of squad/pagination-standardize per manifest instruction; Larry will handle branch/push decision.

@@ -35,6 +35,12 @@ public sealed class StatusResult
     [JsonPropertyName("passedCount")] public int PassedCount { get; init; }
     [JsonPropertyName("failed")] public List<StatusWorkItem>? Failed { get; init; }
     [JsonPropertyName("passed")] public List<StatusWorkItem>? Passed { get; init; }
+    [JsonPropertyName("truncated")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Truncated { get; init; }
+    [JsonPropertyName("note")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Note { get; init; }
 }
 
 // --- Files tool ---
@@ -50,6 +56,12 @@ public sealed class FilesResult
     [JsonPropertyName("binlogs")] public List<FileInfo_> Binlogs { get; init; } = [];
     [JsonPropertyName("testResults")] public List<FileInfo_> TestResults { get; init; } = [];
     [JsonPropertyName("other")] public List<FileInfo_> Other { get; init; } = [];
+    [JsonPropertyName("truncated")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Truncated { get; init; }
+    [JsonPropertyName("note")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Note { get; init; }
 }
 
 // --- FindFiles tool ---
@@ -66,6 +78,12 @@ public sealed class FindFilesResult
     [JsonPropertyName("scannedItems")] public int ScannedItems { get; init; }
     [JsonPropertyName("found")] public int Found { get; init; }
     [JsonPropertyName("results")] public List<FindFilesWorkItem> Results { get; init; } = [];
+    [JsonPropertyName("truncated")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Truncated { get; init; }
+    [JsonPropertyName("note")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Note { get; init; }
 }
 
 // --- Download tool ---
@@ -136,6 +154,12 @@ public sealed class TestResultsToolResult
     [JsonPropertyName("workItem")] public string WorkItem { get; init; } = "";
     [JsonPropertyName("fileCount")] public int FileCount { get; init; }
     [JsonPropertyName("files")] public List<TestResultFile> Files { get; init; } = [];
+    [JsonPropertyName("truncated")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Truncated { get; init; }
+    [JsonPropertyName("note")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Note { get; init; }
 }
 
 // --- BatchStatus tool ---
@@ -156,4 +180,10 @@ public sealed class BatchStatusResult
     [JsonPropertyName("totalPassed")] public int TotalPassed { get; init; }
     [JsonPropertyName("jobCount")] public int JobCount { get; init; }
     [JsonPropertyName("failureBreakdown")] public Dictionary<string, int>? FailureBreakdown { get; init; }
+    [JsonPropertyName("truncated")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Truncated { get; init; }
+    [JsonPropertyName("note")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Note { get; init; }
 }

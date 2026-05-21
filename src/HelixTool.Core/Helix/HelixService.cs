@@ -284,15 +284,18 @@ public class HelixService
 
     /// <summary>A work item and the matching files it contains.</summary>
     public record FileSearchResult(string WorkItem, List<FileEntry> Files);
+    
+    /// <summary>Result of a file search across work items, with truncation metadata.</summary>
+    public record FindFilesResults(List<FileSearchResult> Results, bool Truncated, int TotalWorkItems);
 
     /// <summary>Scan work items in a job to find files matching a pattern.</summary>
     /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
     /// <param name="pattern">File name or glob pattern (e.g., <c>*.binlog</c>). Default: all files.</param>
     /// <param name="maxItems">Maximum number of work items to scan (default 30).</param>
     /// <param name="cancellationToken">Optional cancellation token.</param>
-    /// <returns>A list of <see cref="FileSearchResult"/> for work items that contain matching files.</returns>
+    /// <returns>A <see cref="FindFilesResults"/> envelope containing matched work items plus truncation metadata.</returns>
     /// <exception cref="HelixException">Thrown when the job is not found or the API is unreachable.</exception>
-    public async Task<List<FileSearchResult>> FindFilesAsync(string jobId, string pattern = "*", int maxItems = 30, IProgress<ProgressUpdate>? progress = null, CancellationToken cancellationToken = default)
+    public async Task<FindFilesResults> FindFilesAsync(string jobId, string pattern = "*", int maxItems = 30, IProgress<ProgressUpdate>? progress = null, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
         var id = HelixIdResolver.ResolveJobId(jobId);
@@ -300,6 +303,7 @@ public class HelixService
         try
         {
             var workItems = await _api.ListWorkItemsAsync(id, cancellationToken);
+            var totalWorkItems = workItems.Count;
             var toScan = workItems.Take(maxItems).ToList();
             var results = new List<FileSearchResult>();
 
@@ -327,7 +331,7 @@ public class HelixService
                 }
             }
 
-            return results;
+            return new FindFilesResults(results, totalWorkItems > maxItems, totalWorkItems);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
         {
@@ -356,7 +360,7 @@ public class HelixService
     }
 
     /// <summary>Scan work items in a job to find which ones contain binlog files.</summary>
-    public Task<List<FileSearchResult>> FindBinlogsAsync(string jobId, int maxItems = 30, CancellationToken cancellationToken = default)
+    public Task<FindFilesResults> FindBinlogsAsync(string jobId, int maxItems = 30, CancellationToken cancellationToken = default)
         => FindFilesAsync(jobId, "*.binlog", maxItems, progress: null, cancellationToken);
 
     /// <summary>Download files matching a pattern from a work item to a temp directory.</summary>
