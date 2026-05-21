@@ -769,3 +769,231 @@ Ripley executed the release cleanly via the standardized **3-stamp lockstep + ta
 **Process enforcement:** This was the first release following the **strict Coordinator dispatch rule end-to-end** — release work routed to Ripley (claude-haiku-4.5) per the role-to-model map. Pattern held; no deviations.
 
 
+
+---
+
+## 2026-05-21: Design — Surface WorkItemSummary.ExitCode + ConsoleOutputUri
+
+**Author:** Dallas (Lead)  
+**Date:** 2026-05-21  
+**Status:** Proposal  
+**Triggered by:** v0.7.1 bump to `Microsoft.DotNet.Helix.Client` 11.0.0-beta.26265.121
+
+### Context
+
+The Helix SDK now exposes two additive fields on `WorkItemSummary`:
+
+```csharp
+[JsonProperty("ExitCode")] public int? ExitCode { get; set; }
+[JsonProperty("ConsoleOutputUri")] public string ConsoleOutputUri { get; set; }
+```
+
+Our `IWorkItemSummary` interface currently exposes only `Name`. The new fields are unused.
+
+### Surface Area Changes
+
+**Interface (`IHelixApiClient.cs`):**
+
+```csharp
+public interface IWorkItemSummary
+{
+    string Name { get; }
+    int? ExitCode { get; }          // nullable — server may not populate
+    string? ConsoleOutputUri { get; } // nullable — older runs won't have it
+}
+```
+
+- Both fields **nullable** on our interface. Matches SDK nullability (ExitCode is `int?`, ConsoleOutputUri can be null/absent).
+- Naming: keep `ExitCode` as-is (matches `IWorkItemDetails.ExitCode`). Keep `ConsoleOutputUri` verbatim from the SDK — don't rename to `ConsoleLogUrl` to avoid confusion with the constructed URL pattern we use today.
+
+**Adapter (`HelixApiClient.cs` → `WorkItemSummaryAdapter`):**
+
+```csharp
+private sealed class WorkItemSummaryAdapter(WorkItemSummary summary) : IWorkItemSummary
+{
+    public string Name => summary.Name;
+    public int? ExitCode => summary.ExitCode;
+    public string? ConsoleOutputUri => summary.ConsoleOutputUri;
+}
+```
+
+**Cache DTO (`CachingHelixApiClient.cs` → `WorkItemSummaryDto`):**
+
+```csharp
+private record WorkItemSummaryDto(string Name, int? ExitCode, string? ConsoleOutputUri) : IWorkItemSummary
+{
+    public static WorkItemSummaryDto From(IWorkItemSummary s) => new(s.Name, s.ExitCode, s.ConsoleOutputUri);
+}
+```
+
+**Impact:** 3 files, 3 classes, additive only. No breaking changes to existing callers — they ignore extra interface members.
+
+### Optimization Strategy
+
+#### Current hot path: `GetJobStatusAsync`
+
+Today, `HelixService.GetJobStatusAsync` calls `ListWorkItemsAsync` (1 call), then for *every* work item calls `GetWorkItemDetailsAsync` (N calls). The detail call exists primarily to get `ExitCode`, `State`, `MachineName`, `Started`, `Finished`.
+
+**Before (100 work items):** 1 + 100 = **101 API calls**
+
+With `ExitCode` on the summary, we can short-circuit: items with `ExitCode == 0` don't need a detail fetch for the status tool (we only need details for display on failed items).
+
+**After (100 items, 5 failed):** 1 + 5 = **6 API calls**
+
+This is a **~95% reduction** in API calls for the common case (most items pass).
+
+**Implementation:** In `GetJobStatusAsync`, after `ListWorkItemsAsync`:
+- Items where `summary.ExitCode == 0` → construct `WorkItemResult` directly from summary (duration/machine will be null — acceptable for passed items in `helix_status` default view).
+- Items where `summary.ExitCode != 0` or `summary.ExitCode == null` → fetch details as today.
+- Items where `summary.ExitCode == null` → treat as "unknown, fetch details" (in-progress items).
+
+#### Console log optimization
+
+Today, `GetConsoleLogAsync` always calls the SDK's `ConsoleLogAsync(workItemName, jobId)`, which internally resolves the console URI then streams it.
+
+When `ConsoleOutputUri` is populated on the summary, callers *could* stream directly via `HttpClient` — but this requires plumbing the URI from summary into the console-log call path. **Recommend deferring this** to a follow-up:
+
+- The SDK call is a single HTTP round-trip (the URI resolution is server-side).
+- The optimization saves ~0 extra calls; it just avoids a redirect.
+- Adding a `GetConsoleLogByUriAsync` overload leaks URI lifecycle concerns into the interface.
+
+**Verdict:** Optimize `GetJobStatusAsync` now. Defer console URI streaming to a future PR if profiling shows the redirect is costly.
+
+### MCP Tool Surface Impact
+
+#### `helix_status` — changes required
+
+Currently fetches details for all items. With the optimization:
+- **Passed items:** `ExitCode` comes from summary; `State`/`MachineName`/`Duration` will be `null` (not fetched). This is acceptable — the `helix_status` tool already has a `filter` param and callers rarely inspect passed-item details.
+- **Failed items:** Full details fetched as today.
+- **New JSON field:** Add `"exitCode"` to `StatusWorkItem` for passed items (it's already there for failed). No schema break — field already exists, just sometimes was `-1` sentinel. Now it's the real value.
+
+**No new parameters needed.** The existing `filter` param (`failed`/`passed`/`all`) already covers the `failedOnly` use case.
+
+#### `helix_work_item` — no changes
+
+Already calls `GetWorkItemDetailAsync` which fetches full details. No optimization possible here (single-item detail view).
+
+#### `helix_logs` — no changes now
+
+Deferred per above. No parameter changes.
+
+#### `helix_search`, `helix_files`, `helix_find_files`, `helix_parse_uploaded_trx` — no changes
+
+These tools don't consume work item summaries for exit code or console URI.
+
+#### New tool consideration: `helix_list_items`
+
+**Not recommended now.** The `helix_status` tool already returns work item lists with exit codes. A raw list tool would duplicate surface area. If LLM callers need lightweight item enumeration (without the pass/fail classification), revisit in v0.8.0.
+
+### Backward Compatibility / Nullability
+
+| Scenario | `ExitCode` | `ConsoleOutputUri` | Handling |
+|----------|-----------|-------------------|----------|
+| Completed item (new server) | populated (`int`) | populated (`string`) | Use directly |
+| In-flight item | `null` | `null` | Fall back to detail fetch |
+| Older Helix run | `null` | `null` | Fall back to detail fetch |
+| Failed item (ExitCode != 0) | populated | may be populated | Still fetch details for State/Machine/Duration |
+
+**Key rule:** `null` ExitCode = "unknown, fetch details." Never assume `null` means passed.
+
+**MCP JSON output:** `exitCode` already appears as `int` in `StatusWorkItem`. For passed items that skip detail fetch, it will now be `0` (from summary) instead of `0` (from detail). No visible change to callers.
+
+**Existing consumers:** No breaking changes. `IWorkItemSummary` gains two nullable properties — any mock/test implementing the interface will need to add them, but they can return `null`/`default`.
+
+### Test Plan (Lambert)
+
+#### Unit tests — `IWorkItemSummary` adapter
+
+- `WorkItemSummaryAdapter` maps `ExitCode` and `ConsoleOutputUri` from SDK type
+- `WorkItemSummaryAdapter` handles null `ExitCode` (returns `null`, not `0`)
+- `WorkItemSummaryAdapter` handles null `ConsoleOutputUri`
+
+#### Unit tests — Cache DTO round-trip
+
+- `WorkItemSummaryDto` serializes/deserializes `ExitCode` and `ConsoleOutputUri`
+- Null fields survive JSON round-trip
+- Existing cached data (missing new fields) deserializes with nulls (backward compat)
+
+#### Unit tests — `GetJobStatusAsync` optimization
+
+- Job with all-passing items: no `GetWorkItemDetailsAsync` calls (verify via mock)
+- Job with mixed results: details fetched only for failed + null-exit-code items
+- Job with all-null exit codes (old server): falls back to detail fetch for every item (same as today)
+- Passed items have `null` State/MachineName/Duration (accepted trade-off)
+
+#### Integration tests — MCP tool output
+
+- `helix_status` returns correct `exitCode` for passed items from summary path
+- `helix_status` filter=failed still works (only failed items returned)
+- JSON schema of `StatusWorkItem` unchanged
+
+#### Edge cases
+
+- Work item with `ExitCode = 0` but `State = "Error"` — should this be treated as failed? **No** — ExitCode is the truth for pass/fail, matching current behavior.
+- Empty work item list (0 items) — no detail fetches, returns empty summary.
+
+### Risks
+
+- **API stability:** `WorkItemSummary.ExitCode` is on a beta package. If the Helix team renames or removes it, our adapter breaks at compile time (safe — caught by CI). Low risk: the field shipped in a server-side API update, the SDK is just exposing it.
+- **Semantic drift:** We assume `ExitCode == 0` means passed. If Helix ever uses `0` for "not yet determined," we'd misclassify. Mitigated by also checking for `null` (unknown).
+- **Passed item detail loss:** Skipping detail fetch for passed items means `State`, `MachineName`, `Duration` are unavailable. If a caller (e.g., future MCP tool) needs machine info for passed items, they'd need to opt into full-detail mode. Acceptable: `helix_status` with `filter=passed` shows names + exit codes, and `helix_work_item` always fetches full details.
+- **Cache invalidation:** Adding fields to `WorkItemSummaryDto` is additive. Old cached data missing the fields will deserialize with `null` values — correct behavior (triggers detail fallback). No cache-busting needed.
+
+### Rollout
+
+**Recommend: single PR targeting v0.7.2 patch.**
+
+Rationale:
+- Changes are additive and low-risk (interface extension, adapter wiring, one optimization path).
+- The optimization in `GetJobStatusAsync` delivers immediate user-visible value (faster `helix_status` for large jobs).
+- No new MCP tool parameters or schema changes — backward compatible.
+- v0.8.0 scope is reserved for larger features; this fits a patch.
+
+**PR structure:** One PR, one commit. No feature flag needed.
+
+### Implementation Handoff (Ripley)
+
+#### Files to modify
+
+| File | Change |
+|------|--------|
+| `src/HelixTool.Core/Helix/IHelixApiClient.cs` | Add `ExitCode` + `ConsoleOutputUri` to `IWorkItemSummary` |
+| `src/HelixTool.Core/Helix/HelixApiClient.cs` | Wire fields in `WorkItemSummaryAdapter` |
+| `src/HelixTool.Core/Helix/CachingHelixApiClient.cs` | Add fields to `WorkItemSummaryDto` |
+| `src/HelixTool.Core/Helix/HelixService.cs` | Optimize `GetJobStatusAsync` — skip detail fetch for ExitCode==0 items |
+| Test files (Lambert) | Per test plan above |
+
+#### Work breakdown
+
+1. **Interface + adapters** (~15 min): Add 2 properties to `IWorkItemSummary`, wire in both adapters. Build-verify.
+2. **GetJobStatusAsync optimization** (~30 min): Partition work items by ExitCode nullability, skip detail fetch for passed. Construct `WorkItemResult` for passed items with null duration/machine.
+3. **Test updates** (~30 min): Update any mocks/fakes implementing `IWorkItemSummary`. Add new test cases per test plan.
+4. **Verify MCP output** (~10 min): Run `helix_status` against a real job, confirm JSON shape unchanged.
+
+#### Order: impl-first
+
+The interface change is trivial and safe. Write the adapter + optimization, then tests. No TDD needed for additive interface properties — the risk is in the optimization logic, which can be tested via mock verification.
+
+### Decision Requested
+
+**Approve option B: surface + optimize `GetJobStatusAsync`.** Defer console URI streaming.
+
+---
+
+## 2026-05-21: Decision drop — azdo_auth_status is not sync-safe
+
+**Date:** 2026-05-21T11:27:27-05:00  
+**Author:** Ripley
+
+### Context
+Ash's MCP exception follow-up list treated `azdo_auth_status` as a possible trivial sync conversion if it only read cached/local state like `helix_auth_status`.
+
+### Finding
+- `src/HelixTool.Mcp.Tools/AzDO/AzdoMcpTools.cs` delegates `azdo_auth_status` to `IAzdoTokenAccessor.AuthStatusAsync()`.
+- `src/HelixTool.Core/AzDO/IAzdoTokenAccessor.cs` shows `AzCliAzdoTokenAccessor.AuthStatusAsync()` awaiting `_resolutionLock.WaitAsync(...)` and, on cache miss, `ResolveFallbackCredentialAsync(...)`.
+- That fallback path probes `AzureCliCredential.GetTokenAsync(...)` and then `az account get-access-token`, so the call can perform real credential I/O and subprocess work before returning status.
+
+### Implication
+- Do **not** convert `azdo_auth_status` to a synchronous MCP method in the current shape.
+- If parity with `helix_auth_status` is still desired later, add a separate non-probing cached snapshot API first, then switch the tool to that surface.

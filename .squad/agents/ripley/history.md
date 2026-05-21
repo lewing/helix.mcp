@@ -93,3 +93,7 @@ See history-archive.md for complete history including AzDO auth patterns, MCP SD
 - Ripley executed cleanly: merged PR #54, bumped 3 version stamps (HelixTool.csproj + server.json variants), pushed tag, watched publish.yml workflow complete (26243596534, 33s, all green), verified asset on nuget.org.
 - No deviations from the established pattern (ship-after-merge, tag-based trigger, ncipollo/release-action auto-creation).
 - **First release enforcing strict dispatch rule end-to-end.** Success signal for scaling Squad's role-based task routing.
+
+## Learnings — v0.7.2 Design: Surface WorkItemSummary fields (2026-05-21 Dallas)
+
+Dallas filed design proposal in `.squad/decisions/inbox/dallas-surface-workitem-fields.md` (Brady approved option B: surface + optimize `GetJobStatusAsync`). Proposal details interface changes to `IWorkItemSummary`, adapter wiring, ~95% API call reduction for jobs with mostly-passing items, test plan, and risks. Extracted reusable skill guidance to `.squad/skills/sdk-adapter-extension/` for future SDK field surfacing. Ripley to implement on branch `feat/workitem-summary-exit-code`.
