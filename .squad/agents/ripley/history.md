@@ -104,3 +104,25 @@ Dallas filed design proposal in `.squad/decisions/inbox/dallas-surface-workitem-
 - `GetJobStatusAsync` optimization pattern: branch on `summary.ExitCode` immediately after `ListWorkItemsAsync` — `0` can return a lightweight passed `WorkItemResult`, while `null` and non-zero must still flow through the throttled detail-fetch path.
 - Nullable SDK fields are the compatibility boundary: `int? ExitCode` and `string? ConsoleOutputUri` must stay nullable so older cached payloads and older server responses deserialize to `null` and trigger the detail fallback instead of being misclassified.
 - For this repo's feature shipping flow, branch creation + validation + draft PR was: `git switch -c feat/workitem-summary-exit-code`, `dotnet build --nologo`, `dotnet test --nologo --no-build`, then `gh pr create --draft` once the branch was pushed.
+
+## Learnings — v0.7.2 release flow (2026-05-21 Ripley mechanical release)
+
+**Release execution summary:**
+- PR #55 merged upstream; synced main with `git pull` (fast-forward to eb3bb74).
+- Bumped three version stamps: `HelixTool.csproj` line 12 + `server.json` top-level + packages array (all 0.7.1 → 0.7.2).
+- Build: 0 errors, 0 warnings (10.73s).
+- Tests: 1195/1195 passed (4s) — 1180 baseline + 15 new from Lambert's test suite additions.
+- Version commit: 6f9262a (`release: v0.7.2`).
+- Main push: `eb3bb74..6f9262a`.
+- Tag: `v0.7.2` annotated, pushed to origin.
+- Workflow run: 26245033630, completed in 38s (all jobs green).
+- Release verification: `https://github.com/lewing/helix.mcp/releases/tag/v0.7.2`, asset `lewing.helix.mcp.0.7.2.nupkg` attached.
+
+**Pattern confirmation:**
+- Stashing local state before branch checkout remains necessary (`.squad/agents/dallas/history.md` had uncommitted changes).
+- sed-based version edit for `.json` files works when edit tool encounters Unicode characters (`\u2014` em-dash); fallback to line-targeted sed on duplicate patterns.
+- `gh run watch <id>` polls until workflow completion (no timeout trap; Ctrl+C cancels but doesn't affect upstream workflow).
+- Publish workflow triggers exclusively on tag push; main branch push alone does nothing.
+- Release asset attachment is confirmed via `gh release view v0.7.2` (no asset listing needed; presence implies successful NuGet push).
+
+**All three release runs (v0.7.0, v0.7.1, v0.7.2) executed identically with no deviations from the recipe.** Recipe is solid.
