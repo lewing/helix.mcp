@@ -61,3 +61,28 @@ See history-archive.md for complete history including AzDO auth patterns, MCP SD
 **Microsoft.Data.Sqlite major version cross (9→10):** Moving from 9.0.7 to 10.0.8 crosses a major version boundary but is safe here because we target `net10.0` and there are no API surface changes for our usage patterns (basic connection/command/reader). SQLitePCLRaw transitive dependencies bump automatically.
 
 **PR #54:** `chore(deps): bump 6 packages for v0.7.1` — branch `chore/v0.7.1-deps`, all 6 bumps in one commit. Build green (0/0), tests green (1180/1180). Lewing will merge and tag v0.7.1 separately.
+
+## Learnings — Release flow v0.7.1 (2026-05-21 12:55Z)
+
+**Three version stamps to bump:** The workflow validates all three before creating a release:
+1. `src/HelixTool/HelixTool.csproj` — `<Version>0.7.1</Version>`
+2. `src/HelixTool/.mcp/server.json` — top-level `"version": "0.7.1"` and package `"version": "0.7.1"`
+
+**Build & test gate:** Both must pass (0 errors, 0 warnings; 1180/1180 tests) before commit.
+
+**Never manual `gh release create`:** The `publish.yml` workflow uses `ncipollo/release-action` and creates the GitHub Release automatically when the tag is pushed. Manually running `gh release create` causes a 422 error and **skips the NuGet push step** entirely.
+
+**Release flow (in order):**
+1. Verify all THREE version stamps match the tag (e.g., 0.7.1)
+2. Build clean + all tests pass
+3. Commit version bumps: `git commit -F -` with detailed changelog
+4. Push main: `git push origin main`
+5. Create annotated tag: `git tag -a v0.7.1 -m "Release v0.7.1..."`
+6. Push tag: `git push origin v0.7.1` ← **workflow triggers here**
+7. Workflow auto-creates GitHub Release with nupkg asset; no manual steps needed
+
+**Timing:** Workflow runs in ~33s (validation, pack, create release, NuGet auth, push to NuGet). Watch with `gh run watch <id> --exit-status`.
+
+**Verification:** After workflow completes, `gh release view v0.7.1 --json assets` confirms `lewing.helix.mcp.0.7.1.nupkg` is attached. Release URL: `https://github.com/lewing/helix.mcp/releases/tag/v0.7.1`
+
+**All steps confirmed working 2026-05-21 v0.7.1 release.**
