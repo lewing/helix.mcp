@@ -33,3 +33,12 @@ Our Core layer wraps SDK concrete types behind mockable interfaces (`IWorkItemSu
 - Don't rename SDK fields at the interface boundary — keep names aligned to reduce cognitive load
 - Don't add transformation logic in adapters — they are pass-through only
 - Don't make non-nullable what the SDK provides as nullable
+
+## Testing pattern
+
+When the adapter/cache types stay private nested classes, cover them without widening visibility:
+
+1. Use reflection (`GetNestedType`, `Activator.CreateInstance`) to instantiate the private adapter against the real SDK model.
+2. Invoke the private DTO's public static `From()` factory via reflection, then `JsonSerializer.Serialize`/`Deserialize(..., dtoType)` to validate the cache round-trip.
+3. Add an explicit backward-compat test that deserializes legacy JSON missing the new fields and asserts the surfaced interface properties come back as `null`.
+4. Keep behavior tests separate: assert service-layer call-count optimizations through `IHelixApiClient` mocks, and assert MCP JSON shape by serializing the real result type.
