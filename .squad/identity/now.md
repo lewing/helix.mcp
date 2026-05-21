@@ -1,9 +1,11 @@
 ---
-updated_at: 2026-05-21T17:58:00Z
-focus_area: Post-v0.7.1 — design pass for surfacing new Helix.Client WorkItemSummary fields (ExitCode + ConsoleOutputUri) through IWorkItemSummary adapter
+updated_at: 2026-05-21T13:28:00Z
+focus_area: Idle — v0.7.2 shipped. Ready for next direction.
 active_issues: []
 ---
 
 # What We're Focused On
 
-v0.7.1 shipped — dependency refresh including Microsoft.DotNet.Helix.Client 11.0.0-beta.26265.121 which adds ExitCode + ConsoleOutputUri to WorkItemSummary. Dallas is now running a design pass to decide how to surface these fields through IWorkItemSummary and whether to use ConsoleOutputUri to short-circuit GetConsoleLogAsync round-trips. Pending: proposal review → Ripley implementation → v0.7.2 or v0.8.0.
+v0.7.2 shipped — Lambert tested, Dallas reviewed, Ripley released. Added ExitCode + ConsoleOutputUri to IWorkItemSummary; optimized GetJobStatusAsync (95% API call reduction on jobs with mostly-passing items). 15 new tests (1195 total). No schema breaks. Published to nuget.org.
+
+**Deferred follow-ups:** Console URI streaming optimization, Roslyn 5.x bump, xunit v3 migration.

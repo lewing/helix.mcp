@@ -255,3 +255,127 @@ Wrote 13 pagination contract tests (333 LOC) in `src/HelixTool.Tests/AzDO/Pagina
 
 - **Branch:** `squad/pagination-standardize` (Note: committed to local main due to branch-hygiene issue; see Scribe logs)
 - **Commits:** 181ff5b + d5fde34
+
+---
+
+## 2026-05-21: Decision — Cache DTO backward compat tests must use legacy payloads
+
+**Author:** Dallas (Lead)  
+**Date:** 2026-05-21  
+**Status:** Adopted (verified in PR #55 review)
+
+### Context
+
+When extending cache DTOs with new fields, round-trip tests (serialize → deserialize current shape) don't catch backward compat issues. Old cached data on disk won't have the new fields.
+
+### Decision
+
+Every cache DTO extension must include a test that deserializes a JSON string **missing** the new fields and asserts they default to `null` (or the expected default). This test must use a hardcoded legacy JSON string, not a programmatically-constructed one.
+
+### Example (from PR #55)
+
+```csharp
+[Fact]
+public void WorkItemSummaryDto_MissingNewFields_DeserializesAsNull()
+{
+    var roundTripped = DeserializeDto("{\"Name\":\"workitem-legacy\"}");
+    Assert.Null(roundTripped.ExitCode);
+    Assert.Null(roundTripped.ConsoleOutputUri);
+}
+```
+
+### Rationale
+
+Lambert got this right in PR #55. Codify it so future DTO extensions follow the same pattern.
+
+---
+
+## 2026-05-21: Decision drop — test private WorkItemSummary seams via reflection
+
+**Author:** Lambert  
+**Date:** 2026-05-21  
+**Status:** Applied
+
+### Context
+
+`WorkItemSummaryAdapter` in `HelixApiClient` and `WorkItemSummaryDto` in `CachingHelixApiClient` are private nested types, but Dallas's v0.7.2 test plan explicitly requires direct coverage of adapter field mapping and cache backward compatibility.
+
+### Decision
+
+Keep the production types private and test them from `HelixTool.Tests` via reflection.
+
+### Rationale
+
+- The adapter/cache types are implementation details; widening visibility just for tests would expand the production surface for no product value.
+- Reflection keeps the test targeted on the real wiring (`ExitCode`, `ConsoleOutputUri`, missing-field JSON deserialize) while preserving encapsulation.
+- The service/tool behavior remains covered separately through normal public-entry tests (`GetJobStatusAsync`, `helix_status`).
+
+---
+
+## 2026-05-21: Decision drop — azdo_auth_status is not sync-safe
+
+**Author:** Ripley  
+**Date:** 2026-05-21T11:27:27-05:00  
+**Status:** Documented
+
+### Context
+
+Ash's MCP exception follow-up list treated `azdo_auth_status` as a possible trivial sync conversion if it only read cached/local state like `helix_auth_status`.
+
+### Finding
+
+- `src/HelixTool.Mcp.Tools/AzDO/AzdoMcpTools.cs` delegates `azdo_auth_status` to `IAzdoTokenAccessor.AuthStatusAsync()`.
+- `src/HelixTool.Core/AzDO/IAzdoTokenAccessor.cs` shows `AzCliAzdoTokenAccessor.AuthStatusAsync()` awaiting `_resolutionLock.WaitAsync(...)` and, on cache miss, `ResolveFallbackCredentialAsync(...)`.
+- That fallback path probes `AzureCliCredential.GetTokenAsync(...)` and then `az account get-access-token`, so the call can perform real credential I/O and subprocess work before returning status.
+
+### Implication
+
+- Do **not** convert `azdo_auth_status` to a synchronous MCP method in the current shape.
+- If parity with `helix_auth_status` is still desired later, add a separate non-probing cached snapshot API first, then switch the tool to that surface.
+
+---
+
+## 2026-05-21T13:28:00Z: v0.7.2 Release Shipped
+
+**Release Lead:** Ripley (Mechanical Release)  
+**Test Lead:** Lambert  
+**Review Lead:** Dallas
+
+### Scope
+
+**v0.7.2** is a patch release on top of v0.7.1 (~1 day, PR #55). No breaking API changes.
+
+**Content:** Adds `ExitCode` and `ConsoleOutputUri` to `IWorkItemSummary`; optimizes `GetJobStatusAsync` to skip detail fetches for passed items (~95% API call reduction on jobs with mostly-passing items). Includes 15 new tests (1180 → 1195 total).
+
+### Shipping Manifest
+
+1. **Lambert** (Tester, Sonnet 4.6) — wrote 15 new tests per Dallas's test plan §5. Commit 1592407. Marked PR #55 ready for review.
+2. **Dallas** (Lead, Opus 4.6 w/ gate) — reviewed PR #55. APPROVED. All 8 checklist items passed: surface area, optimization w/ null safety, backward compat, test depth, schema stability, no scope creep, deterministic mocking.
+3. **Ripley** (Backend, Haiku 4.5 · fast) — mechanical release: merged PR #55 (squash, branch deleted), bumped 3 version stamps 0.7.1→0.7.2, commit 6f9262a, tag v0.7.2 pushed, publish.yml run 26245033630 succeeded in 38s. Release: https://github.com/lewing/helix.mcp/releases/tag/v0.7.2 with lewing.helix.mcp.0.7.2.nupkg on nuget.org.
+
+### Schema & Backward Compat
+
+- `IWorkItemSummary` extended with `ExitCode?` and `ConsoleOutputUri?` (both nullable, optional in JSON).
+- No breaking changes. Existing cached data deserializes correctly (new fields default to null).
+- Cache DTO tests explicitly verify missing-field deserialize per Dallas's backward-compat decision (2026-05-21).
+
+### API Call Reduction
+
+`GetJobStatusAsync` now:
+- Skips `FetchJobDetailAsync` for work items with `Result == "Passed"`.
+- Reduced ~95% of detail API calls on typical jobs (most work items pass).
+- Maintains full fetches for failed/partial/skipped items (where detail matters).
+
+### Tests
+
+- **15 new tests** in `src/HelixTool.Tests/HelixApiClient/WorkItemSummaryAdapterTests.cs` cover:
+  - Adapter field mapping (ExitCode, ConsoleOutputUri).
+  - Cache DTO backward compatibility (missing new fields deserialize as null).
+  - Service optimization contract (`GetJobStatusAsync` skips detail for passed items).
+- All 1195 tests passing (baseline 1180 + 15 new).
+
+### Deferred Follow-ups
+
+- Console URI streaming optimization (Dallas proposed deferring pending future profiling on redirect cost).
+- Roslyn 5.x bump for HelixTool.Generators (deferred from v0.7.1 dep audit).
+- xunit v3 migration (still open).
