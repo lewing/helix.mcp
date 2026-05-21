@@ -215,10 +215,10 @@ public class WorkItemDetailTests
         var results = await _svc.FindFilesAsync(ValidJobId, "*.trx");
 
         // Assert
-        Assert.Single(results);
-        Assert.Equal("wi-mixed", results[0].WorkItem);
-        Assert.Single(results[0].Files);
-        Assert.Equal("TestResults.trx", results[0].Files[0].Name);
-        Assert.Equal("https://example.com/TestResults.trx", results[0].Files[0].Uri);
+        Assert.Single(results.Results);
+        Assert.Equal("wi-mixed", results.Results[0].WorkItem);
+        Assert.Single(results.Results[0].Files);
+        Assert.Equal("TestResults.trx", results.Results[0].Files[0].Name);
+        Assert.Equal("https://example.com/TestResults.trx", results.Results[0].Files[0].Uri);
     }
 }

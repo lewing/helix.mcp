@@ -235,12 +235,14 @@ public sealed class HelixMcpTools
             {
                 Pattern = pattern,
                 ScannedItems = maxItems,
-                Found = results.Count,
-                Results = results.Select(r => new FindFilesWorkItem
+                Found = results.Results.Count,
+                Results = results.Results.Select(r => new FindFilesWorkItem
                 {
                     WorkItem = r.WorkItem,
                     Files = r.Files.Select(f => new FileInfo_ { Name = f.Name, Uri = f.Uri }).ToList()
-                }).ToList()
+                }).ToList(),
+                Truncated = results.Truncated,
+                Note = results.Truncated ? $"Scanned {maxItems} of {results.TotalWorkItems} work items. Use a higher 'maxItems' value to scan more." : null
             };
         }
         catch (Exception ex) when (ex is HttpRequestException or HelixException or RestApiException or InvalidOperationException or ArgumentException)

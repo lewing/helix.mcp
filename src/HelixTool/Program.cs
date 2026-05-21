@@ -559,15 +559,21 @@ public class Commands
     {
         Console.WriteLine($"Scanning up to {maxItems} work items for '{pattern}'...");
         var results = await Svc.FindFilesAsync(jobId, pattern, maxItems);
-        foreach (var r in results)
+        foreach (var r in results.Results)
         {
             Console.Write($"  {r.WorkItem}: ");
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine(string.Join(", ", r.Files.Select(f => f.Name)));
             Console.ResetColor();
         }
-        if (results.Count == 0)
+        if (results.Results.Count == 0)
             Console.WriteLine($"  No files matching '{pattern}' found.");
+        else if (results.Truncated)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"  ⚠️  Scanned {maxItems} of {results.TotalWorkItems} work items. Use --max-items to scan more.");
+            Console.ResetColor();
+        }
     }
 
     /// <summary>Show detailed info about a specific work item.</summary>

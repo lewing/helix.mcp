@@ -187,13 +187,13 @@ public sealed class AzdoMcpTools
 
     [McpServerTool(Name = "azdo_changes", Title = "AzDO Build Changes", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
      Description("Get commits/changes for an AzDO build. Returns commit IDs, messages, authors, and timestamps.")]
-    public async Task<IReadOnlyList<AzdoBuildChange>> Changes(
+    public async Task<LimitedResults<AzdoBuildChange>> Changes(
         [Description("AzDO build ID or full build URL")] string buildId,
         [Description("Maximum results to return")] int top = 20)
     {
         try
         {
-            return await _svc.GetBuildChangesAsync(buildId, top);
+            return CreateLimitedResults(await _svc.GetBuildChangesAsync(buildId, top), top);
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
         {
@@ -203,13 +203,13 @@ public sealed class AzdoMcpTools
 
     [McpServerTool(Name = "azdo_test_runs", Title = "AzDO Test Runs", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
      Description("Test run summaries for an AzDO build with total/passed/failed counts. ⚠️ Run-level failedTests can be inaccurate — always drill into azdo_test_results to verify.")]
-    public async Task<IReadOnlyList<AzdoTestRun>> TestRuns(
+    public async Task<LimitedResults<AzdoTestRun>> TestRuns(
         [Description("AzDO build ID or full build URL")] string buildId,
         [Description("Maximum results to return")] int top = 50)
     {
         try
         {
-            return await _svc.GetTestRunsAsync(buildId, top);
+            return CreateLimitedResults(await _svc.GetTestRunsAsync(buildId, top), top);
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
         {

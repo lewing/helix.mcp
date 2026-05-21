@@ -357,7 +357,16 @@ public sealed record HelixJobsFromBuildResult(
     string BuildId,
     int TotalHelixJobs,
     int FailedHelixJobs,
-    List<HelixJobFromBuild> Jobs);
+    List<HelixJobFromBuild> Jobs)
+{
+    [JsonPropertyName("truncated")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Truncated { get; init; }
+    
+    [JsonPropertyName("note")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Note { get; init; }
+}
 
 /// <summary>A single timeline record matching a search pattern.</summary>
 public sealed class TimelineSearchMatch
@@ -384,6 +393,12 @@ public sealed class TimelineSearchResult
     [JsonPropertyName("totalRecords")] public int TotalRecords { get; init; }
     [JsonPropertyName("matchCount")] public int MatchCount { get; init; }
     [JsonPropertyName("matches")] public List<TimelineSearchMatch> Matches { get; init; } = [];
+    [JsonPropertyName("truncated")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Truncated { get; init; }
+    [JsonPropertyName("note")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Note { get; init; }
 }
 
 /// <summary>A log entry from the AzDO Build Logs List API (GET _apis/build/builds/{id}/logs).</summary>
@@ -439,6 +454,12 @@ public sealed record BuildAnalysisResult
     [JsonPropertyName("knownIssues")] public List<KnownIssueMatch> KnownIssues { get; init; } = [];
     [JsonPropertyName("unmatchedFailures")] public List<string> UnmatchedFailures { get; init; } = [];
     [JsonPropertyName("analysisSource")] public string? AnalysisSource { get; init; }
+    [JsonPropertyName("truncated")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Truncated { get; init; }
+    [JsonPropertyName("note")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Note { get; init; }
 }
 
 /// <summary>A known GitHub issue matched to one or more build/test failures by Build Analysis.</summary>
