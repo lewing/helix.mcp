@@ -7,14 +7,14 @@
 
   <ItemGroup>
     <!-- Azure / Helix -->
-    <PackageVersion Include="Azure.Identity" Version="1.13.2" />
-    <PackageVersion Include="Microsoft.Data.Sqlite" Version="9.0.7" />
-    <PackageVersion Include="Microsoft.DotNet.Helix.Client" Version="11.0.0-beta.26110.116" />
+    <PackageVersion Include="Azure.Identity" Version="1.21.0" />
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.8" />
+    <PackageVersion Include="Microsoft.DotNet.Helix.Client" Version="11.0.0-beta.26265.121" />
 
     <!-- Microsoft.Extensions / hosting -->
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.3" />
-    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
-    <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.8" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.8" />
+    <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.8" />
 
     <!-- CLI framework -->
     <PackageVersion Include="ConsoleAppFramework" Version="5.7.13" />
