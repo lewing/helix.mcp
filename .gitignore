@@ -13,3 +13,5 @@ nupkg/
 # Squad: SubSquad activation file (local to this machine)
 .squad-workstream
 .ai-team-backup/
+# Squad: Scribe runtime artifact
+.squad/health-report.txt
