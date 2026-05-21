@@ -77,24 +77,9 @@ public class HelixService
             var workItems = await _api.ListWorkItemsAsync(id, cancellationToken);
 
             var semaphore = new SemaphoreSlim(10);
-            var tasks = workItems.Select(async wi =>
-            {
-                await semaphore.WaitAsync(cancellationToken);
-                try
-                {
-                    var details = await _api.GetWorkItemDetailsAsync(wi.Name, id, cancellationToken);
-                    TimeSpan? duration = (details.Started.HasValue && details.Finished.HasValue)
-                        ? details.Finished.Value - details.Started.Value
-                        : null;
-                    var consoleLogUrl = $"https://helix.dot.net/api/2019-06-17/jobs/{id}/workitems/{wi.Name}/console";
-                    var exitCode = details.ExitCode ?? -1;
-                    FailureCategory? category = exitCode != 0
-                        ? ClassifyFailure(exitCode, details.State, duration, wi.Name)
-                        : null;
-                    return new WorkItemResult(wi.Name, exitCode, details.State, details.MachineName, duration, consoleLogUrl, category);
-                }
-                finally { semaphore.Release(); }
-            }).ToList();
+            var tasks = workItems.Select(wi => wi.ExitCode == 0
+                ? Task.FromResult(CreatePassedResult(wi, id))
+                : CreateDetailedResultAsync(wi, id, semaphore, cancellationToken)).ToList();
 
             var results = await Task.WhenAll(tasks);
             var failed = results.Where(r => r.ExitCode != 0).ToList();
@@ -105,6 +90,44 @@ public class HelixService
                 job.Name ?? "", job.QueueId ?? "", job.Creator ?? "", job.Source ?? "",
                 job.Created, job.Finished,
                 workItems.Count, failed, passed);
+
+            static WorkItemResult CreatePassedResult(IWorkItemSummary summary, string resolvedJobId)
+                => new(summary.Name, 0, null, null, null, BuildConsoleLogUrl(resolvedJobId, summary.Name), null);
+
+            async Task<WorkItemResult> CreateDetailedResultAsync(
+                IWorkItemSummary summary,
+                string resolvedJobId,
+                SemaphoreSlim detailSemaphore,
+                CancellationToken ct)
+            {
+                await detailSemaphore.WaitAsync(ct);
+                try
+                {
+                    var details = await _api.GetWorkItemDetailsAsync(summary.Name, resolvedJobId, ct);
+                    TimeSpan? duration = (details.Started.HasValue && details.Finished.HasValue)
+                        ? details.Finished.Value - details.Started.Value
+                        : null;
+                    var exitCode = details.ExitCode ?? -1;
+                    FailureCategory? category = exitCode != 0
+                        ? ClassifyFailure(exitCode, details.State, duration, summary.Name)
+                        : null;
+                    return new WorkItemResult(
+                        summary.Name,
+                        exitCode,
+                        details.State,
+                        details.MachineName,
+                        duration,
+                        BuildConsoleLogUrl(resolvedJobId, summary.Name),
+                        category);
+                }
+                finally
+                {
+                    detailSemaphore.Release();
+                }
+            }
+
+            static string BuildConsoleLogUrl(string resolvedJobId, string workItemName)
+                => $"https://helix.dot.net/api/2019-06-17/jobs/{resolvedJobId}/workitems/{workItemName}/console";
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
         {

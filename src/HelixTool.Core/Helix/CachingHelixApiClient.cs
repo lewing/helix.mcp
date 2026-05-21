@@ -175,9 +175,9 @@ public sealed class CachingHelixApiClient : IHelixApiClient
         public static JobDetailsDto From(IJobDetails d) => new(d.Name, d.QueueId, d.Creator, d.Source, d.Created, d.Finished);
     }
 
-    private record WorkItemSummaryDto(string Name) : IWorkItemSummary
+    private record WorkItemSummaryDto(string Name, int? ExitCode, string? ConsoleOutputUri) : IWorkItemSummary
     {
-        public static WorkItemSummaryDto From(IWorkItemSummary s) => new(s.Name);
+        public static WorkItemSummaryDto From(IWorkItemSummary s) => new(s.Name, s.ExitCode, s.ConsoleOutputUri);
     }
 
     private record WorkItemDetailsDto(int? ExitCode, string? State, string? MachineName, DateTimeOffset? Started, DateTimeOffset? Finished) : IWorkItemDetails

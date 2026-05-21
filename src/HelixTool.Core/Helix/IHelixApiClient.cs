@@ -45,6 +45,8 @@ public interface IJobDetails
 public interface IWorkItemSummary
 {
     string Name { get; }
+    int? ExitCode { get; }
+    string? ConsoleOutputUri { get; }
 }
 
 /// <summary>Mockable projection of Helix SDK WorkItemDetails.</summary>

@@ -70,6 +70,8 @@ public sealed class HelixApiClient : IHelixApiClient
     private sealed class WorkItemSummaryAdapter(WorkItemSummary summary) : IWorkItemSummary
     {
         public string Name => summary.Name;
+        public int? ExitCode => summary.ExitCode;
+        public string? ConsoleOutputUri => summary.ConsoleOutputUri;
     }
 
     private sealed class WorkItemDetailsAdapter(WorkItemDetails details) : IWorkItemDetails
