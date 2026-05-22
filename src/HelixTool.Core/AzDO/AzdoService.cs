@@ -11,11 +11,62 @@ namespace HelixTool.Core.AzDO;
 public class AzdoService
 {
     private readonly IAzdoApiClient _client;
+    private const string ValidFilterValues = "'failed', 'all', 'running', 'pending', 'incomplete', or 'issues'";
+    private static readonly HashSet<string> s_validFilters = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "failed",
+        "all",
+        "running",
+        "pending",
+        "incomplete",
+        "issues"
+    };
+    private static readonly Dictionary<string, string> s_filterAliases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["inProgress"] = "running",
+        ["in-progress"] = "running",
+        ["active"] = "running",
+        ["notStarted"] = "pending",
+        ["not-started"] = "pending"
+    };
 
     public AzdoService(IAzdoApiClient client)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
     }
+
+    public static string NormalizeFilter(string filter)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        return s_filterAliases.TryGetValue(filter, out var canonical) ? canonical : filter;
+    }
+
+    public static bool IsValidFilter(string filter)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        return s_validFilters.Contains(filter);
+    }
+
+    public static string GetInvalidFilterMessage(string filter, string parameterName = "filter") =>
+        $"Invalid {parameterName} '{filter}'. Must be one of: {ValidFilterValues}.";
+
+    public static void ValidateFilter(string filter, string parameterName = "filter")
+    {
+        if (!IsValidFilter(filter))
+            throw new ArgumentException(GetInvalidFilterMessage(filter, parameterName), parameterName);
+    }
+
+    public static bool MatchesFilter(AzdoTimelineRecord r, string filter) => filter.ToLowerInvariant() switch
+    {
+        "all" => true,
+        "failed" => (r.Result is not null && !r.Result.Equals("succeeded", StringComparison.OrdinalIgnoreCase))
+            || r.Issues is { Count: > 0 },
+        "running" => r.State?.Equals("inProgress", StringComparison.OrdinalIgnoreCase) == true,
+        "pending" => r.State?.Equals("pending", StringComparison.OrdinalIgnoreCase) == true,
+        "incomplete" => !string.Equals(r.State, "completed", StringComparison.OrdinalIgnoreCase),
+        "issues" => r.Issues is { Count: > 0 },
+        _ => throw new ArgumentException(GetInvalidFilterMessage(filter), nameof(filter))
+    };
 
     /// <summary>
     /// Get a formatted build summary by build ID or AzDO URL.
@@ -196,12 +247,9 @@ public class AzdoService
             throw new ArgumentException($"Invalid recordType '{recordType}'. Must be 'Stage', 'Job', or 'Task'.", nameof(recordType));
         }
 
-        if (resultFilter is not null &&
-            !resultFilter.Equals("failed", StringComparison.OrdinalIgnoreCase) &&
-            !resultFilter.Equals("all", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new ArgumentException($"Invalid resultFilter '{resultFilter}'. Must be 'failed' or 'all'.", nameof(resultFilter));
-        }
+        resultFilter ??= "failed";
+        resultFilter = NormalizeFilter(resultFilter);
+        ValidateFilter(resultFilter, nameof(resultFilter));
 
         var timeline = await GetTimelineAsync(buildIdOrUrl, ct);
         if (timeline is null)
@@ -212,9 +260,6 @@ public class AzdoService
             .Where(r => r.Id is not null)
             .ToDictionary(r => r.Id!, StringComparer.OrdinalIgnoreCase);
 
-        // Default resultFilter to "failed": include non-succeeded records and succeeded records with issues
-        resultFilter ??= "failed";
-
         var matches = new List<TimelineSearchMatch>();
 
         foreach (var r in records)
@@ -223,16 +268,8 @@ public class AzdoService
             if (recordType is not null && !string.Equals(r.Type, recordType, StringComparison.OrdinalIgnoreCase))
                 continue;
 
-            // Apply resultFilter
-            if (resultFilter.Equals("failed", StringComparison.OrdinalIgnoreCase))
-            {
-                var isFailed = r.Result is not null &&
-                    !r.Result.Equals("succeeded", StringComparison.OrdinalIgnoreCase);
-                var hasIssues = r.Issues is { Count: > 0 };
-                if (!isFailed && !hasIssues)
-                    continue;
-            }
-            // "all" = no filtering
+            if (!MatchesFilter(r, resultFilter))
+                continue;
 
             // Search record name
             bool nameMatches = r.Name is not null &&
@@ -690,14 +727,9 @@ public class AzdoService
     public async Task<HelixJobsFromBuildResult> GetHelixJobsAsync(
         string buildIdOrUrl, string filter = "failed", CancellationToken ct = default)
     {
-        if (filter is not null &&
-            !filter.Equals("failed", StringComparison.OrdinalIgnoreCase) &&
-            !filter.Equals("all", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new ArgumentException($"Invalid filter '{filter}'. Must be 'failed' or 'all'.", nameof(filter));
-        }
-
         filter ??= "failed";
+        filter = NormalizeFilter(filter);
+        ValidateFilter(filter, nameof(filter));
 
         var timeline = await GetTimelineAsync(buildIdOrUrl, ct);
         if (timeline is null)
@@ -714,41 +746,51 @@ public class AzdoService
                         && r.Name.Contains("helix", StringComparison.OrdinalIgnoreCase));
 
         var jobs = new List<HelixJobFromBuild>();
+        var preserveIssuesGate = filter.Equals("failed", StringComparison.OrdinalIgnoreCase)
+            || filter.Equals("issues", StringComparison.OrdinalIgnoreCase)
+            || filter.Equals("all", StringComparison.OrdinalIgnoreCase);
 
         foreach (var task in helixTasks)
         {
-            if (task.Issues is not { Count: > 0 })
+            if (!MatchesFilter(task, filter))
+                continue;
+
+            var hasIssues = task.Issues is { Count: > 0 };
+            if (!hasIssues && preserveIssuesGate)
                 continue;
 
             // Collect all job IDs and failed work items from this task's issues
             var jobIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var failedWorkItems = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var issue in task.Issues)
+            if (hasIssues)
             {
-                if (issue.Message is null)
-                    continue;
-
-                // Extract job IDs
-                foreach (Match m in HelixJobIdRegex.Matches(issue.Message))
+                foreach (var issue in task.Issues!)
                 {
-                    var jobId = m.Groups[1].Value;
-                    jobIds.Add(jobId);
-                }
+                    if (issue.Message is null)
+                        continue;
 
-                // Extract failed work item names and associate with their job
-                var wiMatch = FailedWorkItemRegex.Match(issue.Message);
-                if (wiMatch.Success)
-                {
-                    var workItemName = wiMatch.Groups[1].Value;
-                    var jobId = wiMatch.Groups[2].Value;
-                    jobIds.Add(jobId);
-                    if (!failedWorkItems.TryGetValue(jobId, out var items))
+                    // Extract job IDs
+                    foreach (Match m in HelixJobIdRegex.Matches(issue.Message))
                     {
-                        items = [];
-                        failedWorkItems[jobId] = items;
+                        var jobId = m.Groups[1].Value;
+                        jobIds.Add(jobId);
                     }
-                    items.Add(workItemName);
+
+                    // Extract failed work item names and associate with their job
+                    var wiMatch = FailedWorkItemRegex.Match(issue.Message);
+                    if (wiMatch.Success)
+                    {
+                        var workItemName = wiMatch.Groups[1].Value;
+                        var jobId = wiMatch.Groups[2].Value;
+                        jobIds.Add(jobId);
+                        if (!failedWorkItems.TryGetValue(jobId, out var items))
+                        {
+                            items = [];
+                            failedWorkItems[jobId] = items;
+                        }
+                        items.Add(workItemName);
+                    }
                 }
             }
 
@@ -758,6 +800,16 @@ public class AzdoService
                 parentName = parent.Name ?? "";
 
             string taskResult = task.Result ?? "unknown";
+
+            if (jobIds.Count == 0 && !preserveIssuesGate)
+            {
+                jobs.Add(new HelixJobFromBuild(
+                    HelixJobId: string.Empty,
+                    ParentJobName: parentName,
+                    Result: taskResult,
+                    FailedWorkItems: []));
+                continue;
+            }
 
             foreach (var jobId in jobIds)
             {

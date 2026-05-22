@@ -79,16 +79,14 @@ public sealed class AzdoMcpTools
     private const int TruncatedTimelineBudget = 100;
 
     [McpServerTool(Name = "azdo_timeline", Title = "AzDO Build Timeline", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
-     Description("Build timeline with stages, jobs, and tasks — state, result, timing, log refs, issues. Find failed steps and log IDs for azdo_log. For large builds, consider azdo_search_timeline instead. Filter: 'failed' (default) or 'all'.")]
+     Description("Build timeline with stages, jobs, and tasks — state, result, timing, log refs, issues. Find failed steps and log IDs for azdo_log. For large builds, consider azdo_search_timeline instead. Filter: 'failed' (default), 'all', 'running' (in-progress tasks), 'pending' (not started), 'incomplete' (running+pending), or 'issues' (errors/warnings only).")]
     public async Task<TimelineResponse?> Timeline(
         [Description("AzDO build ID or full build URL")] string buildId,
-        [Description("Filter: 'failed' (default) or 'all'"), AllowedValues("failed", "all")] string filter = "failed")
+        [Description("Filter: 'failed' (default), 'all', 'running' (in-progress tasks), 'pending' (not started), 'incomplete' (running+pending), or 'issues' (errors/warnings only)."), AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")] string filter = "failed")
     {
-        if (!filter.Equals("failed", StringComparison.OrdinalIgnoreCase) &&
-            !filter.Equals("all", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new McpException($"Invalid filter '{filter}'. Must be 'failed' or 'all'.");
-        }
+        filter = AzdoService.NormalizeFilter(filter);
+        if (!AzdoService.IsValidFilter(filter))
+            throw new McpException(AzdoService.GetInvalidFilterMessage(filter));
 
         AzdoTimeline? timeline;
         try
@@ -111,25 +109,20 @@ public sealed class AzdoMcpTools
         }
         else
         {
-            // Filter to non-succeeded records: failed, canceled, partially succeeded, or with issues
-            var failedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var matchedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var r in timeline.Records)
             {
-                if (r.Id is null) continue;
-                var isFailed = r.Result is not null &&
-                    !r.Result.Equals("succeeded", StringComparison.OrdinalIgnoreCase);
-                var hasIssues = r.Issues is { Count: > 0 };
-                if (isFailed || hasIssues)
-                    failedIds.Add(r.Id);
+                if (r.Id is not null && AzdoService.MatchesFilter(r, filter))
+                    matchedIds.Add(r.Id);
             }
 
             // Include parent records for context (walk up parentId chain)
-            var allIds = new HashSet<string>(failedIds, StringComparer.OrdinalIgnoreCase);
+            var allIds = new HashSet<string>(matchedIds, StringComparer.OrdinalIgnoreCase);
             var recordById = timeline.Records
                 .Where(r => r.Id is not null)
                 .ToDictionary(r => r.Id!, StringComparer.OrdinalIgnoreCase);
 
-            foreach (var id in failedIds)
+            foreach (var id in matchedIds)
             {
                 var current = recordById.GetValueOrDefault(id);
                 while (current?.ParentId is not null && allIds.Add(current.ParentId))
@@ -153,9 +146,9 @@ public sealed class AzdoMcpTools
                 Truncated = true,
                 TotalRecords = totalRecords,
                 Note = $"⚠️ Timeline truncated: showing {TruncatedTimelineBudget} of {totalRecords} records. " +
-                       (filter.Equals("failed", StringComparison.OrdinalIgnoreCase)
-                           ? $"Use azdo_search_timeline(buildId, 'pattern') for targeted search."
-                           : $"Use azdo_search_timeline(buildId, 'pattern') for targeted search, or azdo_timeline with filter='failed' to reduce results.")
+                       (filter.Equals("all", StringComparison.OrdinalIgnoreCase)
+                           ? $"Use azdo_search_timeline(buildId, 'pattern') for targeted search, or azdo_timeline with filter='failed' to reduce results."
+                           : $"Use azdo_search_timeline(buildId, 'pattern') for targeted search.")
             };
         }
 
@@ -311,7 +304,7 @@ public sealed class AzdoMcpTools
         [Description("AzDO build ID or full build URL")] string buildIdOrUrl,
         [Description("Text pattern to search for (case-insensitive)")] string pattern,
         [Description("Filter by record type: 'Stage', 'Job', or 'Task'"), AllowedValues("Stage", "Job", "Task")] string? recordType = null,
-        [Description("Filter: 'failed' (default) or 'all'"), AllowedValues("failed", "all")] string resultFilter = "failed")
+        [Description("Filter: 'failed' (default), 'all', 'running' (in-progress records), 'pending' (not started), 'incomplete' (not completed), or 'issues' (errors/warnings only)."), AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")] string resultFilter = "failed")
     {
         try
         {
@@ -346,10 +339,10 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_helix_jobs", Title = "Helix Jobs from Build", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
-     Description("Extract Helix job IDs from a build. Bridges AzDO→Helix gap — returns job IDs, parent job names, results, and failed work items. Filter: 'failed' (default) or 'all'.")]
+     Description("Extract Helix job IDs from a build. Bridges AzDO→Helix gap — returns job IDs, parent job names, results, and failed work items. Filter: 'failed' (default), 'all', 'running', 'pending', 'incomplete', or 'issues'.")]
     public async Task<HelixJobsFromBuildResult> HelixJobs(
         [Description("AzDO build ID or full build URL")] string buildId,
-        [Description("Filter: 'failed' (default) or 'all'"), AllowedValues("failed", "all")] string filter = "failed")
+        [Description("Filter: 'failed' (default), 'all', 'running', 'pending', 'incomplete', or 'issues'."), AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")] string filter = "failed")
     {
         try
         {

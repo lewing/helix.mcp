@@ -126,3 +126,10 @@ Dallas filed design proposal in `.squad/decisions/inbox/dallas-surface-workitem-
 - Release asset attachment is confirmed via `gh release view v0.7.2` (no asset listing needed; presence implies successful NuGet push).
 
 **All three release runs (v0.7.0, v0.7.1, v0.7.2) executed identically with no deviations from the recipe.** Recipe is solid.
+
+## Learnings — AzDO timeline filter presets (2026-05-22T13:03:40-05:00)
+
+- Shared filter logic now lives on `AzdoService` as `public static` helpers because `HelixTool.Mcp.Tools` needs the exact same normalization/validation/predicate flow and `HelixTool.Core` only exposes internals to tests today.
+- The clean MCP pattern is: keep `AllowedValues` canonical, run `NormalizeFilter(...)` before validation, and accept silent aliases (`inProgress`, `in-progress`, `active`, `notStarted`, `not-started`) without advertising them in schema.
+- `azdo_helix_jobs` must relax its old issues-only gate for `running` / `pending` / `incomplete`; otherwise active Helix submission tasks disappear before issue text exposes a GUID. Returning `HelixJobId = ""` preserves the existing record shape while surfacing those state-based matches.
+- Branch: `feat/azdo-timeline-filter-presets`. PR: #56.
