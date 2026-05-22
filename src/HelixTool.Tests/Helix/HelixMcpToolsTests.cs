@@ -378,8 +378,8 @@ public class HelixMcpToolsTests
     {
         var description = GetMethodDescription<CiKnowledgeTool>(nameof(CiKnowledgeTool.GetGuide));
 
+        // Repo-specific org details are covered in CiKnowledgeServiceTests response-content assertions.
         Assert.Contains("Repo-specific CI guidance", description);
-        Assert.Contains("devdiv", description);
     }
 
     // --- FindFiles tests ---

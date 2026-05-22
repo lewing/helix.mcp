@@ -645,6 +645,7 @@ public class CiKnowledgeServiceTests
     [Fact]
     public void GetOverview_ContainsDevdivWarning()
     {
+        // Option C: repo-specific routing details belong in the guide body, not the compact MCP description string.
         var overview = CiKnowledgeService.GetOverview();
         Assert.Contains("macios and android are on devdiv", overview);
     }
