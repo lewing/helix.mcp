@@ -43,10 +43,10 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_builds", Title = "AzDO Build List", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
-     Description("List recent builds for an AzDO project. Filter by PR, branch, or definition. Defaults to dnceng-public/public, top 20. In-progress builds may already have failed jobs — use azdo_search_timeline to check.")]
+     Description("List recent builds for an AzDO project. Filter by PR, branch, definition, or status.")]
     public async Task<LimitedResults<AzdoBuild>> Builds(
-        [Description("Azure DevOps organization"), AllowedValues("dnceng-public", "dnceng", "devdiv")] string org = "dnceng-public",
-        [Description("Azure DevOps project"), AllowedValues("public", "internal")] string project = "public",
+        [Description("Azure DevOps organization. Default: dnceng-public"), AllowedValues("dnceng-public", "dnceng", "devdiv")] string org = "dnceng-public",
+        [Description("Azure DevOps project. Default: public"), AllowedValues("public", "internal")] string project = "public",
         [Description("Maximum results to return. Default: 20")] int top = 20,
         [Description("Filter by branch name (e.g., 'refs/heads/main')")] string? branch = null,
         [Description("Filter by pull request number")] string? prNumber = null,
@@ -79,7 +79,7 @@ public sealed class AzdoMcpTools
     private const int TruncatedTimelineBudget = 100;
 
     [McpServerTool(Name = "azdo_timeline", Title = "AzDO Build Timeline", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
-     Description("Build timeline with stages, jobs, and tasks — state, result, timing, log refs, issues. Find failed steps and log IDs for azdo_log. For large builds, consider azdo_search_timeline instead. Filter: 'failed' (default), 'all', 'running' (in-progress tasks), 'pending' (not started), 'incomplete' (running+pending), or 'issues' (errors/warnings only).")]
+     Description("Build timeline with stages, jobs, and tasks. Find failed steps and log IDs for azdo_log. Consider azdo_search_timeline for large builds.")]
     public async Task<TimelineResponse?> Timeline(
         [Description("AzDO build ID or full build URL")] string buildId,
         [Description("Filter: 'failed' (default), 'all', 'running' (in-progress tasks), 'pending' (not started), 'incomplete' (running+pending), or 'issues' (errors/warnings only)."), AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")] string filter = "failed")
@@ -211,7 +211,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_test_results", Title = "AzDO Test Results", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
-     Description("Test results for a specific run. Defaults to failed tests only. Primary tool for test failures in most dotnet repos (aspnetcore, sdk, roslyn, efcore).")]
+     Description("Test results for a specific run. Defaults to failed tests only.")]
     public async Task<LimitedResults<AzdoTestResult>> TestResults(
         [Description("AzDO build ID or full build URL")] string buildId,
         [Description("Test run ID from azdo_test_runs")] int runId,
@@ -339,7 +339,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_helix_jobs", Title = "Helix Jobs from Build", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
-     Description("Extract Helix job IDs from a build. Bridges AzDO→Helix gap — returns job IDs, parent job names, results, and failed work items. Filter: 'failed' (default), 'all', 'running', 'pending', 'incomplete', or 'issues'.")]
+     Description("Extract Helix job IDs from a build. Bridges the AzDO-to-Helix gap.")]
     public async Task<HelixJobsFromBuildResult> HelixJobs(
         [Description("AzDO build ID or full build URL")] string buildId,
         [Description("Filter: 'failed' (default), 'all', 'running', 'pending', 'incomplete', or 'issues'."), AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")] string filter = "failed")
@@ -359,7 +359,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_build_analysis", Title = "Build Analysis Known Issues", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
-     Description("Extract Build Analysis known issue matches from a build. Shows which failures are matched to known GitHub issues and which are unmatched. Works for dotnet repos that use Build Analysis.")]
+     Description("Extract Build Analysis known issue matches from a build.")]
     public async Task<BuildAnalysisResult> BuildAnalysis(
         [Description("AzDO build ID or full build URL")] string buildId)
     {

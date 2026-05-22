@@ -22,7 +22,7 @@ public sealed class HelixMcpTools
         _tokenAccessor = tokenAccessor;
     }
 
-    [McpServerTool(Name = "helix_status", Title = "Helix Job Status", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true), Description("Work item pass/fail summary for a Helix job. Returns failed items with exit codes, state, duration, machine. Filter: 'failed' (default), 'passed', or 'all'.")]
+    [McpServerTool(Name = "helix_status", Title = "Helix Job Status", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true), Description("Get pass/fail summary for a Helix job.")]
     public async Task<StatusResult> Status(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("Filter: 'failed' (default), 'passed', or 'all'"), AllowedValues("failed", "passed", "all")] string filter = "failed")
@@ -125,7 +125,7 @@ public sealed class HelixMcpTools
         }
     }
 
-    [McpServerTool(Name = "helix_files", Title = "Helix Work Item Files", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true), Description("List uploaded files for a Helix work item, grouped by type. Returns binlogs, testResults, and other files with names and URIs.")]
+    [McpServerTool(Name = "helix_files", Title = "Helix Work Item Files", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true), Description("List uploaded files for a Helix work item, grouped by type.")]
     public async Task<FilesResult> Files(
         [Description("Helix job ID (GUID), Helix URL, or full work item URL")] string jobId,
         [Description("Work item name (optional if included in jobId URL)")] string? workItem = null)
