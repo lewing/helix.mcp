@@ -133,3 +133,7 @@ Dallas filed design proposal in `.squad/decisions/inbox/dallas-surface-workitem-
 - The clean MCP pattern is: keep `AllowedValues` canonical, run `NormalizeFilter(...)` before validation, and accept silent aliases (`inProgress`, `in-progress`, `active`, `notStarted`, `not-started`) without advertising them in schema.
 - `azdo_helix_jobs` must relax its old issues-only gate for `running` / `pending` / `incomplete`; otherwise active Helix submission tasks disappear before issue text exposes a GUID. Returning `HelixJobId = ""` preserves the existing record shape while surfacing those state-based matches.
 - Branch: `feat/azdo-timeline-filter-presets`. PR: #56.
+
+## Team Update (2026-05-22)
+
+**Lambert's PR #56 merged.** 97 unit tests for AzDO timeline filter presets (`running`, `pending`, `incomplete`, `issues`) and aliases (`inProgress`, `notStarted`, `in-progress`, `active`) now passing in main. Ripley's description tightening work on feat/mcp-description-tightening can proceed independently; no rebase required.

@@ -997,3 +997,319 @@ Ash's MCP exception follow-up list treated `azdo_auth_status` as a possible triv
 ### Implication
 - Do **not** convert `azdo_auth_status` to a synchronous MCP method in the current shape.
 - If parity with `helix_auth_status` is still desired later, add a separate non-probing cached snapshot API first, then switch the tool to that surface.
+# Decision: AzDO Timeline Filter Redesign
+
+**Date:** 2026-05-22  
+**Author:** Dallas (Lead)  
+**Status:** Proposed  
+**Scope:** `azdo_timeline`, `azdo_search_timeline`, `azdo_helix_jobs`
+
+---
+
+## 1. Decision
+
+**Shape A — Richer single `filter` preset enum**, with carefully chosen preset names that map to the two orthogonal AzDO axes (state and result) without exposing those axes as separate parameters.
+
+Keep `'failed'` (default) and `'all'` with unchanged semantics. Add `'running'`, `'pending'`, `'incomplete'`, and `'issues'` as new named presets. Each preset is a documented shorthand for a (state, result, issues) predicate. No new parameters; no combinatorial surface. The `filter`/`resultFilter` parameter stays a single string enum.
+
+---
+
+## 2. Rationale
+
+**Why Shape A over B/C:**
+
+- **LLM ergonomics.** MCP tool consumers are LLMs. A single enum with self-describing names (`'running'`, `'failed'`, `'issues'`) is one decision, not two. Shape B (`state` + `result`) doubles the cognitive load and increases the chance of nonsensical combinations (e.g., `state='pending'` + `result='failed'` — pending records never have a result).
+- **Backward compatibility.** Shape A is purely additive. `'failed'` and `'all'` keep identical semantics. No deprecation, no aliasing, no migration. Shape B/C would require either deprecating `filter` or defining complex composition rules.
+- **Covers the real use cases.** The triggering bug was "I want to see what's running." The next most common needs are "what's pending," "what has issues/warnings," and "what's not done yet." These are all single-preset queries. Nobody has asked for `state=inProgress AND result=failed` — that's contradictory by definition (running records don't have results).
+- **Minimal API surface growth.** 4 new enum values vs 2 new parameters with 5+ values each. Less to document, less to misuse.
+- **Consistency with existing codebase pattern.** The `AllowedValues` attribute on MCP tools is how this project declares filter options — extending the list is mechanical, not architectural.
+
+**Why not Shape D (something else)?** The axes ARE orthogonal in AzDO's model, but the tool's job is to simplify, not to mirror the API. Presets are the right abstraction for a tool consumed by LLMs.
+
+---
+
+## 3. Per-Tool API Spec
+
+> **Naming convention (revised 2026-05-22):** Use friendly lowercase English for preset values. Accept AzDO-verbatim spellings as silent aliases in validation logic, but do NOT list them in `AllowedValues`. See §10 for full rationale.
+
+### 3.1 `azdo_timeline`
+
+```csharp
+[AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")]
+string filter = "failed"
+```
+
+**Description update:** `"Filter: 'failed' (default), 'all', 'running' (in-progress tasks), 'pending' (not started), 'incomplete' (running+pending), or 'issues' (errors/warnings only)."`
+
+**Silent aliases (validation layer only, NOT in AllowedValues):**
+- `inProgress` → resolves to `running`
+- `notStarted` → resolves to `pending`
+- `in-progress` → resolves to `running`
+
+### 3.2 `azdo_search_timeline`
+
+```csharp
+[AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")]
+string resultFilter = "failed"
+```
+
+**Rename consideration:** The parameter is currently `resultFilter`, which made sense when the only values were result-based. With state-based presets, the name is slightly misleading but tolerable — renaming to `filter` would be a breaking change at the MCP schema level and isn't worth it. Keep `resultFilter` for now. Update the description to match. Same silent aliases as §3.1.
+
+### 3.3 `azdo_helix_jobs`
+
+```csharp
+[AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")]
+string filter = "failed"
+```
+
+**Note on `'running'` and `'pending'` for this tool:** These apply to the Helix *task records* in the timeline (the "Send to Helix" tasks), not to individual Helix work items. A Helix task with `state=inProgress` means the Helix submission is still running. This is meaningful — it answers "which Helix legs are still going?" Same silent aliases as §3.1.
+
+**Caveat:** Today `GetHelixJobsAsync` only processes tasks with `Issues.Count > 0` (line 720). For `'running'` and `'pending'` presets to work, the implementation must also include tasks matching the state predicate even if they have no issues yet. The loop should collect tasks that match the filter *or* have issues with job IDs. See Implementation Scope for details.
+
+---
+
+## 4. Backward Compatibility Plan
+
+**No breaking changes.** This is purely additive.
+
+| Existing call | v0.7.2 behavior | New behavior |
+|---|---|---|
+| `filter: 'failed'` | Non-succeeded + has-issues records, with parent walk | **Identical** |
+| `filter: 'all'` | All records | **Identical** |
+| `filter: 'running'` | `McpException("Invalid filter 'running'...")` | Returns records with `state=inProgress`, with parent walk |
+
+- Existing callers sending `'failed'` or `'all'` see zero change.
+- The error message for truly invalid values (e.g., `filter: 'banana'`) should be updated to list all valid options.
+- **Version:** patch bump (v0.7.3) — additive enum expansion is not a breaking change.
+
+---
+
+## 5. Filter Semantics Matrix
+
+Each preset maps to a predicate over `(state, result, issues)`:
+
+| Preset | State predicate | Result predicate | Issues predicate | Description |
+|---|---|---|---|---|
+| `'failed'` | any | `result != null AND result != 'succeeded'` | OR `issues.Count > 0` | **Unchanged.** Non-succeeded completed records, or any record with issues. |
+| `'all'` | any | any | any | **Unchanged.** No filtering. |
+| `'running'` | `state = 'inProgress'` | — | — | Records currently executing. |
+| `'pending'` | `state = 'pending'` | — | — | Records waiting to start. |
+| `'incomplete'` | `state != 'completed'` | — | — | Union of running + pending (anything not finished). |
+| `'issues'` | any | any | `issues.Count > 0` | Records with errors or warnings, regardless of result. Catches `succeededWithIssues` that `'failed'` also catches, but also catches running/pending records that have already emitted warnings. |
+
+**Silent aliases (resolved before predicate evaluation):**
+
+| Input value | Resolves to | Why |
+|---|---|---|
+| `inProgress` | `running` | AzDO-verbatim; LLM may carry over from `azdo_builds.status` |
+| `in-progress` | `running` | Kebab-case variant |
+| `notStarted` | `pending` | AzDO-verbatim; LLM may carry over from `azdo_builds.status` |
+| `not-started` | `pending` | Kebab-case variant |
+| `active` | `running` | Natural English synonym |
+
+Aliases are **not** listed in `AllowedValues` — they don't appear in the MCP schema. They exist only in the validation/normalization layer so a confused LLM gets a working result instead of an error. The error message for truly unrecognized values (e.g., `'banana'`) lists only the canonical names.
+
+**Key clarifications:**
+
+- `'failed'` semantics are **unchanged from today**. The `result != 'succeeded'` check catches `failed`, `canceled`, `skipped`, `abandoned`, and `succeededWithIssues`. The `issues.Count > 0` check also catches records that succeeded but emitted warnings. This is the existing behavior and we preserve it.
+- `'running'` and `'pending'` are state-only filters — they ignore `result` (which is null for non-completed records anyway).
+- `'incomplete'` is the union — useful for "what's left?" queries on in-progress builds.
+- `'issues'` is the issues-only slice of what `'failed'` catches, but also includes running/pending records with issues.
+
+---
+
+## 6. Parent-Walking Policy
+
+| Preset | Parent walk? | Rationale |
+|---|---|---|
+| `'failed'` | **Yes** (unchanged) | Without stage/job context, "Task X failed" is unactionable. |
+| `'running'` | **Yes** | Same reasoning — "Task Y is running" needs "...in Job Z / Stage W" for context. |
+| `'pending'` | **Yes** | Same. |
+| `'incomplete'` | **Yes** | Same. |
+| `'issues'` | **Yes** | Same. |
+| `'all'` | **No** (unchanged) | Everything is already included. |
+
+The parent-walk logic is identical for all non-`'all'` presets: collect matching record IDs, then walk `parentId` chains to include ancestor Stage/Job records. The existing `azdo_timeline` implementation already does this correctly for `'failed'` — the same code path serves all presets, just with a different initial predicate.
+
+**`azdo_search_timeline`:** Does NOT do parent walking today (it returns `parentName` as a field on the match instead). No change needed — the existing approach is correct for a search tool.
+
+**`azdo_helix_jobs`:** Does NOT do parent walking (it resolves `parentName` inline). No change needed.
+
+---
+
+## 7. Edge Cases
+
+### 7.1 Pending records have no `result`
+- `'pending'` filter: include if `state = 'pending'`. `result` is ignored (it's null).
+- `'failed'` filter: `result != null AND result != 'succeeded'` — null result is excluded. Correct: pending records haven't failed.
+- `'issues'` filter: pending records CAN have issues (if the pipeline emits warnings during queuing). Include if `issues.Count > 0`.
+
+### 7.2 Running records have no `finishTime`
+- No impact on filtering. `finishTime` is a display field, not a filter input.
+- `'running'` filter: include if `state = 'inProgress'`. `result` is null and `finishTime` is null — both expected.
+
+### 7.3 Canceled records
+- `state = 'completed'`, `result = 'canceled'`. May or may not have issues.
+- `'failed'` filter: included (result != succeeded). Correct.
+- `'running'` / `'pending'` / `'incomplete'`: excluded (state = completed). Correct.
+- `'issues'` filter: included only if `issues.Count > 0`.
+
+### 7.4 Skipped records
+- `state = 'completed'`, `result = 'skipped'`. Typically no issues.
+- `'failed'` filter: included (result != succeeded). This is debatable — skipped is often intentional. However, this is the **existing** behavior and changing it would be a semantic break. Keep as-is.
+- If users complain about skipped noise, a future `'failed-strict'` preset could exclude skipped. Not in this iteration.
+
+### 7.5 `azdo_helix_jobs` — tasks with no issues but matching state
+- Today, the loop at line 720 skips tasks with no issues (`if (task.Issues is not { Count: > 0 }) continue`). For `'running'` preset, a Helix task that is `state=inProgress` with 0 issues should still appear — but it will have no extractable job IDs (those come from issue messages).
+- **Recommendation:** For state-based presets (`'running'`, `'pending'`, `'incomplete'`), include Helix tasks matching the state predicate even with no issues. Return them with `HelixJobId = ""` or a synthetic marker, so the caller knows the task exists and is running but job IDs aren't yet available.
+- For `'failed'` and `'issues'` presets, the existing `issues.Count > 0` gate remains — no change.
+
+---
+
+## 8. Implementation Scope
+
+### Files to change
+
+| File | Change | Approx LOC |
+|---|---|---|
+| `src/HelixTool.Mcp.Tools/AzDO/AzdoMcpTools.cs` | Update `AllowedValues`, descriptions, and validation for `azdo_timeline` (line ~85), `azdo_search_timeline` (line ~314), `azdo_helix_jobs` (line ~352) | ~15 |
+| `src/HelixTool.Mcp.Tools/AzDO/AzdoMcpTools.cs` | Extend filter predicate in `Timeline()` method (lines 108-141) to handle new presets | ~30 |
+| `src/HelixTool.Core/AzDO/AzdoService.cs` | Extend filter predicate in `SearchTimelineAsync()` (lines 227-234) and `GetHelixJobsAsync()` (lines 693-700, 720, 774-778). Add `NormalizeFilter` + `MatchesFilter` shared helper. Add alias dictionary. | ~55 |
+| `src/HelixTool.Tests/AzDO/AzdoMcpToolsTests.cs` | New test cases for each preset on `azdo_timeline` | ~60 |
+| `src/HelixTool.Tests/AzDO/AzdoSearchTimelineTests.cs` | New test cases for each preset on `azdo_search_timeline` | ~40 |
+| `src/HelixTool.Tests/AzDO/AzdoHelixJobsTests.cs` | New test cases for each preset on `azdo_helix_jobs`; special case for state-based presets with no issues | ~50 |
+| `src/HelixTool.Tests/AzDO/` (any of above) | Alias resolution tests: `inProgress`→`running`, `notStarted`→`pending`, `in-progress`→`running`, `not-started`→`pending`, `active`→`running` | ~20 |
+
+**Total:** ~250 LOC across 6 files. No new files, no new dependencies, no model changes.
+
+### Suggested refactor
+
+Extract the filter predicate into a shared helper to avoid duplicating the switch logic across three call sites:
+
+```csharp
+// In AzdoService.cs or a new static helper
+private static readonly Dictionary<string, string> FilterAliases = new(StringComparer.OrdinalIgnoreCase)
+{
+    ["inProgress"]  = "running",
+    ["in-progress"] = "running",
+    ["active"]      = "running",
+    ["notStarted"]  = "pending",
+    ["not-started"] = "pending",
+};
+
+internal static string NormalizeFilter(string filter)
+{
+    if (FilterAliases.TryGetValue(filter, out var canonical))
+        return canonical;
+    return filter; // pass through to MatchesFilter, which validates
+}
+
+internal static bool MatchesFilter(AzdoTimelineRecord r, string filter) => filter.ToLowerInvariant() switch
+{
+    "all"        => true,
+    "failed"     => (r.Result is not null && !r.Result.Equals("succeeded", OrdinalIgnoreCase))
+                    || r.Issues is { Count: > 0 },
+    "running"    => r.State?.Equals("inProgress", OrdinalIgnoreCase) == true,
+    "pending"    => r.State?.Equals("pending", OrdinalIgnoreCase) == true,
+    "incomplete" => r.State is not null && !r.State.Equals("completed", OrdinalIgnoreCase),
+    "issues"     => r.Issues is { Count: > 0 },
+    _            => throw new ArgumentException(
+        $"Invalid filter '{filter}'. Must be one of: failed, all, running, pending, incomplete, issues.")
+};
+```
+
+Call sites: `filter = NormalizeFilter(filter);` then use `MatchesFilter`. This eliminates the three independent filter-validation blocks and the separate predicate logic. Parent-walking in `azdo_timeline` stays in `AzdoMcpTools.cs` (it's MCP-layer concern, not service logic).
+
+---
+
+## 9. Open Questions
+
+None — I'm confident in this recommendation. Two notes for lewing to consider:
+
+1. **`'skipped'` noise in `'failed'`:** Today `'failed'` includes skipped records. This is probably fine for CI investigation (you want to know what didn't run), but if it causes noise, we could add a `'failed-strict'` preset later that excludes `skipped` and `canceled`.
+
+2. **`azdo_search_timeline` param name:** `resultFilter` is slightly misleading now that we accept state-based presets. Renaming to `filter` is a minor schema break. My recommendation is to keep `resultFilter` for now and document it clearly. If we do a major version bump for other reasons, we can rename it then.
+
+---
+
+## Appendix: Why Not the Other Shapes
+
+**Shape B (two orthogonal params):** Maps cleanly to AzDO's model but creates invalid combinations (state=pending + result=failed is meaningless). The LLM would need to know which combinations are valid — that's implicit domain knowledge we'd be pushing into the prompt. Presets encode that knowledge for free.
+
+**Shape C (hybrid):** Maximum flexibility but also maximum footgun surface. `filter='failed'` + `state='inProgress'` — what wins? We'd need composition rules, and the LLM would need to understand them. For a tool that exists to simplify AzDO, this is the wrong direction.
+
+**Shape D (e.g., separate `stateFilter` and `resultFilter`):** Better than B (clearer naming) but same fundamental problem — invalid combinations and higher cognitive load.
+
+---
+
+## 10. Naming Revision (2026-05-22)
+
+**Question:** Should preset values use friendly English (`running`, `pending`) or AzDO-verbatim casing (`inProgress`, `notStarted`)? And should we accept aliases?
+
+### Observed codebase convention
+
+The codebase already has **two distinct naming conventions** for filter values:
+
+| Param type | Convention | Examples |
+|---|---|---|
+| **Pass-through** (value sent to AzDO API verbatim) | AzDO casing | `azdo_builds.status`: `inProgress`, `notStarted`, `completed` |
+| **Pass-through** (value matched against AzDO data) | AzDO casing | `azdo_search_timeline.recordType`: `Stage`, `Job`, `Task` |
+| **Preset** (value interpreted by our service logic) | Friendly lowercase | `azdo_timeline.filter`: `failed`, `all` |
+| **Preset** (value interpreted by our service logic) | Friendly lowercase | `helix_status.filter`: `failed`, `passed`, `all` |
+
+The `filter` param on timeline tools is a preset — it maps to a predicate computed in our code, NOT a value passed to AzDO. **Friendly lowercase is the established convention for presets.**
+
+### Decision: Friendly English names, with silent AzDO aliases
+
+**Canonical names in `AllowedValues`:** `running`, `pending`, `incomplete`, `issues` (plus existing `failed`, `all`).
+
+**Why `running` over `inProgress`:**
+
+1. **Convention consistency.** Every existing preset in the codebase uses friendly lowercase. `inProgress` would be the first camelCase preset value — a style break more jarring than the cross-tool naming difference it tries to avoid.
+
+2. **Different param types justify different names.** `azdo_builds.status` is a pass-through to the AzDO API — it *must* use AzDO's values. `azdo_timeline.filter` is a preset computed in our code — it *should* use our naming convention. This is not a "split" — it's two param types following their respective rules.
+
+3. **LLM discoverability.** `AllowedValues` is what the LLM sees. `running` is more natural English than `inProgress` for "show me what's currently executing." An LLM reading `AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")` can guess the semantics without reading descriptions. `AllowedValues("failed", "all", "inProgress", "pending", "incomplete", "issues")` has an odd camelCase outlier.
+
+4. **`incomplete` and `issues` are already friendly-named.** These are synthetic presets with no AzDO equivalent. Using `inProgress` alongside `incomplete` creates a mixed-convention list. All-lowercase is cleaner.
+
+**Why aliases instead of dual-listing in AllowedValues:**
+
+- **Schema hygiene.** `AllowedValues` is the canonical API surface. Listing `running` AND `inProgress` doubles the apparent options and makes the LLM choose between synonyms — the opposite of simplicity.
+- **Forgiveness without bloat.** A validation-layer `NormalizeFilter()` silently maps `inProgress` → `running` (and `notStarted` → `pending`, `in-progress` → `running`, `active` → `running`). The LLM that learned `inProgress` from `azdo_builds` gets a working result. The error message for truly invalid values lists only canonical names.
+- **Testing is simple.** One test per alias asserting it resolves to the canonical name. No predicate logic to re-test.
+
+**Why NOT update `azdo_builds` to match:**
+`azdo_builds.status` is a pass-through — its values are AzDO's, not ours. Renaming `inProgress` to `running` there would be both a breaking change AND semantically wrong (the value goes directly to the AzDO API). Leave it alone.
+
+### Implementation note for Ripley
+
+Add a `NormalizeFilter` method (or a `Dictionary<string, string>` alias map) in the shared helper alongside `MatchesFilter`. Call `NormalizeFilter(filter)` before evaluating the predicate. Add 5 test cases for alias resolution. ~15 extra LOC beyond the original estimate.
+
+# Decision: AzDO filter helper placement and Helix placeholder shape
+
+**Date:** 2026-05-22  
+**Author:** Ripley  
+**Status:** Proposed implementation note
+
+## Context
+
+Dallas's approved AzDO timeline filter preset design requires one shared normalization/predicate implementation across `HelixTool.Core` and `HelixTool.Mcp.Tools`, plus state-based `azdo_helix_jobs` results even when no issue text has exposed a Helix job GUID yet.
+
+## Decisions
+
+1. **Shared helper placement:** place `NormalizeFilter`, `MatchesFilter`, validation helpers, and canonical filter metadata on `AzdoService` as `public static` members.
+   - Reason: the MCP timeline tool applies the same predicate in `HelixTool.Mcp.Tools`, but that assembly does not currently have friend access to `HelixTool.Core` internals.
+   - This avoids adding a new `InternalsVisibleTo` coupling or duplicating the filter switch in a second assembly.
+
+2. **State-only Helix task encoding:** when a `running` / `pending` / `incomplete` Helix task matches the state preset but yields no extractable Helix job IDs, return the existing `HelixJobFromBuild` shape with `HelixJobId = ""`.
+   - Reason: this preserves the current record contract while surfacing the meaningful fact that the Helix submission task exists and is still active/incomplete.
+   - No model/schema change is required, and callers can distinguish these rows by the empty job ID.
+
+3. **`failed` compatibility in `azdo_helix_jobs`:** keep the existing final `Result != succeeded` trimming after extraction so current `failed` output stays unchanged, even though task selection now flows through the shared predicate helpers.
+
+## Consequences
+
+- One canonical filter implementation now drives timeline filtering, timeline search filtering, and Helix job task selection.
+- Silent aliases remain schema-invisible while still being accepted operationally.
+- `azdo_helix_jobs` can now surface active Helix submission tasks before issue messages expose a GUID.
