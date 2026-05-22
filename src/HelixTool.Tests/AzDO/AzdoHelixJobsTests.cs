@@ -135,4 +135,144 @@ public class AzdoHelixJobsTests
         await Assert.ThrowsAsync<ArgumentException>(
             () => _svc.GetHelixJobsAsync("42", filter: "invalid"));
     }
+
+    // ── Filter presets: running / pending / incomplete / issues (§5) ─
+
+    [Fact]
+    public async Task GetHelixJobsAsync_Filter_Running_ReturnsInProgressHelixTask()
+    {
+        var timeline = CreateTestTimeline(
+            CreateRecord("task1", "Send to Helix", "Task", state: "inProgress", result: null),
+            CreateRecord("task2", "Send to Helix", "Task", state: "completed",  result: "succeeded"));
+        SetupTimeline(timeline);
+
+        var result = await _svc.GetHelixJobsAsync("42", filter: "running");
+
+        // task1 matches 'running' with no issues → returned with empty HelixJobId (§8 caveat)
+        Assert.Single(result.Jobs);
+        Assert.Equal(string.Empty, result.Jobs[0].HelixJobId);
+    }
+
+    [Fact]
+    public async Task GetHelixJobsAsync_Filter_Running_WithIssues_ReturnsExtractedJobId()
+    {
+        // §8 caveat: running task that DOES have issues → HelixJobId extracted normally
+        var jobGuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        var timeline = CreateTestTimeline(
+            CreateRecord("task1", "Send to Helix", "Task", state: "inProgress", result: null,
+                issues: new List<AzdoIssue>
+                {
+                    new() { Message = $"https://helix.dot.net/api/2019-06-17/jobs/{jobGuid}/details" }
+                }));
+        SetupTimeline(timeline);
+
+        var result = await _svc.GetHelixJobsAsync("42", filter: "running");
+
+        Assert.Single(result.Jobs);
+        Assert.Equal(jobGuid, result.Jobs[0].HelixJobId);
+    }
+
+    [Fact]
+    public async Task GetHelixJobsAsync_Filter_Pending_ReturnsPendingTask()
+    {
+        var timeline = CreateTestTimeline(
+            CreateRecord("task1", "Send to Helix", "Task", state: "pending",   result: null),
+            CreateRecord("task2", "Send to Helix", "Task", state: "completed", result: "failed",
+                issues: new List<AzdoIssue> { new() { Message = "some error" } }));
+        SetupTimeline(timeline);
+
+        var result = await _svc.GetHelixJobsAsync("42", filter: "pending");
+
+        // Only the pending task matches; it has no issues → empty HelixJobId
+        Assert.Single(result.Jobs);
+        Assert.Equal(string.Empty, result.Jobs[0].HelixJobId);
+    }
+
+    [Fact]
+    public async Task GetHelixJobsAsync_Filter_Incomplete_ReturnsRunningAndPendingTasks()
+    {
+        var timeline = CreateTestTimeline(
+            CreateRecord("task1", "Send to Helix", "Task", state: "inProgress", result: null),
+            CreateRecord("task2", "Send to Helix", "Task", state: "pending",    result: null),
+            CreateRecord("task3", "Send to Helix", "Task", state: "completed",  result: "failed",
+                issues: new List<AzdoIssue> { new() { Message = "error" } }));
+        SetupTimeline(timeline);
+
+        var result = await _svc.GetHelixJobsAsync("42", filter: "incomplete");
+
+        Assert.Equal(2, result.Jobs.Count);
+        Assert.All(result.Jobs, j => Assert.Equal(string.Empty, j.HelixJobId));
+    }
+
+    [Fact]
+    public async Task GetHelixJobsAsync_Filter_Issues_ReturnsOnlyTasksWithIssues()
+    {
+        var jobGuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        var timeline = CreateTestTimeline(
+            CreateRecord("task1", "Send to Helix", "Task", state: "inProgress", result: null),
+            CreateRecord("task2", "Send to Helix", "Task", state: "completed",  result: "failed",
+                issues: new List<AzdoIssue>
+                {
+                    new() { Message = $"https://helix.dot.net/api/2019-06-17/jobs/{jobGuid}/details" }
+                }));
+        SetupTimeline(timeline);
+
+        var result = await _svc.GetHelixJobsAsync("42", filter: "issues");
+
+        Assert.Single(result.Jobs);
+        Assert.Equal(jobGuid, result.Jobs[0].HelixJobId);
+    }
+
+    // ── §8 caveat: state-based presets include tasks with 0 issues ───
+
+    [Fact]
+    public async Task GetHelixJobsAsync_Filter_Running_NoIssues_ReturnsRowWithEmptyHelixJobId()
+    {
+        // §8: state-based presets must include tasks matching state even with no issues.
+        // HelixJobId is empty because there are no issue messages to extract job IDs from.
+        var timeline = CreateTestTimeline(
+            CreateRecord("task1", "Send to Helix", "Task", state: "inProgress", result: null));
+        SetupTimeline(timeline);
+
+        var result = await _svc.GetHelixJobsAsync("42", filter: "running");
+
+        Assert.Single(result.Jobs);
+        Assert.Equal(string.Empty, result.Jobs[0].HelixJobId);
+        Assert.Equal("unknown", result.Jobs[0].Result);  // result is null → "unknown"
+    }
+
+    // ── Filter presets: aliases ───────────────────────────────────────
+
+    [Theory]
+    [InlineData("inProgress")]
+    [InlineData("in-progress")]
+    [InlineData("active")]
+    public async Task GetHelixJobsAsync_Filter_AliasRunning_SameAsRunning(string alias)
+    {
+        var timeline = CreateTestTimeline(
+            CreateRecord("task1", "Send to Helix", "Task", state: "inProgress", result: null),
+            CreateRecord("task2", "Send to Helix", "Task", state: "completed",  result: "succeeded"));
+        SetupTimeline(timeline);
+
+        var aliasResult    = await _svc.GetHelixJobsAsync("42", filter: alias);
+        var canonicalResult = await _svc.GetHelixJobsAsync("42", filter: "running");
+
+        Assert.Equal(canonicalResult.TotalHelixJobs, aliasResult.TotalHelixJobs);
+    }
+
+    [Theory]
+    [InlineData("notStarted")]
+    [InlineData("not-started")]
+    public async Task GetHelixJobsAsync_Filter_AliasPending_SameAsPending(string alias)
+    {
+        var timeline = CreateTestTimeline(
+            CreateRecord("task1", "Send to Helix", "Task", state: "pending",   result: null),
+            CreateRecord("task2", "Send to Helix", "Task", state: "completed", result: "succeeded"));
+        SetupTimeline(timeline);
+
+        var aliasResult    = await _svc.GetHelixJobsAsync("42", filter: alias);
+        var canonicalResult = await _svc.GetHelixJobsAsync("42", filter: "pending");
+
+        Assert.Equal(canonicalResult.TotalHelixJobs, aliasResult.TotalHelixJobs);
+    }
 }

@@ -318,4 +318,133 @@ public class AzdoSearchTimelineTests
         Assert.Equal("error handler task", result.Matches[0].Name);
         Assert.Single(result.Matches[0].MatchedIssues);
     }
+
+    // ── ResultFilter presets (§5) ────────────────────────────────────
+
+    [Fact]
+    public async Task SearchTimelineAsync_ResultFilter_Running_ReturnsInProgressRecords()
+    {
+        var timeline = CreateTestTimeline(
+            CreateRecord("r1", "search task", "Task", state: "inProgress",  result: null),
+            CreateRecord("r2", "search task", "Task", state: "pending",     result: null),
+            CreateRecord("r3", "search task", "Task", state: "completed",   result: "succeeded"),
+            CreateRecord("r4", "search task", "Task", state: "completed",   result: "failed"));
+        SetupTimeline(timeline);
+
+        var result = await _svc.SearchTimelineAsync("42", "search task", resultFilter: "running");
+
+        Assert.Single(result.Matches);
+        Assert.Equal("inProgress", result.Matches[0].State);
+    }
+
+    [Fact]
+    public async Task SearchTimelineAsync_ResultFilter_Pending_ReturnsPendingRecords()
+    {
+        var timeline = CreateTestTimeline(
+            CreateRecord("r1", "search task", "Task", state: "inProgress", result: null),
+            CreateRecord("r2", "search task", "Task", state: "pending",    result: null),
+            CreateRecord("r3", "search task", "Task", state: "completed",  result: "failed"));
+        SetupTimeline(timeline);
+
+        var result = await _svc.SearchTimelineAsync("42", "search task", resultFilter: "pending");
+
+        Assert.Single(result.Matches);
+        Assert.Equal("pending", result.Matches[0].State);
+    }
+
+    [Fact]
+    public async Task SearchTimelineAsync_ResultFilter_Incomplete_ReturnsRunningAndPending()
+    {
+        var timeline = CreateTestTimeline(
+            CreateRecord("r1", "search task", "Task", state: "inProgress", result: null),
+            CreateRecord("r2", "search task", "Task", state: "pending",    result: null),
+            CreateRecord("r3", "search task", "Task", state: "completed",  result: "failed"));
+        SetupTimeline(timeline);
+
+        var result = await _svc.SearchTimelineAsync("42", "search task", resultFilter: "incomplete");
+
+        Assert.Equal(2, result.Matches.Count);
+        Assert.All(result.Matches, m =>
+            Assert.NotEqual("completed", m.State, StringComparer.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task SearchTimelineAsync_ResultFilter_Issues_ReturnsOnlyRecordsWithIssues()
+    {
+        var timeline = CreateTestTimeline(
+            CreateRecord("r1", "search task", "Task", result: "succeeded",
+                issues: new List<AzdoIssue> { new() { Type = "warning", Message = "w" } }),
+            CreateRecord("r2", "search task", "Task", result: "failed"));
+        SetupTimeline(timeline);
+
+        var result = await _svc.SearchTimelineAsync("42", "search task", resultFilter: "issues");
+
+        Assert.Single(result.Matches);
+        Assert.Equal("r1", result.Matches[0].RecordId);
+    }
+
+    // ── Alias resolution (§10) ───────────────────────────────────────
+
+    [Theory]
+    [InlineData("inProgress")]
+    [InlineData("in-progress")]
+    [InlineData("active")]
+    public async Task SearchTimelineAsync_ResultFilter_AliasRunning_SameAsCanonicalRunning(string alias)
+    {
+        var timeline = CreateTestTimeline(
+            CreateRecord("r1", "task", "Task", state: "inProgress", result: null),
+            CreateRecord("r2", "task", "Task", state: "completed",  result: "failed"));
+        SetupTimeline(timeline);
+
+        var aliasResult   = await _svc.SearchTimelineAsync("42", "task", resultFilter: alias);
+        var canonicalResult = await _svc.SearchTimelineAsync("42", "task", resultFilter: "running");
+
+        Assert.Equal(canonicalResult.Matches.Count, aliasResult.Matches.Count);
+        Assert.Equal(canonicalResult.Matches[0].RecordId, aliasResult.Matches[0].RecordId);
+    }
+
+    [Theory]
+    [InlineData("notStarted")]
+    [InlineData("not-started")]
+    public async Task SearchTimelineAsync_ResultFilter_AliasPending_SameAsCanonicalPending(string alias)
+    {
+        var timeline = CreateTestTimeline(
+            CreateRecord("r1", "task", "Task", state: "pending",   result: null),
+            CreateRecord("r2", "task", "Task", state: "completed", result: "failed"));
+        SetupTimeline(timeline);
+
+        var aliasResult     = await _svc.SearchTimelineAsync("42", "task", resultFilter: alias);
+        var canonicalResult = await _svc.SearchTimelineAsync("42", "task", resultFilter: "pending");
+
+        Assert.Equal(canonicalResult.Matches.Count, aliasResult.Matches.Count);
+        Assert.Equal(canonicalResult.Matches[0].RecordId, aliasResult.Matches[0].RecordId);
+    }
+
+    [Fact]
+    public async Task SearchTimelineAsync_ResultFilter_InvalidValue_ThrowsArgumentException()
+    {
+        var timeline = CreateTestTimeline(
+            CreateRecord("r1", "task", "Task", result: "failed"));
+        SetupTimeline(timeline);
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => _svc.SearchTimelineAsync("42", "task", resultFilter: "banana"));
+    }
+
+    [Fact]
+    public async Task SearchTimelineAsync_ResultFilter_InvalidValue_ErrorListsCanonicalValues()
+    {
+        var timeline = CreateTestTimeline(
+            CreateRecord("r1", "task", "Task", result: "failed"));
+        SetupTimeline(timeline);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(
+            () => _svc.SearchTimelineAsync("42", "task", resultFilter: "banana"));
+        Assert.Contains("failed",     ex.Message);
+        Assert.Contains("running",    ex.Message);
+        Assert.Contains("pending",    ex.Message);
+        Assert.Contains("incomplete", ex.Message);
+        Assert.Contains("issues",     ex.Message);
+        Assert.DoesNotContain("inProgress", ex.Message);
+    }
 }

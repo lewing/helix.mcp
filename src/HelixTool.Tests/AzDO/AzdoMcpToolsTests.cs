@@ -1,5 +1,6 @@
 using HelixTool.Core.AzDO;
 using HelixTool.Mcp.Tools;
+using ModelContextProtocol;
 using NSubstitute;
 using Xunit;
 
@@ -432,5 +433,248 @@ public class AzdoMcpToolsTests
 
         await _mockApi.Received(1).GetTestAttachmentsAsync(
             "myorg", "myproj", 1, 2, 100, Arg.Any<CancellationToken>());
+    }
+
+    // ── azdo_timeline — filter presets (§5) ─────────────────────────
+
+    private static AzdoTimeline BuildFilterTestTimeline() => new()
+    {
+        Id = "tl-filter",
+        Records =
+        [
+            new() { Id = "r-running",    Name = "Running Task",       Type = "Task", State = "inProgress",  Result = null },
+            new() { Id = "r-pending",    Name = "Pending Task",        Type = "Task", State = "pending",     Result = null },
+            new() { Id = "r-succeeded",  Name = "Succeeded Task",      Type = "Task", State = "completed",   Result = "succeeded" },
+            new() { Id = "r-failed",     Name = "Failed Task",         Type = "Task", State = "completed",   Result = "failed" },
+            new() { Id = "r-canceled",   Name = "Canceled Task",       Type = "Task", State = "completed",   Result = "canceled" },
+            new() { Id = "r-issues",     Name = "Task With Issues",    Type = "Task", State = "completed",   Result = "succeeded",
+                Issues = new List<AzdoIssue> { new() { Type = "warning", Message = "a warning" } } },
+        ]
+    };
+
+    private void SetupFilterTestTimeline()
+    {
+        _mockApi.GetTimelineAsync("dnceng-public", "public", 10, Arg.Any<CancellationToken>())
+            .Returns(BuildFilterTestTimeline());
+    }
+
+    [Fact]
+    public async Task Timeline_Filter_Running_ReturnsOnlyInProgressRecords()
+    {
+        SetupFilterTestTimeline();
+        var result = await _tools.Timeline("10", filter: "running");
+
+        Assert.NotNull(result);
+        var names = result!.Records.Select(r => r.Name).ToList();
+        Assert.Contains("Running Task", names);
+        Assert.DoesNotContain("Pending Task",     names);
+        Assert.DoesNotContain("Succeeded Task",   names);
+        Assert.DoesNotContain("Failed Task",      names);
+        Assert.DoesNotContain("Task With Issues", names);
+    }
+
+    [Fact]
+    public async Task Timeline_Filter_Pending_ReturnsOnlyPendingRecords()
+    {
+        SetupFilterTestTimeline();
+        var result = await _tools.Timeline("10", filter: "pending");
+
+        Assert.NotNull(result);
+        var names = result!.Records.Select(r => r.Name).ToList();
+        Assert.Contains("Pending Task", names);
+        Assert.DoesNotContain("Running Task",     names);
+        Assert.DoesNotContain("Succeeded Task",   names);
+        Assert.DoesNotContain("Failed Task",      names);
+        Assert.DoesNotContain("Task With Issues", names);
+    }
+
+    [Fact]
+    public async Task Timeline_Filter_Incomplete_ReturnsRunningAndPendingRecords()
+    {
+        SetupFilterTestTimeline();
+        var result = await _tools.Timeline("10", filter: "incomplete");
+
+        Assert.NotNull(result);
+        var names = result!.Records.Select(r => r.Name).ToList();
+        Assert.Contains("Running Task", names);
+        Assert.Contains("Pending Task", names);
+        Assert.DoesNotContain("Succeeded Task",  names);
+        Assert.DoesNotContain("Failed Task",     names);
+        Assert.DoesNotContain("Canceled Task",   names);
+        Assert.DoesNotContain("Task With Issues", names);
+    }
+
+    [Fact]
+    public async Task Timeline_Filter_Issues_ReturnsOnlyRecordsWithIssues()
+    {
+        SetupFilterTestTimeline();
+        var result = await _tools.Timeline("10", filter: "issues");
+
+        Assert.NotNull(result);
+        var names = result!.Records.Select(r => r.Name).ToList();
+        Assert.Contains("Task With Issues", names);
+        Assert.DoesNotContain("Running Task",   names);
+        Assert.DoesNotContain("Pending Task",   names);
+        Assert.DoesNotContain("Succeeded Task", names);
+        Assert.DoesNotContain("Failed Task",    names);
+    }
+
+    [Fact]
+    public async Task Timeline_Filter_Failed_DefaultBehaviorUnchanged()
+    {
+        // Regression: 'failed' returns non-succeeded + records-with-issues
+        SetupFilterTestTimeline();
+        var result = await _tools.Timeline("10", filter: "failed");
+
+        Assert.NotNull(result);
+        var names = result!.Records.Select(r => r.Name).ToList();
+        Assert.Contains("Failed Task",      names);
+        Assert.Contains("Canceled Task",    names);
+        Assert.Contains("Task With Issues", names);  // issues gate
+        Assert.DoesNotContain("Succeeded Task", names);
+        // Running/pending: no result → null → NOT matched by 'failed'
+        Assert.DoesNotContain("Running Task", names);
+        Assert.DoesNotContain("Pending Task", names);
+    }
+
+    [Fact]
+    public async Task Timeline_Filter_All_DefaultBehaviorUnchanged()
+    {
+        SetupFilterTestTimeline();
+        var result = await _tools.Timeline("10", filter: "all");
+
+        Assert.NotNull(result);
+        Assert.Equal(6, result!.Records.Count);
+    }
+
+    [Fact]
+    public async Task Timeline_Filter_Invalid_ThrowsMcpException()
+    {
+        SetupFilterTestTimeline();
+        await Assert.ThrowsAsync<McpException>(
+            () => _tools.Timeline("10", filter: "banana"));
+    }
+
+    [Fact]
+    public async Task Timeline_Filter_Invalid_ErrorListsCanonicalValues_NotAliases()
+    {
+        SetupFilterTestTimeline();
+        var ex = await Assert.ThrowsAsync<McpException>(
+            () => _tools.Timeline("10", filter: "banana"));
+        Assert.Contains("failed",     ex.Message);
+        Assert.Contains("running",    ex.Message);
+        Assert.Contains("pending",    ex.Message);
+        Assert.Contains("incomplete", ex.Message);
+        Assert.Contains("issues",     ex.Message);
+        Assert.DoesNotContain("inProgress", ex.Message);
+        Assert.DoesNotContain("active",     ex.Message);
+    }
+
+    // ── azdo_timeline — alias resolution (§10) ──────────────────────
+
+    [Theory]
+    [InlineData("inProgress")]
+    [InlineData("in-progress")]
+    [InlineData("active")]
+    public async Task Timeline_Alias_ResolvesToRunning(string alias)
+    {
+        SetupFilterTestTimeline();
+        var result = await _tools.Timeline("10", filter: alias);
+
+        Assert.NotNull(result);
+        var names = result!.Records.Select(r => r.Name).ToList();
+        Assert.Contains("Running Task",   names);
+        Assert.DoesNotContain("Pending Task",   names);
+        Assert.DoesNotContain("Succeeded Task", names);
+    }
+
+    [Theory]
+    [InlineData("notStarted")]
+    [InlineData("not-started")]
+    public async Task Timeline_Alias_ResolvesToPending(string alias)
+    {
+        SetupFilterTestTimeline();
+        var result = await _tools.Timeline("10", filter: alias);
+
+        Assert.NotNull(result);
+        var names = result!.Records.Select(r => r.Name).ToList();
+        Assert.Contains("Pending Task",   names);
+        Assert.DoesNotContain("Running Task",   names);
+        Assert.DoesNotContain("Succeeded Task", names);
+    }
+
+    [Fact]
+    public async Task Timeline_Alias_CaseInsensitive_InprogressUpperCase_ResolvesToRunning()
+    {
+        SetupFilterTestTimeline();
+        var result = await _tools.Timeline("10", filter: "INPROGRESS");
+
+        Assert.NotNull(result);
+        var names = result!.Records.Select(r => r.Name).ToList();
+        Assert.Contains("Running Task", names);
+        Assert.DoesNotContain("Pending Task", names);
+    }
+
+    // ── azdo_timeline — edge cases (§7) ─────────────────────────────
+
+    [Fact]
+    public async Task Timeline_Filter_Failed_PendingRecord_NotIncluded()
+    {
+        // §7.1: pending records (result=null) must NOT appear in 'failed' results
+        _mockApi.GetTimelineAsync("dnceng-public", "public", 10, Arg.Any<CancellationToken>())
+            .Returns(new AzdoTimeline
+            {
+                Id = "tl-edge",
+                Records =
+                [
+                    new() { Id = "r1", Name = "Pending Step", Type = "Task", State = "pending", Result = null },
+                    new() { Id = "r2", Name = "Failed Step",  Type = "Task", State = "completed", Result = "failed" },
+                ]
+            });
+
+        var result = await _tools.Timeline("10", filter: "failed");
+
+        Assert.NotNull(result);
+        var names = result!.Records.Select(r => r.Name).ToList();
+        Assert.Contains("Failed Step",   names);
+        Assert.DoesNotContain("Pending Step", names);
+    }
+
+    [Fact]
+    public async Task Timeline_Filter_Pending_DoesNotMatchRunning()
+    {
+        SetupFilterTestTimeline();
+        var result = await _tools.Timeline("10", filter: "pending");
+
+        Assert.NotNull(result);
+        // Running task must NOT appear under 'pending' filter
+        Assert.DoesNotContain(result!.Records, r => r.Name == "Running Task");
+    }
+
+    [Fact]
+    public async Task Timeline_Filter_Running_IncludesParentRecordsForContext()
+    {
+        // Parent walk: when a task matches, its parent Job and Stage are included too
+        _mockApi.GetTimelineAsync("dnceng-public", "public", 10, Arg.Any<CancellationToken>())
+            .Returns(new AzdoTimeline
+            {
+                Id = "tl-parents",
+                Records =
+                [
+                    new() { Id = "stage1", Name = "Build Stage",  Type = "Stage", State = "inProgress", Result = null },
+                    new() { Id = "job1",   Name = "Tests Job",    Type = "Job",   State = "inProgress", Result = null, ParentId = "stage1" },
+                    new() { Id = "task1",  Name = "Running Task", Type = "Task",  State = "inProgress", Result = null, ParentId = "job1" },
+                    new() { Id = "task2",  Name = "Done Task",    Type = "Task",  State = "completed",  Result = "succeeded", ParentId = "job1" },
+                ]
+            });
+
+        var result = await _tools.Timeline("10", filter: "running");
+
+        Assert.NotNull(result);
+        var names = result!.Records.Select(r => r.Name).ToList();
+        Assert.Contains("Running Task", names);  // direct match
+        Assert.Contains("Tests Job",    names);  // parent walk
+        Assert.Contains("Build Stage",  names);  // grandparent walk
+        Assert.DoesNotContain("Done Task", names); // not running, not a parent of running
     }
 }
