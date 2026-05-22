@@ -169,3 +169,10 @@ Dallas filed design proposal in `.squad/decisions/inbox/dallas-surface-workitem-
 **PR #57 merged to main at 3c4728c.** Ripley completed description tightening on 8 tools (229 → 93 words, 136 recovered). Lambert fixed assertion coupling by routing devdiv knowledge verification to CiKnowledgeService response content. Dallas reviewed, approved, and merged; flagged two follow-ups: (a) establish quarterly description audit cadence, (b) restore azdo_builds→azdo_search_timeline cross-reference in future pass. Baseline decision recorded in decisions.md with full audit counts and pattern guidance for next drift check.
 
 - [2026-05-22] v0.7.3 shipped (PR #56 + PR #57 → main → NuGet)
+
+## Learnings — DTO consolidation refactor 2026-05-22
+
+- Safe consolidation pattern here was **centralize DTO definitions into `src/HelixTool.Mcp.Tools/McpToolResults.cs`, but keep distinct CLI vs MCP types when wire formats differ**. The CLI `--json` contracts still rely on a mixed PascalCase/camelCase shape, so direct reuse of MCP DTOs would have changed output.
+- The low-risk move was to add public CLI DTOs in the shared results file and alias them back into `Program.cs`, then delete the nested `Program.cs` copies. That removed the parallel definitions without changing command logic.
+- Wire-compat verification worked best as a two-layer check: full `dotnet test --nologo --no-build` for Lambert's existing JSON tests, plus explicit `--schema` spot-checks on `status`, `files`, and `work-item` to confirm property casing stayed exactly where expected.
+- The surprising detail was that the "duplicate" classes were only structurally close, not identical: MCP status includes `helixUrl` and camelCase attributes, while CLI status intentionally omits that field and leaves several properties PascalCase.

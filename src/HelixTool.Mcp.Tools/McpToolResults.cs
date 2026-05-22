@@ -2,6 +2,65 @@ using System.Text.Json.Serialization;
 
 namespace HelixTool.Mcp.Tools;
 
+// --- CLI JSON DTOs ---
+
+public sealed class CliStatusJsonResult
+{
+    [JsonPropertyName("job")] public CliStatusJobJsonResult Job { get; init; } = new();
+    [JsonPropertyName("totalWorkItems")] public int TotalWorkItems { get; init; }
+    [JsonPropertyName("failedCount")] public int FailedCount { get; init; }
+    [JsonPropertyName("passedCount")] public int PassedCount { get; init; }
+    [JsonPropertyName("failed")] public IReadOnlyList<CliStatusWorkItemJsonResult>? Failed { get; init; }
+    [JsonPropertyName("passed")] public IReadOnlyList<CliStatusWorkItemJsonResult>? Passed { get; init; }
+}
+
+public sealed class CliStatusJobJsonResult
+{
+    [JsonPropertyName("jobId")] public string JobId { get; init; } = "";
+    public string Name { get; init; } = "";
+    public string QueueId { get; init; } = "";
+    public string Creator { get; init; } = "";
+    public string Source { get; init; } = "";
+    public string? Created { get; init; }
+    public string? Finished { get; init; }
+}
+
+public sealed class CliStatusWorkItemJsonResult
+{
+    public string Name { get; init; } = "";
+    public int ExitCode { get; init; }
+    public string? State { get; init; }
+    public string? MachineName { get; init; }
+    [JsonPropertyName("duration")] public string? Duration { get; init; }
+    public string ConsoleLogUrl { get; init; } = "";
+    [JsonPropertyName("failureCategory")] public string? FailureCategory { get; init; }
+}
+
+public sealed class CliFilesJsonResult
+{
+    [JsonPropertyName("binlogs")] public IReadOnlyList<CliHelixFileJsonResult> Binlogs { get; init; } = [];
+    [JsonPropertyName("testResults")] public IReadOnlyList<CliHelixFileJsonResult> TestResults { get; init; } = [];
+    [JsonPropertyName("other")] public IReadOnlyList<CliHelixFileJsonResult> Other { get; init; } = [];
+}
+
+public sealed class CliHelixFileJsonResult
+{
+    public string Name { get; init; } = "";
+    public string Uri { get; init; } = "";
+}
+
+public sealed class CliWorkItemJsonResult
+{
+    public string Name { get; init; } = "";
+    public int ExitCode { get; init; }
+    public string? State { get; init; }
+    public string? MachineName { get; init; }
+    [JsonPropertyName("duration")] public string? Duration { get; init; }
+    public string ConsoleLogUrl { get; init; } = "";
+    [JsonPropertyName("failureCategory")] public string? FailureCategory { get; init; }
+    [JsonPropertyName("files")] public IReadOnlyList<CliHelixFileJsonResult> Files { get; init; } = [];
+}
+
 // --- Status tool ---
 
 public sealed class StatusJobInfo

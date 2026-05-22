@@ -9,6 +9,12 @@ using HelixTool.Core.Cache;
 using HelixTool.Core.Helix;
 using HelixTool.Core.AzDO;
 using HelixTool.Mcp.Tools;
+using FilesJsonResult = HelixTool.Mcp.Tools.CliFilesJsonResult;
+using HelixFileJsonResult = HelixTool.Mcp.Tools.CliHelixFileJsonResult;
+using StatusJobJsonResult = HelixTool.Mcp.Tools.CliStatusJobJsonResult;
+using StatusJsonResult = HelixTool.Mcp.Tools.CliStatusJsonResult;
+using StatusWorkItemJsonResult = HelixTool.Mcp.Tools.CliStatusWorkItemJsonResult;
+using WorkItemJsonResult = HelixTool.Mcp.Tools.CliWorkItemJsonResult;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -87,93 +93,6 @@ public class Commands
         if (!schema) return false;
         Console.WriteLine(SchemaGenerator.GenerateSchema<T>());
         return true;
-    }
-
-    private sealed class StatusJsonResult
-    {
-        [JsonPropertyName("job")]
-        public StatusJobJsonResult Job { get; init; } = new();
-
-        [JsonPropertyName("totalWorkItems")]
-        public int TotalWorkItems { get; init; }
-
-        [JsonPropertyName("failedCount")]
-        public int FailedCount { get; init; }
-
-        [JsonPropertyName("passedCount")]
-        public int PassedCount { get; init; }
-
-        [JsonPropertyName("failed")]
-        public IReadOnlyList<StatusWorkItemJsonResult>? Failed { get; init; }
-
-        [JsonPropertyName("passed")]
-        public IReadOnlyList<StatusWorkItemJsonResult>? Passed { get; init; }
-    }
-
-    private sealed class StatusJobJsonResult
-    {
-        [JsonPropertyName("jobId")]
-        public string JobId { get; init; } = "";
-
-        public string Name { get; init; } = "";
-        public string QueueId { get; init; } = "";
-        public string Creator { get; init; } = "";
-        public string Source { get; init; } = "";
-        public string? Created { get; init; }
-        public string? Finished { get; init; }
-    }
-
-    private sealed class StatusWorkItemJsonResult
-    {
-        public string Name { get; init; } = "";
-        public int ExitCode { get; init; }
-        public string? State { get; init; }
-        public string? MachineName { get; init; }
-
-        [JsonPropertyName("duration")]
-        public string? Duration { get; init; }
-
-        public string ConsoleLogUrl { get; init; } = "";
-
-        [JsonPropertyName("failureCategory")]
-        public string? FailureCategory { get; init; }
-    }
-
-    private sealed class FilesJsonResult
-    {
-        [JsonPropertyName("binlogs")]
-        public IReadOnlyList<HelixFileJsonResult> Binlogs { get; init; } = [];
-
-        [JsonPropertyName("testResults")]
-        public IReadOnlyList<HelixFileJsonResult> TestResults { get; init; } = [];
-
-        [JsonPropertyName("other")]
-        public IReadOnlyList<HelixFileJsonResult> Other { get; init; } = [];
-    }
-
-    private sealed class HelixFileJsonResult
-    {
-        public string Name { get; init; } = "";
-        public string Uri { get; init; } = "";
-    }
-
-    private sealed class WorkItemJsonResult
-    {
-        public string Name { get; init; } = "";
-        public int ExitCode { get; init; }
-        public string? State { get; init; }
-        public string? MachineName { get; init; }
-
-        [JsonPropertyName("duration")]
-        public string? Duration { get; init; }
-
-        public string ConsoleLogUrl { get; init; } = "";
-
-        [JsonPropertyName("failureCategory")]
-        public string? FailureCategory { get; init; }
-
-        [JsonPropertyName("files")]
-        public IReadOnlyList<HelixFileJsonResult> Files { get; init; } = [];
     }
 
     private readonly Lazy<HelixService> _lazySvc;
