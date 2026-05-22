@@ -1,3 +1,23 @@
+## Learnings — Release flow v0.7.3 (2026-05-22T14:04:00-05:00)
+
+**Release execution summary:**
+- Synced main with `git pull` (already up-to-date, 2211115).
+- Bumped three version stamps: `HelixTool.csproj` line 12 + `server.json` top-level + packages array (all 0.7.2 → 0.7.3).
+- Build: 0 errors, 0 warnings (10.58s).
+- Tests: 1292/1292 passed (3s) — baseline 1180 + 112 from prior extensions.
+- Version commit: 73e65fd (`release: v0.7.3`).
+- Main push: `2211115..73e65fd`.
+- Tag: `v0.7.3` annotated, pushed to origin.
+- Workflow run: 26306754843, completed in 41s (all jobs green).
+- Release verification: `https://github.com/lewing/helix.mcp/releases/tag/v0.7.3`, asset `lewing.helix.mcp.0.7.3.nupkg` attached.
+- NuGet indexing: Package pushed to nuget.org; appears within typical 5-10 min indexing window.
+
+**Pattern confirmation:**
+- Third consecutive haiku-driven mechanical release (v0.7.1, v0.7.2, v0.7.3) executed flawlessly with zero deviations.
+- Release recipe is fully automated and repeatable: version bumps → build+test gate → commit → push main → tag+push → workflow auto-creation of release and NuGet push.
+- Sed-based `.json` edits continue to work reliably (no Unicode em-dash issues encountered in v0.7.3).
+
+**All releases follow the established recipe with 100% consistency.** Recipe is production-ready.
 
 **2026-05-21 10:33Z:** Ash audit found helix_ci_guide needs exception wrapping (5-line fix). See decisions.md for details.
 
