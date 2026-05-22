@@ -23,7 +23,7 @@ public sealed class AzdoMcpTools
         _tokenAccessor = tokenAccessor;
     }
 
-    [McpServerTool(Name = "azdo_build", Title = "AzDO Build Details", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
+    [McpServerTool(Name = "azdo_build", Title = "AzDO Build Details", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("Get details of an AzDO build: status, result, definition, source branch, timing, and web URL. Accepts build URL or integer ID.")]
     public async Task<AzdoBuildSummary> Build(
         [Description("AzDO build ID or full build URL")] string buildId)
@@ -42,7 +42,7 @@ public sealed class AzdoMcpTools
         }
     }
 
-    [McpServerTool(Name = "azdo_builds", Title = "AzDO Build List", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
+    [McpServerTool(Name = "azdo_builds", Title = "AzDO Build List", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("List recent builds for an AzDO project. Filter by PR, branch, definition, or status.")]
     public async Task<LimitedResults<AzdoBuild>> Builds(
         [Description("Azure DevOps organization. Default: dnceng-public"), AllowedValues("dnceng-public", "dnceng", "devdiv")] string org = "dnceng-public",
@@ -78,7 +78,7 @@ public sealed class AzdoMcpTools
     private const int MaxTimelineRecords = 200;
     private const int TruncatedTimelineBudget = 100;
 
-    [McpServerTool(Name = "azdo_timeline", Title = "AzDO Build Timeline", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
+    [McpServerTool(Name = "azdo_timeline", Title = "AzDO Build Timeline", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("Build timeline with stages, jobs, and tasks. Find failed steps and log IDs for azdo_log. Consider azdo_search_timeline for large builds.")]
     public async Task<TimelineResponse?> Timeline(
         [Description("AzDO build ID or full build URL")] string buildId,
@@ -159,7 +159,7 @@ public sealed class AzdoMcpTools
         };
     }
 
-    [McpServerTool(Name = "azdo_log", Title = "AzDO Build Log", ReadOnly = true, Idempotent = true, OpenWorld = true),
+    [McpServerTool(Name = "azdo_log", Title = "AzDO Build Log", ReadOnly = true, Idempotent = true),
      Description("Get log content for a build step. Use log ID from azdo_timeline. Returns last N lines by default.")]
     public async Task<string> Log(
         [Description("AzDO build ID or full build URL")] string buildId,
@@ -178,7 +178,7 @@ public sealed class AzdoMcpTools
         return content ?? string.Empty;
     }
 
-    [McpServerTool(Name = "azdo_changes", Title = "AzDO Build Changes", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
+    [McpServerTool(Name = "azdo_changes", Title = "AzDO Build Changes", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("Get commits/changes for an AzDO build. Returns commit IDs, messages, authors, and timestamps.")]
     public async Task<LimitedResults<AzdoBuildChange>> Changes(
         [Description("AzDO build ID or full build URL")] string buildId,
@@ -194,7 +194,7 @@ public sealed class AzdoMcpTools
         }
     }
 
-    [McpServerTool(Name = "azdo_test_runs", Title = "AzDO Test Runs", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
+    [McpServerTool(Name = "azdo_test_runs", Title = "AzDO Test Runs", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("Test run summaries for an AzDO build with total/passed/failed counts. ⚠️ Run-level failedTests can be inaccurate — always drill into azdo_test_results to verify.")]
     public async Task<LimitedResults<AzdoTestRun>> TestRuns(
         [Description("AzDO build ID or full build URL")] string buildId,
@@ -210,7 +210,7 @@ public sealed class AzdoMcpTools
         }
     }
 
-    [McpServerTool(Name = "azdo_test_results", Title = "AzDO Test Results", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
+    [McpServerTool(Name = "azdo_test_results", Title = "AzDO Test Results", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("Test results for a specific run. Defaults to failed tests only.")]
     public async Task<LimitedResults<AzdoTestResult>> TestResults(
         [Description("AzDO build ID or full build URL")] string buildId,
@@ -227,7 +227,7 @@ public sealed class AzdoMcpTools
         }
     }
 
-    [McpServerTool(Name = "azdo_artifacts", Title = "AzDO Build Artifacts", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
+    [McpServerTool(Name = "azdo_artifacts", Title = "AzDO Build Artifacts", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("List artifacts from an AzDO build (logs, test results, binlogs). Supports glob-style pattern filtering.")]
     public async Task<LimitedResults<AzdoBuildArtifact>> Artifacts(
         [Description("AzDO build ID or full build URL")] string buildId,
@@ -244,7 +244,7 @@ public sealed class AzdoMcpTools
         }
     }
 
-    [McpServerTool(Name = "azdo_search_log", Title = "Search AzDO Build Logs", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
+    [McpServerTool(Name = "azdo_search_log", Title = "Search AzDO Build Logs", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("Search build step logs for a pattern. Provide logId for one step, or omit it to search all ranked steps.")]
     public async Task<CrossStepSearchResult> SearchLog(
         [Description("AzDO build ID or full build URL")] string buildIdOrUrl,
@@ -298,7 +298,7 @@ public sealed class AzdoMcpTools
         }
     }
 
-    [McpServerTool(Name = "azdo_search_timeline", Title = "AzDO Search Timeline", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
+    [McpServerTool(Name = "azdo_search_timeline", Title = "AzDO Search Timeline", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("Search build timeline record names and issue messages for a pattern. Returns matching records with log IDs for azdo_log or azdo_search_log.")]
     public async Task<TimelineSearchResult> SearchTimeline(
         [Description("AzDO build ID or full build URL")] string buildIdOrUrl,
@@ -316,7 +316,7 @@ public sealed class AzdoMcpTools
         }
     }
 
-    [McpServerTool(Name = "azdo_test_attachments", Title = "AzDO Test Attachments", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
+    [McpServerTool(Name = "azdo_test_attachments", Title = "AzDO Test Attachments", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("List attachments for a test result (screenshots, logs, dumps). Requires run ID and result ID from azdo_test_results.")]
     public async Task<LimitedResults<AzdoTestAttachment>> TestAttachments(
         [Description("Test run ID from azdo_test_runs")] int runId,
@@ -338,7 +338,7 @@ public sealed class AzdoMcpTools
         }
     }
 
-    [McpServerTool(Name = "azdo_helix_jobs", Title = "Helix Jobs from Build", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
+    [McpServerTool(Name = "azdo_helix_jobs", Title = "Helix Jobs from Build", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("Extract Helix job IDs from a build. Bridges the AzDO-to-Helix gap.")]
     public async Task<HelixJobsFromBuildResult> HelixJobs(
         [Description("AzDO build ID or full build URL")] string buildId,
@@ -358,7 +358,7 @@ public sealed class AzdoMcpTools
         }
     }
 
-    [McpServerTool(Name = "azdo_build_analysis", Title = "Build Analysis Known Issues", ReadOnly = true, Idempotent = true, OpenWorld = true, UseStructuredContent = true),
+    [McpServerTool(Name = "azdo_build_analysis", Title = "Build Analysis Known Issues", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("Extract Build Analysis known issue matches from a build.")]
     public async Task<BuildAnalysisResult> BuildAnalysis(
         [Description("AzDO build ID or full build URL")] string buildId)
