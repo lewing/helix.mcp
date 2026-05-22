@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json.Serialization;
 using ModelContextProtocol;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using Microsoft.DotNet.Helix.Client;
 
@@ -460,9 +461,9 @@ public sealed class HelixMcpTools
         }
     }
 
-    [McpServerTool(Name = "helix_auth_status", Title = "Helix Auth Status", ReadOnly = true, Idempotent = true, OpenWorld = false, UseStructuredContent = true),
+    [McpServerTool(Name = "helix_auth_status", Title = "Helix Auth Status", ReadOnly = true, Idempotent = true, OpenWorld = false),
      Description("Current Helix auth status: authenticated or anonymous, and token source (env var, stored credential).")]
-    public HelixAuthStatus HelixAuth()
+    public CallToolResult HelixAuth()
     {
         var token = _tokenAccessor.GetAccessToken();
         var hasToken = !string.IsNullOrEmpty(token);
@@ -486,11 +487,11 @@ public sealed class HelixMcpTools
             source = "none";
         }
 
-        return new HelixAuthStatus
+        return McpToolResultFactory.CreateStructuredJson(new HelixAuthStatus
         {
             IsAuthenticated = hasToken,
             Source = source
-        };
+        });
     }
 }
 

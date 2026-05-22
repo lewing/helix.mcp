@@ -4,6 +4,7 @@ using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using ModelContextProtocol;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
 using HelixTool.Core;
@@ -377,11 +378,11 @@ public sealed class AzdoMcpTools
         }
     }
 
-    [McpServerTool(Name = "azdo_auth_status", Title = "AzDO Auth Status", ReadOnly = true, Idempotent = true, OpenWorld = false, UseStructuredContent = true),
+    [McpServerTool(Name = "azdo_auth_status", Title = "AzDO Auth Status", ReadOnly = true, Idempotent = true, OpenWorld = false),
      Description("Current AzDO auth method (anonymous, PAT, Entra, az CLI), expiry, and warnings. No API call made.")]
-    public async Task<AzdoAuthStatus> AuthStatus()
+    public async Task<CallToolResult> AuthStatus()
     {
-        return await _tokenAccessor.AuthStatusAsync();
+        return McpToolResultFactory.CreateStructuredJson(await _tokenAccessor.AuthStatusAsync());
     }
 
     private static LimitedResults<T> CreateLimitedResults<T>(IReadOnlyList<T> results, int top)
