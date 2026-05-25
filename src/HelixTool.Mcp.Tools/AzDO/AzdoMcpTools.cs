@@ -29,18 +29,10 @@ public sealed class AzdoMcpTools
     public async Task<AzdoBuildSummary> Build(
         [Description("AzDO build ID or full build URL")] string buildId)
     {
-        try
-        {
-            return await _svc.GetBuildSummaryAsync(buildId);
-        }
-        catch (InvalidOperationException ex) when (ex.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new McpException(AppendNotFoundHint(ex.Message, buildId), ex);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
-        {
-            throw new McpException($"Failed to get build details: {ex.Message}", ex);
-        }
+        return await McpExceptionHandler.RunServiceCallAsync(
+            () => _svc.GetBuildSummaryAsync(buildId),
+            "get build details",
+            ex => GetAzdoNotFoundMessage(ex, buildId));
     }
 
     [McpServerTool(Name = "azdo_builds", Title = "AzDO Build List", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
@@ -66,14 +58,9 @@ public sealed class AzdoMcpTools
             StatusFilter = status
         };
 
-        try
-        {
-            return CreateLimitedResults(await _svc.ListBuildsAsync(org, project, filter), top);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
-        {
-            throw new McpException($"Failed to list builds: {ex.Message}", ex);
-        }
+        return await McpExceptionHandler.RunServiceCallAsync(
+            async () => CreateLimitedResults(await _svc.ListBuildsAsync(org, project, filter), top),
+            "list builds");
     }
 
     private const int MaxTimelineRecords = 200;
@@ -90,14 +77,10 @@ public sealed class AzdoMcpTools
             throw new McpException(AzdoService.GetInvalidFilterMessage(filter));
 
         AzdoTimeline? timeline;
-        try
-        {
-            timeline = await _svc.GetTimelineAsync(buildId);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
-        {
-            throw new McpException($"Failed to get build timeline: {ex.Message}", ex);
-        }
+        timeline = await McpExceptionHandler.RunServiceCallAsync(
+            () => _svc.GetTimelineAsync(buildId),
+            "get build timeline",
+            ex => GetAzdoNotFoundMessage(ex, buildId));
 
         if (timeline is null)
             return null;
@@ -168,14 +151,10 @@ public sealed class AzdoMcpTools
         [Description("Lines from end to return")] int? tailLines = 500)
     {
         string? content;
-        try
-        {
-            content = await _svc.GetBuildLogAsync(buildId, logId, tailLines);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
-        {
-            throw new McpException($"Failed to get build log: {ex.Message}", ex);
-        }
+        content = await McpExceptionHandler.RunServiceCallAsync(
+            () => _svc.GetBuildLogAsync(buildId, logId, tailLines),
+            "get build log",
+            ex => GetAzdoNotFoundMessage(ex, buildId));
         return content ?? string.Empty;
     }
 
@@ -185,14 +164,10 @@ public sealed class AzdoMcpTools
         [Description("AzDO build ID or full build URL")] string buildId,
         [Description("Maximum results to return")] int top = 20)
     {
-        try
-        {
-            return CreateLimitedResults(await _svc.GetBuildChangesAsync(buildId, top), top);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
-        {
-            throw new McpException($"Failed to get build changes: {ex.Message}", ex);
-        }
+        return await McpExceptionHandler.RunServiceCallAsync(
+            async () => CreateLimitedResults(await _svc.GetBuildChangesAsync(buildId, top), top),
+            "get build changes",
+            ex => GetAzdoNotFoundMessage(ex, buildId));
     }
 
     [McpServerTool(Name = "azdo_test_runs", Title = "AzDO Test Runs", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
@@ -201,14 +176,10 @@ public sealed class AzdoMcpTools
         [Description("AzDO build ID or full build URL")] string buildId,
         [Description("Maximum results to return")] int top = 50)
     {
-        try
-        {
-            return CreateLimitedResults(await _svc.GetTestRunsAsync(buildId, top), top);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
-        {
-            throw new McpException($"Failed to get test runs: {ex.Message}", ex);
-        }
+        return await McpExceptionHandler.RunServiceCallAsync(
+            async () => CreateLimitedResults(await _svc.GetTestRunsAsync(buildId, top), top),
+            "get test runs",
+            ex => GetAzdoNotFoundMessage(ex, buildId));
     }
 
     [McpServerTool(Name = "azdo_test_results", Title = "AzDO Test Results", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
@@ -218,14 +189,10 @@ public sealed class AzdoMcpTools
         [Description("Test run ID from azdo_test_runs")] int runId,
         [Description("Maximum results to return. Default: 200")] int top = 200)
     {
-        try
-        {
-            return CreateLimitedResults(await _svc.GetTestResultsAsync(buildId, runId, top), top);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
-        {
-            throw new McpException($"Failed to get test results: {ex.Message}", ex);
-        }
+        return await McpExceptionHandler.RunServiceCallAsync(
+            async () => CreateLimitedResults(await _svc.GetTestResultsAsync(buildId, runId, top), top),
+            "get test results",
+            ex => GetAzdoNotFoundMessage(ex, buildId));
     }
 
     [McpServerTool(Name = "azdo_artifacts", Title = "AzDO Build Artifacts", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
@@ -235,14 +202,10 @@ public sealed class AzdoMcpTools
         [Description("Artifact name glob. Default: all")] string pattern = "*",
         [Description("Maximum results to return. Default: 100")] int top = 100)
     {
-        try
-        {
-            return CreateLimitedResults(await _svc.GetBuildArtifactsAsync(buildId, pattern, top), top);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
-        {
-            throw new McpException($"Failed to get build artifacts: {ex.Message}", ex);
-        }
+        return await McpExceptionHandler.RunServiceCallAsync(
+            async () => CreateLimitedResults(await _svc.GetBuildArtifactsAsync(buildId, pattern, top), top),
+            "get build artifacts",
+            ex => GetAzdoNotFoundMessage(ex, buildId));
     }
 
     [McpServerTool(Name = "azdo_search_log", Title = "Search AzDO Build Logs", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
@@ -260,7 +223,7 @@ public sealed class AzdoMcpTools
         if (StringHelpers.IsFileSearchDisabled)
             throw new McpException("File content search is disabled by configuration.");
 
-        try
+        return await McpExceptionHandler.RunServiceCallAsync(async () =>
         {
             if (logId.HasValue)
             {
@@ -292,11 +255,7 @@ public sealed class AzdoMcpTools
             return await _svc.SearchBuildLogAcrossStepsAsync(
                 buildIdOrUrl, pattern, contextLines, maxMatches, maxLogsToSearch, minLogLines,
                 McpProgressAdapter.Wrap(progress));
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
-        {
-            throw new McpException($"Failed to search build logs: {ex.Message}", ex);
-        }
+        }, "search build logs", ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
     }
 
     [McpServerTool(Name = "azdo_search_timeline", Title = "AzDO Search Timeline", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
@@ -307,14 +266,10 @@ public sealed class AzdoMcpTools
         [Description("Filter by record type: 'Stage', 'Job', or 'Task'"), AllowedValues("Stage", "Job", "Task")] string? recordType = null,
         [Description("Filter: 'failed' (default), 'all', 'running' (in-progress records), 'pending' (not started), 'incomplete' (not completed), or 'issues' (errors/warnings only)."), AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")] string resultFilter = "failed")
     {
-        try
-        {
-            return await _svc.SearchTimelineAsync(buildIdOrUrl, pattern, recordType, resultFilter);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
-        {
-            throw new McpException($"Failed to search timeline: {ex.Message}", ex);
-        }
+        return await McpExceptionHandler.RunServiceCallAsync(
+            () => _svc.SearchTimelineAsync(buildIdOrUrl, pattern, recordType, resultFilter),
+            "search timeline",
+            ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
     }
 
     [McpServerTool(Name = "azdo_test_attachments", Title = "AzDO Test Attachments", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
@@ -329,14 +284,9 @@ public sealed class AzdoMcpTools
         // If org looks like a URL, extract org/project from it
         (org, project) = TryExtractOrgProjectFromUrl(org, project);
 
-        try
-        {
-            return CreateLimitedResults(await _svc.GetTestAttachmentsAsync(org, project, runId, resultId, top), top);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
-        {
-            throw new McpException($"Failed to get test attachments: {ex.Message}", ex);
-        }
+        return await McpExceptionHandler.RunServiceCallAsync(
+            async () => CreateLimitedResults(await _svc.GetTestAttachmentsAsync(org, project, runId, resultId, top), top),
+            "get test attachments");
     }
 
     [McpServerTool(Name = "azdo_helix_jobs", Title = "Helix Jobs from Build", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
@@ -345,18 +295,10 @@ public sealed class AzdoMcpTools
         [Description("AzDO build ID or full build URL")] string buildId,
         [Description("Filter: 'failed' (default), 'all', 'running', 'pending', 'incomplete', or 'issues'."), AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")] string filter = "failed")
     {
-        try
-        {
-            return await _svc.GetHelixJobsAsync(buildId, filter);
-        }
-        catch (InvalidOperationException ex) when (ex.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new McpException(AppendNotFoundHint(ex.Message, buildId), ex);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
-        {
-            throw new McpException($"Failed to extract Helix jobs: {ex.Message}", ex);
-        }
+        return await McpExceptionHandler.RunServiceCallAsync(
+            () => _svc.GetHelixJobsAsync(buildId, filter),
+            "extract Helix jobs",
+            ex => GetAzdoNotFoundMessage(ex, buildId));
     }
 
     [McpServerTool(Name = "azdo_build_analysis", Title = "Build Analysis Known Issues", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
@@ -364,18 +306,10 @@ public sealed class AzdoMcpTools
     public async Task<BuildAnalysisResult> BuildAnalysis(
         [Description("AzDO build ID or full build URL")] string buildId)
     {
-        try
-        {
-            return await _svc.GetBuildAnalysisAsync(buildId);
-        }
-        catch (InvalidOperationException ex) when (ex.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new McpException(AppendNotFoundHint(ex.Message, buildId), ex);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or ArgumentException)
-        {
-            throw new McpException($"Failed to get build analysis: {ex.Message}", ex);
-        }
+        return await McpExceptionHandler.RunServiceCallAsync(
+            () => _svc.GetBuildAnalysisAsync(buildId),
+            "get build analysis",
+            ex => GetAzdoNotFoundMessage(ex, buildId));
     }
 
     [McpServerTool(Name = "azdo_auth_status", Title = "AzDO Auth Status", ReadOnly = true, Idempotent = true, OpenWorld = false),
@@ -410,6 +344,17 @@ public sealed class AzdoMcpTools
             }
         }
         return (org, project);
+    }
+
+    private static string? GetAzdoNotFoundMessage(Exception ex, string buildIdOrUrl)
+    {
+        if (ex is InvalidOperationException invalidOperation &&
+            invalidOperation.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))
+        {
+            return AppendNotFoundHint(invalidOperation.Message, buildIdOrUrl);
+        }
+
+        return null;
     }
 
     /// <summary>

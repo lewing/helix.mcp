@@ -14,16 +14,12 @@ public sealed class CiKnowledgeTool
     public string GetGuide(
         [Description("Repository name; omit for overview")] string? repo = null)
     {
-        try
+        return McpExceptionHandler.RunServiceCall(() =>
         {
             if (string.IsNullOrWhiteSpace(repo))
                 return CiKnowledgeService.GetOverview();
 
             return CiKnowledgeService.GetGuide(repo);
-        }
-        catch (Exception ex) when (ex is ArgumentException)
-        {
-            throw new McpException($"Failed to get CI guidance: {ex.Message}", ex);
-        }
+        }, "get CI guidance");
     }
 }

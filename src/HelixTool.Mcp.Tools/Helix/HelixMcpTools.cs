@@ -35,7 +35,7 @@ public sealed class HelixMcpTools
             throw new McpException($"Invalid filter '{filter}'. Must be 'failed', 'passed', or 'all'.");
         }
 
-        try
+        return await McpExceptionHandler.RunServiceCallAsync(async () =>
         {
             var summary = await _svc.GetJobStatusAsync(jobId);
 
@@ -71,11 +71,7 @@ public sealed class HelixMcpTools
                     FailureCategory = null
                 }).ToList() : null
             };
-        }
-        catch (Exception ex) when (ex is HttpRequestException or HelixException or RestApiException or InvalidOperationException or ArgumentException)
-        {
-            throw new McpException($"Failed to get job status: {ex.Message}", ex);
-        }
+        }, "get job status", isKnownException: IsHelixKnownException);
     }
 
     internal static string? FormatDuration(TimeSpan? duration)
@@ -116,14 +112,10 @@ public sealed class HelixMcpTools
         if (string.IsNullOrEmpty(workItem))
             throw new McpException("Work item name is required. Provide it as a separate parameter or include it in the Helix URL.");
 
-        try
-        {
-            return await _svc.GetConsoleLogContentAsync(jobId, workItem, tail);
-        }
-        catch (Exception ex) when (ex is HttpRequestException or HelixException or RestApiException or InvalidOperationException or ArgumentException)
-        {
-            throw new McpException($"Failed to get console log: {ex.Message}", ex);
-        }
+        return await McpExceptionHandler.RunServiceCallAsync(
+            () => _svc.GetConsoleLogContentAsync(jobId, workItem, tail),
+            "get console log",
+            isKnownException: IsHelixKnownException);
     }
 
     [McpServerTool(Name = "helix_files", Title = "Helix Work Item Files", ReadOnly = true, Idempotent = true, UseStructuredContent = true), Description("List uploaded files for a Helix work item, grouped by type.")]
@@ -144,7 +136,7 @@ public sealed class HelixMcpTools
         if (string.IsNullOrEmpty(workItem))
             throw new McpException("Work item name is required. Provide it as a separate parameter or include it in the Helix URL.");
 
-        try
+        return await McpExceptionHandler.RunServiceCallAsync(async () =>
         {
             var files = await _svc.GetWorkItemFilesAsync(jobId, workItem);
 
@@ -168,11 +160,7 @@ public sealed class HelixMcpTools
                 TestResults = testResults,
                 Other = other
             };
-        }
-        catch (Exception ex) when (ex is HttpRequestException or HelixException or RestApiException or InvalidOperationException or ArgumentException)
-        {
-            throw new McpException($"Failed to get work item files: {ex.Message}", ex);
-        }
+        }, "get work item files", isKnownException: IsHelixKnownException);
     }
 
     [McpServerTool(Name = "helix_download", Title = "Download Helix Files or URL", Destructive = false, Idempotent = true, UseStructuredContent = true), Description("Download Helix files by pattern or direct URL. Returns local file paths.")]
@@ -184,7 +172,7 @@ public sealed class HelixMcpTools
         IProgress<ProgressNotificationValue>? progress = null)
     {
         var sink = McpProgressAdapter.Wrap(progress);
-        try
+        return await McpExceptionHandler.RunServiceCallAsync(async () =>
         {
             if (!string.IsNullOrWhiteSpace(url))
             {
@@ -214,11 +202,7 @@ public sealed class HelixMcpTools
                 throw new McpException($"No files matching '{pattern}' found.");
 
             return new DownloadResult { DownloadedFiles = paths };
-        }
-        catch (Exception ex) when (ex is HttpRequestException or HelixException or RestApiException or InvalidOperationException or ArgumentException)
-        {
-            throw new McpException($"Failed to download files: {ex.Message}", ex);
-        }
+        }, "download files", isKnownException: IsHelixKnownException);
     }
 
     [McpServerTool(Name = "helix_find_files", Title = "Find Files in Helix Job", ReadOnly = true, Idempotent = true, UseStructuredContent = true), Description("Search work items in a Helix job for files matching a glob pattern. Returns work item names and matching file URIs.")]
@@ -228,7 +212,7 @@ public sealed class HelixMcpTools
         [Description("Maximum work items to scan. Default: 50")] int maxItems = 50,
         IProgress<ProgressNotificationValue>? progress = null)
     {
-        try
+        return await McpExceptionHandler.RunServiceCallAsync(async () =>
         {
             var results = await _svc.FindFilesAsync(jobId, pattern, maxItems, McpProgressAdapter.Wrap(progress));
 
@@ -245,11 +229,7 @@ public sealed class HelixMcpTools
                 Truncated = results.Truncated,
                 Note = results.Truncated ? $"Scanned {maxItems} of {results.TotalWorkItems} work items. Use a higher 'maxItems' value to scan more." : null
             };
-        }
-        catch (Exception ex) when (ex is HttpRequestException or HelixException or RestApiException or InvalidOperationException or ArgumentException)
-        {
-            throw new McpException($"Failed to find files: {ex.Message}", ex);
-        }
+        }, "find files", isKnownException: IsHelixKnownException);
     }
 
     [McpServerTool(Name = "helix_work_item", Title = "Helix Work Item Details", ReadOnly = true, Idempotent = true, UseStructuredContent = true), Description("Get detailed info about a specific work item including exit code, state, machine, duration, files, and console log URL.")]
@@ -269,7 +249,7 @@ public sealed class HelixMcpTools
         if (string.IsNullOrEmpty(workItem))
             throw new McpException("Work item name is required. Provide it as a separate parameter or include it in the Helix URL.");
 
-        try
+        return await McpExceptionHandler.RunServiceCallAsync(async () =>
         {
             var detail = await _svc.GetWorkItemDetailAsync(jobId, workItem);
 
@@ -284,11 +264,7 @@ public sealed class HelixMcpTools
                 FailureCategory = detail.FailureCategory?.ToString(),
                 Files = detail.Files.Select(f => new FileInfo_ { Name = f.Name, Uri = f.Uri }).ToList()
             };
-        }
-        catch (Exception ex) when (ex is HttpRequestException or HelixException or RestApiException or InvalidOperationException or ArgumentException)
-        {
-            throw new McpException($"Failed to get work item details: {ex.Message}", ex);
-        }
+        }, "get work item details", isKnownException: IsHelixKnownException);
     }
 
     [McpServerTool(Name = "helix_search", Title = "Search Helix Work Item Content", ReadOnly = true, Idempotent = true, UseStructuredContent = true), Description("Search a Helix work item's console log or uploaded file for case-insensitive text matches with context.")]
@@ -315,7 +291,7 @@ public sealed class HelixMcpTools
         if (string.IsNullOrEmpty(workItem))
             throw new McpException("Work item name is required. Provide it as a separate parameter or include it in the Helix URL.");
 
-        try
+        return await McpExceptionHandler.RunServiceCallAsync(async () =>
         {
             if (!string.IsNullOrWhiteSpace(fileName))
             {
@@ -357,11 +333,7 @@ public sealed class HelixMcpTools
                     Context = m.Context
                 }).ToList()
             };
-        }
-        catch (Exception ex) when (ex is HttpRequestException or HelixException or RestApiException or InvalidOperationException or ArgumentException)
-        {
-            throw new McpException($"Failed to search: {ex.Message}", ex);
-        }
+        }, "search", isKnownException: IsHelixKnownException);
     }
 
     [McpServerTool(Name = "helix_parse_uploaded_trx", Title = "Parse Uploaded TRX from Helix", ReadOnly = true, Idempotent = true, UseStructuredContent = true), Description("Parse TRX/xUnit XML files from Helix blob storage. Niche — most repos use azdo_test_results instead.")]
@@ -387,19 +359,11 @@ public sealed class HelixMcpTools
         if (string.IsNullOrEmpty(workItem))
             throw new McpException("Work item name is required. Provide it as a separate parameter or include it in the Helix URL.");
 
-        List<HelixService.TrxParseResult> trxResults;
-        try
-        {
-            trxResults = await _svc.ParseTrxResultsAsync(jobId, workItem, fileName, includePassed, maxResults);
-        }
-        catch (HelixException ex)
-        {
-            throw new McpException(ex.Message, ex);
-        }
-        catch (Exception ex) when (ex is HttpRequestException or RestApiException or InvalidOperationException or ArgumentException)
-        {
-            throw new McpException($"Failed to parse test results: {ex.Message}", ex);
-        }
+        var trxResults = await McpExceptionHandler.RunServiceCallAsync(
+            () => _svc.ParseTrxResultsAsync(jobId, workItem, fileName, includePassed, maxResults),
+            "parse test results",
+            ex => ex is HelixException ? ex.Message : null,
+            IsHelixKnownException);
 
         return new TestResultsToolResult
         {
@@ -429,7 +393,7 @@ public sealed class HelixMcpTools
     public async Task<BatchStatusResult> BatchStatus(
         [Description("Helix job IDs (GUIDs) or URLs")] string[] jobIds)
     {
-        try
+        return await McpExceptionHandler.RunServiceCallAsync(async () =>
         {
             var batch = await _svc.GetBatchStatusAsync(jobIds);
 
@@ -454,12 +418,11 @@ public sealed class HelixMcpTools
                 JobCount = batch.Jobs.Count,
                 FailureBreakdown = failureBreakdown
             };
-        }
-        catch (Exception ex) when (ex is HttpRequestException or HelixException or RestApiException or InvalidOperationException or ArgumentException)
-        {
-            throw new McpException($"Failed to get batch status: {ex.Message}", ex);
-        }
+        }, "get batch status", isKnownException: IsHelixKnownException);
     }
+
+    private static bool IsHelixKnownException(Exception ex)
+        => ex is HelixException or RestApiException;
 
     [McpServerTool(Name = "helix_auth_status", Title = "Helix Auth Status", ReadOnly = true, Idempotent = true, OpenWorld = false),
      Description("Current Helix auth status: authenticated or anonymous, and token source (env var, stored credential).")]
