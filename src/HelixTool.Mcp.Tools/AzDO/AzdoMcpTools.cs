@@ -27,12 +27,12 @@ public sealed class AzdoMcpTools
     [McpServerTool(Name = "azdo_build", Title = "AzDO Build Details", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("Get details of an AzDO build: status, result, definition, source branch, timing, and web URL. Accepts build URL or integer ID.")]
     public async Task<AzdoBuildSummary> Build(
-        [Description("AzDO build ID or full build URL")] string buildId)
+        [Description("AzDO build ID or full build URL")] string buildIdOrUrl)
     {
         return await McpExceptionHandler.RunServiceCallAsync(
-            () => _svc.GetBuildSummaryAsync(buildId),
+            () => _svc.GetBuildSummaryAsync(buildIdOrUrl),
             "get build details",
-            ex => GetAzdoNotFoundMessage(ex, buildId));
+            ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
     }
 
     [McpServerTool(Name = "azdo_builds", Title = "AzDO Build List", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
@@ -69,7 +69,7 @@ public sealed class AzdoMcpTools
     [McpServerTool(Name = "azdo_timeline", Title = "AzDO Build Timeline", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("Build timeline with stages, jobs, and tasks. Find failed steps and log IDs for azdo_log. Consider azdo_search_timeline for large builds.")]
     public async Task<TimelineResponse?> Timeline(
-        [Description("AzDO build ID or full build URL")] string buildId,
+        [Description("AzDO build ID or full build URL")] string buildIdOrUrl,
         [Description("Filter: 'failed' (default), 'all', 'running' (in-progress tasks), 'pending' (not started), 'incomplete' (running+pending), or 'issues' (errors/warnings only)."), AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")] string filter = "failed")
     {
         filter = AzdoService.NormalizeFilter(filter);
@@ -78,9 +78,9 @@ public sealed class AzdoMcpTools
 
         AzdoTimeline? timeline;
         timeline = await McpExceptionHandler.RunServiceCallAsync(
-            () => _svc.GetTimelineAsync(buildId),
+            () => _svc.GetTimelineAsync(buildIdOrUrl),
             "get build timeline",
-            ex => GetAzdoNotFoundMessage(ex, buildId));
+            ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
 
         if (timeline is null)
             return null;
@@ -131,8 +131,8 @@ public sealed class AzdoMcpTools
                 TotalRecords = totalRecords,
                 Note = $"⚠️ Timeline truncated: showing {TruncatedTimelineBudget} of {totalRecords} records. " +
                        (filter.Equals("all", StringComparison.OrdinalIgnoreCase)
-                           ? $"Use azdo_search_timeline(buildId, 'pattern') for targeted search, or azdo_timeline with filter='failed' to reduce results."
-                           : $"Use azdo_search_timeline(buildId, 'pattern') for targeted search.")
+                           ? $"Use azdo_search_timeline(buildIdOrUrl, 'pattern') for targeted search, or azdo_timeline with filter='failed' to reduce results."
+                           : $"Use azdo_search_timeline(buildIdOrUrl, 'pattern') for targeted search.")
             };
         }
 
@@ -146,66 +146,66 @@ public sealed class AzdoMcpTools
     [McpServerTool(Name = "azdo_log", Title = "AzDO Build Log", ReadOnly = true, Idempotent = true),
      Description("Get log content for a build step. Use log ID from azdo_timeline. Returns last N lines by default.")]
     public async Task<string> Log(
-        [Description("AzDO build ID or full build URL")] string buildId,
+        [Description("AzDO build ID or full build URL")] string buildIdOrUrl,
         [Description("Log ID from azdo_timeline")] int logId,
         [Description("Lines from end to return")] int? tailLines = 500)
     {
         string? content;
         content = await McpExceptionHandler.RunServiceCallAsync(
-            () => _svc.GetBuildLogAsync(buildId, logId, tailLines),
+            () => _svc.GetBuildLogAsync(buildIdOrUrl, logId, tailLines),
             "get build log",
-            ex => GetAzdoNotFoundMessage(ex, buildId));
+            ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
         return content ?? string.Empty;
     }
 
     [McpServerTool(Name = "azdo_changes", Title = "AzDO Build Changes", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("Get commits/changes for an AzDO build. Returns commit IDs, messages, authors, and timestamps.")]
     public async Task<LimitedResults<AzdoBuildChange>> Changes(
-        [Description("AzDO build ID or full build URL")] string buildId,
+        [Description("AzDO build ID or full build URL")] string buildIdOrUrl,
         [Description("Maximum results to return")] int top = 20)
     {
         return await McpExceptionHandler.RunServiceCallAsync(
-            async () => CreateLimitedResults(await _svc.GetBuildChangesAsync(buildId, top), top),
+            async () => CreateLimitedResults(await _svc.GetBuildChangesAsync(buildIdOrUrl, top), top),
             "get build changes",
-            ex => GetAzdoNotFoundMessage(ex, buildId));
+            ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
     }
 
     [McpServerTool(Name = "azdo_test_runs", Title = "AzDO Test Runs", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("Test run summaries for an AzDO build with total/passed/failed counts. ⚠️ Run-level failedTests can be inaccurate — always drill into azdo_test_results to verify.")]
     public async Task<LimitedResults<AzdoTestRun>> TestRuns(
-        [Description("AzDO build ID or full build URL")] string buildId,
+        [Description("AzDO build ID or full build URL")] string buildIdOrUrl,
         [Description("Maximum results to return")] int top = 50)
     {
         return await McpExceptionHandler.RunServiceCallAsync(
-            async () => CreateLimitedResults(await _svc.GetTestRunsAsync(buildId, top), top),
+            async () => CreateLimitedResults(await _svc.GetTestRunsAsync(buildIdOrUrl, top), top),
             "get test runs",
-            ex => GetAzdoNotFoundMessage(ex, buildId));
+            ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
     }
 
     [McpServerTool(Name = "azdo_test_results", Title = "AzDO Test Results", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("Test results for a specific run. Defaults to failed tests only.")]
     public async Task<LimitedResults<AzdoTestResult>> TestResults(
-        [Description("AzDO build ID or full build URL")] string buildId,
+        [Description("AzDO build ID or full build URL")] string buildIdOrUrl,
         [Description("Test run ID from azdo_test_runs")] int runId,
         [Description("Maximum results to return. Default: 200")] int top = 200)
     {
         return await McpExceptionHandler.RunServiceCallAsync(
-            async () => CreateLimitedResults(await _svc.GetTestResultsAsync(buildId, runId, top), top),
+            async () => CreateLimitedResults(await _svc.GetTestResultsAsync(buildIdOrUrl, runId, top), top),
             "get test results",
-            ex => GetAzdoNotFoundMessage(ex, buildId));
+            ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
     }
 
     [McpServerTool(Name = "azdo_artifacts", Title = "AzDO Build Artifacts", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("List artifacts from an AzDO build (logs, test results, binlogs). Supports glob-style pattern filtering.")]
     public async Task<LimitedResults<AzdoBuildArtifact>> Artifacts(
-        [Description("AzDO build ID or full build URL")] string buildId,
+        [Description("AzDO build ID or full build URL")] string buildIdOrUrl,
         [Description("Artifact name glob. Default: all")] string pattern = "*",
         [Description("Maximum results to return. Default: 100")] int top = 100)
     {
         return await McpExceptionHandler.RunServiceCallAsync(
-            async () => CreateLimitedResults(await _svc.GetBuildArtifactsAsync(buildId, pattern, top), top),
+            async () => CreateLimitedResults(await _svc.GetBuildArtifactsAsync(buildIdOrUrl, pattern, top), top),
             "get build artifacts",
-            ex => GetAzdoNotFoundMessage(ex, buildId));
+            ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
     }
 
     [McpServerTool(Name = "azdo_search_log", Title = "Search AzDO Build Logs", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
@@ -292,24 +292,24 @@ public sealed class AzdoMcpTools
     [McpServerTool(Name = "azdo_helix_jobs", Title = "Helix Jobs from Build", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("Extract Helix job IDs from a build. Bridges the AzDO-to-Helix gap.")]
     public async Task<HelixJobsFromBuildResult> HelixJobs(
-        [Description("AzDO build ID or full build URL")] string buildId,
+        [Description("AzDO build ID or full build URL")] string buildIdOrUrl,
         [Description("Filter: 'failed' (default), 'all', 'running', 'pending', 'incomplete', or 'issues'."), AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")] string filter = "failed")
     {
         return await McpExceptionHandler.RunServiceCallAsync(
-            () => _svc.GetHelixJobsAsync(buildId, filter),
+            () => _svc.GetHelixJobsAsync(buildIdOrUrl, filter),
             "extract Helix jobs",
-            ex => GetAzdoNotFoundMessage(ex, buildId));
+            ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
     }
 
     [McpServerTool(Name = "azdo_build_analysis", Title = "Build Analysis Known Issues", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
      Description("Extract Build Analysis known issue matches from a build.")]
     public async Task<BuildAnalysisResult> BuildAnalysis(
-        [Description("AzDO build ID or full build URL")] string buildId)
+        [Description("AzDO build ID or full build URL")] string buildIdOrUrl)
     {
         return await McpExceptionHandler.RunServiceCallAsync(
-            () => _svc.GetBuildAnalysisAsync(buildId),
+            () => _svc.GetBuildAnalysisAsync(buildIdOrUrl),
             "get build analysis",
-            ex => GetAzdoNotFoundMessage(ex, buildId));
+            ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
     }
 
     [McpServerTool(Name = "azdo_auth_status", Title = "AzDO Auth Status", ReadOnly = true, Idempotent = true, OpenWorld = false),

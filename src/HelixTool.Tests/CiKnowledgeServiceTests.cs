@@ -494,11 +494,11 @@ public class CiKnowledgeServiceTests
         var guide = CiKnowledgeService.GetGuide("aspnetcore");
         var orderSection = GetMarkdownSection(guide, "## Recommended Investigation Order");
 
-        Assert.Contains("azdo_test_runs(buildId) + azdo_test_results(buildId, runId)", orderSection);
+        Assert.Contains("azdo_test_runs(buildIdOrUrl) + azdo_test_results(buildIdOrUrl, runId)", orderSection);
         Assert.Contains("helix_search(jobId, workItem, '  Failed')", orderSection);
         Assert.DoesNotContain("helix_parse_uploaded_trx", orderSection);
         Assert.True(
-            orderSection.IndexOf("azdo_test_runs(buildId) + azdo_test_results(buildId, runId)", StringComparison.Ordinal) <
+            orderSection.IndexOf("azdo_test_runs(buildIdOrUrl) + azdo_test_results(buildIdOrUrl, runId)", StringComparison.Ordinal) <
             orderSection.IndexOf("helix_search(jobId, workItem, '  Failed')", StringComparison.Ordinal));
     }
 
