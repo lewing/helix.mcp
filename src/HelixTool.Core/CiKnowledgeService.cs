@@ -94,12 +94,12 @@ public sealed class CiKnowledgeService
             ],
             RecommendedInvestigationOrder =
             [
-                "azdo_search_timeline(buildId, 'error') → find failed steps (compact output, preferred for large builds)",
-                "azdo_timeline(buildId, filter='failed') → full timeline when you need complete record details",
+                "azdo_search_timeline(buildIdOrUrl, 'error') → find failed steps (compact output, preferred for large builds)",
+                "azdo_timeline(buildIdOrUrl, filter='failed') → full timeline when you need complete record details",
                 "Classify: 'Send to Helix' failed → test failure; 'Build product' failed → build error; exit -4/-3 → infra",
                 "helix_status(jobId) → find failed work items + exit codes",
-                "azdo_test_runs(buildId) → get test run IDs",
-                "azdo_test_results(buildId, runId) → structured failures (always drill in, don't trust summary counts)",
+                "azdo_test_runs(buildIdOrUrl) → get test run IDs",
+                "azdo_test_results(buildIdOrUrl, runId) → structured failures (always drill in, don't trust summary counts)",
                 "helix_search(jobId, workItem, '[FAIL]') → console confirmation",
                 "helix_logs(jobId, workItem) → full context if needed",
             ],
@@ -164,9 +164,9 @@ public sealed class CiKnowledgeService
             ],
             RecommendedInvestigationOrder =
             [
-                "azdo_search_timeline(buildId, 'error') → find failed steps (compact output, preferred for large builds)",
+                "azdo_search_timeline(buildIdOrUrl, 'error') → find failed steps (compact output, preferred for large builds)",
                 "helix_status(jobId) → which work items failed? (maps to test projects)",
-                "azdo_test_runs(buildId) + azdo_test_results(buildId, runId) → structured failures with stack traces",
+                "azdo_test_runs(buildIdOrUrl) + azdo_test_results(buildIdOrUrl, runId) → structured failures with stack traces",
                 "helix_search(jobId, workItem, '  Failed') → quick cross-reference from console",
                 "Search GitHub issues with test name + label:'Known Build Error'",
             ],
@@ -233,12 +233,12 @@ public sealed class CiKnowledgeService
             ],
             RecommendedInvestigationOrder =
             [
-                "azdo_search_timeline(buildId, 'error') → find failed steps (compact output, preferred for large builds)",
-                "azdo_timeline(buildId, filter='failed') → full timeline when you need complete record details",
+                "azdo_search_timeline(buildIdOrUrl, 'error') → find failed steps (compact output, preferred for large builds)",
+                "azdo_timeline(buildIdOrUrl, filter='failed') → full timeline when you need complete record details",
                 "Classify: '🟣 Build' failed → SDK build break; '🟣 Run TestBuild Tests' failed → test/infra failure; all tests skipped → upstream build failure",
                 "helix_status(jobId) → exit codes — 130/-4 = infra, 1 = real test failure",
-                "azdo_test_runs(buildId) → get test run IDs",
-                "azdo_test_results(buildId, runId) → check for real vs synthetic (WorkItemExecution = crash, not assertion failure)",
+                "azdo_test_runs(buildIdOrUrl) → get test run IDs",
+                "azdo_test_results(buildIdOrUrl, runId) → check for real vs synthetic (WorkItemExecution = crash, not assertion failure)",
                 "helix_search(jobId, workItem, 'Failed') → console error details",
                 "helix_logs(jobId, workItem) → full context",
             ],
@@ -306,8 +306,8 @@ public sealed class CiKnowledgeService
             ],
             RecommendedInvestigationOrder =
             [
-                "azdo_search_timeline(buildId, 'error') → find failed steps (compact output, preferred for large builds)",
-                "azdo_timeline(buildId, filter='failed') → full timeline when you need complete record details",
+                "azdo_search_timeline(buildIdOrUrl, 'error') → find failed steps (compact output, preferred for large builds)",
+                "azdo_timeline(buildIdOrUrl, filter='failed') → full timeline when you need complete record details",
                 "Read failed 'Run Unit Tests' or 'Test' task log → search for 'has failed' to find Helix job GUIDs",
                 "helix_status(jobId) → exit codes + failureCategory (InfrastructureError = crash)",
                 "If crash: helix_search(jobId, workItem, 'aborted') → crash details",
@@ -383,14 +383,14 @@ public sealed class CiKnowledgeService
             ],
             RecommendedInvestigationOrder =
             [
-                "azdo_search_timeline(buildId, 'error') → find failed steps (compact output, preferred for large builds)",
-                "azdo_timeline(buildId, filter='failed') → which phase failed? (local vs Helix)",
+                "azdo_search_timeline(buildIdOrUrl, 'error') → find failed steps (compact output, preferred for large builds)",
+                "azdo_timeline(buildIdOrUrl, filter='failed') → which phase failed? (local vs Helix)",
                 "If Helix: find 'Send job to helix' task log → extract Helix job IDs",
                 "helix_status(jobId) → exit codes per work item (all -3 on one queue = infra issue, retry)",
                 "If specific DLLs fail → test failure, investigate further",
                 "If local phase failed → check task log for test output directly",
-                "azdo_test_runs(buildId) → find runs with failures (~51 runs: local + Helix combined)",
-                "azdo_test_results(buildId, runId) → structured failures",
+                "azdo_test_runs(buildIdOrUrl) → find runs with failures (~51 runs: local + Helix combined)",
+                "azdo_test_results(buildIdOrUrl, runId) → structured failures",
                 "helix_search(jobId, workItem, '[FAIL]') → console confirmation",
             ],
             UploadedFiles =
@@ -455,8 +455,8 @@ public sealed class CiKnowledgeService
             ],
             RecommendedInvestigationOrder =
             [
-                "azdo_search_timeline(buildId, 'error') → find failed steps (compact output, preferred for large builds like VMR)",
-                "azdo_timeline(buildId, filter='failed') → full timeline when you need complete record details",
+                "azdo_search_timeline(buildIdOrUrl, 'error') → find failed steps (compact output, preferred for large builds like VMR)",
+                "azdo_timeline(buildIdOrUrl, filter='failed') → full timeline when you need complete record details",
                 "Classify by stage: 'VMR Vertical Build' = product build, 'VMR Source-Only Build' = source packaging, 'VMR Vertical Build Validation' = smoke test",
                 "Find 'Build' task logId in timeline → read with azdo_log or azdo_search_log",
                 "Search for 'error MSB' to identify which component repo failed",
@@ -526,7 +526,7 @@ public sealed class CiKnowledgeService
             ],
             RecommendedInvestigationOrder =
             [
-                "azdo_search_timeline(buildId, 'error') → find failed steps (compact output, preferred for large builds)",
+                "azdo_search_timeline(buildIdOrUrl, 'error') → find failed steps (compact output, preferred for large builds)",
                 "Identify which pipeline failed: maui-pr (unit), maui-pr-uitests (UI), maui-pr-devicetests (device)",
                 "For maui-pr (unit): azdo_test_runs + azdo_test_results → structured results; helix_search '[FAIL]' for console; SKIP helix_parse_uploaded_trx",
                 "For maui-pr-uitests (UI): azdo_test_runs + azdo_test_results ONLY — no Helix tools useful; azdo_timeline for control group/platform",
@@ -596,7 +596,7 @@ public sealed class CiKnowledgeService
             ],
             RecommendedInvestigationOrder =
             [
-                "azdo_search_timeline(buildId, 'error') → find failed steps (compact output, preferred for large builds)",
+                "azdo_search_timeline(buildIdOrUrl, 'error') → find failed steps (compact output, preferred for large builds)",
                 "Authenticate to devdiv first (`az login` or set `AZDO_TOKEN`), then pass the full devdiv build URL to azdo_* tools (bare build IDs default to dnceng-public)",
                 "Look for PublishTestResults tasks in timeline for NUnit XML results",
                 "AzDO test runs on devdiv org are the primary structured result source",
@@ -661,7 +661,7 @@ public sealed class CiKnowledgeService
             ],
             RecommendedInvestigationOrder =
             [
-                "azdo_search_timeline(buildId, 'error') → find failed steps (compact output, preferred for large builds)",
+                "azdo_search_timeline(buildIdOrUrl, 'error') → find failed steps (compact output, preferred for large builds)",
                 "Check which org the build is on — devdiv (internal) vs dnceng-public (fork PRs)",
                 "For internal devdiv builds, authenticate first and pass the full devdiv build URL to azdo_* tools (bare build IDs default to dnceng-public)",
                 "AzDO test runs (TRX/VSTest format) are the primary result source",
@@ -913,14 +913,14 @@ public sealed class CiKnowledgeService
                - `'exit code'` — process crashes
 
             ## Getting Build Failures
-            1. Use `azdo_search_timeline(buildId, 'error')` to find failed steps (compact output, preferred for large builds)
-            2. Use `azdo_timeline(buildId, filter='failed')` for full timeline details when needed
+            1. Use `azdo_search_timeline(buildIdOrUrl, 'error')` to find failed steps (compact output, preferred for large builds)
+            2. Use `azdo_timeline(buildIdOrUrl, filter='failed')` for full timeline details when needed
             3. Use `azdo_log` or `azdo_search_log` to read the failed step's log
             4. Search for `'error MSB'` for MSBuild errors, `'error NU'` for NuGet errors
 
             ## In-Progress Builds
             In-progress builds may already have failed jobs — AzDO jobs complete independently.
-            Always check `azdo_search_timeline(buildId, 'error')` or `azdo_timeline(buildId, filter='failed')` even for builds that haven't finished.
+            Always check `azdo_search_timeline(buildIdOrUrl, 'error')` or `azdo_timeline(buildIdOrUrl, filter='failed')` even for builds that haven't finished.
 
             ## Failure Classification
             Given a failed Helix work item's exit code and console log, classify:
