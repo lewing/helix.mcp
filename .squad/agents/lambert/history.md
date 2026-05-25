@@ -28,3 +28,10 @@
 
 See history-archive.md for detailed history.
 - [2026-05-22] v0.7.3 shipped (PR #56 + PR #57 → main → NuGet)
+
+## Learnings — Issue #61 MCP exception coverage audit 2026-05-25
+- Baseline: 25 MCP tools audited; 14/25 have direct MCP happy-path tests, 7/25 have any direct unhappy-path tests, and only 2/25 had high-quality service-exception wrapper tests before this branch.
+- Standing rule from Dallas: every `[McpServerTool]` method needs at least one unhappy-path test proving exceptions surface as structured MCP errors with non-empty messages.
+- AggregateException pattern: model Bug B by returning `Task.FromException<T>(new AggregateException(new HttpRequestException("...")))` from the API mock at a `Task.WhenAll` boundary, then assert `McpException` message content after centralization.
+- TaskCanceledException pattern: model timeout/cancellation with `Task.FromException<T>(new TaskCanceledException("..."))`; keep as a skipped contract test until Ripley's centralized handler catches cancellation families.
+- Mocking approach: instantiate real `AzdoMcpTools` with `AzdoService` over an `IAzdoApiClient` NSubstitute mock; assert the MCP tool boundary, not just service-layer exceptions.
