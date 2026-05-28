@@ -198,3 +198,13 @@ Both bugs fixed. Follow-up issue #65 filed for: schema test, flatten exceptions,
 
 **Cost of deferral was higher than estimated:** Not wrong, but should have checked for production evidence weekly. Ripley/Lambert can help with lightweight weekly checks on deferred findings.
 
+## Learnings — PR #66 external contributor review 2026-05-28
+
+- **Bug pattern: null ExitCode → sentinel -1 → mis-bucketed as failure.** Helix `/details` returns `ExitCode == null` for Waiting/Running/Unscheduled work items. The code `details.ExitCode ?? -1` coerced null to -1, then `results.Where(r => r.ExitCode != 0)` classified -1 as failed. Fix: derive `IsCompleted = details.ExitCode.HasValue`, three-way bucket (InProgress / Failed / Passed). Null-coercion of nullable ints to sentinels is a recurring hazard when the sentinel value (-1) falls in the domain of valid failure codes.
+
+- **Additive wire-format discipline must be verified, not trusted.** PR claimed "additive" — verified by confirming: (a) new fields use `init` properties with default values (int → 0, nullable list → null with `JsonIgnore(WhenWritingNull)`), (b) existing field names/types/positions unchanged, (c) no tests assert absence of new fields. For MCP DTOs, "additive" means: new fields only, no renames, no type changes, nullable or defaulted so old consumers see no difference.
+
+- **External contributor reviews differ from internal team PRs.** (a) Be especially clear and specific in review feedback — can't easily ping for follow-ups. (b) Merge first when the fix is correct — don't make external contributors wait behind internal PRs that don't conflict. (c) Production evidence in the PR body (specific AzDO build IDs, Helix job IDs, queue names) made verification efficient. (d) File follow-up issues ourselves rather than requesting them from external contributors.
+
+- **Second code path with same bug pattern (`GetWorkItemDetailAsync` line 563) not addressed by PR.** Deliberately scoped to the aggregation path only — correct prioritization since the detail view is informational. Filed as follow-up. Pattern: when fixing a bug in one code path, grep for the same pattern in other paths and explicitly note what's in/out of scope.
+
