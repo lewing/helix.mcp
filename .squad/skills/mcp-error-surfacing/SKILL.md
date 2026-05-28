@@ -2,19 +2,13 @@
 
 ## Pattern
 
-Register a CallToolFilters middleware at MCP server startup for SDK parameter-binding errors. The ModelContextProtocol 1.3.0 API path is `McpServerOptions.Filters.Request.CallToolFilters`; this repo scopes the catch to `ArgumentException` with `ParamName == "arguments"` so ordinary tool-body `ArgumentException`s are not mislabeled as binding failures.
+Register cross-cutting CallToolFilters middleware through an extension method on `McpServerOptions`, shared by both startup paths. The ModelContextProtocol 1.3.0 API path is `McpServerOptions.Filters.Request.CallToolFilters`; this repo scopes the catch to `ArgumentException` with `ParamName == "arguments"` via a named constant so ordinary tool-body `ArgumentException`s are not mislabeled as binding failures.
 
 ```csharp
-options.Filters.Request.CallToolFilters.Add(next => async (request, ct) =>
-{
-    try { return await next(request, ct); }
-    catch (ArgumentException ex) when (ex.ParamName == "arguments")
-    {
-        throw new McpException(
-            $"Parameter binding error for '{request.Params?.Name}': {ex.Message}", ex);
-    }
-});
+options.AddBindingErrorFilter();
 ```
+
+Keep the helper in `src/HelixTool.Mcp.Tools/` next to other shared MCP helpers. `McpServerOptionsExtensions.AddBindingErrorFilter` owns the exact filter registration and the binder param-name constant.
 
 Use `McpExceptionHandler` at MCP tool entry points for service calls:
 
@@ -47,7 +41,7 @@ Use the optional `getSpecialMessage` callback for domain-specific messages that 
 
 ## Sites covered as of 2026-05-28
 
-- Call-tool parameter binding filter registered in both MCP startup paths: `src/HelixTool/Program.cs` (stdio `hlx mcp`) and `src/HelixTool.Mcp/Program.cs` (HTTP server).
+- Call-tool parameter binding filter registered by `McpServerOptionsExtensions.AddBindingErrorFilter` from both MCP startup paths: `src/HelixTool/Program.cs` (stdio `hlx mcp`) and `src/HelixTool.Mcp/Program.cs` (HTTP server).
 - AzDO MCP tools: `azdo_build`, `azdo_builds`, `azdo_timeline`, `azdo_log`, `azdo_changes`, `azdo_test_runs`, `azdo_test_results`, `azdo_artifacts`, `azdo_search_log`, `azdo_search_timeline`, `azdo_test_attachments`, `azdo_helix_jobs`, `azdo_build_analysis`.
 - Helix MCP tools with `Task.WhenAll` service paths: `helix_status`, `helix_work_item`, `helix_batch_status`.
 - Other Helix MCP service tools use the same helper for consistent error surfacing.

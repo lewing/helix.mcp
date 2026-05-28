@@ -4,7 +4,6 @@ using HelixTool.Core.Helix;
 using HelixTool.Core.AzDO;
 using HelixTool.Mcp;
 using HelixTool.Mcp.Tools;
-using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using System.Reflection;
 
@@ -85,19 +84,7 @@ builder.Services
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0";
         options.ServerInfo = new() { Name = "hlx", Version = serverVersion };
 
-        // Issue #67: surface SDK parameter-binding failures before tool bodies run.
-        options.Filters.Request.CallToolFilters.Add(next => async (request, ct) =>
-        {
-            try
-            {
-                return await next(request, ct);
-            }
-            catch (ArgumentException ex) when (ex.ParamName == "arguments")
-            {
-                throw new McpException(
-                    $"Parameter binding error for '{request.Params?.Name}': {ex.Message}", ex);
-            }
-        });
+        options.AddBindingErrorFilter();
     })
     .WithHttpTransport()
     .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly)
