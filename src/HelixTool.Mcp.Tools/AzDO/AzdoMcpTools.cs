@@ -25,9 +25,9 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_build", Title = "AzDO Build Details", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
-     Description("Get details of an AzDO build: status, result, definition, source branch, timing, and web URL. Accepts build URL or integer ID.")]
+     Description("Get details of an Azure DevOps (AzDO) build: status, result, definition, source branch, timing, and web URL. Use AzDO build IDs/URLs, not Helix job IDs.")]
     public async Task<AzdoBuildSummary> Build(
-        [Description("AzDO build ID or full build URL")] string buildIdOrUrl)
+        [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl)
     {
         return await McpExceptionHandler.RunServiceCallAsync(
             () => _svc.GetBuildSummaryAsync(buildIdOrUrl),
@@ -36,7 +36,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_builds", Title = "AzDO Build List", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
-     Description("List recent builds for an AzDO project. Filter by PR, branch, definition, or status.")]
+     Description("List recent Azure DevOps (AzDO) builds for a project. Filter by PR, branch, definition, or status.")]
     public async Task<LimitedResults<AzdoBuild>> Builds(
         [Description("Azure DevOps organization. Default: dnceng-public"), AllowedValues("dnceng-public", "dnceng", "devdiv")] string org = "dnceng-public",
         [Description("Azure DevOps project. Default: public"), AllowedValues("public", "internal")] string project = "public",
@@ -67,9 +67,9 @@ public sealed class AzdoMcpTools
     private const int TruncatedTimelineBudget = 100;
 
     [McpServerTool(Name = "azdo_timeline", Title = "AzDO Build Timeline", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
-     Description("Build timeline with stages, jobs, and tasks. Find failed steps and log IDs for azdo_log. Consider azdo_search_timeline for large builds.")]
+     Description("Get the Azure DevOps (AzDO) build timeline with stages, jobs, and tasks. Find failed steps and AzDO log IDs for azdo_log. Consider azdo_search_timeline for large builds.")]
     public async Task<TimelineResponse?> Timeline(
-        [Description("AzDO build ID or full build URL")] string buildIdOrUrl,
+        [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
         [Description("Filter: 'failed' (default), 'all', 'running' (in-progress tasks), 'pending' (not started), 'incomplete' (running+pending), or 'issues' (errors/warnings only)."), AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")] string filter = "failed")
     {
         filter = AzdoService.NormalizeFilter(filter);
@@ -144,10 +144,10 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_log", Title = "AzDO Build Log", ReadOnly = true, Idempotent = true),
-     Description("Get log content for a build step. Use log ID from azdo_timeline. Returns last N lines by default.")]
+     Description("Get Azure DevOps (AzDO) log content for a build step. Use the AzDO log ID from azdo_timeline. Returns last N lines by default.")]
     public async Task<string> Log(
-        [Description("AzDO build ID or full build URL")] string buildIdOrUrl,
-        [Description("Log ID from azdo_timeline")] int logId,
+        [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
+        [Description("AzDO log ID from azdo_timeline")] int logId,
         [Description("Lines from end to return")] int? tailLines = 500)
     {
         string? content;
@@ -159,9 +159,9 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_changes", Title = "AzDO Build Changes", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
-     Description("Get commits/changes for an AzDO build. Returns commit IDs, messages, authors, and timestamps.")]
+     Description("Get commits/changes for an Azure DevOps (AzDO) build. Returns commit IDs, messages, authors, and timestamps.")]
     public async Task<LimitedResults<AzdoBuildChange>> Changes(
-        [Description("AzDO build ID or full build URL")] string buildIdOrUrl,
+        [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
         [Description("Maximum results to return")] int top = 20)
     {
         return await McpExceptionHandler.RunServiceCallAsync(
@@ -171,9 +171,9 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_test_runs", Title = "AzDO Test Runs", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
-     Description("Test run summaries for an AzDO build with total/passed/failed counts. ⚠️ Run-level failedTests can be inaccurate — always drill into azdo_test_results to verify.")]
+     Description("Get Azure DevOps (AzDO) test run summaries for a build with total/passed/failed counts. ⚠️ Run-level failedTests can be inaccurate — always drill into azdo_test_results to verify.")]
     public async Task<LimitedResults<AzdoTestRun>> TestRuns(
-        [Description("AzDO build ID or full build URL")] string buildIdOrUrl,
+        [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
         [Description("Maximum results to return")] int top = 50)
     {
         return await McpExceptionHandler.RunServiceCallAsync(
@@ -183,10 +183,10 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_test_results", Title = "AzDO Test Results", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
-     Description("Test results for a specific run. Defaults to failed tests only.")]
+     Description("Get Azure DevOps (AzDO) test results for a specific test run. Defaults to failed tests only.")]
     public async Task<LimitedResults<AzdoTestResult>> TestResults(
-        [Description("AzDO build ID or full build URL")] string buildIdOrUrl,
-        [Description("Test run ID from azdo_test_runs")] int runId,
+        [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
+        [Description("Azure DevOps test run ID from azdo_test_runs")] int runId,
         [Description("Maximum results to return. Default: 200")] int top = 200)
     {
         return await McpExceptionHandler.RunServiceCallAsync(
@@ -196,9 +196,9 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_artifacts", Title = "AzDO Build Artifacts", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
-     Description("List artifacts from an AzDO build (logs, test results, binlogs). Supports glob-style pattern filtering.")]
+     Description("List Azure DevOps (AzDO) build artifacts such as logs, test results, and binlogs. Supports glob-style artifact-name filtering.")]
     public async Task<LimitedResults<AzdoBuildArtifact>> Artifacts(
-        [Description("AzDO build ID or full build URL")] string buildIdOrUrl,
+        [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
         [Description("Artifact name glob. Default: all")] string pattern = "*",
         [Description("Maximum results to return. Default: 100")] int top = 100)
     {
@@ -209,11 +209,11 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_search_log", Title = "Search AzDO Build Logs", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
-     Description("Search build step logs for a pattern. Provide logId for one step, or omit it to search all ranked steps.")]
+     Description("Search Azure DevOps (AzDO) build step logs for a case-insensitive text pattern. Provide logId for one step, or omit it to search all ranked steps.")]
     public async Task<CrossStepSearchResult> SearchLog(
-        [Description("AzDO build ID or full build URL")] string buildIdOrUrl,
-        [Description("Log ID from azdo_timeline")] int? logId = null,
-        [Description("Text pattern to search for (case-insensitive)")] string pattern = "error",
+        [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
+        [Description("AzDO log ID from azdo_timeline")] int? logId = null,
+        [Description("Case-insensitive text substring to search for; not a regex")] string pattern = "error",
         [Description("Lines of context around each match")] int contextLines = 2,
         [Description("Maximum matches to return. Default: 100")] int maxMatches = 100,
         [Description("Maximum log steps to search. Default: 50")] int maxLogsToSearch = 50,
@@ -259,11 +259,11 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_search_timeline", Title = "AzDO Search Timeline", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
-     Description("Search build timeline record names and issue messages for a pattern. Returns matching records with log IDs for azdo_log or azdo_search_log.")]
+     Description("Search Azure DevOps (AzDO) build timeline record names and issue messages for a case-insensitive substring. Returns matching records with AzDO log IDs for azdo_log or azdo_search_log.")]
     public async Task<TimelineSearchResult> SearchTimeline(
-        [Description("AzDO build ID or full build URL")] string buildIdOrUrl,
-        [Description("Text pattern to search for (case-insensitive)")] string pattern,
-        [Description("Filter by record type: 'Stage', 'Job', or 'Task'"), AllowedValues("Stage", "Job", "Task")] string? recordType = null,
+        [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
+        [Description("Case-insensitive text substring to search for; not a regex")] string pattern,
+        [Description("Optional Azure DevOps timeline record type filter: 'Stage', 'Job', or 'Task'"), AllowedValues("Stage", "Job", "Task")] string? recordType = null,
         [Description("Filter: 'failed' (default), 'all', 'running' (in-progress records), 'pending' (not started), 'incomplete' (not completed), or 'issues' (errors/warnings only)."), AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")] string resultFilter = "failed")
     {
         return await McpExceptionHandler.RunServiceCallAsync(
@@ -273,10 +273,10 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_test_attachments", Title = "AzDO Test Attachments", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
-     Description("List attachments for a test result (screenshots, logs, dumps). Requires run ID and result ID from azdo_test_results.")]
+     Description("List Azure DevOps (AzDO) attachments for a test result, such as screenshots, logs, and dumps. Requires run ID and result ID from azdo_test_results.")]
     public async Task<LimitedResults<AzdoTestAttachment>> TestAttachments(
-        [Description("Test run ID from azdo_test_runs")] int runId,
-        [Description("Test result ID from azdo_test_results")] int resultId,
+        [Description("Azure DevOps test run ID from azdo_test_runs")] int runId,
+        [Description("Azure DevOps test result ID from azdo_test_results")] int resultId,
         [Description("Azure DevOps project"), AllowedValues("public", "internal")] string project = "public",
         [Description("Azure DevOps organization"), AllowedValues("dnceng-public", "dnceng", "devdiv")] string org = "dnceng-public",
         [Description("Maximum results to return. Default: 100")] int top = 100)
@@ -290,9 +290,9 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_helix_jobs", Title = "Helix Jobs from Build", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
-     Description("Extract Helix job IDs from a build. Bridges the AzDO-to-Helix gap.")]
+     Description("Extract Helix job IDs from an Azure DevOps (AzDO) build. Start with an AzDO build ID/URL, then pass returned Helix job GUIDs to helix_* tools.")]
     public async Task<HelixJobsFromBuildResult> HelixJobs(
-        [Description("AzDO build ID or full build URL")] string buildIdOrUrl,
+        [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
         [Description("Filter: 'failed' (default), 'all', 'running', 'pending', 'incomplete', or 'issues'."), AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")] string filter = "failed")
     {
         return await McpExceptionHandler.RunServiceCallAsync(
@@ -302,9 +302,9 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_build_analysis", Title = "Build Analysis Known Issues", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
-     Description("Extract Build Analysis known issue matches from a build.")]
+     Description("Extract Build Analysis known issue matches from an Azure DevOps (AzDO) build ID or URL.")]
     public async Task<BuildAnalysisResult> BuildAnalysis(
-        [Description("AzDO build ID or full build URL")] string buildIdOrUrl)
+        [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl)
     {
         return await McpExceptionHandler.RunServiceCallAsync(
             () => _svc.GetBuildAnalysisAsync(buildIdOrUrl),
