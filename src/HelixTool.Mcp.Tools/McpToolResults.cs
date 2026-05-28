@@ -10,8 +10,12 @@ public sealed class CliStatusJsonResult
     [JsonPropertyName("totalWorkItems")] public int TotalWorkItems { get; init; }
     [JsonPropertyName("failedCount")] public int FailedCount { get; init; }
     [JsonPropertyName("passedCount")] public int PassedCount { get; init; }
+    [JsonPropertyName("inProgressCount")] public int InProgressCount { get; init; }
     [JsonPropertyName("failed")] public IReadOnlyList<CliStatusWorkItemJsonResult>? Failed { get; init; }
     [JsonPropertyName("passed")] public IReadOnlyList<CliStatusWorkItemJsonResult>? Passed { get; init; }
+    [JsonPropertyName("inProgress")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<CliStatusWorkItemJsonResult>? InProgress { get; init; }
 }
 
 public sealed class CliStatusJobJsonResult
@@ -92,8 +96,12 @@ public sealed class StatusResult
     [JsonPropertyName("totalWorkItems")] public int TotalWorkItems { get; init; }
     [JsonPropertyName("failedCount")] public int FailedCount { get; init; }
     [JsonPropertyName("passedCount")] public int PassedCount { get; init; }
+    [JsonPropertyName("inProgressCount")] public int InProgressCount { get; init; }
     [JsonPropertyName("failed")] public List<StatusWorkItem>? Failed { get; init; }
     [JsonPropertyName("passed")] public List<StatusWorkItem>? Passed { get; init; }
+    [JsonPropertyName("inProgress")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<StatusWorkItem>? InProgress { get; init; }
     [JsonPropertyName("truncated")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool Truncated { get; init; }
@@ -229,6 +237,7 @@ public sealed class BatchJobEntry
     [JsonPropertyName("name")] public string Name { get; init; } = "";
     [JsonPropertyName("failedCount")] public int FailedCount { get; init; }
     [JsonPropertyName("passedCount")] public int PassedCount { get; init; }
+    [JsonPropertyName("inProgressCount")] public int InProgressCount { get; init; }
     [JsonPropertyName("totalCount")] public int TotalCount { get; init; }
 }
 
@@ -237,6 +246,7 @@ public sealed class BatchStatusResult
     [JsonPropertyName("jobs")] public List<BatchJobEntry> Jobs { get; init; } = [];
     [JsonPropertyName("totalFailed")] public int TotalFailed { get; init; }
     [JsonPropertyName("totalPassed")] public int TotalPassed { get; init; }
+    [JsonPropertyName("totalInProgress")] public int TotalInProgress { get; init; }
     [JsonPropertyName("jobCount")] public int JobCount { get; init; }
     [JsonPropertyName("failureBreakdown")] public Dictionary<string, int>? FailureBreakdown { get; init; }
     [JsonPropertyName("truncated")]

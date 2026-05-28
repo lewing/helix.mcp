@@ -299,6 +299,7 @@ public class Commands
                 TotalWorkItems = summary.TotalCount,
                 FailedCount = summary.Failed.Count,
                 PassedCount = summary.Passed.Count,
+                InProgressCount = summary.InProgress.Count,
                 Failed = showFailed
                     ? summary.Failed.Select(f => new StatusWorkItemJsonResult
                     {
@@ -313,6 +314,18 @@ public class Commands
                     : null,
                 Passed = showPassed
                     ? summary.Passed.Select(p => new StatusWorkItemJsonResult
+                    {
+                        Name = p.Name,
+                        ExitCode = p.ExitCode,
+                        State = p.State,
+                        MachineName = p.MachineName,
+                        Duration = p.Duration?.ToString(),
+                        ConsoleLogUrl = p.ConsoleLogUrl,
+                        FailureCategory = null
+                    }).ToList()
+                    : null,
+                InProgress = summary.InProgress.Count > 0
+                    ? summary.InProgress.Select(p => new StatusWorkItemJsonResult
                     {
                         Name = p.Name,
                         ExitCode = p.ExitCode,
@@ -361,6 +374,23 @@ public class Commands
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine("All work items passed.");
             Console.ResetColor();
+        }
+
+        if (summary.InProgress.Count > 0)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"\nIn progress: {summary.InProgress.Count} (work items still Waiting/Running — not yet completed)");
+            Console.ResetColor();
+            foreach (var item in summary.InProgress)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.Write("  [...]  ");
+                Console.ResetColor();
+                Console.Write(item.Name);
+                if (!string.IsNullOrEmpty(item.State))
+                    Console.Write($" (state: {item.State})");
+                Console.WriteLine();
+            }
         }
 
         if (showPassed)
@@ -563,10 +593,17 @@ public class Commands
         foreach (var job in batch.Jobs)
         {
             var idPrefix = job.JobId.Length >= 8 ? job.JobId[..8] : job.JobId;
-            Console.WriteLine($"Job {idPrefix}...: {job.Name} — {job.Failed.Count} failed, {job.Passed.Count} passed");
+            var line = $"Job {idPrefix}...: {job.Name} — {job.Failed.Count} failed, {job.Passed.Count} passed";
+            if (job.InProgress.Count > 0)
+                line += $", {job.InProgress.Count} in progress";
+            Console.WriteLine(line);
         }
 
-        Console.WriteLine($"Overall: {batch.TotalFailed} failed, {batch.TotalPassed} passed across {batch.Jobs.Count} jobs");
+        var overall = $"Overall: {batch.TotalFailed} failed, {batch.TotalPassed} passed";
+        if (batch.TotalInProgress > 0)
+            overall += $", {batch.TotalInProgress} in progress";
+        overall += $" across {batch.Jobs.Count} jobs";
+        Console.WriteLine(overall);
 
         var allFailed = batch.Jobs.SelectMany(j => j.Failed).Where(f => f.FailureCategory.HasValue).ToList();
         if (allFailed.Count > 0)

@@ -52,14 +52,16 @@ public class HelixService
         };
     }
 
-    /// <summary>Represents a single work item's name and exit code.</summary>
-    public record WorkItemResult(string Name, int ExitCode, string? State, string? MachineName, TimeSpan? Duration, string ConsoleLogUrl, FailureCategory? FailureCategory);
+    /// <summary>Represents a single work item's name and exit code. <see cref="IsCompleted"/> is false
+    /// for work items that have not finished executing (e.g. Waiting, Running, Unscheduled); for those
+    /// <see cref="ExitCode"/> is the sentinel -1 and must not be interpreted as a failure.</summary>
+    public record WorkItemResult(string Name, int ExitCode, string? State, string? MachineName, TimeSpan? Duration, string ConsoleLogUrl, FailureCategory? FailureCategory, bool IsCompleted = true);
 
-    /// <summary>Aggregated pass/fail summary for all work items in a Helix job.</summary>
+    /// <summary>Aggregated pass/fail/in-progress summary for all work items in a Helix job.</summary>
     public record JobSummary(
         string JobId, string Name, string QueueId, string Creator, string Source,
         string? Created, string? Finished,
-        int TotalCount, List<WorkItemResult> Failed, List<WorkItemResult> Passed);
+        int TotalCount, List<WorkItemResult> Failed, List<WorkItemResult> Passed, List<WorkItemResult> InProgress);
 
     /// <summary>Get a pass/fail summary of all work items in a Helix job.</summary>
     /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
@@ -82,14 +84,17 @@ public class HelixService
                 : CreateDetailedResultAsync(wi, id, semaphore, cancellationToken)).ToList();
 
             var results = await Task.WhenAll(tasks);
-            var failed = results.Where(r => r.ExitCode != 0).ToList();
-            var passed = results.Where(r => r.ExitCode == 0).ToList();
+            // Work items whose detailed ExitCode is null are still Waiting/Running/Unscheduled
+            // — they must NOT be counted as failed.
+            var inProgress = results.Where(r => !r.IsCompleted).ToList();
+            var failed = results.Where(r => r.IsCompleted && r.ExitCode != 0).ToList();
+            var passed = results.Where(r => r.IsCompleted && r.ExitCode == 0).ToList();
 
             return new JobSummary(
                 id,
                 job.Name ?? "", job.QueueId ?? "", job.Creator ?? "", job.Source ?? "",
                 job.Created, job.Finished,
-                workItems.Count, failed, passed);
+                workItems.Count, failed, passed, inProgress);
 
             static WorkItemResult CreatePassedResult(IWorkItemSummary summary, string resolvedJobId)
                 => new(summary.Name, 0, null, null, null, BuildConsoleLogUrl(resolvedJobId, summary.Name), null);
@@ -108,7 +113,8 @@ public class HelixService
                         ? details.Finished.Value - details.Started.Value
                         : null;
                     var exitCode = details.ExitCode ?? -1;
-                    FailureCategory? category = exitCode != 0
+                    bool isCompleted = details.ExitCode.HasValue;
+                    FailureCategory? category = isCompleted && exitCode != 0
                         ? ClassifyFailure(exitCode, details.State, duration, summary.Name)
                         : null;
                     return new WorkItemResult(
@@ -118,7 +124,8 @@ public class HelixService
                         details.MachineName,
                         duration,
                         BuildConsoleLogUrl(resolvedJobId, summary.Name),
-                        category);
+                        category,
+                        IsCompleted: isCompleted);
                 }
                 finally
                 {
@@ -587,7 +594,7 @@ public class HelixService
     }
 
     /// <summary>Summary for multiple jobs.</summary>
-    public record BatchJobSummary(List<JobSummary> Jobs, int TotalFailed, int TotalPassed);
+    public record BatchJobSummary(List<JobSummary> Jobs, int TotalFailed, int TotalPassed, int TotalInProgress);
 
     /// <summary>Maximum number of jobs allowed in a single batch status request.</summary>
     internal const int MaxBatchSize = 50;
@@ -616,8 +623,9 @@ public class HelixService
         var jobs = results.ToList();
         var totalFailed = jobs.Sum(j => j.Failed.Count);
         var totalPassed = jobs.Sum(j => j.Passed.Count);
+        var totalInProgress = jobs.Sum(j => j.InProgress.Count);
 
-        return new BatchJobSummary(jobs, totalFailed, totalPassed);
+        return new BatchJobSummary(jobs, totalFailed, totalPassed, totalInProgress);
     }
 
     /// <summary>Classify a work item failure based on available signals.</summary>
