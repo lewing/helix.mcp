@@ -141,6 +141,84 @@ public class HelixServiceStatusOptimizationTests
     }
 
     [Fact]
+    public async Task GetJobStatusAsync_WaitingWorkItems_AreInProgress_NotFailed()
+    {
+        // Regression test for the bug observed on the osx.15.amd64.open queue starvation
+        // (dotnet/arcade PR #16899, AzDO build 1438541): two Helix jobs each had 1 Finished
+        // + 24 Waiting work items. /details reported ExitCode=null and State="Waiting" for the
+        // queued items, yet helix_batch_status reported failedCount: 24. Waiting items must be
+        // classified as in-progress, not failed.
+        ArrangeJobDetails();
+        var finished = CreateSummary("workitem-finished", exitCode: 0);
+        var waiting1 = CreateSummary("workitem-waiting-1", exitCode: null);
+        var waiting2 = CreateSummary("workitem-waiting-2", exitCode: null);
+
+        // Helix /details for a Waiting work item returns ExitCode=null, State="Waiting".
+        var waitingDetails = CreateDetails(exitCode: 0, state: "Waiting", machineName: "");
+        waitingDetails.ExitCode.Returns((int?)null);
+
+        _mockApi.ListWorkItemsAsync(ValidJobId, Arg.Any<CancellationToken>())
+            .Returns(new List<IWorkItemSummary> { finished, waiting1, waiting2 });
+        _mockApi.GetWorkItemDetailsAsync("workitem-waiting-1", ValidJobId, Arg.Any<CancellationToken>())
+            .Returns(waitingDetails);
+        _mockApi.GetWorkItemDetailsAsync("workitem-waiting-2", ValidJobId, Arg.Any<CancellationToken>())
+            .Returns(waitingDetails);
+
+        var result = await _sut.GetJobStatusAsync(ValidJobId);
+
+        Assert.Equal(3, result.TotalCount);
+        Assert.Single(result.Passed);
+        Assert.Empty(result.Failed);
+        Assert.Equal(2, result.InProgress.Count);
+        Assert.All(result.InProgress, item => Assert.False(item.IsCompleted));
+        Assert.Equal(["workitem-waiting-1", "workitem-waiting-2"],
+            result.InProgress.Select(i => i.Name).OrderBy(n => n));
+    }
+
+    [Fact]
+    public async Task GetBatchStatusAsync_WaitingWorkItems_DoNotInflateTotalFailed()
+    {
+        // Companion regression test for helix_batch_status — the exact tool that misreported
+        // the osx.15.amd64.open starvation as "failedCount: 24" for each stuck job.
+        ArrangeJobDetails();
+        const string jobA = "11111111-2222-3333-4444-555555555555";
+        const string jobB = "66666666-7777-8888-9999-aaaaaaaaaaaa";
+
+        var jobDetails = Substitute.For<IJobDetails>();
+        jobDetails.Name.Returns("stuck-osx-job");
+        jobDetails.QueueId.Returns("osx.15.amd64.open");
+        _mockApi.GetJobDetailsAsync(jobA, Arg.Any<CancellationToken>()).Returns(jobDetails);
+        _mockApi.GetJobDetailsAsync(jobB, Arg.Any<CancellationToken>()).Returns(jobDetails);
+
+        var waitingDetails = CreateDetails(exitCode: 0, state: "Waiting", machineName: "");
+        waitingDetails.ExitCode.Returns((int?)null);
+
+        foreach (var jobId in new[] { jobA, jobB })
+        {
+            var items = new List<IWorkItemSummary> { CreateSummary($"{jobId}-finished", exitCode: 0) };
+            for (int i = 0; i < 24; i++)
+            {
+                var name = $"{jobId}-waiting-{i}";
+                items.Add(CreateSummary(name, exitCode: null));
+                _mockApi.GetWorkItemDetailsAsync(name, jobId, Arg.Any<CancellationToken>()).Returns(waitingDetails);
+            }
+            _mockApi.ListWorkItemsAsync(jobId, Arg.Any<CancellationToken>()).Returns(items);
+        }
+
+        var batch = await _sut.GetBatchStatusAsync([jobA, jobB]);
+
+        Assert.Equal(0, batch.TotalFailed);
+        Assert.Equal(2, batch.TotalPassed);
+        Assert.Equal(48, batch.TotalInProgress);
+        Assert.All(batch.Jobs, j =>
+        {
+            Assert.Empty(j.Failed);
+            Assert.Single(j.Passed);
+            Assert.Equal(24, j.InProgress.Count);
+        });
+    }
+
+    [Fact]
     public async Task GetJobStatusAsync_EmptyWorkItemList_DoesNotFetchDetailsAndReturnsEmptySummary()
     {
         ArrangeJobDetails();

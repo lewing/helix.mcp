@@ -58,6 +58,7 @@ public sealed class HelixMcpTools
                 TotalWorkItems = summary.TotalCount,
                 FailedCount = summary.Failed.Count,
                 PassedCount = summary.Passed.Count,
+                InProgressCount = summary.InProgress.Count,
                 Failed = showFailed ? summary.Failed.Select(f => new StatusWorkItem
                 {
                     Name = f.Name, ExitCode = f.ExitCode, State = f.State, MachineName = f.MachineName,
@@ -65,6 +66,12 @@ public sealed class HelixMcpTools
                     FailureCategory = f.FailureCategory?.ToString()
                 }).ToList() : null,
                 Passed = showPassed ? summary.Passed.Select(p => new StatusWorkItem
+                {
+                    Name = p.Name, ExitCode = p.ExitCode, State = p.State, MachineName = p.MachineName,
+                    Duration = FormatDuration(p.Duration), ConsoleLogUrl = p.ConsoleLogUrl,
+                    FailureCategory = null
+                }).ToList() : null,
+                InProgress = summary.InProgress.Count > 0 ? summary.InProgress.Select(p => new StatusWorkItem
                 {
                     Name = p.Name, ExitCode = p.ExitCode, State = p.State, MachineName = p.MachineName,
                     Duration = FormatDuration(p.Duration), ConsoleLogUrl = p.ConsoleLogUrl,
@@ -411,10 +418,12 @@ public sealed class HelixMcpTools
                     Name = j.Name,
                     FailedCount = j.Failed.Count,
                     PassedCount = j.Passed.Count,
+                    InProgressCount = j.InProgress.Count,
                     TotalCount = j.TotalCount
                 }).ToList(),
                 TotalFailed = batch.TotalFailed,
                 TotalPassed = batch.TotalPassed,
+                TotalInProgress = batch.TotalInProgress,
                 JobCount = batch.Jobs.Count,
                 FailureBreakdown = failureBreakdown
             };
