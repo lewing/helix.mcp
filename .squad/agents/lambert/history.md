@@ -86,3 +86,8 @@ Both bugs fixed. Follow-up issue #65 tracks unskip tests, add companion test for
 
 Every MCP tool method must have ≥1 test covering the unhappy path (exception → structured error). Baseline now documented (28% floor). Rolling implementation: Week 2–3.
 
+
+## Learnings — PR #68 review iteration + rebase 2026-05-28
+- Rebase-conflict discipline: when SKILL.md has cross-PR overlap, resolve semantically rather than choosing one side; keep Ripley's implementation facts and Lambert's schema-audit findings/captures when they describe different layers.
+- Forward-looking claim lesson: do not mark a fix as complete until the implementation has merged to the branch being documented; after PR #69 merged, the CallToolFilters claim became present-tense accurate.
+- Use `git push --force-with-lease` after rebasing an open PR branch so the linear-history update does not overwrite unexpected remote work.
