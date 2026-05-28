@@ -263,3 +263,9 @@ Ash's investigation identified the right fix (centralize exceptions) but incorre
 
 Both bugs fixed. Follow-up issue #65 tracks schema test, flatten exceptions, unskip tests, rolling coverage tests, preserve calibration lesson.
 
+
+## Learnings — Issue #67 CallToolFilters middleware 2026-05-28
+
+- SDK API confirmed on ModelContextProtocol 1.3.0: `McpServerOptions.Filters.Request.CallToolFilters` exists, and `CallToolFilters` can be appended inside the existing `.AddMcpServer(options => ...)` startup configuration. The companion builder API is `WithRequestFilters(...).AddCallToolFilter(...)`, but this change used the direct options path from Dallas's policy.
+- The filter converts SDK parameter-binding `ArgumentException`s into `McpException` before the MCP server's generic formatter hides details. It covers binding failures before tool method bodies run; it does not replace `McpExceptionHandler` for runtime/service exceptions inside tool bodies.
+- Double-wrap discipline: the implementation catches `ArgumentException` only when `ex.ParamName == "arguments"`, matching the SDK binder's parameter name from the #67 repro. That avoids relabeling ordinary tool-body `ArgumentException`s as parameter-binding errors while still surfacing the missing `jobId` failure.
