@@ -264,6 +264,7 @@ public sealed class HelixMcpTools
             {
                 Name = detail.Name,
                 ExitCode = detail.ExitCode,
+                IsCompleted = detail.IsCompleted,
                 State = detail.State,
                 MachineName = detail.MachineName,
                 Duration = FormatDuration(detail.Duration),

@@ -544,6 +544,7 @@ public class Commands
             {
                 Name = detail.Name,
                 ExitCode = detail.ExitCode,
+                IsCompleted = detail.IsCompleted,
                 State = detail.State,
                 MachineName = detail.MachineName,
                 Duration = detail.Duration?.ToString(),
@@ -557,6 +558,7 @@ public class Commands
 
         Console.WriteLine($"Work Item: {detail.Name}");
         Console.WriteLine($"Exit Code: {detail.ExitCode}");
+        Console.WriteLine($"Completed: {detail.IsCompleted}");
         if (detail.FailureCategory.HasValue)
             Console.WriteLine($"Category:  {detail.FailureCategory.Value}");
         if (!string.IsNullOrEmpty(detail.State))
