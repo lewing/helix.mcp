@@ -101,6 +101,25 @@ public class WorkItemDetailTests
         Assert.Equal("output.txt", txtEntry.Name);
     }
 
+    [Fact]
+    public async Task GetWorkItemDetail_WaitingWorkItem_IsIncompleteWithoutFailureCategory()
+    {
+        var details = Substitute.For<IWorkItemDetails>();
+        details.ExitCode.Returns((int?)null);
+        details.State.Returns("Waiting");
+
+        _mockApi.GetWorkItemDetailsAsync(WorkItemName, ValidJobId, Arg.Any<CancellationToken>())
+            .Returns(details);
+        _mockApi.ListWorkItemFilesAsync(WorkItemName, ValidJobId, Arg.Any<CancellationToken>())
+            .Returns(new List<IWorkItemFile>());
+
+        var result = await _svc.GetWorkItemDetailAsync(ValidJobId, WorkItemName);
+
+        Assert.Equal(-1, result.ExitCode);
+        Assert.False(result.IsCompleted);
+        Assert.Null(result.FailureCategory);
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]

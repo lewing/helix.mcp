@@ -534,7 +534,8 @@ public class HelixService
     /// <summary>Detailed information about a single work item.</summary>
     public record WorkItemDetail(
         string Name, int ExitCode, string? State, string? MachineName,
-        TimeSpan? Duration, string ConsoleLogUrl, List<FileEntry> Files, FailureCategory? FailureCategory);
+        TimeSpan? Duration, string ConsoleLogUrl, List<FileEntry> Files, FailureCategory? FailureCategory,
+        bool IsCompleted = true);
 
     /// <summary>Get detailed info about a single work item including its files.</summary>
     public async Task<WorkItemDetail> GetWorkItemDetailAsync(string jobId, string workItem, CancellationToken cancellationToken = default)
@@ -561,11 +562,12 @@ public class HelixService
             )).ToList();
 
             var exitCode = details.ExitCode ?? -1;
-            FailureCategory? category = exitCode != 0
+            bool isCompleted = details.ExitCode.HasValue;
+            FailureCategory? category = isCompleted && exitCode != 0
                 ? ClassifyFailure(exitCode, details.State, duration, workItem)
                 : null;
 
-            return new WorkItemDetail(workItem, exitCode, details.State, details.MachineName, duration, consoleLogUrl, fileEntries, category);
+            return new WorkItemDetail(workItem, exitCode, details.State, details.MachineName, duration, consoleLogUrl, fileEntries, category, IsCompleted: isCompleted);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
         {

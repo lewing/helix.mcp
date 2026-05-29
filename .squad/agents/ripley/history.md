@@ -175,3 +175,9 @@ Both bugs fixed. Follow-up issue #65 tracks schema test, flatten exceptions, uns
 
 **Issue closed:** #67 (by PRs #68/#69 in combination).
 
+
+## Learnings — Issue #70 GetWorkItemDetail IsCompleted bucketing (2026-05-29)
+
+- Applied PR #66's Helix work-item completion pattern to the single-item detail path: `details.ExitCode.HasValue` is the completion signal, `-1` remains only a sentinel, and `FailureCategory` is assigned only for completed non-zero exits.
+- `WorkItemDetail` now mirrors `WorkItemResult` with `bool IsCompleted = true` for compatibility, and both CLI JSON/human output plus MCP `helix_work_item` structured content expose completion state.
+- Added focused coverage for a waiting work item so incomplete details return `IsCompleted=false`, `ExitCode=-1`, and no failure category.
