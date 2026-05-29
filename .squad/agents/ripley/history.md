@@ -185,3 +185,26 @@ Both bugs fixed. Follow-up issue #65 tracks schema test, flatten exceptions, uns
 ## Learnings — PR #71 wire-compat result-wrapper defaults (2026-05-29)
 
 - When adding new bool fields to Helix DTOs for wire compatibility, mirror the non-breaking default on every serialized wrapper too: source DTOs (`WorkItemDetail`, `WorkItemResult`) plus CLI/MCP result wrappers (`CliWorkItemJsonResult`, `WorkItemToolResult`). Missing the wrapper default makes older JSON payloads deserialize absent fields as `false` and flips completed work items to incomplete.
+- **MCP tool classes now take token accessors in constructors:** `AzdoMcpTools(AzdoService, IAzdoTokenAccessor)` and `HelixMcpTools(HelixService, IHelixTokenAccessor)` — both are injected by DI; tests pass `Substitute.For<...>()`.
+- **`azdo_builds` and `azdo_test_attachments` are now URL-aware:** `TryExtractOrgProjectFromUrl` in `AzdoMcpTools` detects when the `org` param contains `dev.azure.com`, `visualstudio.com`, or `://` and auto-extracts org/project via `AzdoIdResolver.TryResolve`. Other tools already get this for free via their `buildId` param going through `AzdoIdResolver.Resolve`.
+- **404 hint pattern for internal builds:** `AppendNotFoundHint` in `AzdoMcpTools` checks if the "not found" error mentions the default org/project (`dnceng-public`/`public`), and if so appends a hint that the build might be internal — directing the agent to pass the full URL or set `org='dnceng'` and `project='internal'`.
+- **Two new auth-status MCP tools shipped:** `azdo_auth_status` delegates to `IAzdoTokenAccessor.AuthStatusAsync()` (returns `AzdoAuthStatus` record). `helix_auth_status` checks `IHelixTokenAccessor.GetAccessToken()` and resolves `TokenSource` from `ChainedHelixTokenAccessor` when available, returning a `HelixAuthStatus` record.
+- **Key file paths:** `src/HelixTool.Mcp.Tools/AzDO/AzdoMcpTools.cs` (TryExtractOrgProjectFromUrl, AppendNotFoundHint, azdo_auth_status), `src/HelixTool.Mcp.Tools/Helix/HelixMcpTools.cs` (helix_auth_status, HelixAuthStatus record).
+
+## Learnings (True Test Count — 2026-07-25)
+
+- **New IAzdoApiClient methods for theory expansion:** `GetTestResultsAllOutcomesAsync` fetches all test results (not just failed) and `GetTestResultWithSubResultsAsync` fetches a single result with `detailsToInclude=SubResults` to expand dataDriven/orderedTest entries. Both are cached in `CachingAzdoApiClient` with `TestTtl`.
+- **Theory parent identification pattern:** AzDO marks theory/parameterized test parents with `resultGroupType` values `"dataDriven"` or `"orderedTest"`. The sub-result expansion API is per-result (not bulk), requiring parallel expansion with concurrency control.
+- **SemaphoreSlim(10) + 5s per-request timeout for sub-result expansion:** `AzdoService.GetTrueTestCountAsync` limits concurrent sub-result fetches to 10 with a 5-second timeout per request. Failed expansions count as 1 test each (conservative fallback).
+- **Single-object GET already supported:** `AzdoApiClient.GetAsync<T>` handles single JSON objects (not wrapped in `AzdoListResponse`), used for builds, timelines, and now test result sub-result expansion.
+- **Key file paths:** Models in `AzdoModels.cs` (`AzdoTestSubResult`, `TrueTestCountResult`, `TestRunTrueCount`), API methods in `AzdoApiClient.cs` and `IAzdoApiClient.cs`, service logic in `AzdoService.cs` (`GetTrueTestCountAsync`), MCP tool `azdo_true_test_count` in `AzdoMcpTools.cs`.
+
+
+## Ripley — PR #41 true-test-count rebase (2026-05-29T15:23:30-05:00)
+
+- Rebased `feature/true-test-count` onto main commit `9659a0fff4eddac259e14a1dc199148377cfa70f`; force-pushed new head `b8826eea4994a9d3517535283c8bdfdd166b7bc2`.
+- Phase 1 found 8 changed files: Ripley history plus AzDO API/client/cache/service/model/MCP tool changes and `TrueTestCountTests.cs`. Anticipated mainline conformance issues were MCP parameter naming/descriptions, read-only annotations, exception-wrapper style, and possible DTO consolidation.
+- Rebase had one conflict in `src/HelixTool.Mcp.Tools/AzDO/AzdoMcpTools.cs` where the stale branch inserted `azdo_true_test_count` at the same location main now uses for `azdo_auth_status`.
+- Resolution pattern: keep main's `azdo_auth_status` `CallToolResult`/`OpenWorld=false` shape, insert the new read-only tool before it, rename the build input to `buildIdOrUrl`, use detailed `[Description]` attributes, set `Destructive=false` and `OpenWorld=false`, and route failures through `McpExceptionHandler.RunServiceCallAsync`.
+- `TrueTestCountResult`/`TestRunTrueCount` stayed in `HelixTool.Core.AzDO` because the service returns them directly; no separate MCP-only result wrapper was introduced.
+- Validation passed: `dotnet build --nologo`; `dotnet test --nologo --no-build` (1305 passed, 2 skipped). PR comment posted with the rebase summary; immediate `statusCheckRollup` was empty after force-push.
