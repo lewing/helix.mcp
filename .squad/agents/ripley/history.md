@@ -185,3 +185,9 @@ Both bugs fixed. Follow-up issue #65 tracks schema test, flatten exceptions, uns
 ## Learnings — PR #71 wire-compat result-wrapper defaults (2026-05-29)
 
 - When adding new bool fields to Helix DTOs for wire compatibility, mirror the non-breaking default on every serialized wrapper too: source DTOs (`WorkItemDetail`, `WorkItemResult`) plus CLI/MCP result wrappers (`CliWorkItemJsonResult`, `WorkItemToolResult`). Missing the wrapper default makes older JSON payloads deserialize absent fields as `false` and flips completed work items to incomplete.
+
+## Learnings — IWorkItemSummary enrichment verification (2026-05-29)
+
+- Verified `IWorkItemSummary` already surfaces nullable `ExitCode` and `ConsoleOutputUri`, with production forwarding in `HelixApiClient.WorkItemSummaryAdapter` and cache preservation in `CachingHelixApiClient.WorkItemSummaryDto`.
+- Existing `WorkItemSummarySurfaceTests` cover adapter forwarding, nullable behavior, DTO round-trip, and legacy cache payloads with missing fields.
+- No additional consumer wiring was added in this pass; current consumers already compile against the additive interface.
