@@ -57,7 +57,7 @@ public sealed class CliWorkItemJsonResult
 {
     public string Name { get; init; } = "";
     public int ExitCode { get; init; }
-    public bool IsCompleted { get; init; }
+    public bool IsCompleted { get; init; } = true;
     public string? State { get; init; }
     public string? MachineName { get; init; }
     [JsonPropertyName("duration")] public string? Duration { get; init; }
@@ -167,7 +167,7 @@ public sealed class WorkItemToolResult
 {
     [JsonPropertyName("name")] public string Name { get; init; } = "";
     [JsonPropertyName("exitCode")] public int ExitCode { get; init; }
-    [JsonPropertyName("isCompleted")] public bool IsCompleted { get; init; }
+    [JsonPropertyName("isCompleted")] public bool IsCompleted { get; init; } = true;
     [JsonPropertyName("state")] public string? State { get; init; }
     [JsonPropertyName("machineName")] public string? MachineName { get; init; }
     [JsonPropertyName("duration")] public string? Duration { get; init; }

@@ -181,3 +181,7 @@ Both bugs fixed. Follow-up issue #65 tracks schema test, flatten exceptions, uns
 - Applied PR #66's Helix work-item completion pattern to the single-item detail path: `details.ExitCode.HasValue` is the completion signal, `-1` remains only a sentinel, and `FailureCategory` is assigned only for completed non-zero exits.
 - `WorkItemDetail` now mirrors `WorkItemResult` with `bool IsCompleted = true` for compatibility, and both CLI JSON/human output plus MCP `helix_work_item` structured content expose completion state.
 - Added focused coverage for a waiting work item so incomplete details return `IsCompleted=false`, `ExitCode=-1`, and no failure category.
+
+## Learnings — PR #71 wire-compat result-wrapper defaults (2026-05-29)
+
+- When adding new bool fields to Helix DTOs for wire compatibility, mirror the non-breaking default on every serialized wrapper too: source DTOs (`WorkItemDetail`, `WorkItemResult`) plus CLI/MCP result wrappers (`CliWorkItemJsonResult`, `WorkItemToolResult`). Missing the wrapper default makes older JSON payloads deserialize absent fields as `false` and flips completed work items to incomplete.
