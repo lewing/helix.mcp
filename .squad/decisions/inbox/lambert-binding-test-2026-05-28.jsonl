@@ -1,3 +1,0 @@
-{"result":{"protocolVersion":"2024-11-05","capabilities":{"logging":{},"resources":{"listChanged":true},"tools":{"listChanged":true}},"serverInfo":{"name":"hlx","version":"0.7.4\u002B5d2b0bf00eac3b75ec05f49a400768218282913b"}},"id":1,"jsonrpc":"2.0"}
-{"result":{"content":[{"type":"text","text":"An error occurred invoking \u0027azdo_build_analysis\u0027."}],"isError":true},"id":4,"jsonrpc":"2.0"}
-{"result":{"content":[{"type":"text","text":"An error occurred invoking \u0027helix_status\u0027."}],"isError":true},"id":3,"jsonrpc":"2.0"}

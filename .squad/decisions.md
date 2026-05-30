@@ -1960,3 +1960,93 @@ helix_status required=['jobId'] jobId="Helix job ID as a JSON string (GUID), Hel
 azdo_search_timeline required=['buildIdOrUrl','pattern'] buildIdOrUrl="AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID" pattern="Case-insensitive text substring to search for; not a regex"
 azdo_build_analysis required=['buildIdOrUrl'] buildIdOrUrl="AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID"
 ```
+# Decision: helix.mcp outbound traffic identifier
+
+**Date:** 2026-05-29T20:12:39-05:00  
+**Author:** Ripley  
+**Status:** Proposed implementation
+
+## Context
+
+arcade-services request logs could not distinguish helix.mcp traffic from other Helix SDK consumers because this tool sent no product-specific identifier. AzDO traffic also only added auth headers.
+
+## Decision
+
+Add one shared `HelixToolUserAgent` helper in `HelixTool.Core` and apply it to every outbound HTTP surface owned by this repo:
+
+- named `AzDO` `HttpClient`
+- named `HelixDownload` `HttpClient`
+- Helix SDK calls via `HelixApiOptions.AddPolicy(...)`
+
+The identifier is `User-Agent: helix.mcp/{version}` plus `X-Helix-Mcp-Tool: helix.mcp`.
+
+## Consequences
+
+arcade-services can filter logs by either standard User-Agent product or the explicit tool header. The Helix SDK path is covered because `HelixApiOptions` exposes an Azure.Core pipeline policy hook.
+
+# Decision: v0.7.6 Release Shipped ✅
+
+**Date:** 2026-05-29T20:34:23-05:00  
+**Released by:** Ripley  
+**Status:** Complete
+
+## Summary
+
+v0.7.6 of lewing/helix.mcp shipped successfully to NuGet and GitHub Releases.
+
+### Changes Shipped
+
+1. **PR #73** (akoeplinger): User-Agent identifier + X-Helix-Mcp-Tool custom header
+   - Adds `User-Agent: helix.mcp/{version}` header to all outbound AzDO and Helix downloads
+   - Adds `X-Helix-Mcp-Tool: helix.mcp` custom header for arcade-services identification
+   - Helix SDK calls use `HelixApiOptions.AddPolicy()` to inject headers via per-call pipeline policy
+   - Lets arcade-services distinguish hlx traffic for observability
+
+2. **PR #71** (backport of #70): IsCompleted bucketing in GetWorkItemDetailAsync
+   - Applies completion-signal pattern to single-item detail path
+   - `details.ExitCode.HasValue` determines completion (not `FailureCategory`)
+   - Prevents waiting/in-progress work items from being miscounted as failed
+   - Mirrors pattern from PR #66 (work-item summary exit code)
+
+### Release Artifacts
+
+- **GitHub Release:** https://github.com/lewing/helix.mcp/releases/tag/v0.7.6
+- **NuGet Package:** https://www.nuget.org/packages/lewing.helix.mcp/0.7.6
+- **NuGet Asset (attached):** `lewing.helix.mcp.0.7.6.nupkg` (19.7 MB, SHA256: 35641bdd452b295b49e2c87733db5b781f337841bb16675fb50e269367b9967e)
+
+### Build & Test Verification
+
+- Build: 0 errors, 0 warnings (9.70s)
+- Tests: 1300 passed, 0 failed, 2 skipped (3s)
+- All CI gates green
+
+### Release Commits
+
+| Commit | Message |
+|--------|---------|
+| 0bc0095 | release: v0.7.6 (version bump) |
+| 815c497 | squad: Ripley v0.7.6 release notes |
+| v0.7.6  | tag pushed to origin |
+
+### Publish Workflow
+
+- **Run:** https://github.com/lewing/helix.mcp/actions/runs/26670863077
+- **Status:** ✅ Completed (46s)
+- **Steps:** All green (Pack, Create Release, NuGet login, Push to NuGet)
+
+### Distribution Status
+
+- ✅ GitHub Release created with asset
+- ✅ NuGet package pushed successfully
+- ✅ Package visible at https://www.nuget.org/packages/lewing.helix.mcp/0.7.6
+- ✅ Tool CLI can be updated via `dotnet tool update -g lewing.helix.mcp`
+
+---
+
+**Next steps:** Users can install v0.7.6 via:
+```bash
+dotnet tool install -g lewing.helix.mcp@0.7.6
+# or update existing installation
+dotnet tool update -g lewing.helix.mcp
+```
+
