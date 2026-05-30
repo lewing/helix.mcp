@@ -185,3 +185,8 @@ Both bugs fixed. Follow-up issue #65 tracks schema test, flatten exceptions, uns
 ## Learnings — PR #71 wire-compat result-wrapper defaults (2026-05-29)
 
 - When adding new bool fields to Helix DTOs for wire compatibility, mirror the non-breaking default on every serialized wrapper too: source DTOs (`WorkItemDetail`, `WorkItemResult`) plus CLI/MCP result wrappers (`CliWorkItemJsonResult`, `WorkItemToolResult`). Missing the wrapper default makes older JSON payloads deserialize absent fields as `false` and flips completed work items to incomplete.
+
+## Learnings — User-Agent identifier (2026-05-29T20:12:39-05:00)
+
+- Outbound tool-owned `HttpClient` traffic now uses `HelixToolUserAgent.Apply(HttpClient)` to add `User-Agent: helix.mcp/{version}` plus `X-Helix-Mcp-Tool: helix.mcp` on the AzDO and Helix download named clients.
+- The Helix SDK exposes an `Azure.Core.ClientOptions.AddPolicy(...)` hook through `HelixApiOptions`, so SDK calls can carry the same UA and tool header via a per-call pipeline policy instead of relying on the SDK default UA alone.

@@ -14,9 +14,11 @@ public sealed class HelixApiClient : IHelixApiClient
 
     public HelixApiClient(string? accessToken = null)
     {
-        _api = !string.IsNullOrEmpty(accessToken)
-            ? new HelixApi(new HelixApiOptions(new HelixApiTokenCredential(accessToken)))
-            : new HelixApi();
+        var options = !string.IsNullOrEmpty(accessToken)
+            ? new HelixApiOptions(new HelixApiTokenCredential(accessToken))
+            : new HelixApiOptions();
+        HelixToolUserAgent.Apply(options);
+        _api = new HelixApi(options);
     }
 
     /// <inheritdoc />

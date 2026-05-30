@@ -8,6 +8,7 @@ using HelixTool.Core;
 using HelixTool.Core.Cache;
 using HelixTool.Core.Helix;
 using HelixTool.Core.AzDO;
+using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
 using Xunit;
 
@@ -62,6 +63,20 @@ public class HttpClientConfigurationTests
 
         // Default is 100 seconds — verify this is NOT TimeSpan.MaxValue (infinite)
         Assert.NotEqual(System.Threading.Timeout.InfiniteTimeSpan, defaultTimeout);
+    }
+
+    [Fact]
+    public void NamedHttpClients_IncludeHelixMcpUserAgentAndToolHeader()
+    {
+        var services = new ServiceCollection();
+        services.AddHttpClient("AzDO", HelixToolUserAgent.Apply);
+        services.AddHttpClient("HelixDownload", HelixToolUserAgent.Apply);
+
+        using var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<IHttpClientFactory>();
+
+        AssertHelixMcpHeaders(factory.CreateClient("AzDO"));
+        AssertHelixMcpHeaders(factory.CreateClient("HelixDownload"));
     }
 
     [Fact]
@@ -179,6 +194,14 @@ public class HttpClientConfigurationTests
     }
 
     // ── Test helpers ─────────────────────────────────────────────────
+
+    private static void AssertHelixMcpHeaders(HttpClient client)
+    {
+        Assert.Contains(client.DefaultRequestHeaders.UserAgent,
+            value => string.Equals(value.Product?.Name, HelixToolUserAgent.ToolName, StringComparison.OrdinalIgnoreCase));
+        Assert.True(client.DefaultRequestHeaders.TryGetValues(HelixToolUserAgent.ToolHeaderName, out var values));
+        Assert.Contains(HelixToolUserAgent.ToolHeaderValue, values);
+    }
 
     private class FakeHttpMessageHandler : HttpMessageHandler
     {

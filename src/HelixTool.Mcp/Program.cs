@@ -7,11 +7,21 @@ using HelixTool.Mcp.Tools;
 using ModelContextProtocol.Server;
 using System.Reflection;
 
+HelixToolUserAgent.Initialize(Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0");
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Named HttpClients via IHttpClientFactory — avoids socket exhaustion, enables timeout config
-builder.Services.AddHttpClient("HelixDownload", c => c.Timeout = TimeSpan.FromMinutes(5));
-builder.Services.AddHttpClient("AzDO", c => c.Timeout = TimeSpan.FromMinutes(5));
+builder.Services.AddHttpClient("HelixDownload", c =>
+{
+    c.Timeout = TimeSpan.FromMinutes(5);
+    HelixToolUserAgent.Apply(c);
+});
+builder.Services.AddHttpClient("AzDO", c =>
+{
+    c.Timeout = TimeSpan.FromMinutes(5);
+    HelixToolUserAgent.Apply(c);
+});
 
 // HttpContext accessor for per-request token resolution
 builder.Services.AddHttpContextAccessor();

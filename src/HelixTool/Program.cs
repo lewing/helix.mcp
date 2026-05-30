@@ -21,9 +21,19 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using System.Reflection;
 
+HelixToolUserAgent.Initialize(typeof(Commands).Assembly.GetName().Version?.ToString() ?? "0.0.0");
+
 var services = new ServiceCollection();
-services.AddHttpClient("HelixDownload", c => c.Timeout = TimeSpan.FromMinutes(5));
-services.AddHttpClient("AzDO", c => c.Timeout = TimeSpan.FromMinutes(5));
+services.AddHttpClient("HelixDownload", c =>
+{
+    c.Timeout = TimeSpan.FromMinutes(5);
+    HelixToolUserAgent.Apply(c);
+});
+services.AddHttpClient("AzDO", c =>
+{
+    c.Timeout = TimeSpan.FromMinutes(5);
+    HelixToolUserAgent.Apply(c);
+});
 services.AddSingleton<ICredentialStore, GitCredentialStore>();
 services.AddSingleton<ChainedHelixTokenAccessor>();
 services.AddSingleton<IHelixTokenAccessor>(sp => sp.GetRequiredService<ChainedHelixTokenAccessor>());
@@ -851,8 +861,16 @@ Available as `failureCategory` in JSON and MCP output.
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
         builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
-        builder.Services.AddHttpClient("HelixDownload", c => c.Timeout = TimeSpan.FromMinutes(5));
-        builder.Services.AddHttpClient("AzDO", c => c.Timeout = TimeSpan.FromMinutes(5));
+        builder.Services.AddHttpClient("HelixDownload", c =>
+        {
+            c.Timeout = TimeSpan.FromMinutes(5);
+            HelixToolUserAgent.Apply(c);
+        });
+        builder.Services.AddHttpClient("AzDO", c =>
+        {
+            c.Timeout = TimeSpan.FromMinutes(5);
+            HelixToolUserAgent.Apply(c);
+        });
         builder.Services.AddSingleton<IHelixTokenAccessor>(_ =>
             new EnvironmentHelixTokenAccessor(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
         builder.Services.AddSingleton<IHelixApiClientFactory, HelixApiClientFactory>();
