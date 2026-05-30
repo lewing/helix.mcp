@@ -190,3 +190,17 @@ Both bugs fixed. Follow-up issue #65 tracks schema test, flatten exceptions, uns
 
 - Outbound tool-owned `HttpClient` traffic now uses `HelixToolUserAgent.Apply(HttpClient)` to add `User-Agent: helix.mcp/{version}` plus `X-Helix-Mcp-Tool: helix.mcp` on the AzDO and Helix download named clients.
 - The Helix SDK exposes an `Azure.Core.ClientOptions.AddPolicy(...)` hook through `HelixApiOptions`, so SDK calls can carry the same UA and tool header via a per-call pipeline policy instead of relying on the SDK default UA alone.
+
+## Learnings — v0.7.6 release flow (2026-05-29 Ripley mechanical release)
+
+**Release execution summary:**
+- Synced main branch: commit 0ee744d (via `git pull --ff-only`).
+- Bumped three version stamps: `src/HelixTool/HelixTool.csproj` (line 12) + `src/HelixTool/.mcp/server.json` (top-level "version" + packages[0].version) — all 0.7.5 → 0.7.6.
+- Build: 0 errors, 0 warnings (9.70s).
+- Tests: 1300 passed, 0 failed, 2 skipped (3s).
+- Release commit: 0bc0095 (`release: v0.7.6`).
+- Tag: `v0.7.6` pushed to origin.
+
+**Shipped PRs in v0.7.6:**
+- PR #73 (akoeplinger): User-Agent identifier + X-Helix-Mcp-Tool custom header on AzDO HttpClient, Helix download HttpClient, and Helix SDK pipeline (via HelixApiOptions.AddPolicy) — lets arcade-services distinguish hlx traffic.
+- PR #71 (backport of #70): Apply IsCompleted bucketing to GetWorkItemDetailAsync so waiting/in-progress work items aren't miscounted as failed.
