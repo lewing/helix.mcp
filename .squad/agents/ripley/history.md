@@ -184,3 +184,10 @@ Both bugs fixed. Follow-up issue #65 tracks schema test, flatten exceptions, uns
 ## Status — v0.7.6 release shipped (2026-05-29T20:34:23-05:00)
 
 Release v0.7.6 shipped successfully to NuGet and GitHub Releases. Decision merged to `.squad/decisions.md`. Orchestration logged. Cross-agent update by Scribe.
+
+## 2026-05-30T11:48:09-05:00: Tool rename freedom validated (helix_status → helix_workitems)
+
+**Validation scope:** Cross-check dotnet org for hard-coded tool name references (cypher research).
+**Finding:** Zero code-level pinning of `helix_*` tool names. Semantic connections only.
+**Decision:** Rename `helix_status` → `helix_workitems` is safe. No alias needed.
+**PR scope:** Tiny discoverability rename. Expected landing in next cycle.
