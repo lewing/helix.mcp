@@ -61,4 +61,40 @@ The May 22 deferral of Finding #2 (boilerplate, Q3 2026) was no longer valid by 
 
 See `.squad/decisions.md` for full decision documentation on Issue #61 Policy (CallToolFilters), Issue #74 Schema Cost Framework, and Issue #74 Ground-Truth Measurement.
 
+## Learnings
+
+### Parameter Alias Layer Choice — `buildIdOrUrl` Review (2026-06-01)
+
+**Problem:** Agents supplied `build_id`/`buildUrl` (intuitive names) instead of canonical `buildIdOrUrl`, causing MCP SDK binding failure before tool code executed. Two rejection patterns confirmed from session e9c219bd telemetry.
+
+**Layer decision: `CallToolFilter` in `McpServerOptionsExtensions`, not per-tool attribute metadata.**
+
+Rationale: The failure is a *key*-normalization problem, not a *value*-normalization problem. `AzdoService.NormalizeFilter` handles value normalization post-binding — it cannot help when the binder rejects a call because the required key is absent. The only layer with access to `CallToolRequestParams.Arguments` before binding is a `CallToolFilter`. `McpServerToolAttribute` has no alias-map surface in MCP SDK 1.3.0. Per-tool method signatures (adding `buildId`/`buildUrl` as optional params) would require 11 method signature changes, add schema bytes to `tools/list`, and create coalesce logic in 11 bodies — wrong granularity.
+
+**One flat global alias map is correct until a second use case appears.** `buildIdOrUrl` is unique enough as a canonical key that global scope is safe. Pattern: `Dictionary<string, string>(OrdinalIgnoreCase)` mapping alias → canonical; first match wins; insertion order is significant for multi-alias calls.
+
+**Combine normalization INTO the existing binding-error filter, or enforce order via a composite helper.** Separate filter registration leaves an ordering dependency unchecked by the type system. Pre-invocation hygiene concerns (alias normalization + exception translation) belong together.
+
+**Drift telemetry must be built in from day one.** An alias filter with no logging cannot tell us whether the problem is improving. `ILogger? logger = null` parameter; `Debug`-level log when alias fires. Cheap to add; expensive to retrofit.
+
+**Approved: APPROVE WITH CHANGES.** Verdict at `.squad/decisions/inbox/dallas-buildidorurl-verdict-2026-06-01.md`.
+
+**Status:** Verdict approved 2026-06-01. Ripley implemented same date per 4 directives. Lambert completed 11 test cases (all 7 scenarios), full suite 1312 pass / 2 skip. Decision merged to decisions.md.
+
+---
+
+### Issue #74 Schema Trim — Lead Verdict (2026-06-01)
+
+**Verdict: CONDITIONAL NO.** Do not pursue active `tools/list` trimming at 28.26 KB. Rationale: `tools/list` is a cold-load cost cached per-session by all major MCP clients. 28 KB amortized over sessions processing hundreds of KB of build/test data is <1% of token budget. The GitHub study's caveat ("0% benefit when context dominated by other content") applies directly.
+
+**Lever ranking (value-vs-risk):**
+1. **Selective outputSchema removal** (4.5–8.9 KB, 16–31%): Best lever, HOLD until needed. Pattern 2 in SKILL.md preserves wire payload. No known consumer parses `tools/list` outputSchema.
+2. **Description tightening** (~0.5–1 KB): Do opportunistically during normal tool work, not as a dedicated project.
+3. **Lazy/scoped tool loading** (up to 50%): Architecturally interesting, defer to v0.9+. Premature at 25 tools.
+4. **Parameter consolidation** (~0.5 KB): REJECTED. Breaks v0.7.x API contracts for negligible savings.
+
+**Decision flip trigger:** Consumer confirmed to re-fetch `tools/list` per-turn, tool count >40, or real user reports token budget pressure.
+
+**Calibration learning:** Estimated-vs-measured gap was 44% (16.2 KB estimate vs 28.9 KB real). Two errors partially cancelled (inputSchema overcount + outputSchema omission). Lesson: **always measure the full wire path before deciding on optimization work**. Ash's decision to gate on ground-truth measurement before approving any trim work was correct and saved us from acting on wrong numbers in either direction.
+
 For full work history from earlier 2026 sessions, see `.squad/agents/dallas/history-archive-2026-06-01.md`.

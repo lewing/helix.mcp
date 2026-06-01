@@ -93,3 +93,9 @@ Lambert handoff line table:
 | `src/HelixTool.Mcp.Tools/McpServerOptionsExtensions.cs` | 43-91 | Logger resolution and case-insensitive argument-key helpers. |
 | `.squad/decisions/inbox/ripley-buildidorurl-impl-handoff-2026-06-01.md` | 1-29 | Lambert test handoff. |
 
+## 2026-06-01: Completion — buildIdOrUrl alias implementation approved and tested
+
+**Dallas verdict:** APPROVE WITH CHANGES (4 directives, all implemented)
+**Lambert delivery:** 11 tests added, all 7 test cases covered. Full suite: 1312 pass, 2 pre-existing skip.
+**Status:** Implementation merged to decisions.md. Orchestration logs created. Ready for team commit.
+

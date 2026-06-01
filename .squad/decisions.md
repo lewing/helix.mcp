@@ -843,3 +843,26 @@ Date: 2026-06-01
 ## Validation
 
 - `dotnet build --nologo` completed with 0 warnings and 0 errors on 2026-06-01.
+
+---
+
+# Lambert completion: `buildIdOrUrl` alias normalization tests
+
+Date: 2026-06-01
+
+## Summary
+
+- Branch: `ripley/azdo-buildidorurl-aliases`
+- Commit: `9dcf20bdd4174f53ce676bb19238b0bdb5fc1a7a`
+- Tests added: 11 in `src/HelixTool.Tests/McpServerOptionsExtensionsTests.cs`
+- Coverage: all 7 Dallas-requested cases covered.
+
+## Test Validation Results
+
+- Pre-change build: `dotnet build --nologo` — succeeded with 0 warnings / 0 errors.
+- Focused validation: `dotnet test src/HelixTool.Tests/HelixTool.Tests.csproj --nologo --no-restore --filter McpServerOptionsExtensionsTests` — 11 passed / 0 failed / 0 skipped.
+- Full validation: `dotnet test --nologo --no-build` — 1312 passed / 0 failed / 2 skipped.
+
+## Skips
+
+No new tests were skipped. The 2 skipped tests in the full run are pre-existing MCP exception coverage tests for pending exception-centralization follow-up work.
