@@ -337,3 +337,129 @@ Issue's #3 (`azdo_builds`, 1,051 bytes) actually ranks #7 at 508 bytes. Issue's 
 ## Concrete Next Step
 
 Assign to Ripley: run the `McpServerTool.Create` + `ProtocolTool` serialization measurement (`.squad/skills/mcp-wire-format-trim/SKILL.md` "Measurement" section). Report back total byte count including outputSchema before any trim work is authorized. Estimated effort: 1–2 hours.
+
+---
+
+# Issue #74 — Ground-Truth `tools/list` Byte Measurement ✅
+
+**Date:** 2026-06-01T14:02:01.195-05:00  
+**Author:** Ripley  
+**Status:** Measurement complete — awaiting Dallas go/no-go
+
+---
+
+## TL;DR
+
+The real `tools/list` JSON payload is **28,941 bytes (28.26 KB)**, not the 16,212-byte estimate in issue #74, and well above Ash's 15–25 KB range. outputSchema alone contributes 8,882 bytes across 20 tools. The issue estimate was wrong for two independent reasons: the per-param heuristic overstated inputSchema by ~30%, AND it ignored outputSchema entirely.
+
+---
+
+## Serialization Path Used
+
+`McpServerTool.Create(MethodInfo, object, null)` → `mcpTool.ProtocolTool` → `JsonSerializer.Serialize(proto, McpJsonUtilities.DefaultOptions)` (compact JSON, UTF-8 byte count). This is the canonical wire path documented in `.squad/skills/mcp-wire-format-trim/SKILL.md`.
+
+Instance requirement: `RuntimeHelpers.GetUninitializedObject(type)` was used to create a schema-only shell for each tool class (no constructor runs, no DI services needed). The test lives in `src/HelixTool.Tests/McpToolsListPayloadTests.cs`.
+
+---
+
+## Measured Numbers
+
+| Metric | Bytes | KB |
+|---|---|---|
+| **tools/list full payload** | **28,941** | **28.26** |
+| inputSchema total | 11,068 | 10.81 |
+| outputSchema total | 8,882 | 8.67 |
+| input + output total | 19,950 | 19.48 |
+| Remaining (names, desc, annotations, wrappers) | 8,991 | 8.78 |
+
+- Total tools: **25**
+- Structured (have outputSchema): **20 / 25**
+
+---
+
+## Per-Tool Breakdown (fattest first)
+
+| Rank | Tool | Total | Input | Output | Desc | HasOutput |
+|---|---|---|---|---|---|---|
+| 1 | azdo_timeline | 2099 | 578 | 1123 | 169 | yes |
+| 2 | azdo_search_log | 2027 | 844 | 800 | 146 | yes |
+| 3 | azdo_search_timeline | 1929 | 900 | 608 | 183 | yes |
+| 4 | helix_parse_uploaded_trx | 1703 | 651 | 656 | 133 | yes |
+| 5 | helix_status | 1692 | 370 | 1001 | 99 | yes |
+| 6 | helix_search | 1650 | 819 | 418 | 163 | yes |
+| 7 | azdo_build | 1531 | 226 | 929 | 152 | yes |
+| 8 | azdo_helix_jobs | 1425 | 498 | 550 | 142 | yes |
+| 9 | azdo_builds | 1305 | 920 | 68 | 98 | yes |
+| 10 | helix_find_files | 1185 | 418 | 398 | 129 | yes |
+| 11 | helix_batch_status | 1143 | 207 | 569 | 127 | yes |
+| 12 | helix_work_item | 1128 | 344 | 428 | 117 | yes |
+| 13 | azdo_build_analysis | 1103 | 226 | 539 | 87 | yes |
+| 14 | helix_files | 1058 | 344 | 362 | 121 | yes |
+| 15 | azdo_test_attachments | 1048 | 592 | 68 | 147 | yes |
+| 16 | helix_download | 1035 | 586 | 93 | 106 | yes |
+| 17 | azdo_artifacts | 838 | 412 | 68 | 126 | yes |
+| 18 | azdo_test_results | 806 | 417 | 68 | 92 | yes |
+| 19 | helix_logs | 806 | 467 | 0 | 127 | no |
+| 20 | azdo_log | 727 | 403 | 0 | 126 | no |
+| 21 | azdo_test_runs | 788 | 306 | 68 | 185 | yes |
+| 22 | azdo_changes | 708 | 306 | 68 | 108 | yes |
+| 23 | helix_ci_guide | 479 | 168 | 0 | 108 | no |
+| 24 | azdo_auth_status | 362 | 33 | 0 | 97 | no |
+| 25 | helix_auth_status | 330 | 33 | 0 | 101 | no |
+
+---
+
+## Reconciliation Against Prior Estimates
+
+| Source | Estimate | Reality | Verdict |
+|---|---|---|---|
+| Issue #74 heuristic | 16,212 bytes | 28,941 bytes | **Understated by 44%** (two independent errors) |
+| Ash static estimate (inputSchema only) | 11,317 bytes | 11,068 bytes | ✅ Accurate (within 2%) |
+| Ash range (with outputSchema) | 15,000–25,000 bytes | 28,941 bytes | **Range top was too low by ~16%** |
+
+The issue's 16,212-byte number was wrong because:
+1. Its `params × 80` heuristic overstated inputSchema by ~30% (actual is ~42–50 bytes/param, not 80)
+2. It completely excluded outputSchema (8,882 bytes for 20 structured tools)
+
+These two errors partially cancelled: overcount on inputSchema + undercount (zero) on outputSchema = net understatement vs. reality.
+
+---
+
+## Decision Criteria (from decisions.md)
+
+Per Ash's framework:
+
+| Scenario | Threshold | Result |
+|---|---|---|
+| Real > 15 KB AND called per-turn | YES — pursue trimming | **28.26 KB — in scope** |
+| 11–15 KB, called per-turn | MAYBE — conservative only | (below actual) |
+| Cached per-session OR dominated by other payloads | NO | (unknown; requires live measurement) |
+
+**Measurement verdict: the payload is large enough that trimming is justified IF tools/list is called per-turn.** Dallas still needs to decide whether to measure live caching behavior or proceed directly to conservative trim.
+
+---
+
+## Key Trim Opportunity (not implemented — Dallas decision required)
+
+Top 5 outputSchema contributors (high-value trim targets via Pattern 2 in skill):
+
+| Tool | Output bytes | Note |
+|---|---|---|
+| azdo_timeline | 1,123 | Largest single outputSchema |
+| helix_status | 1,001 | StatusResult type is broad |
+| azdo_build | 929 | Build result DTO is wide |
+| azdo_search_log | 800 | Structured log result |
+| helix_parse_uploaded_trx | 656 | TRX parse output schema |
+
+Dropping outputSchema on these 5 alone (Pattern 2: return `CallToolResult` directly, keep StructuredContent) would save ~4.5 KB. Combined with description tightening (-0.5 KB), a moderate trim could bring total from 28.26 KB → ~23 KB.
+
+---
+
+## Test Artifact
+
+`src/HelixTool.Tests/McpToolsListPayloadTests.cs` — kept as a regression guard. If total payload grows beyond 32 KB, the test will catch it via the sanity assertions.
+
+---
+
+**Prepared by:** Ripley  
+**Decision owner:** Dallas
