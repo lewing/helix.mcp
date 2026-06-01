@@ -111,3 +111,15 @@ Release v0.7.6 shipped successfully to NuGet and GitHub Releases. Decision merge
 **Finding:** Zero code-level pinning of `helix_*` tool names. Semantic connections only.
 **Decision:** Rename `helix_status` → `helix_workitems` is safe. No alias needed.
 **PR scope:** Tiny discoverability rename. Expected landing in next cycle.
+
+## 2026-06-01T12:37:55-05:00: MCP Schema Trimming — v0.7.8 candidate (decision pending)
+
+**Input from Ash (Analyst):** GitHub agentic token-efficiency study identified MCP tool schemas as #1 inefficiency. helix.mcp's 25-tool schema footprint is 15.83 KB (upper end of measured range).
+
+**Measurement:** Top 5 cost drivers (helix_search, azdo_search_log, azdo_builds, helix_download, azdo_search_timeline) account for 60% of schema cost. Conservative trim opportunity: −1 KB (tool description tightening only; no API changes).
+
+**Decision timeline:** Squad PM (Dallas) to decide on measure-in-live-workflows vs. proceed-with-conservative-trim. If approved, conservative trim is planned for v0.7.8 post-helix_status→helix_workitems rename (v0.7.7 candidate).
+
+**Tracking:** GitHub issue #74. Full analysis in .squad/decisions/ash-mcp-schema-measurement-2026-06-01.md.
+
+**Status:** Awaiting squad decision. No action for Ripley until approval.
