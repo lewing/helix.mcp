@@ -99,3 +99,10 @@ Lambert handoff line table:
 **Lambert delivery:** 11 tests added, all 7 test cases covered. Full suite: 1312 pass, 2 pre-existing skip.
 **Status:** Implementation merged to decisions.md. Orchestration logs created. Ready for team commit.
 
+## 2026-06-01: Numeric `JsonElement` alias binding fix
+
+- Copilot review caught a critical real-world gap: copying `build_id: 2989057` as a numeric `JsonElement` into canonical `buildIdOrUrl` still leaves the SDK binder unable to bind the value to the string parameter. Alias filters for string parameters must normalize both the key and the JSON value kind.
+- Updated `src/HelixTool.Mcp.Tools/McpServerOptionsExtensions.cs` so alias values are assigned through `CoerceToStringElement(...)`: string values are preserved; non-string JSON values use `GetRawText()` serialized as a JSON string element. This makes numeric telemetry bind as `"2989057"`.
+- Replaced the alias `Dictionary` with an ordered tuple array because alias precedence is documented behavior (`build_id` > `buildId` > `buildUrl`) and should not rely on dictionary enumeration semantics.
+- Validation: `dotnet build --nologo` completed with 0 warnings / 0 errors; `dotnet test --nologo --no-build` completed with 1312 passed, 2 skipped, 0 failed.
+
