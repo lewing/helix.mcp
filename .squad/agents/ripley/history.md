@@ -123,3 +123,13 @@ Release v0.7.6 shipped successfully to NuGet and GitHub Releases. Decision merge
 **Tracking:** GitHub issue #74. Full analysis in .squad/decisions/ash-mcp-schema-measurement-2026-06-01.md.
 
 **Status:** Awaiting squad decision. No action for Ripley until approval.
+
+## 2026-06-01T19:01:23Z: Issue #74 Ground-Truth Schema Measurement — Incoming Task (Ripley)
+
+**From Ash (Analyst) via Scribe:**
+Ash's analysis revealed critical gap: issue #74 excluded `outputSchema` (20/25 tools use `UseStructuredContent=true`). Real `tools/list` payload likely 15–25 KB, not the measured 11.3 KB inputSchema alone.
+
+**Incoming task for Ripley:** Run ground-truth `tools/list` measurement using `McpServerTool.Create()` + `ProtocolTool` serialization per `.squad/skills/mcp-wire-format-trim/SKILL.md` "Measurement" section. Report total byte count (including outputSchema) before any trim work is authorized. Estimated effort: 1–2 hours.
+
+**Decision depends on this:** If real > 15 KB AND called per-turn (not cached), Dallas may approve conservative trim (−1 KB). Otherwise, defer.
+

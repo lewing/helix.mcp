@@ -256,3 +256,84 @@ Where:
 **Prepared by**: Ash (Analyst)  
 **Status**: Ready for squad review  
 **Decision owner**: Dallas (PM/Architecture)
+
+---
+
+# Issue #74 Schema Cost — Ground-Truth Analysis
+
+**Filed by**: Ash (Product Analyst)  
+**Date**: 2026-06-01T13:54:11.609-05:00  
+**Decision owner**: Dallas  
+**Status**: Awaiting go/no-go
+
+---
+
+## What Was Measured
+
+The issue's 16,212-byte estimate used a heuristic: `name + title + description + (params × 80) + param_descriptions + JSON wrapper`. The "× 80" per-param multiplier is the flaw — actual per-param JSON overhead is ~42–50 bytes.
+
+Real measurements extracted directly from source:
+
+| Metric | Value |
+|---|---|
+| Total tools | 25 (confirmed) |
+| Tool description chars | 3,181 |
+| Parameter count | 39 total |
+| Param description chars | 1,866 |
+| All text chars (names + titles + descs) | 5,927 |
+| **Compact JSON — inputSchema only** | **~11,317 bytes (~11.0 KB)** |
+| Issue's estimate | 16,212 bytes |
+| Overstatement | ~30–40% |
+
+**Source files measured**:
+- `src/HelixTool.Mcp.Tools/Helix/HelixMcpTools.cs` (10 tools)
+- `src/HelixTool.Mcp.Tools/AzDO/AzdoMcpTools.cs` (14 tools)
+- `src/HelixTool.Mcp.Tools/CiKnowledgeTool.cs` (1 tool)
+
+---
+
+## Critical Gap the Issue Missed
+
+20 of 25 tools have `UseStructuredContent = true` → the SDK emits an `outputSchema` field for each in the `tools/list` response. The issue explicitly did NOT measure this. If outputSchema is significant (structured result types like `AzdoBuild`, `HelixWorkItem`, etc.), the real `tools/list` payload could be **15–25 KB** — meaning the issue's 16.2 KB number might accidentally be close to reality, just via the wrong path.
+
+**The right measurement**: Use `McpServerTool.Create(...)` per tool, serialize each `ProtocolTool` with `McpJsonUtilities.DefaultOptions`, count UTF-8 bytes (per the existing `.squad/skills/mcp-wire-format-trim/SKILL.md`). This is a 2-hour task for Ripley.
+
+---
+
+## Corrected Top 5 Fattest Tools (inputSchema only)
+
+| Rank | Tool | Est. JSON (bytes) | Change from Issue |
+|---|---|---|---|
+| 1 | helix_search | 861 | Was 1,113 (overstated) |
+| 2 | azdo_search_log | 823 | Was 1,089 (overstated) |
+| 3 | helix_parse_uploaded_trx | 691 | Not in issue's top-5 |
+| 4 | helix_download | 594 | Was 923 (overstated) |
+| 5 | helix_logs | 522 | Not in issue's top-5 |
+
+Issue's #3 (`azdo_builds`, 1,051 bytes) actually ranks #7 at 508 bytes. Issue's #5 (`azdo_search_timeline`, 917 bytes) actually ranks #9 at 469 bytes.
+
+---
+
+## Recommendation (for Dallas)
+
+**Do NOT trim before measuring the real `tools/list` payload** (including outputSchema). The GitHub study's key caveat applies directly: schema pruning gives 0% improvement when context is dominated by other content — measurement matters before action.
+
+**Decision criteria**:
+
+| Scenario | Verdict |
+|---|---|
+| Real `tools/list` > 15 KB **AND** called per-turn (not cached) | **YES — pursue trimming** |
+| Real `tools/list` 11–15 KB, tools/list called per-turn | **MAYBE — conservative desc trim only, <1 KB savings** |
+| tools/list cached per-session OR context dominated by other payloads | **NO** |
+
+**If YES, trimming priority order** (lowest risk → highest risk):
+1. **Description tightening** (no API contract impact) — reuse existing mcp-wire-format-trim skill; potential −0.5–1 KB
+2. **Default-annotation audit** — `OpenWorld=true` and other SDK-default annotations are removable noise (per skill Pattern 1); potential −0.1–0.2 KB  
+3. **outputSchema opt-out for trivial tools** (Pattern 2 in skill) — only for small primitive-result tools; medium risk
+4. **Parameter consolidation** in `azdo_search_log`/`azdo_builds` — **BREAKS v0.7.x API contracts → Dallas decision required before any work begins**
+
+---
+
+## Concrete Next Step
+
+Assign to Ripley: run the `McpServerTool.Create` + `ProtocolTool` serialization measurement (`.squad/skills/mcp-wire-format-trim/SKILL.md` "Measurement" section). Report back total byte count including outputSchema before any trim work is authorized. Estimated effort: 1–2 hours.

@@ -136,3 +136,19 @@ Both bugs fixed. Follow-up issue #65 filed for: schema test, flatten exceptions,
 **Issue #67 Policy Decision:** Reviewed Ash's silent MCP failure investigation. Decided on CallToolFilters middleware as central solution (ArgumentException → McpException, ~10 LOC, all 25 tools). Sequenced v0.7.5 release with CallToolFilters as primary item, schema audit parallel. Deferred per-tool validation prologues (only for combo-rules, narrow scope).
 
 **Deliverables:** PR #66 review document + McpException policy decision document (merged into decisions.md 2026-05-28)
+
+## 2026-06-01T19:01:23Z: Issue #74 Ash Follow-up — Critical Gap Alert (Decision Required)
+
+**From Ash (Analyst) via Scribe:**
+Analysis revealed critical measurement gap: Ash's ground-truth assessment excluded `outputSchema` (20/25 tools use `UseStructuredContent=true`). Real `tools/list` response likely 15–25 KB, not 11.3 KB (inputSchema alone). This means:
+- Issue #74's original estimate (16.2 KB) may accidentally be close to reality via the wrong path
+- **Before approving any trim work, Ripley must measure real `tools/list` payload including outputSchema** (1–2 hour task)
+
+**Your decision gate:**
+1. **Measure first?** (Ripley: run `McpServerTool.Create` + `ProtocolTool` serialization per `.squad/skills/mcp-wire-format-trim/SKILL.md`)
+2. **Proceed with conservative trim?** (−1 KB, v0.7.8, post-helix_status rename)
+
+**Recommendation:** Prioritize measurement. Aligns with GitHub study caveat: schema pruning yields 0% savings if context dominated by other content.
+
+**Full analysis:** `.squad/decisions.md` (merged Issue #74 ground-truth section)
+
