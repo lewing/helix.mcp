@@ -704,3 +704,142 @@ Recommended coverage:
 - Should alias normalization be global for all tools or scoped to AzDO tool names? I recommend global because `buildIdOrUrl` is currently AzDO-only and the alias table is canonical-key based.
 - Should `result` also alias to `resultFilter` for `azdo_search_timeline`? The observed call included `result: 'failed'`, but unknown extras are ignored and the default is already `failed`. Treat as a separate alias decision if telemetry shows non-default `result` values.
 - Future SDK versions might add native alias support. If that happens, this filter can be retired or reduced to a compatibility shim.
+# REVIEW VERDICT: AzDO `buildIdOrUrl` Alias Filter
+
+**Date:** 2026-06-01  
+**Reviewer:** Dallas (Lead)  
+**Verdict:** ✅ **APPROVE WITH CHANGES**  
+**Reference:** Proposal embedded in `.squad/decisions.md` (line 557) — "Proposal: Normalize AzDO `buildIdOrUrl` aliases at MCP call binding"  
+**Target release:** v0.7.7 (confirmed — see §4)
+
+---
+
+## Summary Verdict
+
+The core approach is correct and ready to implement. A `CallToolFilter` in `McpServerOptionsExtensions` is the right architectural layer. The alias map design is sound. The conflict semantics are correct. Four specific changes are required before implementation lands:
+
+1. **Combine normalization INTO the existing filter** (or document registration order explicitly if kept separate)
+2. **Add one test case** to Lambert's list: multiple aliases present, no canonical
+3. **Add a `Debug`-level log line** when an alias substitution fires
+4. **Close the `result` → `resultFilter` open question** with an explicit "skip it" — do not implement that alias
+
+Details below.
+
+---
+
+## §1 — Architectural Fit
+
+**The `CallToolFilter` layer is correct.** The failure occurs at MCP SDK binding before `AzdoMcpTools` or `AzdoService` ever runs. No lower layer can intercept it. `CallToolRequestParams.Arguments` is mutable and accessible in the filter, so pre-binding key normalization is clean and surgical.
+
+`McpServerOptionsExtensions` is the right home. It already owns `AddBindingErrorFilter`, and both startup paths (stdio `Program.cs`, HTTP `Program.cs`) already wire into it with one-line calls. The proposed helper follows the exact same pattern.
+
+Placing aliases as per-tool attribute metadata was considered and correctly rejected — `McpServerToolAttribute` has no alias-map surface in 1.3.0 and per-tool repetition would be wrong anyway (11 tools, one alias table).
+
+**One architectural refinement required:** Ripley's proposal offers two choices — combine normalization into the existing `AddBindingErrorFilter`, or register a separate filter. The separate-filter option introduces a filter-ordering dependency that is not enforced by the codebase. Prefer **combining into the existing filter**: call `NormalizeArgumentAliases(request.Params)` before `next(request, ct)` inside the existing binding error wrapper. This eliminates the ordering question entirely. The two concerns (alias normalization + exception translation) are both pre-invocation hygiene and belong together. If Ripley has a strong reason to separate them, that is acceptable — but then the registration helper must call both `AddArgumentAliasFilter` AND `AddBindingErrorFilter` in the correct order from a single composite extension method, so callers cannot accidentally register them in the wrong sequence.
+
+---
+
+## §2 — Generality
+
+**The `Dictionary<string, string>` alias-to-canonical map is the right structure. Keep it static/global for now.** The parameterization question: do NOT add a `IReadOnlyDictionary<string, string>` parameter to the public API at this time. We have one use case. The static readonly field is testable without parameterization (Lambert can construct `RequestContext` with the alias keys and verify the canonical appears). Introducing a parameter now would add API surface with no current consumer.
+
+Required future pattern: when a second independent alias group emerges (e.g., `workItemName` aliases for Helix tools), do NOT add them to the same flat dictionary and call it done. File that as a decision for me to rule on scoping and whether to split into per-domain alias tables or keep a single global table with documented ownership.
+
+**`StringComparer.OrdinalIgnoreCase` on the alias map is correct.** Agents have demonstrated both `build_id` (snake_case) and `buildUrl` (camelCase). Case-insensitive lookup is the right default for key matching.
+
+---
+
+## §3 — Conflict Semantics
+
+**"Canonical wins if both supplied" is correct.** The early-return guard (`if (args.ContainsKey("buildIdOrUrl")) return;`) is sound. No issue there.
+
+**"Alias wins when only alias is present" is correct.** The `TryGetValue` + `!ContainsKey(canonical)` check is correct. The `JsonElement` value is carried through as-is — no type conversion, no data loss.
+
+**Precedence when multiple aliases are present (no canonical):** The `foreach` loop over `Dictionary<string, string>` iterates in insertion order in .NET. So `build_id` wins over `buildId` wins over `buildUrl`. This is an acceptable behavior but **must be tested explicitly** (see §5) and **documented with a code comment** on the alias dictionary ("First match wins; order is significant when multiple aliases are present in a single call").
+
+**Drift telemetry — a `Debug` log is required:** When an alias substitution fires, emit a `Debug`-level log line: `"Argument alias resolved: '{alias}' → '{canonical}' for tool '{toolName}'"`. The MCP filter has access to `request.Params?.Name`. This is the only way we can measure alias drift over time and eventually retire the table when agent behavior converges. Without it we're flying blind on whether the problem is improving. Note: this requires that `McpServerOptionsExtensions` receive or create an `ILogger`. The cleanest approach is to add an overload that accepts `ILogger?` with a `null` default — no logger, no log line, existing callers unchanged.
+
+---
+
+## §4 — Scope / Release
+
+**v0.7.7 confirmed.** This is a runtime compat fix sourced from real consumer telemetry (session e9c219bd). Two distinct rejection patterns were observed. Schema impact is zero — the alias map is invisible to `tools/list`. The fix does not interact with the schema-trim decision (CONDITIONAL NO per the Issue #74 verdict).
+
+**Pairing with the `helix_status` → `helix_workitems` rename:** Both are discoverability fixes in v0.7.7. They are independent and do not conflict. The rename is a tool-name change; this is a parameter-key normalization. No concern about landing together.
+
+**Do not wait for v0.7.8.** The schema-trim lever (if ever triggered) operates at `tools/list` generation time; this filter operates at `tools/call` dispatch time. They are orthogonal.
+
+---
+
+## §5 — Test Surface
+
+Ripley's 5 cases are good. **Lambert must add:**
+
+- **Case 6:** Both `build_id` and `buildUrl` present in arguments, canonical `buildIdOrUrl` absent. Expected: `build_id` wins (first in insertion order). Verify the `buildIdOrUrl` value in the normalized args equals the original `build_id` value, NOT the `buildUrl` value.
+- **Case 7:** Alias key with non-standard casing (e.g., `Build_Id`, `BUILDURL`) maps correctly to canonical — validates `OrdinalIgnoreCase` on the lookup.
+
+**Not missing:**
+- `JsonElement` vs `string` value types — `TryGetValue` returns `JsonElement` and it's re-inserted as-is. No conversion occurs, no test needed.
+- Interaction with `AddBindingErrorFilter` — covered by case 4 in Ripley's list (missing required params when no alias matches). Good.
+- `UseStructuredContent` / output schema — completely unaffected. No test needed.
+
+**Recommended for Lambert if capacity allows (not blocking):**
+- An integration test that wires the full `McpServerOptions` with both filters and issues an actual `tools/call` via `InMemoryServer` (or mock) with `build_id` as the key, verifying the tool handler receives the normalized value. This validates the full filter composition path, not just the normalization helper in isolation.
+
+---
+
+## §6 — Open Questions — Verdicts
+
+### `result` → `resultFilter` for `azdo_search_timeline`
+
+**Verdict: Skip.** Do not implement this alias now.
+
+The observed call included `result: 'failed'`, but Ripley's probe confirms unknown extras are silently ignored by the binder, and the default value for `resultFilter` is already `failed`. The observed call succeeded (or would succeed once `buildIdOrUrl` is resolved). Adding a `result` → `resultFilter` alias provides no correctness benefit for the common case. If telemetry shows agents passing non-default `result` values that are being silently dropped, revisit as a separate alias decision. Not v0.7.7 scope.
+
+### Global vs AzDO-scoped alias table
+
+**Verdict: Global is correct.** The canonical name `buildIdOrUrl` is specific enough that it will never collide with a Helix parameter name. A global alias table with a canonical-name key is the right design. If alias tables for different subsystems were added to the same flat dict (e.g., if Helix had a `buildIdOrUrl` parameter of its own), that would be the time to split. We're not there. Global.
+
+---
+
+## Directives for Ripley
+
+Implement the following; all other aspects of the proposal are approved as described:
+
+- **MUST:** Combine `NormalizeArgumentAliases` into the existing `AddBindingErrorFilter` body (call it before `next(request, ct)`), OR produce a composite helper that enforces correct registration order. Do not leave separate filter registration to caller discretion.
+- **MUST:** Add code comment on `s_argumentAliases` dictionary: "First match wins; insertion order is significant when multiple aliases are present without a canonical key."
+- **MUST:** Emit a `Debug`-level log when alias substitution fires. Add `ILogger? logger = null` parameter to `AddBindingErrorFilter` (or the composite helper). No-op if `logger` is null.
+- **MUST:** Pass Lambert's updated test list (6 required cases + case 7 for case-insensitivity).
+- **SKIP:** `result` → `resultFilter` alias. Not in v0.7.7 scope.
+- **SKIP:** Parameterizing the alias map on the public API. Static readonly dict is correct for now.
+
+---
+
+**Verdict is final. This proposal moves to the implementation queue for v0.7.7.**
+# Ripley handoff: `buildIdOrUrl` alias implementation
+
+Date: 2026-06-01
+
+## Files touched
+
+| File | Lines | Notes |
+|---|---:|---|
+| `src/HelixTool.Mcp.Tools/McpServerOptionsExtensions.cs` | 1-4 | Added logging/DI/protocol imports. |
+| `src/HelixTool.Mcp.Tools/McpServerOptionsExtensions.cs` | 15-21 | Added case-insensitive alias table: `build_id`, `buildId`, `buildUrl` → `buildIdOrUrl`; insertion order is documented as precedence. |
+| `src/HelixTool.Mcp.Tools/McpServerOptionsExtensions.cs` | 23-38 | Folded alias normalization into existing `AddBindingErrorFilter` before `next(...)`, with optional `ILogger?`. |
+| `src/HelixTool.Mcp.Tools/McpServerOptionsExtensions.cs` | 43-91 | Added logger resolution, alias normalization, canonical-conflict guard, and case-insensitive key matching helpers. |
+| `.squad/agents/ripley/history.md` | appended | Implementation notes for future agents. |
+
+## Lambert test cases requested by Dallas
+
+1. Alias maps when canonical absent.
+2. All three aliases (`build_id`, `buildId`, `buildUrl`) map correctly.
+3. Canonical wins on conflict.
+4. Binding-error filter still fires when no canonical/alias exists.
+5. End-to-end via at least `azdo_build_analysis` + `azdo_search_timeline`.
+6. Multi-alias-no-canonical — precedence when two aliases supplied without canonical. Current documented order: `build_id` wins over `buildId` wins over `buildUrl`.
+7. Case-insensitive key matching — `BUILD_ID`, `BuildID`, etc. all normalize.
+
+## Validation
+
+- `dotnet build --nologo` completed with 0 warnings and 0 errors on 2026-06-01.
