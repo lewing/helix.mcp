@@ -866,3 +866,40 @@ Date: 2026-06-01
 ## Skips
 
 No new tests were skipped. The 2 skipped tests in the full run are pre-existing MCP exception coverage tests for pending exception-centralization follow-up work.
+
+# Decision: numeric `build_id` / `buildId` alias coercion (Copilot PR #75)
+
+**Date:** 2026-06-01T20:50:00Z  
+**Author:** Ripley  
+**Status:** Implemented & tested
+
+## Summary
+
+Copilot bot review flagged a critical binding gap: numeric values passed as `build_id` or `buildId` aliases would fail SDK binding because the aliases are strings but incoming telemetry could be JSON numbers.
+
+## Implementation: JsonElement value-kind coercion
+
+`AddBindingErrorFilter` now routes alias values through `CoerceToStringElement(...)` before assigning to the canonical `buildIdOrUrl` key:
+
+- **String values** (e.g., `"2989057"`) → preserved as-is
+- **Number/Boolean/other JSON kinds** (e.g., `2989057`) → serialized as JSON string (e.g., `"2989057"`)
+
+Result: real telemetry like `build_id: 2989057` becomes canonical `buildIdOrUrl: "2989057"`, which successfully binds to `string buildIdOrUrl` parameter.
+
+## Alias precedence (ordered tuple array)
+
+Changed from fragile `Dictionary<string, string>` enumeration to explicit `(string Alias, string Canonical)[]` order:
+- `build_id` wins
+- `buildId` wins
+- `buildUrl` last
+
+Documents and enforces precedence as part of the contract.
+
+## Validation
+
+- **Build:** 0 warnings, 0 errors
+- **Tests:** 1316 passed, 2 skipped, 0 failed (+ numeric regression coverage)
+- **Commits:** `92c2655` (fix), `015d304` (test)
+- **Branch:** `ripley/azdo-buildidorurl-aliases`
+- **Regression tests:** Added for numeric `build_id: 2989057` and `buildId: 2989057` → end-to-end SDK binding success
+

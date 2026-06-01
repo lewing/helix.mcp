@@ -106,3 +106,20 @@ Lambert handoff line table:
 - Replaced the alias `Dictionary` with an ordered tuple array because alias precedence is documented behavior (`build_id` > `buildId` > `buildUrl`) and should not rely on dictionary enumeration semantics.
 - Validation: `dotnet build --nologo` completed with 0 warnings / 0 errors; `dotnet test --nologo --no-build` completed with 1312 passed, 2 skipped, 0 failed.
 
+
+## Copilot PR #75 — Numeric JsonElement Coercion (2026-06-01)
+
+Copilot bot flagged critical binding issue: numeric `build_id` / `buildId` alias values (e.g., `2989057`) would fail SDK binding because they arrive as JSON numbers but the canonical parameter is a string.
+
+**Fix:** Implemented `CoerceToStringElement(...)` in `AddBindingErrorFilter`. Routes alias values through value-kind detection:
+- String → preserve as-is
+- Number/Boolean/other → serialize to JSON string before binding
+
+**Result:** `build_id: 2989057` becomes `buildIdOrUrl: "2989057"` → succeeds binding.
+
+**Also:** Refactored alias map from fragile `Dictionary<string, string>` to ordered `(string Alias, string Canonical)[]` tuple array. Enforces multi-alias precedence (`build_id` > `buildId` > `buildUrl`) as contract.
+
+**Commits:** `92c2655` (fix), `d6528b5` (notes)  
+**Tests:** 1312 passed, 2 skipped (0 failed)  
+**Branch:** `ripley/azdo-buildidorurl-aliases` (Lambert added regression coverage)
+

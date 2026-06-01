@@ -98,3 +98,18 @@ Rationale: The failure is a *key*-normalization problem, not a *value*-normaliza
 **Calibration learning:** Estimated-vs-measured gap was 44% (16.2 KB estimate vs 28.9 KB real). Two errors partially cancelled (inputSchema overcount + outputSchema omission). Lesson: **always measure the full wire path before deciding on optimization work**. Ash's decision to gate on ground-truth measurement before approving any trim work was correct and saved us from acting on wrong numbers in either direction.
 
 For full work history from earlier 2026 sessions, see `.squad/agents/dallas/history-archive-2026-06-01.md`.
+
+---
+
+## Gap Identification: Copilot PR #75 Review (2026-06-01)
+
+Copilot bot review flagged critical gap in prior approval: numeric `build_id` / `buildId` alias values (JSON numbers) would fail SDK binding to string parameter `buildIdOrUrl`. This was missed in original `AddBindingErrorFilter` design (PR #69).
+
+**Finding:** Alias coercion must handle JSON value-kind conversion (Number → String), not just parameter renaming.
+
+**Remediation:** Ripley implemented `CoerceToStringElement(...)` in filter logic. Lambert added end-to-end regression tests. Now all numeric aliases coerce before binding.
+
+**Lesson for future filter designs:** When binding alias parameters, validate all upstream value kinds (not just assumes upstream matches parameter type). Consider jsonElement.ValueKind early.
+
+**Commits:** `92c2655` (Ripley fix), `015d304` (Lambert tests)
+
