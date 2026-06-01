@@ -7,129 +7,72 @@ See history-archive.md for:
 - Issue #59 quick wins (SDK defaults, structured output)
 - Issue #61 Bug A+B (param rename, exception centralization)
 - RollForward policy, release flows, earlier baselines
+- AzDO timeline filter presets (PR #56)
+- Description tightening (PR #57)
+- v0.7.3 release flow summary
 
-## Learnings — AzDO timeline filter presets (2026-05-22T13:03:40-05:00)
+## Current Work (2026-05-28 through 2026-06-01)
 
-- Shared filter logic now lives on `AzdoService` as `public static` helpers because `HelixTool.Mcp.Tools` needs the exact same normalization/validation/predicate flow and `HelixTool.Core` only exposes internals to tests today.
-- The clean MCP pattern is: keep `AllowedValues` canonical, run `NormalizeFilter(...)` before validation, and accept silent aliases (`inProgress`, `in-progress`, `active`, `notStarted`, `not-started`) without advertising them in schema.
-- `azdo_helix_jobs` must relax its old issues-only gate for `running` / `pending` / `incomplete`; otherwise active Helix submission tasks disappear before issue text exposes a GUID. Returning `HelixJobId = ""` preserves the existing record shape while surfacing those state-based matches.
-- Branch: `feat/azdo-timeline-filter-presets`. PR: #56.
+### Learnings — Issue #67 CallToolFilters middleware (2026-05-28)
 
-## Team Update (2026-05-22)
+- SDK API confirmed on ModelContextProtocol 1.3.0: `McpServerOptions.Filters.Request.CallToolFilters` exists, and `CallToolFilters` can be appended inside the existing `.AddMcpServer(options => ...)` startup configuration.
+- Filter converts SDK parameter-binding `ArgumentException`s into `McpException` before the MCP server's generic formatter hides details. Double-wrap discipline: catches `ArgumentException` only when `ex.ParamName == "arguments"` (matching SDK binder's exact param name from #67 repro).
+- Helper extraction pattern: cross-cutting MCP request filters live as extension methods on `McpServerOptions` in `src/HelixTool.Mcp.Tools`, so stdio and HTTP startup paths each keep a one-line `options.AddBindingErrorFilter()` call.
 
-**Lambert's PR #56 merged.** 97 unit tests for AzDO timeline filter presets (`running`, `pending`, `incomplete`, `issues`) and aliases (`inProgress`, `notStarted`, `in-progress`, `active`) now passing in main. Ripley's description tightening work on feat/mcp-description-tightening can proceed independently; no rebase required.
-
-## Learnings — MCP description tightening pass (2026-05-22)
-
-- For `[McpServerTool]` descriptions, follow the `mcp-server-design` rubric in `.squad/skills/mcp-filter-api-design/SKILL.md`: lead with a verb, stay around 20 words or less, and push defaults/filter enumerations down into parameter descriptions.
-- Schema dumps and repo-specific/domain guidance belong in response content (`CiKnowledgeService` overview/profile text), not in always-loaded tool description metadata.
-- The second-pass audit on 2026-05-22 showed description drift had already crept back in roughly three months after the prior tightening pass, so periodic re-audits are warranted.
-
-## Team Update (2026-05-22 completion)
-
-**PR #57 merged to main at 3c4728c.** Ripley completed description tightening on 8 tools (229 → 93 words, 136 recovered). Lambert fixed assertion coupling by routing devdiv knowledge verification to CiKnowledgeService response content. Dallas reviewed, approved, and merged; flagged two follow-ups: (a) establish quarterly description audit cadence, (b) restore azdo_builds→azdo_search_timeline cross-reference in future pass. Baseline decision recorded in decisions.md with full audit counts and pattern guidance for next drift check.
-
-- [2026-05-22] v0.7.3 shipped (PR #56 + PR #57 → main → NuGet)
-
-## Learnings — Issue #67 CallToolFilters middleware (2026-05-28)
-
-- SDK API confirmed on ModelContextProtocol 1.3.0: `McpServerOptions.Filters.Request.CallToolFilters` exists, and `CallToolFilters` can be appended inside the existing `.AddMcpServer(options => ...)` startup configuration. The companion builder API is `WithRequestFilters(...).AddCallToolFilter(...)`, but this change used the direct options path from Dallas's policy.
-- The filter converts SDK parameter-binding `ArgumentException`s into `McpException` before the MCP server's generic formatter hides details. It covers binding failures before tool method bodies run; it does not replace `McpExceptionHandler` for runtime/service exceptions inside tool bodies.
-- Double-wrap discipline: the implementation catches `ArgumentException` only when `ex.ParamName == "arguments"`, matching the SDK binder's parameter name from the #67 repro. That avoids relabeling ordinary tool-body `ArgumentException`s as parameter-binding errors while still surfacing the missing `jobId` failure.
-
-## Learnings — PR #69 review-feedback iteration (2026-05-28)
-
-- Helper extraction pattern: cross-cutting MCP request filters now live as extension methods on `McpServerOptions` in `src/HelixTool.Mcp.Tools`, so stdio and HTTP startup paths each keep a one-line `options.AddBindingErrorFilter()` call.
-- Binder param-name rationale: the SDK binding failure is identified by `ArgumentException.ParamName == "arguments"`; `Microsoft.Extensions.AI.AIFunctionFactory.ReflectionAIFunction.InvokeCoreAsync` constructs that exception when binder validation fails, and Ash verified the exact param name in stderr during the 2026-05-28 investigation.
-- Filter middleware test pattern: instantiate `McpServerOptions`, call the extension, grab the single `CallToolFilters` delegate, wrap a fake `McpRequestHandler<CallToolRequestParams, CallToolResult>`, and invoke it with a minimal `RequestContext<CallToolRequestParams>` using an NSubstitute `McpServer` and `JsonRpcRequest`.
-
-## 2026-05-28: PR #69 — CallToolFilters Middleware for MCP Parameter Binding Errors
+### PR #69: CallToolFilters Middleware (2026-05-28)
 
 - Implemented AddBindingErrorFilter() in new src/HelixTool.Mcp.Tools/McpServerOptionsExtensions.cs
 - Integrated filter registration in both src/HelixTool/Program.cs and src/HelixTool.Mcp/Program.cs
-- Added 2 unit tests for filter behavior (ArgumentException detection, McpException conversion, message preservation)
+- Added 2 unit tests for filter behavior
 - Resolves Issue #67 Class A silent failures (all 25 tools automatically protected)
-- PR #69 shipped and merged; v0.7.5 release candidate pending
+- **v0.7.5 shipped** (PR #69 merged)
 
-**Next steps:** Per-tool validation prologues deferred pending filter feedback (only for combo-rules, narrow scope)
+### v0.7.5 Release Flow (2026-05-28 mechanical release)
 
-## Learnings — v0.7.5 release flow (2026-05-28 Ripley mechanical release)
+- Synced main: commit 5c7852e. Bumped version 0.7.4 → 0.7.5 (3 locations: .csproj, server.json top-level + packages[0].version).
+- Build: 0 errors, 0 warnings. Tests: 1298 passed, 0 failed, 2 skipped.
+- Release commit: c801bb5. Tag: v0.7.5 pushed to origin. Publish workflow: run 26599303495.
+- **Shipped PRs:** PR #66 (akoeplinger): IsCompleted bucketing. PR #68 (Lambert): required-param schema clarity audit. PR #69 (Ripley): CallToolFilters middleware.
 
-**Release execution summary:**
-- Synced main branch: commit 5c7852e (via `git pull --ff-only`).
-- Bumped three version stamps: `src/HelixTool/HelixTool.csproj` (line 12) + `src/HelixTool/.mcp/server.json` (top-level "version" + packages[0].version) — all 0.7.4 → 0.7.5.
-- Build: 0 errors, 0 warnings (9.52s).
-- Tests: 1298 passed, 0 failed, 2 skipped (3s).
-- Release commit: c801bb5 (`release: v0.7.5`).
-- Tag: `v0.7.5` pushed to origin.
-- Publish workflow: triggered on tag push, run 26599303495, status in_progress.
-- Workflow URL: https://github.com/lewing/helix.mcp/actions/runs/26599303495
+### Issue #70 & PR #71: GetWorkItemDetail IsCompleted Bucketing (2026-05-29)
 
-**Shipped PRs in v0.7.5:**
-- PR #66 (akoeplinger): fix(helix): waiting work items must not be counted as failed — adds IsCompleted/InProgress bucketing.
-- PR #68 (Lambert): audit: MCP tool required-param schema clarity (#67 supporting work) — improves [Description] attributes, adds reflection coverage test.
-- PR #69 (Ripley): fix: surface MCP parameter-binding errors via CallToolFilters (#67) — adds AddBindingErrorFilter() middleware to surface previously-stripped binding error messages.
+- Applied PR #66's Helix work-item completion pattern to single-item detail path: `details.ExitCode.HasValue` is completion signal.
+- Added focused coverage for waiting work items (IsCompleted=false, ExitCode=-1, no failure category).
+- When adding new bool fields to Helix DTOs, mirror non-breaking default on every serialized wrapper (source DTOs + CLI/MCP result wrappers). Missing wrapper default causes older JSON payloads to deserialize absent fields as `false` and flip completed items to incomplete.
 
-**Issue closed:** #67 (by PRs #68/#69 in combination).
+### User-Agent Identifier & v0.7.6 Release (2026-05-29)
 
-## Learnings — Issue #70 GetWorkItemDetail IsCompleted bucketing (2026-05-29)
+- Outbound tool-owned `HttpClient` traffic: `HelixToolUserAgent.Apply(HttpClient)` adds `User-Agent: helix.mcp/{version}` + `X-Helix-Mcp-Tool: helix.mcp` on AzDO and Helix download named clients.
+- Helix SDK exposes `Azure.Core.ClientOptions.AddPolicy(...)` hook through `HelixApiOptions`, so SDK calls carry same UA/tool header via per-call pipeline policy.
+- **v0.7.6 shipped:** Release commit 0bc0095 (0.7.5 → 0.7.6). Build: 0 errors. Tests: 1300 passed.
+- **Shipped PRs:** PR #73 (User-Agent + X-Helix-Mcp-Tool header). PR #71 (IsCompleted backport).
 
-- Applied PR #66's Helix work-item completion pattern to the single-item detail path: `details.ExitCode.HasValue` is the completion signal, `-1` remains only a sentinel, and `FailureCategory` is assigned only for completed non-zero exits.
-- `WorkItemDetail` now mirrors `WorkItemResult` with `bool IsCompleted = true` for compatibility, and both CLI JSON/human output plus MCP `helix_work_item` structured content expose completion state.
-- Added focused coverage for a waiting work item so incomplete details return `IsCompleted=false`, `ExitCode=-1`, and no failure category.
+### Tool Rename Validation (2026-05-30)
 
-## Learnings — PR #71 wire-compat result-wrapper defaults (2026-05-29)
+- Cross-checked dotnet org for hard-coded tool name references: zero code-level pinning of `helix_*` tool names.
+- **Verdict:** Rename `helix_status` → `helix_workitems` is safe. No alias needed. Expected landing in next cycle.
 
-- When adding new bool fields to Helix DTOs for wire compatibility, mirror the non-breaking default on every serialized wrapper too: source DTOs (`WorkItemDetail`, `WorkItemResult`) plus CLI/MCP result wrappers (`CliWorkItemJsonResult`, `WorkItemToolResult`). Missing the wrapper default makes older JSON payloads deserialize absent fields as `false` and flips completed work items to incomplete.
+### Issue #74: MCP Schema Trimming Decision (2026-06-01)
 
-## Learnings — User-Agent identifier (2026-05-29T20:12:39-05:00)
+**Ground-truth measurement (completed by Ripley 2026-06-01T14:02:01Z):**
+- Serialization: `McpServerTool.Create()` → `ProtocolTool` → `JsonSerializer.Serialize()` (canonical wire path).
+- **Real `tools/list` payload: 28,941 bytes (28.26 KB)** — 44% larger than issue's 16,212-byte heuristic estimate.
+  - inputSchema: 11,068 bytes (10.81 KB) — matches Ash's estimate within 2% ✅
+  - outputSchema: 8,882 bytes (8.67 KB) — critical discovery (20/25 tools have UseStructuredContent=true)
+- Ash's measurement framework validated. Issue #74 closed with Dallas verdict.
+- **Measurement test:** src/HelixTool.Tests/McpToolsListPayloadTests.cs (added as regression guard, 1301 tests pass).
+- Top outputSchema contributors (trim candidates): azdo_timeline (1,123 B), helix_status (1,001 B), azdo_build (929 B).
 
-- Outbound tool-owned `HttpClient` traffic now uses `HelixToolUserAgent.Apply(HttpClient)` to add `User-Agent: helix.mcp/{version}` plus `X-Helix-Mcp-Tool: helix.mcp` on the AzDO and Helix download named clients.
-- The Helix SDK exposes an `Azure.Core.ClientOptions.AddPolicy(...)` hook through `HelixApiOptions`, so SDK calls can carry the same UA and tool header via a per-call pipeline policy instead of relying on the SDK default UA alone.
+**Dallas Verdict (2026-06-01T14:12:04.001-05:00):** CONDITIONAL NO on active trimming. Cold-load payload cached per-session, not per-turn. At <1% of session token budget, solves problem we don't have. Revisit if: consumer re-fetches per-turn, tool count >40, or token budget pressure reported. Best lever when needed: Pattern 2 (selective outputSchema removal, 4.5–8.9 KB, no breaking change). No trim implementation assigned.
 
-## Learnings — v0.7.6 release flow (2026-05-29 Ripley mechanical release)
+### AzDO buildIdOrUrl Alias Proposal (2026-06-01)
 
-**Release execution summary:**
-- Synced main branch: commit 0ee744d (via `git pull --ff-only`).
-- Bumped three version stamps: `src/HelixTool/HelixTool.csproj` (line 12) + `src/HelixTool/.mcp/server.json` (top-level "version" + packages[0].version) — all 0.7.5 → 0.7.6.
-- Build: 0 errors, 0 warnings (9.70s).
-- Tests: 1300 passed, 0 failed, 2 skipped (3s).
-- Release commit: 0bc0095 (`release: v0.7.6`).
-- Tag: `v0.7.6` pushed to origin.
+**Surface confirmed:** 11 AzDO MCP tools require `buildIdOrUrl`: azdo_build, azdo_timeline, azdo_log, azdo_changes, azdo_test_runs, azdo_test_results, azdo_artifacts, azdo_search_log, azdo_search_timeline, azdo_helix_jobs, azdo_build_analysis.
 
-**Shipped PRs in v0.7.6:**
-- PR #73 (akoeplinger): User-Agent identifier + X-Helix-Mcp-Tool custom header on AzDO HttpClient, Helix download HttpClient, and Helix SDK pipeline (via HelixApiOptions.AddPolicy) — lets arcade-services distinguish hlx traffic.
-- PR #71 (backport of #70): Apply IsCompleted bucketing to GetWorkItemDetailAsync so waiting/in-progress work items aren't miscounted as failed.
+**Issue:** `AzdoService.NormalizeFilter(...)` works for values after binding. Cannot fix `buildUrl` / `build_id` keys because MCP/AI binder rejects missing required parameter names before tool method bodies run.
 
-## Status — v0.7.6 release shipped (2026-05-29T20:34:23-05:00)
+**Solution:** Add one generic CallToolFilter mapping aliases (`build_id`, `buildId`, `buildUrl`) to canonical `buildIdOrUrl` when canonical key is absent. Keeps schema bytes flat. No wire-format breaking change. Recommended for **v0.7.7** as compatibility/discoverability bugfix (separate from schema-trim work).
 
-Release v0.7.6 shipped successfully to NuGet and GitHub Releases. Decision merged to `.squad/decisions.md`. Orchestration logged. Cross-agent update by Scribe.
+---
 
-## 2026-05-30T11:48:09-05:00: Tool rename freedom validated (helix_status → helix_workitems)
-
-**Validation scope:** Cross-check dotnet org for hard-coded tool name references (cypher research).
-**Finding:** Zero code-level pinning of `helix_*` tool names. Semantic connections only.
-**Decision:** Rename `helix_status` → `helix_workitems` is safe. No alias needed.
-**PR scope:** Tiny discoverability rename. Expected landing in next cycle.
-
-## 2026-06-01T12:37:55-05:00: MCP Schema Trimming — v0.7.8 candidate (decision pending)
-
-**Input from Ash (Analyst):** GitHub agentic token-efficiency study identified MCP tool schemas as #1 inefficiency. helix.mcp's 25-tool schema footprint is 15.83 KB (upper end of measured range).
-
-**Measurement:** Top 5 cost drivers (helix_search, azdo_search_log, azdo_builds, helix_download, azdo_search_timeline) account for 60% of schema cost. Conservative trim opportunity: −1 KB (tool description tightening only; no API changes).
-
-**Decision timeline:** Squad PM (Dallas) to decide on measure-in-live-workflows vs. proceed-with-conservative-trim. If approved, conservative trim is planned for v0.7.8 post-helix_status→helix_workitems rename (v0.7.7 candidate).
-
-**Tracking:** GitHub issue #74. Full analysis in .squad/decisions/ash-mcp-schema-measurement-2026-06-01.md.
-
-**Status:** Awaiting squad decision. No action for Ripley until approval.
-
-## 2026-06-01T19:01:23Z: Issue #74 Ground-Truth Schema Measurement — Incoming Task (Ripley)
-
-**From Ash (Analyst) via Scribe:**
-Ash's analysis revealed critical gap: issue #74 excluded `outputSchema` (20/25 tools use `UseStructuredContent=true`). Real `tools/list` payload likely 15–25 KB, not the measured 11.3 KB inputSchema alone.
-
-**Incoming task for Ripley:** Run ground-truth `tools/list` measurement using `McpServerTool.Create()` + `ProtocolTool` serialization per `.squad/skills/mcp-wire-format-trim/SKILL.md` "Measurement" section. Report total byte count (including outputSchema) before any trim work is authorized. Estimated effort: 1–2 hours.
-
-**Decision depends on this:** If real > 15 KB AND called per-turn (not cached), Dallas may approve conservative trim (−1 KB). Otherwise, defer.
-
+**Status:** Issue #74 finalized (CONDITIONAL NO). buildIdOrUrl alias approved as separate v0.7.7 task. Awaiting Larry/Dallas approval on v0.7.7 scheduling.

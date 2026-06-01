@@ -118,3 +118,17 @@ See `history-archive.md` for full details on older work.
 **Test artifact**: `src/HelixTool.Tests/McpToolsListPayloadTests.cs` added as regression guard (triggers if payload > 32 KB).
 
 **Next**: Dallas decision on go/no-go for trimming. Measurement validates Ash's framework; no further analysis needed from Ash until trim work begins.
+
+---
+
+### 2026-06-01: Dallas Verdict on Issue #74 (CONDITIONAL NO)
+
+**Status**: Finalized and merged into decisions.md.
+
+**Key decision**: CONDITIONAL NO on active schema trimming. At 28.26 KB cold-load cached per-session (not per-turn), the payload is <1% of typical session token budget. Trimming solves a problem we don't have today.
+
+**Revisit triggers**: (1) consumer re-fetches per-turn, (2) tool count >40, (3) token budget pressure from real workflows.
+
+**Best available lever when needed**: Pattern 2 (selective outputSchema removal via SKILL.md), saving 4.5–8.9 KB with no breaking change.
+
+Ash's measurement framework validated. Issue #74 closed with Conditional No unless trigger fires.

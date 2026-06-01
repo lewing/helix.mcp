@@ -463,3 +463,244 @@ Dropping outputSchema on these 5 alone (Pattern 2: return `CallToolResult` direc
 
 **Prepared by:** Ripley  
 **Decision owner:** Dallas
+
+---
+
+# Issue #74 — Schema Trim Verdict
+
+**Date:** 2026-06-01T14:12:04.001-05:00  
+**Author:** Dallas (Lead)  
+**Status:** DECIDED  
+**Related:** Issue #74, decisions.md (Ash analysis + Ripley measurement)
+
+---
+
+## Verdict: CONDITIONAL NO — Do not pursue active trimming now
+
+At 28.26 KB, the `tools/list` payload is non-trivial. But 28 KB is a **cold-load cost**, not a per-turn cost. MCP `tools/list` is called once at session initialization and cached by every major MCP client (GitHub Copilot, Claude Desktop, Cursor, VS Code). No evidence exists that any consumer re-fetches it per-turn.
+
+**28 KB amortized over a session that processes hundreds of KB of build logs, test output, and timeline data is noise.** The GitHub study's own caveat applies directly: schema pruning yields 0% benefit when context is dominated by other content. Our tools routinely return 50–500 KB of build/test data per invocation. The schema is <1% of a typical session's token budget.
+
+**The one fact that flips this decision:** If we discover or a consumer reports that `tools/list` is re-fetched per-turn (not cached), this becomes an immediate YES for the outputSchema lever (8.9 KB, 31% of payload). File a revisit trigger on issue #74.
+
+---
+
+## Lever Ranking (value-vs-risk, best to worst)
+
+### Lever 1: Selective outputSchema removal — HOLD (best future lever)
+- **Savings:** 4.5–8.9 KB (16–31% of payload)
+- **Risk:** LOW-MEDIUM. Pattern 2 from the SKILL.md preserves StructuredContent in tool-call responses while dropping the schema from `tools/list`. No wire-format change for consumers.
+- **Why HOLD:** This is the biggest single lever and the right first move IF we ever need to trim. But today it's solving a problem we don't have. The 5 fattest outputSchemas (azdo_timeline 1,123 B, helix_status 1,001 B, azdo_build 929 B, azdo_search_log 800 B, helix_parse_uploaded_trx 656 B) are the candidates.
+- **Back-compat note:** v0.7.x consumers that parse `tools/list` outputSchema for type hints would lose that metadata. No known consumer does this today; outputSchema is informational in MCP spec.
+
+### Lever 2: Description tightening — OPPORTUNISTIC ONLY
+- **Savings:** ~0.5–1 KB
+- **Risk:** LOW
+- **Verdict:** Do this incidentally during normal tool work (renames, new tools), not as a dedicated project. PR #57 already established the baseline. Not worth a standalone PR for 0.5 KB.
+
+### Lever 3: Lazy/scoped tool loading — DEFER TO v0.9+
+- **Savings:** Up to 50% if a session only needs Helix OR AzDO tools
+- **Risk:** MEDIUM (requires MCP server-side filtering, client negotiation)
+- **Verdict:** Architecturally interesting but premature. Our tool count (25) is modest. This becomes valuable at 50+ tools or if we add new tool families. Track as a v0.9 architecture item, not a trimming response.
+
+### Lever 4: Parameter consolidation — REJECTED
+- **Savings:** ~0.5 KB
+- **Risk:** HIGH — breaks v0.7.x API contracts on azdo_search_log, azdo_builds
+- **Verdict:** Not worth it. The savings are tiny relative to the breaking change. Never pursue this for trim reasons alone.
+
+---
+
+## What NOT to do
+
+1. **Do not assign Ripley to any trim implementation work.** There is no approved trim scope.
+2. **Do not measure live caching behavior.** Ash recommended this as a gate; I'm overruling it. Every major MCP client caches `tools/list`. Spending 1–2 hours instrumenting something we already know the answer to is waste.
+3. **Do not defer other work (renames, new tools) waiting for a trim decision.** This decision is: proceed normally.
+
+---
+
+## Revisit Triggers
+
+This decision flips to YES if ANY of:
+1. A consumer (GitHub Copilot, Claude, etc.) is confirmed to re-fetch `tools/list` per-turn
+2. Tool count grows past 40 (payload would exceed ~45 KB)
+3. An MCP spec change makes outputSchema mandatory or cached differently
+4. Token budget pressure is reported by a real user/agent workflow
+
+---
+
+## Assignments (if revisit triggers fire)
+
+| Role | Task |
+|------|------|
+| Ripley | Implement Pattern 2 (selective outputSchema removal) on top 5 tools |
+| Lambert | Regression test: verify tool-call StructuredContent unchanged after outputSchema removal |
+| Kane | Update issue #74 with this decision; document outputSchema opt-out pattern |
+
+---
+
+## Issue #74 Comment (for Kane to post)
+
+> **Lead Decision (Dallas, 2026-06-01):** CONDITIONAL NO on schema trimming.
+>
+> Ground-truth measurement: `tools/list` = 28,941 bytes (28.26 KB). outputSchema is 8.9 KB (31%) — the biggest surprise lever. However, `tools/list` is a cold-load cost cached per-session, not per-turn. At <1% of a typical session's token budget (our tools return 50–500 KB of data per call), trimming solves a problem we don't have today.
+>
+> **Revisit if:** any consumer re-fetches `tools/list` per-turn, or tool count exceeds 40.
+>
+> Best available lever when needed: selective outputSchema removal via Pattern 2 (SKILL.md), saving 4.5–8.9 KB with no wire-format breaking change. See `.squad/decisions/inbox/dallas-issue74-trim-verdict.md` for full rationale.
+
+---
+
+**Decision is final unless a revisit trigger fires.**
+
+---
+
+# Proposal: Normalize AzDO `buildIdOrUrl` aliases at MCP call binding
+
+**Date:** 2026-06-01  
+**Author:** Ripley  
+**Status:** Proposed for Larry/Dallas approval  
+**Recommendation:** Add one inbound MCP argument-alias `CallToolFilter` that maps `build_id`, `buildId`, and `buildUrl` to canonical `buildIdOrUrl` before SDK binding. Ship with v0.7.7 if that train is still open.
+
+## Why this is the recommended path
+
+The failure is a wire-format compatibility problem, not an AzDO service parsing problem. Agents supplied a valid build URL/ID under intuitive keys, but the SDK binder rejected the call before `AzdoMcpTools` or `AzdoService` ran.
+
+Option **(b) CallToolFilter normalization** is the best fit:
+
+- **Fixes the actual failure point:** the filter sees `CallToolRequestParams.Arguments` before tool invocation/binding.
+- **No schema bloat:** unlike explicit `buildId` / `buildUrl` parameters, aliases stay silent and do not add bytes to `tools/list`.
+- **Maintainable:** one central alias table can cover future parameter renames or intuitive spellings.
+- **Aligned with team directive:** keeps canonical implementation names while tolerating wire-format drift.
+
+## Confirmed surface
+
+Every `[McpServerTool]` in `src/HelixTool.Mcp.Tools/AzDO/AzdoMcpTools.cs` that takes `buildIdOrUrl`:
+
+| Tool | Method line | Parameter line |
+|---|---:|---:|
+| `azdo_build` | 27 | 30 |
+| `azdo_timeline` | 69 | 72 |
+| `azdo_log` | 146 | 149 |
+| `azdo_changes` | 161 | 164 |
+| `azdo_test_runs` | 173 | 176 |
+| `azdo_test_results` | 185 | 188 |
+| `azdo_artifacts` | 198 | 201 |
+| `azdo_search_log` | 211 | 214 |
+| `azdo_search_timeline` | 261 | 264 |
+| `azdo_helix_jobs` | 292 | 295 |
+| `azdo_build_analysis` | 304 | 307 |
+
+This is broad enough that fixing one method body would be the wrong granularity.
+
+## Existing alias pattern check
+
+The previous AzDO filter work lives in `src/HelixTool.Core/AzDO/AzdoService.cs:14-69`:
+
+```csharp
+private static readonly Dictionary<string, string> s_filterAliases = new(StringComparer.OrdinalIgnoreCase)
+{
+    ["inProgress"] = "running",
+    ["in-progress"] = "running",
+    ["active"] = "running",
+    ["notStarted"] = "pending",
+    ["not-started"] = "pending"
+};
+
+public static string NormalizeFilter(string filter)
+{
+    ArgumentNullException.ThrowIfNull(filter);
+    return s_filterAliases.TryGetValue(filter, out var canonical) ? canonical : filter;
+}
+```
+
+That pattern works for **values** after binding has succeeded. It cannot fix `buildUrl` or `build_id`, because those are **argument keys**. When the required key `buildIdOrUrl` is absent, the method body never executes.
+
+A local binder probe against `Microsoft.Extensions.AI.AIFunctionFactory` showed:
+
+- `{ "buildIdOrUrl": "123" }` binds successfully.
+- `{ "build_id": "123" }` fails with `ArgumentException`, `ParamName == "arguments"`, missing required `buildIdOrUrl`.
+- Unknown extras such as `org`, `project`, or `result` are ignored when required args are present.
+
+## MCP SDK binding findings
+
+ModelContextProtocol 1.3.0 does not expose method/parameter alias metadata in the reflection path used here.
+
+Reflection-confirmed public `McpServerToolAttribute` properties:
+
+```text
+Name, Title, Destructive, Idempotent, OpenWorld, ReadOnly,
+UseStructuredContent, OutputSchemaType, IconSource, TaskSupport
+```
+
+Reflection-confirmed `McpServerToolCreateOptions` has tool-level options (`Name`, `Description`, `Title`, schema/options/metadata), but no per-parameter alias map.
+
+The relevant hook does exist at request-filter level:
+
+- `McpServerOptions.Filters.Request.CallToolFilters` already exists in this repo.
+- `src/HelixTool.Mcp.Tools/McpServerOptionsExtensions.cs` already installs `AddBindingErrorFilter()` in both startup paths.
+- `CallToolRequestParams.Arguments` is mutable, so aliases can be normalized before `next(request, ct)` invokes the tool.
+
+Illustrative implementation shape:
+
+```csharp
+private static readonly Dictionary<string, string> s_argumentAliases = new(StringComparer.OrdinalIgnoreCase)
+{
+    ["build_id"] = "buildIdOrUrl",
+    ["buildId"] = "buildIdOrUrl",
+    ["buildUrl"] = "buildIdOrUrl",
+};
+
+private static void NormalizeArgumentAliases(CallToolRequestParams? parameters)
+{
+    var args = parameters?.Arguments;
+    if (args is null || args.ContainsKey("buildIdOrUrl"))
+        return;
+
+    foreach (var (alias, canonical) in s_argumentAliases)
+    {
+        if (args.TryGetValue(alias, out var value) && !args.ContainsKey(canonical))
+        {
+            args[canonical] = value;
+            return;
+        }
+    }
+}
+```
+
+This can either augment the existing binding-error filter before `next(...)`, or become a separate filter registered before the error wrapper. I prefer a named helper in `McpServerOptionsExtensions` so stdio and HTTP paths remain one-line registration points.
+
+## Options considered
+
+### (a) Rename/keep one canonical parameter
+
+Already true: `buildIdOrUrl` accepts both numeric IDs and URLs. The telemetry shows agents do not reliably intuit that exact key, so this does not solve the wire failure.
+
+### (b) Normalize inbound argument dictionaries before binding — recommended
+
+Best balance of compatibility, token cost, and maintainability. The schema stays canonical and compact, while the runtime tolerates intuitive aliases.
+
+### (c) Add explicit optional parameters (`buildId`, `buildUrl`) and coalesce
+
+Not recommended. It would work only after broad method signature changes across 11 tools, adds redundant schema bytes to every affected tool, and creates precedence/validation questions in each method. It also trains callers toward multiple names instead of keeping one canonical schema.
+
+## Release scope recommendation
+
+Ship this in **v0.7.7** alongside the discoverability fixes if there is still room. It is a compatibility/discoverability bugfix caused by real consumer telemetry, and option (b) does not worsen the v0.7.8 schema-trim problem.
+
+Do not wait for v0.7.8 unless v0.7.7 is already frozen. Schema trimming should remain focused on measured `tools/list` reduction; this alias filter is runtime behavior with near-zero schema impact.
+
+## Test expectations for Lambert
+
+Recommended coverage:
+
+1. Filter maps `build_id` to `buildIdOrUrl` when canonical is absent.
+2. Filter maps `buildId` and `buildUrl` likewise.
+3. Canonical `buildIdOrUrl` wins if both canonical and alias are supplied.
+4. Existing binding-error filter still reports missing required params when no canonical or alias exists.
+5. An end-to-end MCP tool call for at least `azdo_build_analysis` and `azdo_search_timeline` reaches the service/mock with the normalized value.
+
+## Open questions / risks
+
+- Should alias normalization be global for all tools or scoped to AzDO tool names? I recommend global because `buildIdOrUrl` is currently AzDO-only and the alias table is canonical-key based.
+- Should `result` also alias to `resultFilter` for `azdo_search_timeline`? The observed call included `result: 'failed'`, but unknown extras are ignored and the default is already `failed`. Treat as a separate alias decision if telemetry shows non-default `result` values.
+- Future SDK versions might add native alias support. If that happens, this filter can be retired or reduced to a compatibility shim.
