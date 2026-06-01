@@ -76,3 +76,20 @@ See history-archive.md for:
 ---
 
 **Status:** Issue #74 finalized (CONDITIONAL NO). buildIdOrUrl alias approved as separate v0.7.7 task. Awaiting Larry/Dallas approval on v0.7.7 scheduling.
+## 2026-06-01: Implemented AzDO `buildIdOrUrl` MCP argument aliases
+
+- Implemented Dallas-approved alias normalization inside the existing `AddBindingErrorFilter` in `src/HelixTool.Mcp.Tools/McpServerOptionsExtensions.cs`, so normalization runs before SDK parameter binding and before binding errors are wrapped.
+- Added case-insensitive aliases `build_id`, `buildId`, and `buildUrl` for canonical `buildIdOrUrl`. Conflict semantics: an existing canonical key wins; if multiple aliases are present without canonical, insertion order decides (`build_id` > `buildId` > `buildUrl`).
+- Added optional `ILogger?` support plus fallback logger resolution from request services. When an alias fires, the filter logs Debug: `Argument alias resolved: '{Alias}' → '{Canonical}' for tool '{ToolName}'`.
+- Build validation: `dotnet build --nologo` completed with 0 warnings and 0 errors.
+
+Lambert handoff line table:
+
+| File | Lines | Notes |
+|---|---:|---|
+| `src/HelixTool.Mcp.Tools/McpServerOptionsExtensions.cs` | 1-4 | Added logging/DI/protocol imports. |
+| `src/HelixTool.Mcp.Tools/McpServerOptionsExtensions.cs` | 15-21 | Alias table and precedence comment. |
+| `src/HelixTool.Mcp.Tools/McpServerOptionsExtensions.cs` | 23-38 | Alias normalization folded into `AddBindingErrorFilter`. |
+| `src/HelixTool.Mcp.Tools/McpServerOptionsExtensions.cs` | 43-91 | Logger resolution and case-insensitive argument-key helpers. |
+| `.squad/decisions/inbox/ripley-buildidorurl-impl-handoff-2026-06-01.md` | 1-29 | Lambert test handoff. |
+
