@@ -101,3 +101,5 @@ Every MCP tool method must have ≥1 test covering the unhappy path (exception �
 - Flagged 8 schema follow-ups: conditional-required params, JSON numeric→string ID binding, custom annotations for combo rules
 - Token measurement: 25 tools = 7,966 tokens (down 246 tokens / -3.0% from v0.7.3 baseline)
 - PR #68 shipped and merged; schema audit findings ready for v0.7.6 planning
+
+- **2026-06-01:** MCP `CallToolFilter` tests can wrap a capture handler for argument-mutation unit coverage, then wrap real `McpServerTool.InvokeAsync` for SDK binding coverage. Added 11 `McpServerOptionsExtensionsTests` cases for `buildIdOrUrl` alias normalization: 3 alias mappings, canonical conflict, missing-param binding error preservation, `azdo_build_analysis` and `azdo_search_timeline` end-to-end calls, multi-alias precedence (`build_id` wins), and 3 case-insensitive alias keys; full suite passed at 1312 passed / 2 skipped.
