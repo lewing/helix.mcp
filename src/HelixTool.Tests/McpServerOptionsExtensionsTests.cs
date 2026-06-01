@@ -29,6 +29,55 @@ public class McpServerOptionsExtensionsTests
         await handler(request, CancellationToken.None);
     }
 
+    [Theory]
+    [InlineData("build_id")]
+    [InlineData("buildId")]
+    public async Task AddBindingErrorFilter_CoercesNumericBuildIdOrUrlAliasesToString(string alias)
+    {
+        var handler = CreateFilteredHandler((request, _) =>
+        {
+            var value = AssertBuildIdOrUrl(request);
+            Assert.Equal(JsonValueKind.String, value.ValueKind);
+            Assert.Equal("2989057", value.GetString());
+            return ValueTask.FromResult(new CallToolResult());
+        });
+        var request = CreateRequest("azdo_search_timeline", Arguments((alias, 2989057), ("pattern", "tests")));
+
+        await handler(request, CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData("build_id")]
+    [InlineData("buildId")]
+    public async Task AddBindingErrorFilter_EndToEndSearchTimeline_NumericAliasBindsAsString(string alias)
+    {
+        var tools = CreateAzdoTools(out var client);
+        client.GetTimelineAsync("dnceng-public", "public", 2989057, Arg.Any<CancellationToken>())
+            .Returns(new AzdoTimeline
+            {
+                Id = "tl1",
+                Records =
+                [
+                    new AzdoTimelineRecord
+                    {
+                        Id = "r1",
+                        Name = "Run tests",
+                        Type = "Task",
+                        Result = "failed",
+                        State = "completed"
+                    }
+                ]
+            });
+        var handler = CreateFilteredToolHandler("azdo_search_timeline", tools);
+        var request = CreateRequest("azdo_search_timeline", Arguments(
+            (alias, 2989057),
+            ("pattern", "tests")));
+
+        await handler(request, CancellationToken.None);
+
+        await client.Received(1).GetTimelineAsync("dnceng-public", "public", 2989057, Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task AddBindingErrorFilter_PreservesCanonicalValue_WhenAliasAlsoSupplied()
     {

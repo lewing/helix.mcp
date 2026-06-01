@@ -2,7 +2,7 @@
 name: "mcp-calltoolfilter-tests"
 description: "Test MCP CallToolFilter behavior with real CallToolRequestParams and McpServerTool invocation."
 domain: "mcp-testing"
-confidence: "medium"
+confidence: "high"
 source: "earned"
 ---
 
@@ -20,3 +20,4 @@ Use this when validating `McpServerOptions.Filters.Request.CallToolFilters`, esp
 - Canonical parameter wins when canonical and alias are both present.
 - Multiple aliases have documented precedence.
 - Non-standard alias casing is accepted when the alias table is case-insensitive.
+- Test with realistic value types from telemetry, not just sanitized strings; numeric `JsonElement` aliases should be covered when callers send IDs as JSON numbers.
