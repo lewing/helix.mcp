@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
@@ -12,13 +13,13 @@ public static class McpServerOptionsExtensions
     // paramName = "arguments" when SDK binder validation fails; Ash verified this in stderr during the 2026-05-28 investigation.
     private const string BinderArgumentsParamName = "arguments";
 
-    // First match wins; insertion order is significant when multiple aliases are present without a canonical key.
-    private static readonly Dictionary<string, string> s_argumentAliases = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["build_id"] = "buildIdOrUrl",
-        ["buildId"] = "buildIdOrUrl",
-        ["buildUrl"] = "buildIdOrUrl",
-    };
+    // First match wins; tuple order is the documented precedence when multiple aliases are present without a canonical key.
+    private static readonly (string Alias, string Canonical)[] s_argumentAliases =
+    [
+        ("build_id", "buildIdOrUrl"),
+        ("buildId", "buildIdOrUrl"),
+        ("buildUrl", "buildIdOrUrl"),
+    ];
 
     public static McpServerOptions AddBindingErrorFilter(this McpServerOptions options, ILogger? logger = null)
     {
@@ -64,7 +65,7 @@ public static class McpServerOptionsExtensions
                 continue;
             }
 
-            arguments[canonical] = arguments[aliasKey];
+            arguments[canonical] = CoerceToStringElement(arguments[aliasKey]);
             logger?.LogDebug(
                 "Argument alias resolved: '{Alias}' → '{Canonical}' for tool '{ToolName}'",
                 aliasKey,
@@ -74,10 +75,15 @@ public static class McpServerOptionsExtensions
         }
     }
 
-    private static bool HasArgument(IDictionary<string, System.Text.Json.JsonElement> arguments, string key)
+    private static JsonElement CoerceToStringElement(JsonElement value)
+        => value.ValueKind == JsonValueKind.String
+            ? value
+            : JsonSerializer.SerializeToElement(value.GetRawText());
+
+    private static bool HasArgument(IDictionary<string, JsonElement> arguments, string key)
         => FindArgumentKey(arguments, key) is not null;
 
-    private static string? FindArgumentKey(IDictionary<string, System.Text.Json.JsonElement> arguments, string key)
+    private static string? FindArgumentKey(IDictionary<string, JsonElement> arguments, string key)
     {
         foreach (var argumentKey in arguments.Keys)
         {
