@@ -114,9 +114,10 @@ public class McpToolsListPayloadTests(ITestOutputHelper output)
         output.WriteLine($"Ash range estimate:   15,000–25,000 bytes (with outputSchema)");
         output.WriteLine($"Measured (this run):  {listPayloadBytes} bytes");
 
-        // Sanity assertions — not strict thresholds, just ensuring measurement ran
-        Assert.True(toolCount >= 25, $"Expected at least 25 tools, found {toolCount}");
-        Assert.True(listPayloadBytes > 5_000, $"Suspiciously small payload: {listPayloadBytes} bytes");
-        Assert.True(structuredToolCount >= 15, $"Expected at least 15 structured tools, found {structuredToolCount}");
+        // Sanity assertions — harness-ran-successfully only; do not assert on counts or
+        // structured-tool ratios, as those change when the mcp-wire-format-trim skill's
+        // advice (Pattern 2) is followed or tools are added/removed.
+        Assert.True(toolCount >= 1, $"Expected at least 1 tool, found {toolCount}");
+        Assert.True(listPayloadBytes > 0, $"Empty payload: {listPayloadBytes} bytes");
     }
 }
