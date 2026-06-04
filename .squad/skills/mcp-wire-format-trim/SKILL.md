@@ -39,33 +39,60 @@ Use this only for tiny results where schema carries little value and you must ke
 ### Concrete How-To (verified 2026-06-01, SDK 1.3.0, net10.0)
 
 ```csharp
-// 1. Get all [McpServerTool] methods from tool classes
+// Full runnable implementation: src/HelixTool.Tests/McpToolsListPayloadTests.cs
+// The pseudocode below shows the key steps for a single tool; see the test file for
+// the complete loop, per-tool reporting, and sanity assertions.
+
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Text.Json;
+using ModelContextProtocol;
+using ModelContextProtocol.Server;
+
+// 1. Enumerate all [McpServerTool] methods from tool classes
 var toolTypes = new[] { typeof(AzdoMcpTools), typeof(HelixMcpTools), typeof(CiKnowledgeTool) };
 
 // 2. Create uninitialized shell instances (no DI needed — schema only, never invoked)
 //    McpServerTool.Create() REQUIRES a non-null instance for instance methods.
 //    RuntimeHelpers.GetUninitializedObject bypasses constructors safely.
-using System.Runtime.CompilerServices;
-var shell = RuntimeHelpers.GetUninitializedObject(toolType);
+foreach (var toolType in toolTypes)
+{
+    var shell = RuntimeHelpers.GetUninitializedObject(toolType);
+    var methods = toolType.GetMethods(BindingFlags.Instance | BindingFlags.Public)
+        .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() is not null);
 
-// 3. Create McpServerTool and extract ProtocolTool
-var mcpTool = McpServerTool.Create(method, shell, options: null);
-var proto = mcpTool.ProtocolTool;  // ModelContextProtocol.Protocol.Tool
+    // 3. Create McpServerTool and extract ProtocolTool (one per method)
+    foreach (var method in methods)
+    {
+        var mcpTool = McpServerTool.Create(method, shell, options: null);
+        var proto = mcpTool.ProtocolTool;  // ModelContextProtocol.Protocol.Tool
 
-// 4. Serialize with canonical wire options
-var json = JsonSerializer.Serialize(proto, McpJsonUtilities.DefaultOptions);
-var bytes = Encoding.UTF8.GetByteCount(json);
+        // 4. Serialize with canonical wire options
+        var json = JsonSerializer.Serialize(proto, McpJsonUtilities.DefaultOptions);
+        var bytes = Encoding.UTF8.GetByteCount(json);
 
-// 5. Per-field breakdown
-//    proto.InputSchema is JsonElement (always present, non-nullable)
-var inputBytes = Encoding.UTF8.GetByteCount(
-    JsonSerializer.Serialize(proto.InputSchema, McpJsonUtilities.DefaultOptions));
-//    proto.OutputSchema is JsonElement? (nullable — null when UseStructuredContent=false)
-var outputBytes = proto.OutputSchema.HasValue
-    ? Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(proto.OutputSchema.Value, McpJsonUtilities.DefaultOptions))
-    : 0;
+        // 5. Per-field breakdown
+        //    proto.InputSchema is JsonElement (always present, non-nullable)
+        var inputBytes = Encoding.UTF8.GetByteCount(
+            JsonSerializer.Serialize(proto.InputSchema, McpJsonUtilities.DefaultOptions));
+        //    proto.OutputSchema is JsonElement? (nullable — null when UseStructuredContent=false)
+        var outputBytes = proto.OutputSchema.HasValue
+            ? Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(proto.OutputSchema.Value, McpJsonUtilities.DefaultOptions))
+            : 0;
+    }
+}
 
 // 6. Full tools/list payload ({"tools":[...]}) for total wire size
+var allProtos = toolTypes
+    .SelectMany(t =>
+    {
+        var shell = RuntimeHelpers.GetUninitializedObject(t);
+        return t.GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() is not null)
+            .Select(m => McpServerTool.Create(m, shell, options: null).ProtocolTool);
+    })
+    .ToList();
 var listPayload = JsonSerializer.Serialize(new { tools = allProtos }, McpJsonUtilities.DefaultOptions);
 var listPayloadBytes = Encoding.UTF8.GetByteCount(listPayload);
 ```
