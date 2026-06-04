@@ -76,9 +76,18 @@ public static class McpServerOptionsExtensions
     }
 
     private static JsonElement CoerceToStringElement(JsonElement value)
-        => value.ValueKind == JsonValueKind.String
-            ? value
-            : JsonSerializer.SerializeToElement(value.GetRawText());
+        => value.ValueKind switch
+        {
+            JsonValueKind.String => value,
+            // Number and Boolean are coerced to their string representation so the SDK binder
+            // can bind the value to a string parameter (e.g. buildIdOrUrl).
+            // GetRawText() on a Number returns bare digits ("2989057"); serializing that C# string
+            // produces a JSON string element whose ValueKind == String, which is what the binder needs.
+            JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False
+                => JsonSerializer.SerializeToElement(value.GetRawText()),
+            // Object/array/null — leave untouched and let the binder surface its own error.
+            _ => value,
+        };
 
     private static bool HasArgument(IDictionary<string, JsonElement> arguments, string key)
         => FindArgumentKey(arguments, key) is not null;
