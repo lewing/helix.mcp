@@ -16,7 +16,7 @@ jobs:
   verify-pinned:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Ensure all action references are pinned to a 40-char commit SHA
         shell: bash
         run: |
@@ -39,7 +39,7 @@ jobs:
           if [[ "$fail" -ne 0 ]]; then
             echo ""
             echo "Pin every action to a full commit SHA, e.g.:"
-            echo "  uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1"
+            echo "  uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v4.3.1"
             exit 1
           fi
           echo "All action references in .github/workflows are SHA-pinned. ✅"
