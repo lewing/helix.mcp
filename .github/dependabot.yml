@@ -4,6 +4,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Wait before adopting brand-new releases, so a freshly-compromised
+    # action version isn't auto-PR'd the moment it ships (supply-chain
+    # hardening; see zizmor `dependabot-cooldown`).
+    cooldown:
+      default-days: 7
     groups:
       github-owned-actions:
         patterns:
