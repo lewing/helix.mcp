@@ -1,0 +1,105 @@
+name: Publish Container
+
+# Publishes a containerized stdio MCP server image to GHCR alongside the
+# existing NuGet publish flow. The image enables consumers whose MCP
+# gateway only supports `type: stdio` + `container:` (e.g. GitHub
+# Agentic Workflows' MCP Gateway) to attach hlx without a .NET runtime
+# in the gateway container.
+
+permissions: {}
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag to build (default: 0.0.0-dispatch-<sha>)"
+        required: false
+        type: string
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment: release
+
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          elif [[ -n "${INPUT_VERSION}" ]]; then
+            VERSION="${INPUT_VERSION}"
+          else
+            VERSION="0.0.0-dispatch-${GITHUB_SHA::7}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: ${VERSION}"
+
+      - name: Validate version consistency
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG_VERSION="${{ steps.version.outputs.version }}"
+          CSPROJ_VERSION=$(grep -oP '(?<=<Version>)[^<]+' src/HelixTool/HelixTool.csproj)
+          if [ "$CSPROJ_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Version mismatch: tag=${TAG_VERSION} csproj=${CSPROJ_VERSION}"
+            exit 1
+          fi
+
+      - name: Set up QEMU (for arm64 cross-build)
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/helix.mcp
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+          labels: |
+            org.opencontainers.image.title=hlx
+            org.opencontainers.image.description=CLI and stdio MCP server for investigating .NET CI failures in Helix and Azure DevOps
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          provenance: true
+          sbom: true

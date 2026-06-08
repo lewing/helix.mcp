@@ -1,0 +1,16 @@
+**/bin
+**/obj
+**/.vs
+**/.vscode
+**/TestResults
+.git
+.github
+.squad
+.copilot
+.ai-team-templates
+.worktrees
+docs
+.gitignore
+.gitattributes
+.editorconfig
+artifacts

@@ -267,6 +267,24 @@ For HTTP (remote/shared servers):
 }
 ```
 
+For MCP gateways that launch servers as containerized stdio subprocesses
+(e.g. [GitHub Agentic Workflows][gh-aw]'s MCP Gateway, which has no .NET
+runtime to launch `dnx` against), use the published container image:
+
+```yaml
+mcp-servers:
+  hlx:
+    type: stdio
+    container: ghcr.io/lewing/helix.mcp:latest
+    env:
+      AZURE_DEVOPS_EXT_PAT: ""
+      HELIX_ACCESS_TOKEN: ""
+```
+
+The image is published per release to `ghcr.io/lewing/helix.mcp:<version>` and `:latest`, multi-arch (`linux/amd64`, `linux/arm64`).
+
+[gh-aw]: https://github.com/github/gh-aw
+
 ## Security
 
 - **Safe XML parsing** — DTD processing prohibited, XmlResolver disabled, 50 MB character limit (XXE/billion-laughs protection)
