@@ -9,25 +9,28 @@
 
 ARG DOTNET_VERSION=10.0
 
-# ---------- Stage 1: build & install the tool from source ----------
+# ---------- Stage 1: publish the framework-dependent binaries ----------
 FROM mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION} AS build
 WORKDIR /src
 
 # Copy manifests first so layer caching survives source-only changes.
-# README.md is required by src/HelixTool/HelixTool.csproj for `dotnet pack`
-# (it sets <Content Include="..\..\README.md" Pack="true" ... />).
+# README.md is referenced by src/HelixTool/HelixTool.csproj
+# (<Content Include="..\..\README.md" Pack="true" />); LICENSE is
+# kept in the image for OCI label provenance.
 COPY HelixTool.slnx Directory.Packages.props nuget.config README.md LICENSE ./
 COPY src/ ./src/
 
 ARG VERSION=0.0.0-local
-RUN dotnet pack src/HelixTool -c Release -o /pkg \
+# `dotnet publish` (not pack) — produces a framework-dependent apphost
+# that can be invoked directly. Avoids the `dotnet tool install`
+# package-source-mapping conflict that the repo's nuget.config triggers
+# when combined with --add-source.
+RUN dotnet publish src/HelixTool \
+      -c Release \
+      -o /publish \
+      --no-self-contained \
       /p:Version=${VERSION} \
-      /p:ContinuousIntegrationBuild=true \
- && dotnet tool install \
-      --tool-path /tools \
-      --add-source /pkg \
-      --version ${VERSION} \
-      lewing.helix.mcp
+      /p:ContinuousIntegrationBuild=true
 
 # ---------- Stage 2: minimal runtime image ----------
 FROM mcr.microsoft.com/dotnet/runtime:${DOTNET_VERSION}
@@ -36,10 +39,19 @@ LABEL org.opencontainers.image.source="https://github.com/lewing/helix.mcp"
 LABEL org.opencontainers.image.description="hlx — CLI and stdio MCP server for investigating .NET CI failures in Helix and Azure DevOps"
 LABEL org.opencontainers.image.licenses="MIT"
 
-COPY --from=build /tools /usr/local/bin/
+COPY --from=build /publish /app
 
-# Cache lives under the user's home by default; create a writable home
-# so non-root containers in MCP gateways can still open the SQLite cache.
+# Expose the binary on PATH as `hlx` (the tool's canonical command name,
+# matching `<ToolCommandName>hlx</ToolCommandName>` in HelixTool.csproj).
+# On Linux the apphost resolves its own location via /proc/self/exe, so
+# a symlink in /usr/local/bin/ Just Works — dependencies are still found
+# in /app/.
+RUN ln -s /app/HelixTool /usr/local/bin/hlx
+
+# Cache lives under the user's home by default
+# (Environment.SpecialFolder.UserProfile → $HOME on Linux per
+# src/HelixTool.Core/Cache/CacheOptions.cs). Provide a writable home
+# so non-root containers can still open the SQLite cache.
 ENV HOME=/home/hlx \
     DOTNET_NOLOGO=1 \
     DOTNET_CLI_TELEMETRY_OPTOUT=1
