@@ -267,14 +267,13 @@ For HTTP (remote/shared servers):
 }
 ```
 
-For MCP gateways that launch servers as containerized stdio subprocesses
-(e.g. [GitHub Agentic Workflows][gh-aw]'s MCP Gateway, which has no .NET
-runtime to launch `dnx` against), use the published container image:
+For MCP gateways that spawn stdio MCP servers as Docker subprocesses
+(e.g. [GitHub Agentic Workflows][gh-aw]'s MCP Gateway), use the
+published container image:
 
 ```yaml
 mcp-servers:
   hlx:
-    type: stdio
     container: ghcr.io/lewing/helix.mcp:latest
     env:
       AZURE_DEVOPS_EXT_PAT: ""
