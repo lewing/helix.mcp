@@ -31,9 +31,14 @@ jobs:
       attestations: write
 
     steps:
+      # NOTE: `persist-credentials: false` removed deliberately. The repo has
+      # `.worktrees/*` committed as gitlinks (mode 160000) with no .gitmodules.
+      # With persist-credentials disabled, actions/checkout@v6 runs an auth-removal
+      # `git submodule foreach` that fatally errors on those gitlinks (exit 128).
+      # Mirrors the workaround already applied to ci.yml and zizmor.yml in commit
+      # f5bb94c. Proper fix is untracking the accidental .worktrees gitlinks
+      # (tracked as a follow-up by upstream).
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          persist-credentials: false
 
       - name: Resolve version
         id: version
