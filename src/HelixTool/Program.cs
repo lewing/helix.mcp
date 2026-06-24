@@ -1275,12 +1275,17 @@ public class AzdoCommands
     /// <param name="prNumber">Filter by pull request number.</param>
     /// <param name="definitionId">Filter by pipeline definition ID.</param>
     /// <param name="status">Filter by build status.</param>
+    /// <param name="minTime">Lower bound on queue/start/finish time (ISO 8601).</param>
+    /// <param name="maxTime">Upper bound on queue/start/finish time (ISO 8601).</param>
+    /// <param name="queryOrder">Order results by time field (e.g. finishTimeDescending). Default: queueTimeDescending.</param>
     /// <param name="json">Output as structured JSON.</param>
     [McpEquivalent("azdo_builds")]
     [Command("azdo builds")]
     public async Task Builds(string org = "dnceng-public", string project = "public",
         int top = 20, string? branch = null, string? prNumber = null,
-        int? definitionId = null, string? status = null, bool json = false, bool schema = false)
+        int? definitionId = null, string? status = null,
+        DateTimeOffset? minTime = null, DateTimeOffset? maxTime = null,
+        string? queryOrder = null, bool json = false, bool schema = false)
     {
         if (Commands.TryPrintSchema<IReadOnlyList<AzdoBuild>>(schema))
             return;
@@ -1291,7 +1296,10 @@ public class AzdoCommands
             Branch = branch,
             DefinitionId = definitionId,
             Top = top,
-            StatusFilter = status
+            StatusFilter = status,
+            MinTime = minTime,
+            MaxTime = maxTime,
+            QueryOrder = queryOrder
         };
 
         var builds = await _svc.ListBuildsAsync(org, project, filter);

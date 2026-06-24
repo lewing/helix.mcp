@@ -677,4 +677,33 @@ public class AzdoMcpToolsTests
         Assert.Contains("Build Stage",  names);  // grandparent walk
         Assert.DoesNotContain("Done Task", names); // not running, not a parent of running
     }
+
+    // ── azdo_builds — time range and queryOrder params ───────────────
+
+    [Fact]
+    public async Task Builds_TimeRangeParams_PassedInFilter()
+    {
+        _mockApi.ListBuildsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuild>());
+
+        var minTime = new DateTimeOffset(2026, 5, 1, 0, 0, 0, TimeSpan.Zero);
+        var maxTime = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+
+        await _tools.Builds(minTime: minTime, maxTime: maxTime, queryOrder: "finishTimeDescending");
+
+        await _mockApi.Received(1).ListBuildsAsync(
+            Arg.Any<string>(), Arg.Any<string>(),
+            Arg.Is<AzdoBuildFilter>(f =>
+                f.MinTime == minTime &&
+                f.MaxTime == maxTime &&
+                f.QueryOrder == "finishTimeDescending"),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Builds_InvalidQueryOrder_Throws()
+    {
+        await Assert.ThrowsAsync<McpException>(
+            () => _tools.Builds(queryOrder: "garbage"));
+    }
 }

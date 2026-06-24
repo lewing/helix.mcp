@@ -44,10 +44,18 @@ public sealed class AzdoMcpTools
         [Description("Filter by branch name (e.g., 'refs/heads/main')")] string? branch = null,
         [Description("Filter by pull request number")] string? prNumber = null,
         [Description("Filter by pipeline definition ID")] int? definitionId = null,
-        [Description("Filter by build status"), AllowedValues("all", "cancelling", "completed", "inProgress", "none", "notStarted", "postponed")] string? status = null)
+        [Description("Filter by build status"), AllowedValues("all", "cancelling", "completed", "inProgress", "none", "notStarted", "postponed")] string? status = null,
+        [Description("Lower bound on queue/start/finish time (ISO 8601). Pair with queryOrder to choose which time field is filtered.")] DateTimeOffset? minTime = null,
+        [Description("Upper bound on queue/start/finish time (ISO 8601). Pair with queryOrder to choose which time field is filtered.")] DateTimeOffset? maxTime = null,
+        [Description("Order results by time field. AzDO interprets minTime/maxTime against the field matching this order (e.g. finishTimeDescending → filter by finishTime). Default: queueTimeDescending"),
+         AllowedValues("queueTimeAscending", "queueTimeDescending", "startTimeAscending", "startTimeDescending", "finishTimeAscending", "finishTimeDescending")] string? queryOrder = null)
     {
         // If org looks like a URL, extract org/project from it
         (org, project) = TryExtractOrgProjectFromUrl(org, project);
+
+        queryOrder = AzdoService.NormalizeQueryOrder(queryOrder);
+        if (!AzdoService.IsValidQueryOrder(queryOrder))
+            throw new McpException(AzdoService.GetInvalidQueryOrderMessage(queryOrder!));
 
         var filter = new AzdoBuildFilter
         {
@@ -55,7 +63,10 @@ public sealed class AzdoMcpTools
             Branch = branch,
             DefinitionId = definitionId,
             Top = top,
-            StatusFilter = status
+            StatusFilter = status,
+            MinTime = minTime,
+            MaxTime = maxTime,
+            QueryOrder = queryOrder
         };
 
         return await McpExceptionHandler.RunServiceCallAsync(

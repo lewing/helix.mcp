@@ -412,7 +412,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
     private static string HashFilter(AzdoBuildFilter filter)
     {
-        var raw = $"{filter.PrNumber}|{filter.Branch}|{filter.DefinitionId}|{filter.Top}|{filter.StatusFilter}";
+        var raw = $"{filter.PrNumber}|{filter.Branch}|{filter.DefinitionId}|{filter.Top}|{filter.StatusFilter}|{filter.MinTime:O}|{filter.MaxTime:O}|{filter.QueryOrder}";
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(raw));
         return Convert.ToHexString(hash)[..12].ToLowerInvariant();
     }

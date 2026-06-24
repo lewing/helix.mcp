@@ -73,7 +73,13 @@ public sealed class AzdoApiClient : IAzdoApiClient
         if (!string.IsNullOrEmpty(filter.StatusFilter))
             queryParams.Add($"statusFilter={Uri.EscapeDataString(filter.StatusFilter)}");
 
-        queryParams.Add("queryOrder=queueTimeDescending");
+        if (filter.MinTime.HasValue)
+            queryParams.Add($"minTime={Uri.EscapeDataString(filter.MinTime.Value.ToString("O", System.Globalization.CultureInfo.InvariantCulture))}");
+
+        if (filter.MaxTime.HasValue)
+            queryParams.Add($"maxTime={Uri.EscapeDataString(filter.MaxTime.Value.ToString("O", System.Globalization.CultureInfo.InvariantCulture))}");
+
+        queryParams.Add($"queryOrder={Uri.EscapeDataString(filter.QueryOrder ?? "queueTimeDescending")}");
 
         var path = "build/builds?" + string.Join("&", queryParams);
         var url = BuildUrl(org, project, path);

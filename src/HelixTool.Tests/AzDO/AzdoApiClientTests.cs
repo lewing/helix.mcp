@@ -238,6 +238,66 @@ public class AzdoApiClientTests
         Assert.Contains("queryOrder=queueTimeDescending", url);
     }
 
+    [Fact]
+    public async Task ListBuildsAsync_MinTime_AppearsInUrl()
+    {
+        _handler.ResponseContent = JsonSerializer.Serialize(new { value = Array.Empty<object>(), count = 0 });
+        var minTime = new DateTimeOffset(2026, 5, 15, 0, 0, 0, TimeSpan.Zero);
+        var filter = new AzdoBuildFilter { MinTime = minTime };
+
+        await _client.ListBuildsAsync("dnceng", "internal", filter);
+
+        var url = _handler.LastRequest!.RequestUri!.ToString();
+        Assert.Contains("minTime=", url);
+        Assert.Contains("2026-05-15", Uri.UnescapeDataString(url));
+    }
+
+    [Fact]
+    public async Task ListBuildsAsync_MaxTime_AppearsInUrl()
+    {
+        _handler.ResponseContent = JsonSerializer.Serialize(new { value = Array.Empty<object>(), count = 0 });
+        var maxTime = new DateTimeOffset(2026, 6, 1, 12, 30, 0, TimeSpan.Zero);
+        var filter = new AzdoBuildFilter { MaxTime = maxTime };
+
+        await _client.ListBuildsAsync("dnceng", "internal", filter);
+
+        var url = _handler.LastRequest!.RequestUri!.ToString();
+        Assert.Contains("maxTime=", url);
+        Assert.Contains("2026-06-01", Uri.UnescapeDataString(url));
+    }
+
+    [Fact]
+    public async Task ListBuildsAsync_QueryOrder_OverridesDefault()
+    {
+        _handler.ResponseContent = JsonSerializer.Serialize(new { value = Array.Empty<object>(), count = 0 });
+        var filter = new AzdoBuildFilter { QueryOrder = "finishTimeDescending" };
+
+        await _client.ListBuildsAsync("dnceng", "internal", filter);
+
+        var url = _handler.LastRequest!.RequestUri!.ToString();
+        Assert.Contains("queryOrder=finishTimeDescending", url);
+        Assert.DoesNotContain("queryOrder=queueTimeDescending", url);
+    }
+
+    [Fact]
+    public async Task ListBuildsAsync_TimeRangeAndQueryOrder_AllPresent()
+    {
+        _handler.ResponseContent = JsonSerializer.Serialize(new { value = Array.Empty<object>(), count = 0 });
+        var filter = new AzdoBuildFilter
+        {
+            MinTime = new DateTimeOffset(2026, 5, 1, 0, 0, 0, TimeSpan.Zero),
+            MaxTime = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero),
+            QueryOrder = "finishTimeDescending"
+        };
+
+        await _client.ListBuildsAsync("dnceng", "internal", filter);
+
+        var url = _handler.LastRequest!.RequestUri!.ToString();
+        Assert.Contains("minTime=", url);
+        Assert.Contains("maxTime=", url);
+        Assert.Contains("queryOrder=finishTimeDescending", url);
+    }
+
     // ── Error Handling ───────────────────────────────────────────────
 
     [Fact]
