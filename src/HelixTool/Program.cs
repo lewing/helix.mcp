@@ -923,6 +923,10 @@ Available as `failureCategory` in JSON and MCP output.
                 options.ServerInfo = new() { Name = "hlx", Version = serverVersion };
 
                 options.AddBindingErrorFilter();
+                // Stage B: did-you-mean filter — runs after alias normalization, before SDK dispatch.
+                // Intercepts unknown params with structured McpException + Levenshtein hints.
+                // Stage A's UnmappedMemberHandling.Disallow (below) remains as defense-in-depth.
+                options.AddUnknownParameterFilter(typeof(HelixMcpTools).Assembly);
             })
             .WithStdioServerTransport()
             .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly, new JsonSerializerOptions

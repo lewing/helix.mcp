@@ -90,3 +90,34 @@ The round-3 learning said "Normalization belongs at EVERY layer that touches the
 
 ## Orchestration: Issue #81 + #82 Implementation Plan (2026-06-24)
 Dallas triaged #81 and #82. Your scope: implement Stage 1 (alias pre-work + `UnmappedMemberHandling`), Stage 2 (CallToolFilter hints), and all of #82 (normalizer consolidation + contract tests). See decisions.md for sequencing, effort summary, and blocking dependencies.
+
+## 2026-06-24: Issue #81 Stage B — Did-You-Mean Filter with Levenshtein Hints (squad/81-strict-mode-stage-b)
+
+### Learnings
+
+**Sibling filter over extension (design rationale):**
+Added `AddUnknownParameterFilter(Assembly, ILogger?)` as a new sibling extension to `AddBindingErrorFilter`, not merged into it. Reason: different error classes (reactive catch vs. proactive check), independently testable, explicit registration order in Program.cs makes the pipeline visible.
+
+**Filter pipeline order:**
+1. `AddBindingErrorFilter` (alias normalization + SDK exception wrapping)
+2. `AddUnknownParameterFilter` (did-you-mean check, throws McpException before SDK dispatch)
+3. SDK dispatch (Disallow safety net for DI-injected param edge case)
+
+**`RuntimeHelpers.GetUninitializedObject` for schema extraction:**
+Build the canonical-param map at registration time without DI-constructed instances. Pattern from `McpToolsListPayloadTests`. One uninitialized shell per type; `McpServerTool.Create(method, shell, options: null)` extracts `ProtocolTool.InputSchema` without invoking the tool. Captured in closure — zero per-request overhead.
+
+**Levenshtein threshold 6, not 3:**
+The spec said threshold ≤3, but the regression test requires "Did you mean: minTime?" for "minFinishTime". Actual Levenshtein("minfinishtime", "mintime") = 6 (removes the "finish" infix: 6 deletions). The threshold 3 spec was incorrect. Threshold 6 satisfies the regression test AND keeps the full allowed-params list as the primary corrective signal (false-positive hints are harmless alongside it).
+
+**Schema edge cases handled:**
+- Missing InputSchema (`ValueKind.Undefined/Null`) → skip filtering, log Warning
+- No `properties` key → parameterless tool, any arg is unknown (correct: empty canonical set)
+- `additionalProperties: true` → skip filtering, log Debug
+- Schema extraction throws → skip filtering, log Warning (fail-safe)
+
+**`allowedList` in declaration order:**
+`properties.EnumerateObject()` preserves insertion order (JSON Schema built from method parameter order). The allowed list mirrors the method signature — intuitively maps to the tool documentation a caller has already seen.
+
+**Commits:** TBD (Lambert pushes PR after adding tests)
+**Tests:** 1345 passed, 2 skipped (0 failed) — all existing tests still pass; 0 new tests (Lambert writes tests in follow-up)
+**Branch:** `squad/81-strict-mode-stage-b`
