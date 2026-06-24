@@ -135,5 +135,26 @@ Added end-to-end regression tests for Ripley's numeric coercion fix.
 **Related:** Session log: `.squad/log/2026-06-24-pr78-azdo-param-plumbing-and-followups.md`
 **Follow-up:** Issue #82 (architectural cleanup: centralize AzDO filter normalization)
 
-## Orchestration: Issue #81 + #82 Testing Plan (2026-06-24)
-Dallas triaged #81 and #82. Your scope: write tests for Stage 1 alias regression, Stage 2 CallToolFilter (reference mcp-calltoolfilter-tests pattern), and #82 contract tests (reference azdo-rest-param-surface-audit). See decisions.md for blocking chain and effort summary.
+## Learnings — Issue #81 Stage A Tests (2026-06-24)
+
+- **`McpServerToolCreateOptions.SerializerOptions` requires `TypeInfoResolver`** — when creating a `JsonSerializerOptions` with `UnmappedMemberHandling = Disallow` and passing it to `McpServerToolCreateOptions`, `DefaultJsonTypeInfoResolver` must be set or the SDK throws `InvalidOperationException` at tool-create time. Add `using System.Text.Json.Serialization.Metadata;` and set `TypeInfoResolver = new DefaultJsonTypeInfoResolver()`.
+- **Strict-mode test helper pattern** — `CreateStrictFilteredToolHandler` follows the same shape as `CreateFilteredToolHandler` but passes `McpServerToolCreateOptions` with Disallow + DefaultJsonTypeInfoResolver to `McpServerTool.Create`.
+- **Alias-key-removal regression tests** use the capture-handler pattern (`CreateFilteredHandler`) — no end-to-end tool invocation needed; just assert the dict state after the filter runs.
+- **`dotnet test --no-build` skips rebuild** — always run `dotnet test` (with build) when verifying new code; `--no-build` will run stale binaries and give false failures.
+- **PR #83** — 8 tests added, 1345 passed / 0 failed / 2 skipped. Ready for Dallas review.
+
+## 2026-06-24: PR #83 Dallas Review Fix (commit 443c31f)
+
+**Pattern: reviewer-driven fix by a different agent.** Ripley wrote PR #83; Dallas rejected (blocking issue). Per reviewer-lockout convention, Lambert applied the one-liner fix because it mirrors what Lambert already did in test setup code.
+
+**The Fix:** Added `TypeInfoResolver = new DefaultJsonTypeInfoResolver()` (and `using System.Text.Json.Serialization.Metadata;`) to both `src/HelixTool.Mcp/Program.cs` and `src/HelixTool/Program.cs` `WithToolsFromAssembly` calls.
+
+**SDK code path Dallas traced:**
+`AIFunctionFactory.GetOrCreate` → `MakeReadOnly()` called on `JsonSerializerOptions` before tool descriptor runs → constructor calls `AIJsonUtilities.CreateFunctionJsonSchema` → `CreateJsonSchemaCore` → tries `jsonSerializerOptions.TypeInfoResolver = DefaultOptions.TypeInfoResolver` → **throws `InvalidOperationException`** because options are already read-only.
+
+Crash is deferred (not at startup) — fires on first MCP request that triggers tool singleton resolution. Lambert's test helper `CreateStrictFilteredToolHandler` already set `TypeInfoResolver` correctly; the production `Program.cs` files did not.
+
+**SKILL.md** updated with `TypeInfoResolver` as required companion setting, including the full SDK code path.
+
+**Test result:** 1345 passed / 0 failed / 2 skipped (unchanged). PR comment: https://github.com/lewing/helix.mcp/pull/83#issuecomment-4794361161
+
