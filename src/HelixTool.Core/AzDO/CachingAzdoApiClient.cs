@@ -240,20 +240,21 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         return result;
     }
 
-    public async Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(string org, string project, int runId, int top = 200, CancellationToken ct = default)
+    public async Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(string org, string project, int runId, int top = 200, string? outcomes = null, CancellationToken ct = default)
     {
-        if (!_enabled) return await _inner.GetTestResultsAsync(org, project, runId, top, ct);
+        if (!_enabled) return await _inner.GetTestResultsAsync(org, project, runId, top, outcomes, ct);
 
         await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
 
-        var key = BuildCacheKey(org, project, $"testresults:{runId}:{top}");
+        var normalizedOutcomes = string.IsNullOrWhiteSpace(outcomes) ? null : outcomes.Trim();
+        var key = BuildCacheKey(org, project, $"testresults:{runId}:{top}:{normalizedOutcomes ?? "Failed"}");
         var cached = await _cache.GetMetadataAsync(key, ct);
         var deserialized = TryDeserialize<List<AzdoTestResult>>(cached);
         if (deserialized is not null)
             return deserialized;
 
-        var result = await _inner.GetTestResultsAsync(org, project, runId, top, ct);
-        key = BuildCacheKey(org, project, $"testresults:{runId}:{top}");
+        var result = await _inner.GetTestResultsAsync(org, project, runId, top, normalizedOutcomes, ct);
+        key = BuildCacheKey(org, project, $"testresults:{runId}:{top}:{normalizedOutcomes ?? "Failed"}");
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
 
         return result;
@@ -412,7 +413,20 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
     private static string HashFilter(AzdoBuildFilter filter)
     {
-        var raw = $"{filter.PrNumber}|{filter.Branch}|{filter.DefinitionId}|{filter.Top}|{filter.StatusFilter}";
+        // Normalize QueryOrder: treat null/empty/whitespace as null (server default).
+        var normalizedQueryOrder = string.IsNullOrWhiteSpace(filter.QueryOrder)
+            ? null
+            : filter.QueryOrder.Trim();
+        // Collapse the explicit server default to null so it shares the cache key with the null case.
+        if (string.Equals(normalizedQueryOrder, AzdoApiClient.DefaultQueryOrder, StringComparison.OrdinalIgnoreCase))
+            normalizedQueryOrder = null;
+        // Lowercase so different casings of the same value share a cache key (AzDO treats queryOrder case-insensitively).
+        normalizedQueryOrder = normalizedQueryOrder?.ToLowerInvariant();
+
+        var minTime = filter.MinTime?.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        var maxTime = filter.MaxTime?.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+
+        var raw = $"{filter.PrNumber}|{filter.Branch}|{filter.DefinitionId}|{filter.Top}|{filter.StatusFilter}|{minTime}|{maxTime}|{normalizedQueryOrder}";
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(raw));
         return Convert.ToHexString(hash)[..12].ToLowerInvariant();
     }

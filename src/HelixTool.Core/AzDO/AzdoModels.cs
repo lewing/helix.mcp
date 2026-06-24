@@ -97,6 +97,9 @@ public sealed record AzdoBuildFilter
     public int? DefinitionId { get; init; }
     public int? Top { get; init; }
     public string? StatusFilter { get; init; }
+    public DateTimeOffset? MinTime { get; init; }
+    public DateTimeOffset? MaxTime { get; init; }
+    public string? QueryOrder { get; init; }
 }
 
 /// <summary>Build timeline (GET _apis/build/builds/{id}/timeline).</summary>

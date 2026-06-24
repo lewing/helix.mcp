@@ -30,6 +30,18 @@ public class AzdoService
         ["not-started"] = "pending"
     };
 
+    /// <summary>Valid queryOrder values accepted by the AzDO builds REST API.</summary>
+    public static readonly IReadOnlyList<string> AzdoQueryOrders =
+    [
+        "queueTimeAscending",
+        "queueTimeDescending",
+        "startTimeAscending",
+        "startTimeDescending",
+        "finishTimeAscending",
+        "finishTimeDescending"
+    ];
+    private static readonly HashSet<string> s_validQueryOrders = new(AzdoQueryOrders, StringComparer.OrdinalIgnoreCase);
+
     public AzdoService(IAzdoApiClient client)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
@@ -55,6 +67,19 @@ public class AzdoService
         if (!IsValidFilter(filter))
             throw new ArgumentException(GetInvalidFilterMessage(filter, parameterName), parameterName);
     }
+
+    public static string? NormalizeQueryOrder(string? queryOrder)
+    {
+        if (queryOrder is null) return null;
+        var trimmed = queryOrder.Trim();
+        return trimmed.Length == 0 ? null : trimmed;
+    }
+
+    public static bool IsValidQueryOrder(string? queryOrder) =>
+        queryOrder is null || s_validQueryOrders.Contains(queryOrder);
+
+    public static string GetInvalidQueryOrderMessage(string queryOrder) =>
+        $"Invalid queryOrder '{queryOrder}'. Must be one of: {string.Join(", ", AzdoQueryOrders)}.";
 
     public static bool MatchesFilter(AzdoTimelineRecord r, string filter) => filter.ToLowerInvariant() switch
     {
@@ -179,10 +204,10 @@ public class AzdoService
     /// Org/project are resolved from the buildIdOrUrl since runId is scoped to org/project.
     /// </summary>
     public async Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(
-        string buildIdOrUrl, int runId, int top = 200, CancellationToken ct = default)
+        string buildIdOrUrl, int runId, int top = 200, string? outcomes = null, CancellationToken ct = default)
     {
         var (org, project, _) = AzdoIdResolver.Resolve(buildIdOrUrl);
-        return await _client.GetTestResultsAsync(org, project, runId, top, ct);
+        return await _client.GetTestResultsAsync(org, project, runId, top, outcomes, ct);
     }
 
     /// <summary>

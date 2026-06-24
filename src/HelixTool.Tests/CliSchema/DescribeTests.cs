@@ -164,6 +164,9 @@ public class DescribeTests
             parameter => AssertParameter(parameter, "prNumber", "String", "null", isPositional: false),
             parameter => AssertParameter(parameter, "definitionId", "Int32?", "null", isPositional: false),
             parameter => AssertParameter(parameter, "status", "String", "null", isPositional: false),
+            parameter => AssertParameter(parameter, "minTime", "DateTimeOffset?", "null", isPositional: false),
+            parameter => AssertParameter(parameter, "maxTime", "DateTimeOffset?", "null", isPositional: false),
+            parameter => AssertParameter(parameter, "queryOrder", "String", "null", isPositional: false),
             parameter => AssertParameter(parameter, "json", "Boolean", "false", isPositional: false),
             parameter => AssertParameter(parameter, "schema", "Boolean", "false", isPositional: false));
     }

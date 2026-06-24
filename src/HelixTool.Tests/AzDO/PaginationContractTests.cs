@@ -248,7 +248,7 @@ public class PaginationContractTests
     {
         // Default should be 200 per spec (detail tool, needs more context)
         var mockApi = Substitute.For<IAzdoApiClient>();
-        mockApi.GetTestResultsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+        mockApi.GetTestResultsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new List<AzdoTestResult>());
 
         var tools = CreateAzdoTools(mockApi);
@@ -262,6 +262,7 @@ public class PaginationContractTests
             Arg.Any<string>(),
             Arg.Any<int>(),
             200, // default top
+            Arg.Any<string?>(),
             Arg.Any<CancellationToken>());
     }
 

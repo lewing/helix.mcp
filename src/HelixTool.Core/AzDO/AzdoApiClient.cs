@@ -13,6 +13,7 @@ namespace HelixTool.Core.AzDO;
 public sealed class AzdoApiClient : IAzdoApiClient
 {
     private const int ErrorBodySnippetLimit = 500;
+    internal const string DefaultQueryOrder = "queueTimeDescending";
     private static readonly JsonSerializerOptions s_jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -73,7 +74,16 @@ public sealed class AzdoApiClient : IAzdoApiClient
         if (!string.IsNullOrEmpty(filter.StatusFilter))
             queryParams.Add($"statusFilter={Uri.EscapeDataString(filter.StatusFilter)}");
 
-        queryParams.Add("queryOrder=queueTimeDescending");
+        if (filter.MinTime.HasValue)
+            queryParams.Add($"minTime={Uri.EscapeDataString(filter.MinTime.Value.ToString("O", System.Globalization.CultureInfo.InvariantCulture))}");
+
+        if (filter.MaxTime.HasValue)
+            queryParams.Add($"maxTime={Uri.EscapeDataString(filter.MaxTime.Value.ToString("O", System.Globalization.CultureInfo.InvariantCulture))}");
+
+        var queryOrder = string.IsNullOrWhiteSpace(filter.QueryOrder)
+            ? DefaultQueryOrder
+            : filter.QueryOrder.Trim();
+        queryParams.Add($"queryOrder={Uri.EscapeDataString(queryOrder)}");
 
         var path = "build/builds?" + string.Join("&", queryParams);
         var url = BuildUrl(org, project, path);
@@ -126,9 +136,10 @@ public sealed class AzdoApiClient : IAzdoApiClient
         return await GetListAsync<AzdoTestRun>(org, project, url, ct);
     }
 
-    public async Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(string org, string project, int runId, int top = 200, CancellationToken ct = default)
+    public async Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(string org, string project, int runId, int top = 200, string? outcomes = null, CancellationToken ct = default)
     {
-        var url = BuildUrl(org, project, $"test/runs/{runId}/results?$top={top}&outcomes=Failed");
+        var outcomesParam = string.IsNullOrWhiteSpace(outcomes) ? "Failed" : outcomes.Trim();
+        var url = BuildUrl(org, project, $"test/runs/{runId}/results?$top={top}&outcomes={Uri.EscapeDataString(outcomesParam)}");
         return await GetListAsync<AzdoTestResult>(org, project, url, ct);
     }
 
@@ -140,7 +151,8 @@ public sealed class AzdoApiClient : IAzdoApiClient
 
     public async Task<IReadOnlyList<AzdoTestAttachment>> GetTestAttachmentsAsync(string org, string project, int runId, int resultId, int top = 50, CancellationToken ct = default)
     {
-        var url = BuildUrl(org, project, $"test/runs/{runId}/results/{resultId}/attachments");
+        var topParam = top > 0 ? $"?$top={top}" : "";
+        var url = BuildUrl(org, project, $"test/runs/{runId}/results/{resultId}/attachments{topParam}");
         return await GetListAsync<AzdoTestAttachment>(org, project, url, ct);
     }
 
