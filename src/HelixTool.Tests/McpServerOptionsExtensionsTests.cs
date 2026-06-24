@@ -346,6 +346,240 @@ public class McpServerOptionsExtensionsTests
         await handler(request, CancellationToken.None);
     }
 
+    // ── Stage B: Unknown-param filter with Levenshtein hints (Issue #81) ──────
+
+    [Fact]
+    public async Task UnknownParamFilter_CanonicalArgsOnly_DoNotThrow()
+    {
+        // Smoke: canonical params must not be flagged by the unknown-param filter.
+        var tools = CreateAzdoTools(out var client);
+        client.ListBuildsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuild>());
+        var handler = CreateUnknownParamFilteredToolHandler("azdo_builds", tools);
+        var request = CreateRequest("azdo_builds", Arguments(("org", "dnceng-public"), ("project", "public")));
+
+        await handler(request, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task UnknownParamFilter_AliasedArgPassesAfterNormalization()
+    {
+        // Alias 'result' is renamed to 'resultFilter' by AddBindingErrorFilter before
+        // AddUnknownParameterFilter runs; the renamed key is canonical and must not be flagged.
+        var tools = CreateAzdoTools(out var client);
+        client.GetTimelineAsync("dnceng-public", "public", 42, Arg.Any<CancellationToken>())
+            .Returns(new AzdoTimeline { Id = "tl1", Records = [] });
+        var handler = CreateUnknownParamFilteredToolHandler("azdo_search_timeline", tools);
+        var request = CreateRequest("azdo_search_timeline", Arguments(
+            ("result", "failed"),
+            ("buildIdOrUrl", "42"),
+            ("pattern", "x")));
+
+        await handler(request, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task UnknownParamFilter_SingleUnknownCloseMatch_ThrowsMcpExceptionWithHint()
+    {
+        var tools = CreateAzdoTools(out _);
+        var handler = CreateUnknownParamFilteredToolHandler("azdo_builds", tools);
+        var request = CreateRequest("azdo_builds", Arguments(("minFinishTime", "2024-01-01")));
+
+        var ex = await Assert.ThrowsAsync<McpException>(async () =>
+            await handler(request, CancellationToken.None));
+
+        Assert.Contains("minFinishTime", ex.Message);
+        Assert.Contains("Did you mean: minTime?", ex.Message);
+        Assert.Contains("Allowed parameters:", ex.Message);
+    }
+
+    [Fact]
+    public async Task UnknownParamFilter_SingleUnknownNoCloseMatch_ThrowsMcpExceptionWithoutHint()
+    {
+        // 'zzzzzzzzzz' has Levenshtein distance ≥ 10 from every azdo_builds param (all > threshold-6).
+        var tools = CreateAzdoTools(out _);
+        var handler = CreateUnknownParamFilteredToolHandler("azdo_builds", tools);
+        var request = CreateRequest("azdo_builds", Arguments(("zzzzzzzzzz", "bar")));
+
+        var ex = await Assert.ThrowsAsync<McpException>(async () =>
+            await handler(request, CancellationToken.None));
+
+        Assert.Contains("zzzzzzzzzz", ex.Message);
+        Assert.DoesNotContain("Did you mean:", ex.Message);
+        Assert.Contains("Allowed parameters:", ex.Message);
+    }
+
+    [Fact]
+    public async Task UnknownParamFilter_MultipleUnknowns_AllSurfacedInMessage()
+    {
+        var tools = CreateAzdoTools(out _);
+        var handler = CreateUnknownParamFilteredToolHandler("azdo_builds", tools);
+        var request = CreateRequest("azdo_builds", Arguments(
+            ("minFinishTime", "x"),
+            ("fooBar", "y")));
+
+        var ex = await Assert.ThrowsAsync<McpException>(async () =>
+            await handler(request, CancellationToken.None));
+
+        Assert.Contains("minFinishTime", ex.Message);
+        Assert.Contains("fooBar", ex.Message);
+        Assert.Contains("Allowed parameters:", ex.Message);
+    }
+
+    [Fact]
+    public async Task UnknownParamFilter_Threshold6Regression_MinFinishTimeGetsMinTimeHint()
+    {
+        // minFinishTime → minTime has Levenshtein distance = 6 (removes "finish" infix).
+        // Threshold-6 (not spec's original 3) is required for this regression case.
+        var tools = CreateAzdoTools(out _);
+        var handler = CreateUnknownParamFilteredToolHandler("azdo_builds", tools);
+        var request = CreateRequest("azdo_builds", Arguments(("minFinishTime", "2024-01-01")));
+
+        var ex = await Assert.ThrowsAsync<McpException>(async () =>
+            await handler(request, CancellationToken.None));
+
+        Assert.Contains("Did you mean: minTime?", ex.Message);
+    }
+
+    [Fact]
+    public async Task UnknownParamFilter_MissingRequiredParam_StillWrapsMcpException()
+    {
+        // Stage B skips when argument count is zero; AddBindingErrorFilter still wraps the
+        // SDK ArgumentException for a missing required parameter.
+        var tools = CreateAzdoTools(out _);
+        var handler = CreateUnknownParamFilteredToolHandler("azdo_build", tools);
+        var request = CreateRequest("azdo_build", Arguments());
+
+        var ex = await Assert.ThrowsAsync<McpException>(async () =>
+            await handler(request, CancellationToken.None));
+
+        Assert.IsType<ArgumentException>(ex.InnerException);
+        Assert.Contains("Parameter binding error for 'azdo_build'", ex.Message);
+    }
+
+    [Fact]
+    public async Task UnknownParamFilter_ParameterlessTool_AnyArgFlaggedUnknown()
+    {
+        // azdo_auth_status has no parameters; its canonical set is empty, so any
+        // argument is treated as unknown and the allowed list is "(none)".
+        var tools = CreateAzdoTools(out _);
+        var handler = CreateUnknownParamFilteredToolHandler("azdo_auth_status", tools);
+        var request = CreateRequest("azdo_auth_status", Arguments(("unknownArg", "value")));
+
+        var ex = await Assert.ThrowsAsync<McpException>(async () =>
+            await handler(request, CancellationToken.None));
+
+        Assert.Contains("unknownArg", ex.Message);
+        Assert.Contains("Allowed parameters: (none).", ex.Message);
+    }
+
+    [Fact]
+    public async Task UnknownParamFilter_CaseInsensitiveCanonicalMatch_KnownPassesUnknownFlagged()
+    {
+        // Canonical set is OrdinalIgnoreCase: 'ORG' matches 'org' → not unknown.
+        // 'MINFINISHTIME' has no case-insensitive canonical match → flagged with hint.
+        var tools = CreateAzdoTools(out _);
+        var handler = CreateUnknownParamFilteredToolHandler("azdo_builds", tools);
+        var request = CreateRequest("azdo_builds", Arguments(
+            ("ORG", "dnceng-public"),
+            ("MINFINISHTIME", "2024-01-01")));
+
+        var ex = await Assert.ThrowsAsync<McpException>(async () =>
+            await handler(request, CancellationToken.None));
+
+        Assert.DoesNotContain("'ORG'", ex.Message);
+        Assert.Contains("MINFINISHTIME", ex.Message);
+    }
+
+    // ── Levenshtein / FindClosestMatch direct tests (threshold boundary) ─────
+
+    [Fact]
+    public void Levenshtein_MinFinishTimeToMinTime_IsExactlyThreshold6()
+    {
+        // This is the key regression distance that drove the threshold choice.
+        var dist = McpServerOptionsExtensions.Levenshtein("minfinishtime", "mintime");
+        Assert.Equal(6, dist);
+    }
+
+    [Fact]
+    public void FindClosestMatch_Distance6_ReturnsSuggestion()
+    {
+        // minFinishTime → minTime is exactly at threshold-6; the hint must fire.
+        var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "org", "project", "top", "branch", "prNumber", "definitionId",
+              "status", "minTime", "maxTime", "queryOrder" };
+
+        var result = McpServerOptionsExtensions.FindClosestMatch("minFinishTime", candidates);
+
+        Assert.Equal("minTime", result);
+    }
+
+    [Fact]
+    public void FindClosestMatch_FarDistance_ReturnsNull()
+    {
+        // 'zzzzzzzzzz' is ≥ 10 Levenshtein from every azdo_builds param (all exceed threshold-6).
+        var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "org", "project", "top", "branch", "prNumber", "definitionId",
+              "status", "minTime", "maxTime", "queryOrder" };
+
+        var result = McpServerOptionsExtensions.FindClosestMatch("zzzzzzzzzz", candidates);
+
+        Assert.Null(result);
+    }
+
+    // ── ExtractToolParamInfo schema edge-case tests ──────────────────────────
+
+    [Fact]
+    public void ExtractToolParamInfo_AdditionalPropertiesTrue_ReturnsNull()
+    {
+        // Schema with additionalProperties: true means any extra key is allowed;
+        // the filter must be skipped for such tools (returns null).
+        var schema = JsonSerializer.Deserialize<JsonElement>(
+            """{"properties": {"foo": {"type": "string"}}, "additionalProperties": true}""");
+
+        var result = McpServerOptionsExtensions.ExtractToolParamInfo(schema, "test_tool", logger: null);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ExtractToolParamInfo_MissingSchema_ReturnsNull()
+    {
+        // Undefined schema must not produce false positives — filter is skipped.
+        var result = McpServerOptionsExtensions.ExtractToolParamInfo(
+            default, "test_tool", logger: null);
+
+        Assert.Null(result);
+    }
+
+    private static McpRequestHandler<CallToolRequestParams, CallToolResult>
+        CreateUnknownParamFilteredToolHandler(string toolName, AzdoMcpTools tools)
+    {
+        var options = new McpServerOptions()
+            .AddBindingErrorFilter()
+            .AddUnknownParameterFilter(typeof(AzdoMcpTools).Assembly);
+        Assert.Equal(2, options.Filters.Request.CallToolFilters.Count);
+
+        var toolCreateOptions = new McpServerToolCreateOptions
+        {
+            SerializerOptions = new JsonSerializerOptions
+            {
+                UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+                TypeInfoResolver = new DefaultJsonTypeInfoResolver()
+            }
+        };
+        var method = typeof(AzdoMcpTools).GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .Single(m => m.GetCustomAttribute<McpServerToolAttribute>()?.Name == toolName);
+        var tool = McpServerTool.Create(method, tools, toolCreateOptions);
+
+        // Compose: binding-error-filter (aliases + exception wrap) → unknown-param-filter → tool
+        var bindingErrorFilter = options.Filters.Request.CallToolFilters[0];
+        var unknownParamFilter = options.Filters.Request.CallToolFilters[1];
+        McpRequestHandler<CallToolRequestParams, CallToolResult> baseHandler =
+            (req, ct) => tool.InvokeAsync(req, ct);
+        return bindingErrorFilter(unknownParamFilter(baseHandler));
+    }
+
     private static McpRequestHandler<CallToolRequestParams, CallToolResult> CreateFilteredHandler(
         Func<RequestContext<CallToolRequestParams>, CancellationToken, ValueTask<CallToolResult>> next)
     {

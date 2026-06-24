@@ -100,7 +100,7 @@ public static class McpServerOptionsExtensions
 
     // ── Per-tool canonical-param info (built once at startup) ────────────────
 
-    private readonly record struct ToolParamInfo(
+    internal readonly record struct ToolParamInfo(
         HashSet<string> CanonicalSet,   // OrdinalIgnoreCase — used for Contains()
         string[] OrderedNames);         // schema declaration order — used in error messages
 
@@ -142,7 +142,7 @@ public static class McpServerOptionsExtensions
         return map;
     }
 
-    private static ToolParamInfo? ExtractToolParamInfo(
+    internal static ToolParamInfo? ExtractToolParamInfo(
         JsonElement schema,
         string toolName,
         ILogger? logger)
@@ -213,7 +213,7 @@ public static class McpServerOptionsExtensions
         return sb.ToString();
     }
 
-    private static string? FindClosestMatch(string unknown, HashSet<string> candidates)
+    internal static string? FindClosestMatch(string unknown, HashSet<string> candidates)
     {
         if (candidates.Count == 0)
             return null;
@@ -242,7 +242,7 @@ public static class McpServerOptionsExtensions
     // The full allowed-params list is always shown, so a false-positive hint is harmless.
     private const int LevenshteinThreshold = 6;
 
-    private static int Levenshtein(string s, string t)
+    internal static int Levenshtein(string s, string t)
     {
         var m = s.Length;
         var n = t.Length;

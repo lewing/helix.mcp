@@ -11,4 +11,8 @@
     <PackageReference Include="ModelContextProtocol" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="HelixTool.Tests" />
+  </ItemGroup>
+
 </Project>
