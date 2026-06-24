@@ -158,3 +158,5 @@ Crash is deferred (not at startup) — fires on first MCP request that triggers 
 
 **Test result:** 1345 passed / 0 failed / 2 skipped (unchanged). PR comment: https://github.com/lewing/helix.mcp/pull/83#issuecomment-4794361161
 
+## Orchestration: Issue #81 + #82 Testing Plan (2026-06-24)
+Dallas triaged #81 and #82. Your scope: write tests for Stage 1 alias regression, Stage 2 CallToolFilter (reference mcp-calltoolfilter-tests pattern), and #82 contract tests (reference azdo-rest-param-surface-audit). See decisions.md for blocking chain and effort summary.
