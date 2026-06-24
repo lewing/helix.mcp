@@ -135,3 +135,33 @@ Copilot bot review flagged critical gap in prior approval: numeric `build_id` / 
 
 **Related:** Session log: `.squad/log/2026-06-24-pr78-azdo-param-plumbing-and-followups.md`
 **Follow-up:** Issue #82 (architectural cleanup: centralize AzDO filter normalization)
+
+---
+
+### 2026-06-24: PR #83 Review — Issue #81 Stage A (strict unknown-param rejection)
+
+**Verdict: REQUEST CHANGES — blocking bug found.**
+
+**Non-blocking items all pass:**
+- Stage B scope is correctly absent
+- `("result", "resultFilter")` alias landed correctly; `arguments.Remove(aliasKey)` is in the right place; `return` → `continue` is sound
+- Both HTTP and stdio transports configured consistently
+- `AddBindingErrorFilter` interaction is correct — existing `ex.ParamName == "arguments"` catch covers the strict-mode throw
+- 8 tests cover all 7 Ripley scenarios plus build_id removal regression
+
+**Blocking issue: missing `TypeInfoResolver` in both `Program.cs` files.**
+
+Root cause discovered via SDK decompilation (`Microsoft.Extensions.AI.Abstractions 10.5.2`):
+1. `AIFunctionFactory.ReflectionAIFunctionDescriptor.GetOrCreate` calls `jsonSerializerOptions.MakeReadOnly()` BEFORE constructing the descriptor
+2. The descriptor constructor calls `AIJsonUtilities.CreateFunctionJsonSchema` → `CreateJsonSchemaCore`
+3. `CreateJsonSchemaCore` (line 13866) tries to auto-assign `TypeInfoResolver` when null: `jsonSerializerOptions.TypeInfoResolver = DefaultOptions.TypeInfoResolver`
+4. Setting any property on read-only `JsonSerializerOptions` → `InvalidOperationException`
+5. This is a **first-request crash** (not a startup crash — tools are registered via DI factory lambdas that run on first request)
+
+Lambert correctly fixed this in `CreateStrictFilteredToolHandler` but the fix was not applied to production `Program.cs`.
+
+**Fix:** Add `TypeInfoResolver = new DefaultJsonTypeInfoResolver()` to `JsonSerializerOptions` in both `Program.cs` files. Also update `SKILL.md` to document this as a required companion.
+
+**Who fixes:** Larry (one-liner; reviewer lockout prevents routing to Ripley).
+
+**Architectural note:** This is a subtle SDK ordering hazard — the "MakeReadOnly before schema gen" pattern requires callers to pre-populate TypeInfoResolver. Future callers of `WithToolsFromAssembly` with custom options must always include `TypeInfoResolver`. Captured in follow-up decision file.
