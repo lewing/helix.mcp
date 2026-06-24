@@ -166,3 +166,16 @@ Copilot bot flagged critical binding issue: numeric `build_id` / `buildId` alias
 **Commit:** `aa7dbe8` (whitespace normalization — queryOrder CLI, outcomes trim, caching outcomes)  
 **Tests:** 1330 passed, 2 skipped (0 failed) — 4 new tests added  
 **Branch:** `fix/azdo-param-plumbing`
+
+## 2026-06-24: PR #78 Second Copilot Review — Cache normalization, exit codes, doc coupling (fix/azdo-param-plumbing)
+
+### Learnings
+
+- **Cache key normalization isn't just for outcomes — any optional param with a server-side default needs the same null-vs-default treatment in the cache layer.** Explicit `"queueTimeDescending"` and `null` are semantically identical (the server applies the same default), but produce different hash strings if you embed the raw value. Always normalize to `null` before hashing when the server would treat them as equivalent.
+- **CLI commands MUST set non-zero exit code on invalid input or scripts can't detect failure.** `Environment.ExitCode = 1` before returning is the pattern used throughout this codebase for user input errors. Silent success-on-bad-input (`return` with exit 0) masks failures in CI pipelines and shell scripts.
+- **DateTimeOffset? in cache keys:** Use `.ToString("O", CultureInfo.InvariantCulture)` for stable, round-trip-safe cache key segments. The `{value:O}` format-string shorthand works but the explicit InvariantCulture call is more defensive.
+- **Doc coupling between CLI XML and MCP `[Description]`:** When a param's behavior depends on another param (e.g., minTime/maxTime filtered by the time-field implied by queryOrder), document that coupling in BOTH surfaces. The MCP description and the CLI XML `<param>` doc must be kept in sync — users of each surface deserve the same information.
+
+**Commit:** `0101b7d`  
+**Tests:** 1332 passed, 2 skipped (0 failed) — 2 new tests added (NullAndWhitespaceQueryOrder_ShareCacheKey, DifferentTimeRanges_DistinctCacheKeys)  
+**Branch:** `fix/azdo-param-plumbing`
