@@ -413,7 +413,15 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
     private static string HashFilter(AzdoBuildFilter filter)
     {
-        var raw = $"{filter.PrNumber}|{filter.Branch}|{filter.DefinitionId}|{filter.Top}|{filter.StatusFilter}|{filter.MinTime:O}|{filter.MaxTime:O}|{filter.QueryOrder}";
+        // Normalize QueryOrder: treat null/empty/whitespace as null (server default).
+        var normalizedQueryOrder = string.IsNullOrWhiteSpace(filter.QueryOrder)
+            ? null
+            : filter.QueryOrder.Trim();
+
+        var minTime = filter.MinTime?.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        var maxTime = filter.MaxTime?.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+
+        var raw = $"{filter.PrNumber}|{filter.Branch}|{filter.DefinitionId}|{filter.Top}|{filter.StatusFilter}|{minTime}|{maxTime}|{normalizedQueryOrder}";
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(raw));
         return Convert.ToHexString(hash)[..12].ToLowerInvariant();
     }

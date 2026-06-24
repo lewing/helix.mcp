@@ -1275,8 +1275,8 @@ public class AzdoCommands
     /// <param name="prNumber">Filter by pull request number.</param>
     /// <param name="definitionId">Filter by pipeline definition ID.</param>
     /// <param name="status">Filter by build status.</param>
-    /// <param name="minTime">Lower bound on queue/start/finish time (ISO 8601).</param>
-    /// <param name="maxTime">Upper bound on queue/start/finish time (ISO 8601).</param>
+    /// <param name="minTime">Lower bound on the build time field selected by queryOrder. With the default queryOrder (queueTimeDescending), filters by queueTime. Use finishTimeDescending to filter by finishTime, etc. (ISO 8601).</param>
+    /// <param name="maxTime">Upper bound on the build time field selected by queryOrder. With the default queryOrder (queueTimeDescending), filters by queueTime. Use finishTimeDescending to filter by finishTime, etc. (ISO 8601).</param>
     /// <param name="queryOrder">Order results by time field (e.g. finishTimeDescending). Default: queueTimeDescending.</param>
     /// <param name="json">Output as structured JSON.</param>
     [McpEquivalent("azdo_builds")]
@@ -1294,6 +1294,7 @@ public class AzdoCommands
         if (!AzdoService.IsValidQueryOrder(queryOrder))
         {
             Console.Error.WriteLine(AzdoService.GetInvalidQueryOrderMessage(queryOrder!));
+            Environment.ExitCode = 1;
             return;
         }
 
