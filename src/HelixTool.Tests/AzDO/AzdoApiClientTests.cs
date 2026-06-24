@@ -124,6 +124,18 @@ public class AzdoApiClientTests
         Assert.Contains("api-version=7.0", url);
     }
 
+    [Fact]
+    public async Task GetTestAttachmentsAsync_Top_AppearsInUrl()
+    {
+        _handler.ResponseContent = JsonSerializer.Serialize(new { value = Array.Empty<object>(), count = 0 });
+
+        await _client.GetTestAttachmentsAsync("dnceng", "internal", 10, 20, top: 25);
+
+        var url = _handler.LastRequest!.RequestUri!.ToString();
+        Assert.Contains("$top=25", url);
+        Assert.Contains("test/runs/10/results/20/attachments", url);
+    }
+
     // ── ListBuildsAsync filter parameter construction ────────────────
 
     [Fact]

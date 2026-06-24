@@ -146,7 +146,8 @@ public sealed class AzdoApiClient : IAzdoApiClient
 
     public async Task<IReadOnlyList<AzdoTestAttachment>> GetTestAttachmentsAsync(string org, string project, int runId, int resultId, int top = 50, CancellationToken ct = default)
     {
-        var url = BuildUrl(org, project, $"test/runs/{runId}/results/{resultId}/attachments");
+        var topParam = top > 0 ? $"?$top={top}" : "";
+        var url = BuildUrl(org, project, $"test/runs/{runId}/results/{resultId}/attachments{topParam}");
         return await GetListAsync<AzdoTestAttachment>(org, project, url, ct);
     }
 
