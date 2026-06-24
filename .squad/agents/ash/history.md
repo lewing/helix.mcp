@@ -183,3 +183,13 @@ Ash's measurement framework validated. Issue #74 closed with Conditional No unle
 - Changes: SSO/auth (IdentityAssertionGrantProvider), InheritEnvironmentVariables on stdio client, session DELETE hardening (user-auth check). Zero changes to `CallToolFilter` API, `McpException` shape, `McpServerTool.Create`, `ProtocolTool.InputSchema` structure, or alias normalization paths.
 - `AddBindingErrorFilter`, `NormalizeArgumentAliases`, and test pattern in `McpServerOptionsExtensionsTests.cs` all unaffected.
 - **Bump to 1.4.0 is safe.** No migration work required.
+
+### 2026-06-24: MCP Tool Param Surface Audit — PR #78 Kick-off
+
+- Audited 25 MCP tools against underlying REST/SDK capabilities
+- Found three parameter plumbing bugs: azdo_builds (minTime/maxTime/queryOrder), azdo_test_attachments (top not forwarded), azdo_test_results (outcomes hardcoded)
+- All three shipped in PR #78 after four Copilot review rounds
+- Also led Feasibility study on strict unknown-parameter rejection (issues #81–#82)
+
+**Related:** Session log: `.squad/log/2026-06-24-pr78-azdo-param-plumbing-and-followups.md`
+**Follow-up:** Issue #82 (architectural cleanup: centralize AzDO filter normalization)

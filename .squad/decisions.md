@@ -903,3 +903,65 @@ Documents and enforces precedence as part of the contract.
 - **Branch:** `ripley/azdo-buildidorurl-aliases`
 - **Regression tests:** Added for numeric `build_id: 2989057` and `buildId: 2989057` → end-to-end SDK binding success
 
+# Decision: AzDO Tool Param Plumbing — Validation Pattern
+
+**Date:** 2026-06-24T15:37:15-05:00
+**Author:** Ripley
+**Branch:** fix/azdo-param-plumbing
+**Status:** Implemented
+
+## Context
+
+Audit of AzDO MCP tools found three cases where REST API capabilities were
+not reachable from callers: `minTime`/`maxTime`/`queryOrder` on builds,
+the `top` parameter not forwarded to the test attachments URL, and the
+`outcomes` filter hardcoded to `Failed` in test results.
+
+## Decision: AllowedValues + server-side normalizer pattern for enum-like params
+
+For string parameters that accept a fixed set of values (queryOrder,
+filter, recordType, etc.), always apply the following defense-in-depth:
+
+1. **`[AllowedValues(...)]`** on the MCP tool parameter — prevents binding
+   unknown values before the method body runs.
+2. **`Normalize*(string?)` helper on `AzdoService`** — trim + canonicalize
+   (e.g., case-fold, alias expansion). Maps empty/whitespace → null.
+3. **`IsValid*(string?)` check + `McpException` throw** in the tool method —
+   server-side validation for callers who bypass schema constraints.
+4. **Expose the constant array** (e.g., `AzdoQueryOrders`) as a public
+   `static readonly string[]` on `AzdoService` so the tool's `AllowedValues`
+   attribute can spread it without duplication.
+
+## Decision: Cache key must include all discriminating params
+
+When `CachingAzdoApiClient.HashFilter` or per-endpoint cache keys are
+built, they must include **every parameter that affects the server response**
+(not just the historically-implemented ones). Failure to include a new
+param (e.g., `outcomes`, `queryOrder`) causes stale cache hits that return
+wrong data silently.
+
+Checklist for new params:
+- [ ] Add to `AzdoBuildFilter` record (or method signature)
+- [ ] Forward to REST URL
+- [ ] Include in `HashFilter` / cache key string
+- [ ] Expose on MCP tool
+- [ ] Expose on CLI command
+
+## Decision: AzDO REST time-range semantics
+
+`minTime` / `maxTime` parameters are named generically. The time field
+they filter against is determined by `queryOrder`:
+- `queueTimeDescending` → filters queue time
+- `finishTimeDescending` → filters finish time
+- etc.
+
+Document this coupling in the `minTime`/`maxTime` parameter descriptions
+so callers know to pair them with the right `queryOrder`.
+
+## Consequences
+
+- Tools gain new capabilities without breaking existing callers (defaults
+  preserve prior behavior in all cases: queryOrder defaults to
+  queueTimeDescending, outcomes defaults to Failed).
+- Pattern is consistent with existing `filter`/`recordType` validation on
+  Timeline and SearchTimeline tools.

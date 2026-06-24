@@ -100,3 +100,12 @@
 
 **Status:** PRs open, awaiting Dallas code review.
 - [2026-05-22] v0.7.3 shipped (PR #56 + PR #57 → main → NuGet)
+
+### 2026-06-24: PR #78 AzDO Param Plumbing Shipped
+
+- Three parameter plumbing bugs fixed in unified PR (minTime/maxTime/queryOrder, top forwarding, outcomes filter)
+- Four review rounds addressing whitespace, cache semantics, boundary normalization, and API stability
+- 14 new tests; all 1337 tests pass
+
+**Related:** Session log: `.squad/log/2026-06-24-pr78-azdo-param-plumbing-and-followups.md`
+**Follow-up:** Issue #82 (architectural cleanup: centralize AzDO filter normalization)

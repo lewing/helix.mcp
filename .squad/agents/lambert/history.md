@@ -124,3 +124,13 @@ Added end-to-end regression tests for Ripley's numeric coercion fix.
 **Tests:** 1316 passed, 2 skipped (0 failed) — 4 new tests all green  
 **Branch:** `ripley/azdo-buildidorurl-aliases` (same as Ripley)
 
+
+### 2026-06-24: PR #78 AzDO Param Plumbing Shipped
+
+- Ripley's three parameter plumbing bugfixes shipped after four Copilot review rounds
+- Covers minTime/maxTime/queryOrder plumbing, top forwarding, outcomes filter exposure
+- 14 new tests covering whitespace normalization, cache key semantics, boundary protection
+- All 1337 tests pass
+
+**Related:** Session log: `.squad/log/2026-06-24-pr78-azdo-param-plumbing-and-followups.md`
+**Follow-up:** Issue #82 (architectural cleanup: centralize AzDO filter normalization)

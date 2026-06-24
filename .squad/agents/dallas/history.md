@@ -113,3 +113,13 @@ Copilot bot review flagged critical gap in prior approval: numeric `build_id` / 
 
 **Commits:** `92c2655` (Ripley fix), `015d304` (Lambert tests)
 
+
+### 2026-06-24: PR #78 AzDO Param Plumbing Shipped
+
+- Ripley implemented three parameter plumbing bugs (minTime/maxTime/queryOrder, top forwarding, outcomes filter)
+- Four Copilot review rounds: whitespace normalization, cache semantics, boundary protection, API stability
+- Duck architectural review clarified principle: "canonicalize at boundaries, centralize the algorithm" (not "normalize at every layer")
+- All 1337 tests pass; 14 new tests added
+
+**Related:** Session log: `.squad/log/2026-06-24-pr78-azdo-param-plumbing-and-followups.md`
+**Follow-up:** Issue #82 (architectural cleanup: centralize AzDO filter normalization)
