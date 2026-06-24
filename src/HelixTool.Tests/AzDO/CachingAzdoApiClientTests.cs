@@ -340,6 +340,23 @@ public class CachingAzdoApiClientTests
     }
 
     [Fact]
+    public async Task ListBuildsAsync_DifferentCasingsSameQueryOrder_ShareCacheKey()
+    {
+        var builds = new List<AzdoBuild> { new() { Id = 21 } };
+        _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((string?)null, JsonSerializer.Serialize(builds), JsonSerializer.Serialize(builds));
+        _inner.ListBuildsAsync("org", "proj", Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>())
+            .Returns(builds);
+
+        await _sut.ListBuildsAsync("org", "proj", new AzdoBuildFilter { QueryOrder = "finishTimeDescending" });
+        await _sut.ListBuildsAsync("org", "proj", new AzdoBuildFilter { QueryOrder = "FINISHTIMEDESCENDING" });
+        await _sut.ListBuildsAsync("org", "proj", new AzdoBuildFilter { QueryOrder = "FinishTimeDescending" });
+
+        // All three casings are semantically identical — AzDO is case-insensitive — so only one inner call.
+        await _inner.Received(1).ListBuildsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task ListBuildsAsync_DifferentTimeRanges_DistinctCacheKeys()
     {
         var t1 = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);

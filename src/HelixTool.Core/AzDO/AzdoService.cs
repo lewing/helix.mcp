@@ -31,7 +31,7 @@ public class AzdoService
     };
 
     /// <summary>Valid queryOrder values accepted by the AzDO builds REST API.</summary>
-    public static readonly string[] AzdoQueryOrders =
+    public static readonly IReadOnlyList<string> AzdoQueryOrders =
     [
         "queueTimeAscending",
         "queueTimeDescending",
