@@ -179,3 +179,36 @@ Copilot bot flagged critical binding issue: numeric `build_id` / `buildId` alias
 **Commit:** `0101b7d`  
 **Tests:** 1332 passed, 2 skipped (0 failed) — 2 new tests added (NullAndWhitespaceQueryOrder_ShareCacheKey, DifferentTimeRanges_DistinctCacheKeys)  
 **Branch:** `fix/azdo-param-plumbing`
+
+## 2026-06-24: PR #78 Third Copilot Review — Defense-in-depth normalization at HTTP client + cache key collapse (fix/azdo-param-plumbing)
+
+### Learnings
+
+- **Normalization belongs at EVERY layer that touches the value, not just the entry layer.** The HTTP client, cache key, and entry-point validation are all independent and must each be self-protecting. An internal caller, test, or future path can bypass the CLI/MCP entry layer — the HTTP client and cache layer must still produce correct behavior. (Applied: `AzdoApiClient.ListBuildsAsync` whitespace-normalizes `QueryOrder` independent of service layer.)
+- **For cache keys, normalize the canonical default string to null — null and the explicit server default are semantically identical and must share a key.** `null` and `"queueTimeDescending"` produce the exact same AzDO REST call; hashing them differently causes unnecessary cache misses. Collapse with `string.Equals(value, Default, OrdinalIgnoreCase)` → null before hashing. Extract the default as a named constant to avoid magic-string duplication across client and cache layers. (Applied: `AzdoApiClient.DefaultQueryOrder` constant, `CachingAzdoApiClient.HashFilter` collapses explicit "queueTimeDescending" to null.)
+
+**Commit:** `fd11105`  
+**Tests:** 1336 passed, 2 skipped (0 failed) — 4 new tests added (WhitespaceQueryOrder_FallsBackToDefault, EmptyQueryOrder_FallsBackToDefault, NullAndExplicitDefaultQueryOrder_ShareCacheKey, NullAndExplicitFailedOutcomes_ShareCacheKey)  
+**Branch:** `fix/azdo-param-plumbing`
+
+
+## 2026-06-24: PR #78 Final Copilot Review — Array mutability, cache key casing, API stability (fix/azdo-param-plumbing)
+
+### Learnings
+
+- **Public arrays are mutable even when the field is `readonly` — always expose `IReadOnlyList<T>`, `FrozenSet<T>`, or similar for validation sets.** `public static readonly string[]` lets callers overwrite elements at runtime, silently corrupting validation. The field reference is frozen; the array contents are not. Use `IReadOnlyList<string>` (or `ImmutableArray<T>`) at the public boundary.
+- **`CancellationToken` is always last in .NET convention; new optional params go before it.** Inserting a parameter anywhere but the position immediately before `CancellationToken` shifts indices for positional callers. Verify placement by reading the full signature — the reviewer's concern was valid in principle but the current code was already correct.
+- **Cache keys for case-insensitive server values must be lowercased to prevent fragmentation.** AzDO treats `queryOrder` case-insensitively, so `"finishTimeDescending"` and `"FINISHTIMEDESCENDING"` produce identical server responses but different hash inputs without explicit normalization. After the null-collapse step, call `?.ToLowerInvariant()` before hashing.
+
+### Correction to round-3 learning: "normalize at every layer"
+
+The round-3 learning said "Normalization belongs at EVERY layer that touches the value." Rubber-duck review clarified the right principle is:
+
+- **Validate at user/input boundaries** (CLI/MCP) — for useful, early error messages
+- **Canonicalize at semantic boundaries** (cache key construction, URL construction) — where the value's meaning is consumed
+- **Centralize the canonicalization algorithm** — multiple layers invoke the shared helper; none reimplement it independently
+- **"Defense in depth at every layer" leads to algorithm duplication and drift.** The right principle is "canonicalize at boundaries, share the algorithm." Duplicating the normalization expression at HTTP client, cache, and entry-point means three places to update when the rule changes.
+
+**Commit:** `6bb0009`
+**Tests:** 1337 passed, 2 skipped (0 failed) — 1 new test added (ListBuildsAsync_DifferentCasingsSameQueryOrder_ShareCacheKey)
+**Branch:** `fix/azdo-param-plumbing`
