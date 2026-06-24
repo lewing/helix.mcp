@@ -924,7 +924,13 @@ Available as `failureCategory` in JSON and MCP output.
                 options.AddBindingErrorFilter();
             })
             .WithStdioServerTransport()
-            .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly)
+            .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly, new JsonSerializerOptions
+            {
+                // Reject unknown parameters at binding time so callers get a structured error
+                // instead of silent data loss. The AddBindingErrorFilter above catches the resulting
+                // ArgumentException(paramName:"arguments") and wraps it as McpException.
+                UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+            })
             .WithResourcesFromAssembly(typeof(HelixMcpTools).Assembly);
         await builder.Build().RunAsync();
     }

@@ -6,6 +6,8 @@ using HelixTool.Mcp;
 using HelixTool.Mcp.Tools;
 using ModelContextProtocol.Server;
 using System.Reflection;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 HelixToolUserAgent.Initialize(Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0");
 
@@ -97,7 +99,13 @@ builder.Services
         options.AddBindingErrorFilter();
     })
     .WithHttpTransport()
-    .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly)
+    .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly, new JsonSerializerOptions
+    {
+        // Reject unknown parameters at binding time so callers get a structured error
+        // instead of silent data loss. The AddBindingErrorFilter above catches the resulting
+        // ArgumentException(paramName:"arguments") and wraps it as McpException.
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+    })
     .WithResourcesFromAssembly(typeof(HelixMcpTools).Assembly);
 
 var app = builder.Build();
