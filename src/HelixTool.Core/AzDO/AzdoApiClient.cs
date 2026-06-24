@@ -134,7 +134,8 @@ public sealed class AzdoApiClient : IAzdoApiClient
 
     public async Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(string org, string project, int runId, int top = 200, string? outcomes = null, CancellationToken ct = default)
     {
-        var url = BuildUrl(org, project, $"test/runs/{runId}/results?$top={top}&outcomes={Uri.EscapeDataString(outcomes ?? "Failed")}");
+        var outcomesParam = string.IsNullOrWhiteSpace(outcomes) ? "Failed" : outcomes.Trim();
+        var url = BuildUrl(org, project, $"test/runs/{runId}/results?$top={top}&outcomes={Uri.EscapeDataString(outcomesParam)}");
         return await GetListAsync<AzdoTestResult>(org, project, url, ct);
     }
 

@@ -1290,6 +1290,13 @@ public class AzdoCommands
         if (Commands.TryPrintSchema<IReadOnlyList<AzdoBuild>>(schema))
             return;
 
+        queryOrder = AzdoService.NormalizeQueryOrder(queryOrder);
+        if (!AzdoService.IsValidQueryOrder(queryOrder))
+        {
+            Console.Error.WriteLine(AzdoService.GetInvalidQueryOrderMessage(queryOrder!));
+            return;
+        }
+
         var filter = new AzdoBuildFilter
         {
             PrNumber = prNumber,

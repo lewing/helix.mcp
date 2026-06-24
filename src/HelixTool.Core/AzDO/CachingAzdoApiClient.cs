@@ -246,14 +246,15 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
         await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
 
-        var key = BuildCacheKey(org, project, $"testresults:{runId}:{top}:{outcomes ?? "Failed"}");
+        var normalizedOutcomes = string.IsNullOrWhiteSpace(outcomes) ? null : outcomes.Trim();
+        var key = BuildCacheKey(org, project, $"testresults:{runId}:{top}:{normalizedOutcomes ?? "Failed"}");
         var cached = await _cache.GetMetadataAsync(key, ct);
         var deserialized = TryDeserialize<List<AzdoTestResult>>(cached);
         if (deserialized is not null)
             return deserialized;
 
-        var result = await _inner.GetTestResultsAsync(org, project, runId, top, outcomes, ct);
-        key = BuildCacheKey(org, project, $"testresults:{runId}:{top}:{outcomes ?? "Failed"}");
+        var result = await _inner.GetTestResultsAsync(org, project, runId, top, normalizedOutcomes, ct);
+        key = BuildCacheKey(org, project, $"testresults:{runId}:{top}:{normalizedOutcomes ?? "Failed"}");
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
 
         return result;

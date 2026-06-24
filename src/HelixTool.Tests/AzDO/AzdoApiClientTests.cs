@@ -148,6 +148,40 @@ public class AzdoApiClientTests
     }
 
     [Fact]
+    public async Task GetTestResultsAsync_EmptyOutcomes_UsesFailedDefault()
+    {
+        _handler.ResponseContent = JsonSerializer.Serialize(new { value = Array.Empty<object>(), count = 0 });
+
+        await _client.GetTestResultsAsync("dnceng", "internal", 999, outcomes: "");
+
+        var url = _handler.LastRequest!.RequestUri!.ToString();
+        Assert.Contains("outcomes=Failed", url);
+    }
+
+    [Fact]
+    public async Task GetTestResultsAsync_WhitespaceOutcomes_UsesFailedDefault()
+    {
+        _handler.ResponseContent = JsonSerializer.Serialize(new { value = Array.Empty<object>(), count = 0 });
+
+        await _client.GetTestResultsAsync("dnceng", "internal", 999, outcomes: "   ");
+
+        var url = _handler.LastRequest!.RequestUri!.ToString();
+        Assert.Contains("outcomes=Failed", url);
+    }
+
+    [Fact]
+    public async Task GetTestResultsAsync_OutcomesWithWhitespace_TrimsBeforeUse()
+    {
+        _handler.ResponseContent = JsonSerializer.Serialize(new { value = Array.Empty<object>(), count = 0 });
+
+        await _client.GetTestResultsAsync("dnceng", "internal", 999, outcomes: " Passed,Failed ");
+
+        var url = _handler.LastRequest!.RequestUri!.ToString();
+        Assert.Contains("outcomes=Passed%2CFailed", url);
+        Assert.DoesNotContain("%20", url.Split('?')[1].Split('&').First(p => p.StartsWith("outcomes")));
+    }
+
+    [Fact]
     public async Task GetTestAttachmentsAsync_Top_AppearsInUrl()
     {
         _handler.ResponseContent = JsonSerializer.Serialize(new { value = Array.Empty<object>(), count = 0 });

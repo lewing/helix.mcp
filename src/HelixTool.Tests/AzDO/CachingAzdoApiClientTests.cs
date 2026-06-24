@@ -338,6 +338,34 @@ public class CachingAzdoApiClientTests
     }
 
     [Fact]
+    public async Task GetTestResultsAsync_NullAndEmptyOutcomes_ShareCacheKey()
+    {
+        // First call: cache miss, returns from inner
+        _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((string?)null);
+
+        var results = new List<AzdoTestResult>();
+        _inner.GetTestResultsAsync("org", "proj", 77, Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(results);
+
+        _cache.SetMetadataAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+
+        await _sut.GetTestResultsAsync("org", "proj", 77, outcomes: null);
+
+        // Second and third calls: cache should hit (null, "", and "   " all normalize to the same key)
+        _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(JsonSerializer.Serialize(results));
+
+        await _sut.GetTestResultsAsync("org", "proj", 77, outcomes: "");
+        await _sut.GetTestResultsAsync("org", "proj", 77, outcomes: "   ");
+
+        // Inner should have been called only once (the first cache-miss call)
+        await _inner.Received(1).GetTestResultsAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task GetTestRunsAsync_CacheHit_SkipsInner()
     {
         var runs = new List<AzdoTestRun> { new() { Id = 1, Name = "run1" } };
