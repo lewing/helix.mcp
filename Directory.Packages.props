@@ -8,8 +8,20 @@
   <ItemGroup>
     <!-- Azure / Helix -->
     <PackageVersion Include="Azure.Identity" Version="1.21.0" />
-    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.8" />
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.9" />
     <PackageVersion Include="Microsoft.DotNet.Helix.Client" Version="11.0.0-beta.26265.121" />
+
+    <!--
+      Transitive pin for CVE-2025-6965 / GHSA-2m69-gcr7-jv3q.
+      Microsoft.Data.Sqlite 10.0.9 still references SQLitePCLRaw 2.1.11, which
+      is flagged high-severity. Forcing the 3.x package set (core/bundle/provider
+      at 3.0.3, lib at 3.50.3) picks up the patched native SQLite binary.
+      Remove once Microsoft.Data.Sqlite ships a version that pulls SQLitePCLRaw 3.x.
+    -->
+    <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
+    <PackageVersion Include="SQLitePCLRaw.core" Version="3.0.3" />
+    <PackageVersion Include="SQLitePCLRaw.provider.e_sqlite3" Version="3.0.3" />
+    <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.50.3" />
 
     <!-- Microsoft.Extensions / hosting -->
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.8" />
