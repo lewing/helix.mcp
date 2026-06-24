@@ -87,3 +87,6 @@ The round-3 learning said "Normalization belongs at EVERY layer that touches the
 **Commit:** `6bb0009`
 **Tests:** 1337 passed, 2 skipped (0 failed) — 1 new test added (ListBuildsAsync_DifferentCasingsSameQueryOrder_ShareCacheKey)
 **Branch:** `fix/azdo-param-plumbing`
+
+## Orchestration: Issue #81 + #82 Implementation Plan (2026-06-24)
+Dallas triaged #81 and #82. Your scope: implement Stage 1 (alias pre-work + `UnmappedMemberHandling`), Stage 2 (CallToolFilter hints), and all of #82 (normalizer consolidation + contract tests). See decisions.md for sequencing, effort summary, and blocking dependencies.

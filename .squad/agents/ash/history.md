@@ -193,3 +193,6 @@ Ash's measurement framework validated. Issue #74 closed with Conditional No unle
 
 **Related:** Session log: `.squad/log/2026-06-24-pr78-azdo-param-plumbing-and-followups.md`
 **Follow-up:** Issue #82 (architectural cleanup: centralize AzDO filter normalization)
+
+## Rubber-duck: Issue #81 Stage B Levenshtein Threshold (2026-06-24)
+Ripley implementing Stage B (CallToolFilter 'did you mean' hints). Decision proposes Levenshtein ≤3. Rubber-duck role: review existing param names to confirm no false positives at this threshold. See decisions.md §Issue #81 Decomposition Stage B.

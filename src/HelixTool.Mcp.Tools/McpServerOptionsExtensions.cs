@@ -13,12 +13,17 @@ public static class McpServerOptionsExtensions
     // paramName = "arguments" when SDK binder validation fails; Ash verified this in stderr during the 2026-05-28 investigation.
     private const string BinderArgumentsParamName = "arguments";
 
-    // First match wins; tuple order is the documented precedence when multiple aliases are present without a canonical key.
+    // First match wins per canonical; tuple order is the documented precedence when multiple aliases for the same
+    // canonical are present without the canonical key. All aliases are processed in a single pass so that callers
+    // passing aliases for different canonicals (e.g. build_id + result on azdo_search_timeline) have all entries
+    // renamed before strict-mode unmapped-member checking fires.
     private static readonly (string Alias, string Canonical)[] s_argumentAliases =
     [
         ("build_id", "buildIdOrUrl"),
         ("buildId", "buildIdOrUrl"),
         ("buildUrl", "buildIdOrUrl"),
+        // azdo_search_timeline exposes the filter param as 'resultFilter'; callers historically pass 'result'.
+        ("result", "resultFilter"),
     ];
 
     public static McpServerOptions AddBindingErrorFilter(this McpServerOptions options, ILogger? logger = null)
@@ -66,12 +71,15 @@ public static class McpServerOptionsExtensions
             }
 
             arguments[canonical] = CoerceToStringElement(arguments[aliasKey]);
+            arguments.Remove(aliasKey);
             logger?.LogDebug(
                 "Argument alias resolved: '{Alias}' → '{Canonical}' for tool '{ToolName}'",
                 aliasKey,
                 canonical,
                 parameters?.Name);
-            return;
+            // Continue processing — caller may have passed aliases for multiple distinct canonicals
+            // (e.g. build_id + result on azdo_search_timeline). The alias key is removed so strict-mode
+            // unmapped-member checking does not flag it after this filter runs.
         }
     }
 

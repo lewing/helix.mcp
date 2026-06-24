@@ -965,3 +965,109 @@ so callers know to pair them with the right `queryOrder`.
   queueTimeDescending, outcomes defaults to Failed).
 - Pattern is consistent with existing `filter`/`recordType` validation on
   Timeline and SearchTimeline tools.
+# Decision: Issue #81 + #82 Triage — Sequencing and Scoping
+
+**Date:** 2026-06-24  
+**Author:** Dallas  
+**Status:** Proposed
+
+---
+
+## Sequencing Decision
+
+**Recommended order:**
+
+1. **Pre-work alias + #81 Stage A** (one PR, size S)
+2. **#81 Stage B** (one PR, size M)
+3. **#82 — full normalization refactor** (one PR, size M)
+
+### Rationale
+
+#81 Stage A is the highest-value/lowest-risk item in the set: a single serializer option change converts silent data-corruption failures into structured errors. It ships immediately, closes the production footgun, and has no dependency on #82. Getting the "did you mean" UX (#81 Stage B) in before the normalization refactor (#82) means callers start seeing useful errors sooner, and the refactor (#82) gets to land on a codebase where strict mode is already exercising the filter pipeline.
+
+#82 is independent of both #81 stages but benefits from landing after #81 Stage A is in, so its contract tests can exercise the full failure surface (hallucinated params AND declared-but-not-forwarded params).
+
+---
+
+## Pre-work Required for #81 Stage A
+
+### `result` → `resultFilter` alias **must land in the same PR as Stage A**
+
+`azdo_search_timeline` exposes its filter param as `resultFilter`. The alias table (`NormalizeArgumentAliases` in `McpServerOptionsExtensions.cs`) has no entry for `result` → `resultFilter`. Once `UnmappedMemberHandling = Disallow` is set, any caller currently passing `result: 'failed'` will receive a hard rejection. Confirmed absent by source inspection — the alias array only contains three `buildIdOrUrl` aliases.
+
+Action: add `("result", "resultFilter")` to `s_argumentAliases` in the same PR that enables strict mode. Lambert adds a regression test (alias normalizes before strict check fires).
+
+### Scan for any other silent-tolerance aliases
+
+Before Stage A ships, do a one-pass grep of session logs / issue history for other params being passed by callers in non-canonical form that the SDK currently tolerates. No further instances found in PR #78 / Ash's feasibility report, but confirm at implementation time.
+
+---
+
+## Issue #81 Decomposition
+
+### Stage A (size S — one PR)
+- Add `("result", "resultFilter")` alias entry
+- Set `JsonSerializerOptions.UnmappedMemberHandling = Disallow` on `McpServerToolCreateOptions.SerializerOptions` at tool registration
+- Tests: existing alias tests still pass; new rejection test confirms `ArgumentException` from `InvokeCoreAsync` is caught by existing `AddBindingErrorFilter` and wrapped as `McpException`
+
+**Owner:** Ripley implements, Lambert writes tests. No doc surface change (error message is machine-generated, not schema-visible).
+
+### Stage B (size M — one PR)
+- Extend `AddBindingErrorFilter` (or a sibling CallToolFilter registered immediately after) with the canonical-param diffing logic
+- Build `toolName → IReadOnlySet<string>(canonicalParams)` map at server startup from `tool.ProtocolTool.InputSchema["properties"]`, captured in the filter closure
+- Compute `unknowns = normalizedArgKeys − canonicalParams`
+- On non-empty unknowns: throw structured `McpException` with "did you mean" (Levenshtein ≤3) and full allowed-param list
+- Stage A's `UnmappedMemberHandling = Disallow` can be removed if Stage B is in place (Stage B fires first in the filter pipeline, before SDK dispatch); or both can coexist as defense-in-depth
+
+Tests per issue body: per-tool canonical pass, alias pass, unknown rejected, close-match hint present, no-match list only, multiple unknowns. Add `minFinishTime` → `azdo_builds` regression from PR #78's root cause.
+
+**Owner:** Ripley implements. Lambert writes tests (reference `mcp-calltoolfilter-tests` SKILL.md for `RequestContext<CallToolRequestParams>` pattern). Kane: no user-visible schema change; the error message is in the response, not the schema — no doc update needed.
+
+**Note:** Ash adds value here as a rubber-duck on the Levenshtein threshold (≤3 is Ash's recommendation; confirm no false positives in the existing param name set).
+
+---
+
+## Issue #82 Decomposition — One PR
+
+All four sub-changes ship as a single coherent PR. Sub-changes 1 (normalizer), 2 (JSON cache key), and 3 (move defaults to domain) have a dependency chain and partial state in `main` is worse than the consolidated diff. Sub-change 4 (contract tests) validates the whole unit.
+
+### Sub-change 3 first (no external dependency)
+Move `AzdoApiClient.DefaultQueryOrder` to `AzdoBuildFilterDefaults` in the domain model. This is a pure rename/move with no behavioral change and unblocks sub-changes 1 and 2.
+
+### Sub-change 1: `AzdoBuildFilterNormalizer`
+Extract the normalization rules (whitespace → null, trim, default-collapse, lowercase) into a single static helper. Both `AzdoApiClient.ListBuildsAsync` and `CachingAzdoApiClient.HashFilter` call it; neither reimplements the rules. Apply the same pattern to `AzdoTestResultFilter` if it accumulates similar concerns.
+
+### Sub-change 2: JSON-derived cache key
+Replace hand-built `HashFilter` string concatenation with `JsonSerializer.Serialize(normalizedFilter, stableOptions)`. Stable options: alphabetical property ordering, omit nulls/defaults, invariant culture. New fields fail-safe — no explicit wiring needed.
+
+### Sub-change 4: Contract tests per param
+Per MCP/CLI param: (a) REST URL contains the value, (b) cache key contains the value, (c) service call shape is correct. Reference `azdo-rest-param-surface-audit` SKILL.md for pattern. This is the largest piece; estimate ~half the total effort for this issue.
+
+**Owner:** Ripley implements all four. Lambert writes the normalizer unit tests and contract tests. No schema surface change → Kane not needed.
+
+---
+
+## Issue #74 Overlap
+
+**No bundling.** #74 (schema token cost) is a `tools/list` cold-load size problem. #81 strict rejection is a runtime invocation-time problem. They are orthogonal — enabling strict mode does not add or remove bytes from `tools/list`. Dallas's existing CONDITIONAL NO verdict on #74 stands. Revisit triggers remain: per-turn re-fetch, tool count >40, or user-reported token pressure.
+
+---
+
+## Effort Summary
+
+| Item | Size | Owner | Blocker for |
+|------|------|-------|------------|
+| Pre-work: `result` → `resultFilter` alias | S | Ripley + Lambert | #81 Stage A |
+| #81 Stage A: `UnmappedMemberHandling = Disallow` | S | Ripley + Lambert | #81 Stage B |
+| #81 Stage B: "did you mean" CallToolFilter | M | Ripley + Lambert (+ Ash rubber-duck) | — |
+| #82: Centralize normalization (all 4 sub-changes) | M | Ripley + Lambert | — |
+
+Total: ~1.5–2 days of Ripley + Lambert time.
+
+---
+
+## Open Questions
+
+1. **Stage A vs. Stage B coexistence:** When Stage B lands, should `UnmappedMemberHandling = Disallow` from Stage A be removed (Stage B supersedes it) or kept as defense-in-depth for the `HasCustomParameterBinding == true` edge case? Decision deferred to Ripley at implementation time; document the choice in the PR.
+
+2. **`AzdoQueryOrder` value object (#82 optional):** The issue mentions the `mcp-enum-with-aliases` skill as a natural fit. Not required for the core cleanup. Defer unless the normalizer helper reveals a natural seam for it.

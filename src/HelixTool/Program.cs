@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using ConsoleAppFramework;
 using HelixTool;
 using HelixTool.Core;
@@ -924,7 +925,16 @@ Available as `failureCategory` in JSON and MCP output.
                 options.AddBindingErrorFilter();
             })
             .WithStdioServerTransport()
-            .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly)
+            .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly, new JsonSerializerOptions
+            {
+                // Reject unknown parameters at binding time so callers get a structured error
+                // instead of silent data loss. The AddBindingErrorFilter above catches the resulting
+                // ArgumentException(paramName:"arguments") and wraps it as McpException.
+                UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+                // Required: SDK calls MakeReadOnly() on options before schema gen; without a
+                // TypeInfoResolver set, CreateJsonSchemaCore tries to assign one post-lock → InvalidOperationException.
+                TypeInfoResolver = new DefaultJsonTypeInfoResolver(),
+            })
             .WithResourcesFromAssembly(typeof(HelixMcpTools).Assembly);
         await builder.Build().RunAsync();
     }
