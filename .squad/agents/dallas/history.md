@@ -63,6 +63,18 @@ See `.squad/decisions.md` for full decision documentation on Issue #61 Policy (C
 
 ## Learnings
 
+### Issue #81/#82 Triage — Framing Decisions (2026-06-24)
+
+**Sequencing heuristic applied:** User-visible correctness fix (#81 Stage A: silent → structured error) goes before architectural cleanup (#82: normalization centralization). The cleanup does not unblock the correctness fix; ship value first, clean house after.
+
+**Pre-work scope rule:** Any alias that currently "works" via silent tolerance must be in the alias table BEFORE strict mode enables. Source-confirmed: `result` → `resultFilter` is absent from `s_argumentAliases`; must land in the Stage A PR, not as a follow-up. General principle: when enabling a new enforcement gate, grep the session telemetry and issue history for known-tolerated variants before flipping the switch.
+
+**#82 one-PR vs. multiple PRs:** Sub-changes with a dependency chain (domain defaults → normalizer → JSON cache key → tests) should ship as one PR. Partial refactor state in `main` is worse than a larger diff. Independent sub-changes only justify separate PRs when they have different risk profiles or different owners.
+
+**#74 stays deferred:** Strict unknown-param rejection (#81) is invocation-time; schema trimming (#74) is cold-load size. Orthogonal concerns. The CONDITIONAL NO verdict on #74 is unaffected.
+
+**Stage A/B coexistence question:** Left as an open question for Ripley at implementation time. Both `UnmappedMemberHandling = Disallow` (Stage A, SDK-layer) and the CallToolFilter "did you mean" (Stage B, filter-pipeline layer) can coexist as defense-in-depth, but Stage B makes Stage A redundant for our tool set. Document the choice in the PR, don't silently remove Stage A without noting why.
+
 ### Parameter Alias Layer Choice — `buildIdOrUrl` Review (2026-06-01)
 
 **Problem:** Agents supplied `build_id`/`buildUrl` (intuitive names) instead of canonical `buildIdOrUrl`, causing MCP SDK binding failure before tool code executed. Two rejection patterns confirmed from session e9c219bd telemetry.

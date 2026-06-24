@@ -134,3 +134,6 @@ Added end-to-end regression tests for Ripley's numeric coercion fix.
 
 **Related:** Session log: `.squad/log/2026-06-24-pr78-azdo-param-plumbing-and-followups.md`
 **Follow-up:** Issue #82 (architectural cleanup: centralize AzDO filter normalization)
+
+## Orchestration: Issue #81 + #82 Testing Plan (2026-06-24)
+Dallas triaged #81 and #82. Your scope: write tests for Stage 1 alias regression, Stage 2 CallToolFilter (reference mcp-calltoolfilter-tests pattern), and #82 contract tests (reference azdo-rest-param-surface-audit). See decisions.md for blocking chain and effort summary.
