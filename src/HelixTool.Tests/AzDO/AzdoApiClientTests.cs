@@ -349,6 +349,31 @@ public class AzdoApiClientTests
     }
 
     [Fact]
+    public async Task ListBuildsAsync_WhitespaceQueryOrder_FallsBackToDefault()
+    {
+        _handler.ResponseContent = JsonSerializer.Serialize(new { value = Array.Empty<object>(), count = 0 });
+        var filter = new AzdoBuildFilter { QueryOrder = "   " };
+
+        await _client.ListBuildsAsync("dnceng", "internal", filter);
+
+        var url = _handler.LastRequest!.RequestUri!.ToString();
+        Assert.Contains("queryOrder=queueTimeDescending", url);
+        Assert.DoesNotContain("%20", url);
+    }
+
+    [Fact]
+    public async Task ListBuildsAsync_EmptyQueryOrder_FallsBackToDefault()
+    {
+        _handler.ResponseContent = JsonSerializer.Serialize(new { value = Array.Empty<object>(), count = 0 });
+        var filter = new AzdoBuildFilter { QueryOrder = "" };
+
+        await _client.ListBuildsAsync("dnceng", "internal", filter);
+
+        var url = _handler.LastRequest!.RequestUri!.ToString();
+        Assert.Contains("queryOrder=queueTimeDescending", url);
+    }
+
+    [Fact]
     public async Task ListBuildsAsync_TimeRangeAndQueryOrder_AllPresent()
     {
         _handler.ResponseContent = JsonSerializer.Serialize(new { value = Array.Empty<object>(), count = 0 });

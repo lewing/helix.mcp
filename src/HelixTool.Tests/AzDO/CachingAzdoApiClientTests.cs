@@ -322,6 +322,24 @@ public class CachingAzdoApiClientTests
     }
 
     [Fact]
+    public async Task ListBuildsAsync_NullAndExplicitDefaultQueryOrder_ShareCacheKey()
+    {
+        var builds = new List<AzdoBuild> { new() { Id = 20 } };
+        // First call: miss. Subsequent calls: hit (explicit default and case variants collapse to same key).
+        _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((string?)null, JsonSerializer.Serialize(builds), JsonSerializer.Serialize(builds));
+        _inner.ListBuildsAsync("org", "proj", Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>())
+            .Returns(builds);
+
+        await _sut.ListBuildsAsync("org", "proj", new AzdoBuildFilter { QueryOrder = null });
+        await _sut.ListBuildsAsync("org", "proj", new AzdoBuildFilter { QueryOrder = "queueTimeDescending" });
+        await _sut.ListBuildsAsync("org", "proj", new AzdoBuildFilter { QueryOrder = "QUEUETIMEDESCENDING" });
+
+        // Inner must only be called once — all three share the same cache key.
+        await _inner.Received(1).ListBuildsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task ListBuildsAsync_DifferentTimeRanges_DistinctCacheKeys()
     {
         var t1 = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
@@ -400,6 +418,33 @@ public class CachingAzdoApiClientTests
         await _sut.GetTestResultsAsync("org", "proj", 77, outcomes: "   ");
 
         // Inner should have been called only once (the first cache-miss call)
+        await _inner.Received(1).GetTestResultsAsync(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetTestResultsAsync_NullAndExplicitFailedOutcomes_ShareCacheKey()
+    {
+        // First call: miss, returns from inner.
+        _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((string?)null);
+
+        var results = new List<AzdoTestResult>();
+        _inner.GetTestResultsAsync("org", "proj", 77, Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(results);
+
+        _cache.SetMetadataAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+
+        await _sut.GetTestResultsAsync("org", "proj", 77, outcomes: null);
+
+        // Second call: explicit "Failed" should share the same cache key as null.
+        _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(JsonSerializer.Serialize(results));
+
+        await _sut.GetTestResultsAsync("org", "proj", 77, outcomes: "Failed");
+
+        // Inner should have been called only once — null and "Failed" are semantically identical.
         await _inner.Received(1).GetTestResultsAsync(
             Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }

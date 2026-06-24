@@ -13,6 +13,7 @@ namespace HelixTool.Core.AzDO;
 public sealed class AzdoApiClient : IAzdoApiClient
 {
     private const int ErrorBodySnippetLimit = 500;
+    internal const string DefaultQueryOrder = "queueTimeDescending";
     private static readonly JsonSerializerOptions s_jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -79,7 +80,10 @@ public sealed class AzdoApiClient : IAzdoApiClient
         if (filter.MaxTime.HasValue)
             queryParams.Add($"maxTime={Uri.EscapeDataString(filter.MaxTime.Value.ToString("O", System.Globalization.CultureInfo.InvariantCulture))}");
 
-        queryParams.Add($"queryOrder={Uri.EscapeDataString(filter.QueryOrder ?? "queueTimeDescending")}");
+        var queryOrder = string.IsNullOrWhiteSpace(filter.QueryOrder)
+            ? DefaultQueryOrder
+            : filter.QueryOrder.Trim();
+        queryParams.Add($"queryOrder={Uri.EscapeDataString(queryOrder)}");
 
         var path = "build/builds?" + string.Join("&", queryParams);
         var url = BuildUrl(org, project, path);

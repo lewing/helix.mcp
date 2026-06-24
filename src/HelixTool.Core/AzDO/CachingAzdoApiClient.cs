@@ -417,6 +417,9 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         var normalizedQueryOrder = string.IsNullOrWhiteSpace(filter.QueryOrder)
             ? null
             : filter.QueryOrder.Trim();
+        // Collapse the explicit server default to null so it shares the cache key with the null case.
+        if (string.Equals(normalizedQueryOrder, AzdoApiClient.DefaultQueryOrder, StringComparison.OrdinalIgnoreCase))
+            normalizedQueryOrder = null;
 
         var minTime = filter.MinTime?.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
         var maxTime = filter.MaxTime?.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
