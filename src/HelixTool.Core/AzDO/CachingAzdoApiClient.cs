@@ -240,20 +240,20 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         return result;
     }
 
-    public async Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(string org, string project, int runId, int top = 200, CancellationToken ct = default)
+    public async Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(string org, string project, int runId, int top = 200, string? outcomes = null, CancellationToken ct = default)
     {
-        if (!_enabled) return await _inner.GetTestResultsAsync(org, project, runId, top, ct);
+        if (!_enabled) return await _inner.GetTestResultsAsync(org, project, runId, top, outcomes, ct);
 
         await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
 
-        var key = BuildCacheKey(org, project, $"testresults:{runId}:{top}");
+        var key = BuildCacheKey(org, project, $"testresults:{runId}:{top}:{outcomes ?? "Failed"}");
         var cached = await _cache.GetMetadataAsync(key, ct);
         var deserialized = TryDeserialize<List<AzdoTestResult>>(cached);
         if (deserialized is not null)
             return deserialized;
 
-        var result = await _inner.GetTestResultsAsync(org, project, runId, top, ct);
-        key = BuildCacheKey(org, project, $"testresults:{runId}:{top}");
+        var result = await _inner.GetTestResultsAsync(org, project, runId, top, outcomes, ct);
+        key = BuildCacheKey(org, project, $"testresults:{runId}:{top}:{outcomes ?? "Failed"}");
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
 
         return result;

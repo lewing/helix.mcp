@@ -204,10 +204,10 @@ public class AzdoService
     /// Org/project are resolved from the buildIdOrUrl since runId is scoped to org/project.
     /// </summary>
     public async Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(
-        string buildIdOrUrl, int runId, int top = 200, CancellationToken ct = default)
+        string buildIdOrUrl, int runId, int top = 200, string? outcomes = null, CancellationToken ct = default)
     {
         var (org, project, _) = AzdoIdResolver.Resolve(buildIdOrUrl);
-        return await _client.GetTestResultsAsync(org, project, runId, top, ct);
+        return await _client.GetTestResultsAsync(org, project, runId, top, outcomes, ct);
     }
 
     /// <summary>

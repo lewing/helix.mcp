@@ -302,7 +302,7 @@ public class AzdoMcpToolsTests
                 ErrorMessage = "Assert.Equal failed"
             }
         };
-        _mockApi.GetTestResultsAsync("dnceng-public", "public", 77, Arg.Any<int>(), Arg.Any<CancellationToken>())
+        _mockApi.GetTestResultsAsync("dnceng-public", "public", 77, Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(results);
 
         var result = await _tools.TestResults("42", 77);
@@ -316,13 +316,13 @@ public class AzdoMcpToolsTests
     [Fact]
     public async Task TestResults_UrlBuildId_ResolvesOrgProject()
     {
-        _mockApi.GetTestResultsAsync("myorg", "proj", 10, Arg.Any<int>(), Arg.Any<CancellationToken>())
+        _mockApi.GetTestResultsAsync("myorg", "proj", 10, Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new List<AzdoTestResult>());
 
         await _tools.TestResults(
             "https://dev.azure.com/myorg/proj/_build/results?buildId=999", 10);
 
-        await _mockApi.Received(1).GetTestResultsAsync("myorg", "proj", 10, Arg.Any<int>(), Arg.Any<CancellationToken>());
+        await _mockApi.Received(1).GetTestResultsAsync("myorg", "proj", 10, Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
     }
 
     // ── azdo_builds PR number filter ────────────────────────────────
@@ -705,5 +705,22 @@ public class AzdoMcpToolsTests
     {
         await Assert.ThrowsAsync<McpException>(
             () => _tools.Builds(queryOrder: "garbage"));
+    }
+
+    // ── azdo_test_results — outcomes param ───────────────────────────
+
+    [Fact]
+    public async Task TestResults_Outcomes_PassedToService()
+    {
+        _mockApi.GetTestResultsAsync("dnceng-public", "public", 77, Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoTestResult>());
+
+        await _tools.TestResults("42", 77, outcomes: "Passed,Failed");
+
+        await _mockApi.Received(1).GetTestResultsAsync(
+            "dnceng-public", "public", 77,
+            Arg.Any<int>(),
+            "Passed,Failed",
+            Arg.Any<CancellationToken>());
     }
 }

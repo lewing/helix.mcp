@@ -119,7 +119,7 @@ public class AzdoServiceTests
         {
             new() { Id = 1, TestCaseTitle = "TestA", Outcome = "Failed" }
         };
-        _mockApi.GetTestResultsAsync("myorg", "proj", 77, Arg.Any<int>(), Arg.Any<CancellationToken>())
+        _mockApi.GetTestResultsAsync("myorg", "proj", 77, Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(results);
 
         var result = await _svc.GetTestResultsAsync(

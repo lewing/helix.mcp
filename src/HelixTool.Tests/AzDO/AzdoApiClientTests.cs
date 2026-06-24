@@ -125,6 +125,29 @@ public class AzdoApiClientTests
     }
 
     [Fact]
+    public async Task GetTestResultsAsync_DefaultOutcomes_StillFailedOnly()
+    {
+        _handler.ResponseContent = JsonSerializer.Serialize(new { value = Array.Empty<object>(), count = 0 });
+
+        await _client.GetTestResultsAsync("dnceng", "internal", 999);
+
+        var url = _handler.LastRequest!.RequestUri!.ToString();
+        Assert.Contains("outcomes=Failed", url);
+    }
+
+    [Fact]
+    public async Task GetTestResultsAsync_CustomOutcomes_OverridesDefault()
+    {
+        _handler.ResponseContent = JsonSerializer.Serialize(new { value = Array.Empty<object>(), count = 0 });
+
+        await _client.GetTestResultsAsync("dnceng", "internal", 999, outcomes: "Passed,Failed");
+
+        var url = _handler.LastRequest!.RequestUri!.ToString();
+        // Comma must be URL-escaped
+        Assert.Contains("outcomes=Passed%2CFailed", url);
+    }
+
+    [Fact]
     public async Task GetTestAttachmentsAsync_Top_AppearsInUrl()
     {
         _handler.ResponseContent = JsonSerializer.Serialize(new { value = Array.Empty<object>(), count = 0 });

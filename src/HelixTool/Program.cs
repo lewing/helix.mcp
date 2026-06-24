@@ -1634,16 +1634,17 @@ public class AzdoCommands
     /// <param name="buildId">AzDO build ID or URL — used to resolve org/project context.</param>
     /// <param name="runId">Test run ID from azdo-test-runs output.</param>
     /// <param name="top">Maximum number of test results to return.</param>
+    /// <param name="outcomes">Comma-separated AzDO test outcomes to include (e.g. 'Failed', 'Passed,Failed'). Default: Failed.</param>
     /// <param name="json">Output as structured JSON.</param>
     [McpEquivalent("azdo_test_results")]
     [Command("azdo test-results")]
     public async Task TestResults([Argument] string buildId, [Argument] int runId,
-        int top = 200, bool json = false, bool schema = false)
+        int top = 200, string? outcomes = null, bool json = false, bool schema = false)
     {
         if (Commands.TryPrintSchema<IReadOnlyList<AzdoTestResult>>(schema))
             return;
 
-        var results = await _svc.GetTestResultsAsync(buildId, runId, top);
+        var results = await _svc.GetTestResultsAsync(buildId, runId, top, outcomes);
 
         if (json)
         {

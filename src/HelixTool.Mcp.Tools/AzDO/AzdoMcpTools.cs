@@ -198,10 +198,11 @@ public sealed class AzdoMcpTools
     public async Task<LimitedResults<AzdoTestResult>> TestResults(
         [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
         [Description("Azure DevOps test run ID from azdo_test_runs")] int runId,
-        [Description("Maximum results to return. Default: 200")] int top = 200)
+        [Description("Maximum results to return. Default: 200")] int top = 200,
+        [Description("Comma-separated AzDO test outcomes to include (e.g. 'Failed', 'Passed,Failed', 'NotExecuted'). Default: Failed (matches current behavior).")] string? outcomes = null)
     {
         return await McpExceptionHandler.RunServiceCallAsync(
-            async () => CreateLimitedResults(await _svc.GetTestResultsAsync(buildIdOrUrl, runId, top), top),
+            async () => CreateLimitedResults(await _svc.GetTestResultsAsync(buildIdOrUrl, runId, top, outcomes), top),
             "get test results",
             ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
     }

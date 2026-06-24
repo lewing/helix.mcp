@@ -326,7 +326,7 @@ public class CachingAzdoApiClientTests
         _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns((string?)null);
 
-        _inner.GetTestResultsAsync("org", "proj", 77, Arg.Any<int>(), Arg.Any<CancellationToken>())
+        _inner.GetTestResultsAsync("org", "proj", 77, Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(new List<AzdoTestResult>());
 
         await _sut.GetTestResultsAsync("org", "proj", 77);
