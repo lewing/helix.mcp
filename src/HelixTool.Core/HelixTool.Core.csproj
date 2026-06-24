@@ -12,6 +12,18 @@
     <PackageReference Include="Microsoft.DotNet.Helix.Client" />
   </ItemGroup>
 
+  <!--
+    Transitive pin for CVE-2025-6965 / GHSA-2m69-gcr7-jv3q.
+    Forces SQLitePCLRaw 3.x to pick up the patched native SQLite binary.
+    Remove once Microsoft.Data.Sqlite pulls SQLitePCLRaw 3.x natively.
+  -->
+  <ItemGroup>
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" />
+    <PackageReference Include="SQLitePCLRaw.core" />
+    <PackageReference Include="SQLitePCLRaw.provider.e_sqlite3" />
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" />
+  </ItemGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="HelixTool.Tests" />
   </ItemGroup>
