@@ -132,3 +132,22 @@ See `history-archive.md` for full details on older work.
 **Best available lever when needed**: Pattern 2 (selective outputSchema removal via SKILL.md), saving 4.5–8.9 KB with no breaking change.
 
 Ash's measurement framework validated. Issue #74 closed with Conditional No unless trigger fires.
+
+---
+
+### 2026-06-24: Strict Unknown-Param Rejection Feasibility Analysis
+
+**Status**: Complete. Report delivered to Larry.
+
+**SDK behavior confirmed** (ModelContextProtocol 1.3.0):
+- `AIFunctionMcpServerTool.InvokeAsync` copies the caller's arg dict to `AIFunctionArguments` and hands it to `AIFunction.InvokeAsync` (AIFunctionFactory reflection binder). Unknown keys are **silently discarded** — no exception, no log. Confirmed by csharp-sdk Issue #1508 and SDK source (`AIFunctionMcpServerTool.cs`).
+- There is **no built-in strict mode** in the SDK. `additionalProperties: false` in the generated JSON Schema is advisory-only (for clients), not enforced at dispatch.
+- Parameter names ARE accessible at runtime via `tool.ProtocolTool.InputSchema.GetProperty("properties").EnumerateObject()`, enabling a CallToolFilter to build the canonical set without per-tool preamble.
+
+**Two distinct alias types in the codebase** — must not be confused:
+1. **Key aliases** (`build_id → buildIdOrUrl`): renamed in `McpServerOptionsExtensions.NormalizeArgumentAliases()` at the CallToolFilter level, BEFORE SDK binding. These must stay in the alias registry for strict-mode to work correctly.
+2. **Value aliases** (`inProgress → running`): normalized inside `AzdoService.NormalizeFilter()`, called from tool methods AFTER binding. These are invisible to the strict check (no key mismatch).
+
+**Recommended hook**: Extend the existing `AddBindingErrorFilter` CallToolFilter. After `NormalizeArgumentAliases`, extract canonical param names from `ProtocolTool.InputSchema.properties`, diff against the normalized arg dict, throw `McpException` for unknowns with Levenshtein "did you mean" hint. Tool lookup requires passing the `McpServerOptions.ToolCollection` (or tool-lookup delegate) into the filter.
+
+**Ripley's `fix/azdo-param-plumbing` branch** adds `minTime`, `maxTime`, `queryOrder` to `azdo_builds` — exactly the params callers invent variants of. Strict-mode PR should land **after** this branch merges, not before. Otherwise callers passing `minTime` before the param exists would get a confusing rejection on the correct name.
