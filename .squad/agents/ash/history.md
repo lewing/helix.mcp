@@ -151,3 +151,35 @@ Ash's measurement framework validated. Issue #74 closed with Conditional No unle
 **Recommended hook**: Extend the existing `AddBindingErrorFilter` CallToolFilter. After `NormalizeArgumentAliases`, extract canonical param names from `ProtocolTool.InputSchema.properties`, diff against the normalized arg dict, throw `McpException` for unknowns with Levenshtein "did you mean" hint. Tool lookup requires passing the `McpServerOptions.ToolCollection` (or tool-lookup delegate) into the filter.
 
 **Ripley's `fix/azdo-param-plumbing` branch** adds `minTime`, `maxTime`, `queryOrder` to `azdo_builds` — exactly the params callers invent variants of. Strict-mode PR should land **after** this branch merges, not before. Otherwise callers passing `minTime` before the param exists would get a confusing rejection on the correct name.
+
+---
+
+### 2026-06-24 Update: MCP 1.4.0 and UnmappedMemberHandling Investigation
+
+**Status**: Complete. Report updated with follow-up findings.
+
+**Key finding — `UnmappedMemberHandling.Disallow` IS in MEAI 10.5.2 (already available in MCP 1.3.0):**
+- Decompiled `Microsoft.Extensions.AI.Abstractions 10.5.2` confirms the strict check is present in `ReflectionAIFunction.InvokeCoreAsync`. Both MCP 1.3.0 and 1.4.0 depend on the same MEAI 10.5.2, so this is NOT a 1.4.0 feature — it was there all along.
+
+**How it works (gating condition):**
+- The check fires IFF: `JsonSerializerOptions.UnmappedMemberHandling == Disallow` AND `!HasCustomParameterBinding`
+- `HasCustomParameterBinding = true` for any tool where any parameter has a non-null `BindParameter` callback from `ConfigureParameterBinding`. For our tools (all plain value params, no DI injections), `HasCustomParameterBinding = false` → check WOULD run.
+- The error thrown is `ArgumentException(paramName: "arguments", message: "The arguments dictionary contains an unexpected key 'X'...")` — which our existing binding-error filter catches (it matches on `ex.ParamName == "arguments"`) and wraps as a `McpException`.
+
+**Alias normalization order (confirmed safe):**
+- Our `NormalizeArgumentAliases()` runs at the CallToolFilter level, mutating `Arguments` before `next()` calls `InvokeAsync`. By the time `InvokeCoreAsync` runs its strict check, `build_id` has already been renamed to `buildIdOrUrl` and won't be flagged. Order is correct.
+
+**What this approach does NOT give us:**
+- "Did you mean" hint (the message just names the unknown key, no edit-distance suggestion)
+- Full allowed-param list in the error message
+- Control per-tool (it's all-or-nothing via the serializer options)
+- Safety when any tool later gains a DI param (HasCustomParameterBinding would silently disable the check for that tool)
+
+**How to set it (if we wanted to use it):**
+- Configure `McpServerToolCreateOptions.SerializerOptions` with `UnmappedMemberHandling = Disallow` when registering tools. This plumbs through via `AIFunctionFactoryOptions.SerializerOptions` to the descriptor. OR mutate a custom `JsonSerializerOptions` instance before it's frozen.
+- This is more invasive than the CallToolFilter approach and provides weaker error UX.
+
+**MCP 1.4.0 diff — bump safety:**
+- Changes: SSO/auth (IdentityAssertionGrantProvider), InheritEnvironmentVariables on stdio client, session DELETE hardening (user-auth check). Zero changes to `CallToolFilter` API, `McpException` shape, `McpServerTool.Create`, `ProtocolTool.InputSchema` structure, or alias normalization paths.
+- `AddBindingErrorFilter`, `NormalizeArgumentAliases`, and test pattern in `McpServerOptionsExtensionsTests.cs` all unaffected.
+- **Bump to 1.4.0 is safe.** No migration work required.
