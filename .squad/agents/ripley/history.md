@@ -123,3 +123,34 @@ Copilot bot flagged critical binding issue: numeric `build_id` / `buildId` alias
 **Tests:** 1312 passed, 2 skipped (0 failed)  
 **Branch:** `ripley/azdo-buildidorurl-aliases` (Lambert added regression coverage)
 
+## 2026-06-24: AzDO Param Plumbing — Three Bugs Fixed (fix/azdo-param-plumbing)
+
+### Learnings
+
+**AzDO REST query param names for time range:**
+- `minTime` and `maxTime` (ISO 8601 round-trip format, URL-escaped)
+- The time field filtered is **determined by queryOrder**, not by minTime/maxTime param names
+  (e.g., `queryOrder=finishTimeDescending` → AzDO interprets minTime/maxTime against finish time)
+- Valid queryOrder values: `queueTimeAscending`, `queueTimeDescending`, `startTimeAscending`, `startTimeDescending`, `finishTimeAscending`, `finishTimeDescending`
+
+**Class of bug (silent param drop):**
+- MCP param binding silently drops unknown args if not present in the tool method signature
+- Missing param + missing URL plumbing both produce identical symptom: filter is ignored
+- Audit: compare tool method signature with underlying REST API capabilities to catch gaps early
+
+**Three bugs fixed and locations:**
+1. `azdo_builds` — `minTime`/`maxTime`/`queryOrder` were absent from `AzdoBuildFilter`, not forwarded to AzDO URL, not exposed on MCP tool or CLI command
+   - Files: `AzdoModels.cs`, `AzdoApiClient.cs` (`ListBuildsAsync`), `AzdoService.cs`, `CachingAzdoApiClient.cs`, `AzdoMcpTools.cs`, `Program.cs`
+2. `azdo_test_attachments` — `top` param accepted but never forwarded to REST URL (`$top=` missing from `GetTestAttachmentsAsync`)
+   - File: `AzdoApiClient.cs` (`GetTestAttachmentsAsync`)
+3. `azdo_test_results` — `outcomes` filter hardcoded to `Failed` with no way for caller to override; passing `Passed,Failed` etc. was impossible
+   - Files: `IAzdoApiClient.cs`, `AzdoApiClient.cs`, `CachingAzdoApiClient.cs`, `AzdoService.cs`, `AzdoMcpTools.cs`, `Program.cs`
+
+**Pattern applied:**
+- `NormalizeQueryOrder` + `IsValidQueryOrder` + `GetInvalidQueryOrderMessage` mirrors existing `NormalizeFilter`/`IsValidFilter` pattern
+- `AllowedValues` on MCP tool param + server-side validator + `McpException` on invalid = defense in depth
+- Cache key includes new discriminating params (outcomes, QueryOrder, MinTime, MaxTime) to avoid stale cache hits
+
+**Commits:** `fefd0dc` (builds), `a2615df` (attachments top), `cbb35c5` (outcomes)  
+**Tests:** 1326 passed, 2 skipped (0 failed) — 14 new tests added  
+**Branch:** `fix/azdo-param-plumbing`
