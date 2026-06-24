@@ -102,6 +102,20 @@ public sealed record AzdoBuildFilter
     public string? QueryOrder { get; init; }
 }
 
+/// <summary>
+/// Server-side defaults for <see cref="AzdoBuildFilter"/> optional fields.
+/// Null (or omitted) in the filter means "use server default"; these constants name those defaults
+/// so that both the HTTP client and cache layer can reference the same canonical strings.
+/// </summary>
+public static class AzdoBuildFilterDefaults
+{
+    /// <summary>AzDO REST default for <c>queryOrder</c>: newest-queued builds first.</summary>
+    public const string QueryOrder = "queueTimeDescending";
+
+    /// <summary>AzDO REST default for <c>outcomes</c> on test results: failed tests only.</summary>
+    public const string Outcomes = "Failed";
+}
+
 /// <summary>Build timeline (GET _apis/build/builds/{id}/timeline).</summary>
 public sealed record AzdoTimeline
 {

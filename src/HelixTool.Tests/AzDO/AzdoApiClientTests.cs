@@ -344,7 +344,7 @@ public class AzdoApiClientTests
         await _client.ListBuildsAsync("dnceng", "internal", filter);
 
         var url = _handler.LastRequest!.RequestUri!.ToString();
-        Assert.Contains("queryOrder=finishTimeDescending", url);
+        Assert.Contains("queryOrder=finishtimedescending", url);
         Assert.DoesNotContain("queryOrder=queueTimeDescending", url);
     }
 
@@ -389,7 +389,7 @@ public class AzdoApiClientTests
         var url = _handler.LastRequest!.RequestUri!.ToString();
         Assert.Contains("minTime=", url);
         Assert.Contains("maxTime=", url);
-        Assert.Contains("queryOrder=finishTimeDescending", url);
+        Assert.Contains("queryOrder=finishtimedescending", url);
     }
 
     // ── Error Handling ───────────────────────────────────────────────
