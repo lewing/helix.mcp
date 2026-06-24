@@ -20,8 +20,8 @@
     <PackageVersion Include="ConsoleAppFramework" Version="5.7.13" />
 
     <!-- MCP SDK (kept in lockstep) -->
-    <PackageVersion Include="ModelContextProtocol" Version="1.3.0" />
-    <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="1.3.0" />
+    <PackageVersion Include="ModelContextProtocol" Version="1.4.0" />
+    <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="1.4.0" />
 
     <!-- Source generators (netstandard2.0 project) -->
     <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.12.0" />
