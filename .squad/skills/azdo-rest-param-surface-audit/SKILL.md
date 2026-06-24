@@ -62,3 +62,37 @@ know to pair them correctly.
   `param ?? "Failed"` so the caller can override.
 - Cache keys that omit new params → different queries return cached results
   from the first query's filter set.
+
+## Whitespace Normalization (PR #78 learnings)
+
+For **optional string params with a server-side default**, always use
+`IsNullOrWhiteSpace` + `Trim()`, not `IsNullOrEmpty`:
+
+```csharp
+// AzdoApiClient — correct
+var outcomesParam = string.IsNullOrWhiteSpace(outcomes) ? "Failed" : outcomes.Trim();
+
+// CachingAzdoApiClient — normalize once, use in both key and inner call
+var normalizedOutcomes = string.IsNullOrWhiteSpace(outcomes) ? null : outcomes.Trim();
+var key = BuildCacheKey(..., $"...:{normalizedOutcomes ?? "Failed"}");
+var result = await _inner.GetTestResultsAsync(..., normalizedOutcomes, ct);
+```
+
+Rationale:
+- `""` and `"   "` from a CLI or MCP caller should fall back to the default, not produce
+  `outcomes=` or `outcomes=%20%20%20` in the URL (a confusing 400 from AzDO).
+- Without normalization, null / "" / "   " produce three distinct cache keys for
+  semantically-identical requests, causing stale-cache bugs.
+- Use `null` as the canonical "use default" value in internal layers; the API client
+  resolves null → "Failed" as close to the URL as possible.
+
+For **validation params** (e.g., `queryOrder`), mirror MCP validation in the CLI too:
+```csharp
+queryOrder = AzdoService.NormalizeQueryOrder(queryOrder);  // trims, null-if-empty
+if (!AzdoService.IsValidQueryOrder(queryOrder))
+{
+    Console.Error.WriteLine(AzdoService.GetInvalidQueryOrderMessage(queryOrder!));
+    return;
+}
+```
+Don't rely on the MCP path to protect against bad CLI input — both entry points must validate.
