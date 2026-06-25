@@ -11,7 +11,7 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 ### Strict parameter rejection with "Did you mean?" hints (#81, PRs #83/#84/#87)
 
 MCP tools now reject unknown or mistyped parameter names immediately, with a structured error message that includes:
-- A **"Did you mean: X?"** suggestion when the unknown name is close to a known parameter (Levenshtein distance ≤ 3)
+- A **"Did you mean: X?"** suggestion when the unknown name is close to a known parameter (Levenshtein distance ≤ 6)
 - The **full list of allowed parameter names** so callers can self-correct without consulting docs
 
 Previously, unknown params were silently dropped (the SDK discarded them before invoking the tool). This change turns silent data-loss failures into immediate, actionable errors.
@@ -43,9 +43,9 @@ Tools that accept a build identifier resolve common parameter name aliases autom
 
 | Alias | Canonical | Tools affected |
 |-------|-----------|----------------|
-| `buildId` | `buildIdOrUrl` | all AzDO tools |
-| `build_id` | `buildIdOrUrl` | all AzDO tools |
-| `buildUrl` | `buildIdOrUrl` | all AzDO tools |
+| `buildId` | `buildIdOrUrl` | AzDO tools that accept a `buildIdOrUrl` parameter |
+| `build_id` | `buildIdOrUrl` | AzDO tools that accept a `buildIdOrUrl` parameter |
+| `buildUrl` | `buildIdOrUrl` | AzDO tools that accept a `buildIdOrUrl` parameter |
 | `result` | `resultFilter` | `azdo_search_timeline` |
 
 ### AzDO filter normalization (#82, PR #85)
@@ -58,7 +58,7 @@ Internal refactor — centralized AzDO filter normalization (trim, case-fold, de
 ### Dependency updates
 
 - `ModelContextProtocol` 1.3.0 → 1.4.0
-- `SQLitePCLRaw` pinned to 3.x for [CVE-2025-6965](https://github.com/advisories/GHSA-xxxx-xxxx-xxxx)
+- `SQLitePCLRaw` pinned to 3.x for [CVE-2025-6965 / GHSA-2m69-gcr7-jv3q](https://github.com/advisories/GHSA-2m69-gcr7-jv3q)
 
 ---
 

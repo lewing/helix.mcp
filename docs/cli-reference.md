@@ -131,13 +131,13 @@ hlx azdo build 12345678
 hlx azdo build "https://dev.azure.com/dnceng-public/public/_build/results?buildId=12345678"
 ```
 
-### `hlx azdo builds [--branch B] [--pr N] [--definition-id D] [--status S] [--top N] [--min-time ISO8601] [--max-time ISO8601] [--query-order ORDER]`
+### `hlx azdo builds [--branch B] [--pr-number N] [--definition-id D] [--status S] [--top N] [--min-time ISO8601] [--max-time ISO8601] [--query-order ORDER]`
 
 List recent builds for a project. Defaults to `dnceng-public/public`.
 
 ```bash
 hlx azdo builds --branch main
-hlx azdo builds --pr 12345 --top 5
+hlx azdo builds --pr-number 12345 --top 5
 hlx azdo builds --min-time 2026-06-01T00:00:00Z --max-time 2026-06-24T00:00:00Z --query-order finishTimeDescending
 ```
 
