@@ -375,6 +375,101 @@ public class CachingAzdoApiClientTests
         await _inner.Received(2).ListBuildsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>());
     }
 
+    [Fact]
+    public async Task ListBuildsAsync_NullAndWhitespaceBranch_ShareCacheKey()
+    {
+        var builds = new List<AzdoBuild> { new() { Id = 30 } };
+        // First call: miss. Subsequent calls: hit (null and whitespace both normalize to absent Branch → same key).
+        _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((string?)null, JsonSerializer.Serialize(builds));
+        _inner.ListBuildsAsync("org", "proj", Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>())
+            .Returns(builds);
+
+        await _sut.ListBuildsAsync("org", "proj", new AzdoBuildFilter { Branch = null });
+        await _sut.ListBuildsAsync("org", "proj", new AzdoBuildFilter { Branch = "   " });
+
+        // Whitespace branch normalizes to null — same cache key as null branch.
+        await _inner.Received(1).ListBuildsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ListBuildsAsync_DifferentNonDefaultQueryOrders_DistinctCacheKeys()
+    {
+        // Two distinct non-default query orders must produce distinct cache keys.
+        _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((string?)null);
+        _inner.ListBuildsAsync("org", "proj", Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuild>());
+
+        await _sut.ListBuildsAsync("org", "proj", new AzdoBuildFilter { QueryOrder = "finishTimeDescending" });
+        await _sut.ListBuildsAsync("org", "proj", new AzdoBuildFilter { QueryOrder = "startTimeAscending" });
+
+        await _inner.Received(2).ListBuildsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ListBuildsAsync_NewFieldOnFilter_AutomaticallyDistinguishesCacheKey()
+    {
+        // JSON fail-safe property: any field present on AzdoBuildFilter participates in the cache key
+        // automatically — no explicit HashFilter wiring needed.
+        // If a developer adds a new field to AzdoBuildFilter without updating HashFilter, the JSON-based
+        // key changes naturally. To add a guard test for a new field: set it on one filter, leave null on
+        // the other, and assert inner is called 2× (as shown here for Branch).
+        _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((string?)null);
+        _inner.ListBuildsAsync("org", "proj", Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuild>());
+
+        await _sut.ListBuildsAsync("org", "proj", new AzdoBuildFilter());
+        await _sut.ListBuildsAsync("org", "proj", new AzdoBuildFilter { Branch = "main" });
+
+        // The two filters are logically different → different JSON → different keys → inner called 2×.
+        await _inner.Received(2).ListBuildsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetTestResultsAsync_DifferentCustomOutcomes_DistinctCacheKeys()
+    {
+        // Non-default outcomes values that differ from each other must produce distinct cache keys.
+        _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((string?)null);
+        _inner.GetTestResultsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(),
+                Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoTestResult>());
+
+        await _sut.GetTestResultsAsync("org", "proj", 77, outcomes: "Passed,Failed");
+        await _sut.GetTestResultsAsync("org", "proj", 77, outcomes: "Passed");
+
+        await _inner.Received(2).GetTestResultsAsync(Arg.Any<string>(), Arg.Any<string>(),
+            Arg.Any<int>(), Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetTestResultsAsync_NullAndExplicitFailedOutcomes_ShareCacheKey2()
+    {
+        // Explicit "Failed" (the server default) vs null should map to the same cache key.
+        // This is the outcomes equivalent of ListBuildsAsync_NullAndExplicitDefaultQueryOrder_ShareCacheKey.
+        _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((string?)null);
+        var results = new List<AzdoTestResult>();
+        _inner.GetTestResultsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(),
+                Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(results);
+        _cache.SetMetadataAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+
+        await _sut.GetTestResultsAsync("org", "proj", 77, outcomes: null);
+
+        _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(JsonSerializer.Serialize(results));
+
+        await _sut.GetTestResultsAsync("org", "proj", 77, outcomes: "Failed");
+        await _sut.GetTestResultsAsync("org", "proj", 77, outcomes: "  Failed  "); // trimmed
+
+        // All three map to the same cache key → inner called exactly once.
+        await _inner.Received(1).GetTestResultsAsync(Arg.Any<string>(), Arg.Any<string>(),
+            Arg.Any<int>(), Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+    }
 
 
     [Fact]

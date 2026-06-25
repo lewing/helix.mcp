@@ -158,3 +158,140 @@ Crash is deferred (not at startup) — fires on first MCP request that triggers 
 
 **Test result:** 1345 passed / 0 failed / 2 skipped (unchanged). PR comment: https://github.com/lewing/helix.mcp/pull/83#issuecomment-4794361161
 
+## Orchestration: Issue #81 + #82 Testing Plan (2026-06-24)
+Dallas triaged #81 and #82. Your scope: write tests for Stage 1 alias regression, Stage 2 CallToolFilter (reference mcp-calltoolfilter-tests pattern), and #82 contract tests (reference azdo-rest-param-surface-audit). See decisions.md for blocking chain and effort summary.
+## Learnings — Issue #81 Stage A Tests (2026-06-24)
+
+- **`McpServerToolCreateOptions.SerializerOptions` requires `TypeInfoResolver`** — when creating a `JsonSerializerOptions` with `UnmappedMemberHandling = Disallow` and passing it to `McpServerToolCreateOptions`, `DefaultJsonTypeInfoResolver` must be set or the SDK throws `InvalidOperationException` at tool-create time. Add `using System.Text.Json.Serialization.Metadata;` and set `TypeInfoResolver = new DefaultJsonTypeInfoResolver()`.
+- **Strict-mode test helper pattern** — `CreateStrictFilteredToolHandler` follows the same shape as `CreateFilteredToolHandler` but passes `McpServerToolCreateOptions` with Disallow + DefaultJsonTypeInfoResolver to `McpServerTool.Create`.
+- **Alias-key-removal regression tests** use the capture-handler pattern (`CreateFilteredHandler`) — no end-to-end tool invocation needed; just assert the dict state after the filter runs.
+- **`dotnet test --no-build` skips rebuild** — always run `dotnet test` (with build) when verifying new code; `--no-build` will run stale binaries and give false failures.
+- **PR #83** — 8 tests added, 1345 passed / 0 failed / 2 skipped. Ready for Dallas review.
+
+## 2026-06-24: PR #83 Dallas Review Fix (commit 443c31f)
+
+**Pattern: reviewer-driven fix by a different agent.** Ripley wrote PR #83; Dallas rejected (blocking issue). Per reviewer-lockout convention, Lambert applied the one-liner fix because it mirrors what Lambert already did in test setup code.
+
+**The Fix:** Added `TypeInfoResolver = new DefaultJsonTypeInfoResolver()` (and `using System.Text.Json.Serialization.Metadata;`) to both `src/HelixTool.Mcp/Program.cs` and `src/HelixTool/Program.cs` `WithToolsFromAssembly` calls.
+
+**SDK code path Dallas traced:**
+`AIFunctionFactory.GetOrCreate` → `MakeReadOnly()` called on `JsonSerializerOptions` before tool descriptor runs → constructor calls `AIJsonUtilities.CreateFunctionJsonSchema` → `CreateJsonSchemaCore` → tries `jsonSerializerOptions.TypeInfoResolver = DefaultOptions.TypeInfoResolver` → **throws `InvalidOperationException`** because options are already read-only.
+
+Crash is deferred (not at startup) — fires on first MCP request that triggers tool singleton resolution. Lambert's test helper `CreateStrictFilteredToolHandler` already set `TypeInfoResolver` correctly; the production `Program.cs` files did not.
+
+**SKILL.md** updated with `TypeInfoResolver` as required companion setting, including the full SDK code path.
+
+**Test result:** 1345 passed / 0 failed / 2 skipped (unchanged). PR comment: https://github.com/lewing/helix.mcp/pull/83#issuecomment-4794361161
+
+
+## 2026-06-24: PR #84 — Stage B Unknown-Param Filter Tests (Issue #81)
+
+Implemented Ripley's 9 test scenarios plus 5 additional direct/boundary tests for
+`AddUnknownParameterFilter` (did-you-mean Levenshtein hints).
+
+**Tests added (14 new):**
+
+Ripley's 9 scenarios:
+1. `UnknownParamFilter_CanonicalArgsOnly_DoNotThrow` — smoke: canonical args pass
+2. `UnknownParamFilter_AliasedArgPassesAfterNormalization` — alias resolved before filter fires
+3. `UnknownParamFilter_SingleUnknownCloseMatch_ThrowsMcpExceptionWithHint` — hint fires
+4. `UnknownParamFilter_SingleUnknownNoCloseMatch_ThrowsMcpExceptionWithoutHint` — no hint
+5. `UnknownParamFilter_MultipleUnknowns_AllSurfacedInMessage` — both keys named
+6. `UnknownParamFilter_Threshold6Regression_MinFinishTimeGetsMinTimeHint` — distance-6 fires
+7. `UnknownParamFilter_MissingRequiredParam_StillWrapsMcpException` — Stage A behavior unchanged
+8. `UnknownParamFilter_ParameterlessTool_AnyArgFlaggedUnknown` — `azdo_auth_status`, allowed=(none)
+9. `UnknownParamFilter_CaseInsensitiveCanonicalMatch_KnownPassesUnknownFlagged` — ORG passes, MINFINISHTIME flagged
+
+Additional direct/boundary tests:
+10. `Levenshtein_MinFinishTimeToMinTime_IsExactlyThreshold6` — exact DP boundary
+11. `FindClosestMatch_Distance6_ReturnsSuggestion`
+12. `FindClosestMatch_FarDistance_ReturnsNull` — `zzzzzzzzzz` > threshold from all params
+13. `ExtractToolParamInfo_AdditionalPropertiesTrue_ReturnsNull`
+14. `ExtractToolParamInfo_MissingSchema_ReturnsNull`
+
+**Production visibility changes (minimal, test-only):**
+- `FindClosestMatch`, `Levenshtein`, `ExtractToolParamInfo`, `ToolParamInfo`: `private`→`internal`
+- Added `InternalsVisibleTo Include="HelixTool.Tests"` to `HelixTool.Mcp.Tools.csproj`
+
+**Scenario 4 note:** With threshold=6, `foo` → `top` distance=2 gets a hint (false positive,
+harmless). Used `zzzzzzzzzz` (10 z's, ≥10 distance from all params) for the no-match test.
+Ripley's design doc explicitly acknowledges this tradeoff.
+
+**Concurrent work:** Ash's threshold-6 vs threshold-3 review pending in
+`.squad/decisions/inbox/ash-pr-stage-b-threshold-review.md`. Not a blocker.
+
+**Build/test:** 1359 passed / 0 failed / 2 skipped (was 1345; +14 new).
+**PR:** https://github.com/lewing/helix.mcp/pull/84 — ready-for-review (non-draft).
+**Branch:** `squad/81-strict-mode-stage-b`, commit `3016611`.
+
+## 2026-06-24: PR #85 — Issue #82 Contract Tests + Normalizer Unit Tests
+
+**Branch:** `squad/82-centralize-azdo-normalization`, commit `d04e828`  
+**Status:** PR open, ready-for-review (non-draft)  
+**PR:** https://github.com/lewing/helix.mcp/pull/85
+
+### Tests added (+91 total)
+
+| File | Tests | Description |
+|---|---|---|
+| `AzdoBuildFilterNormalizerTests.cs` (new) | 44 | Direct unit tests — every rule × every field |
+| `AzdoBuildContractTests.cs` (new) | 42 | Per-param contract tests (URL + cache key + service received) |
+| `CachingAzdoApiClientTests.cs` (5 additions) | 5 | Cache-key stability: branch share, distinct query orders, fail-safe, outcomes |
+
+**Before:** 1359 passed / 0 failed / 2 skipped  
+**After:** 1450 passed / 0 failed / 2 skipped
+
+### Tests removed: 0
+
+Per Ripley's explicit recommendation, existing layer-smoke tests were kept. The normalizer unit tests cover the rules; layer tests now document "the layer calls the normalizer." No deletions were made.
+
+### Reusable Patterns Captured
+
+#### `[Theory]+[InlineData]` contract test pattern
+
+For per-param coverage with high test count and low LOC, the pattern is:
+
+```csharp
+// (a) URL — one [Theory] per param, multiple values
+[Theory]
+[InlineData("main", "branchName=main")]
+[InlineData("refs/heads/main", "branchName=refs%2Fheads%2Fmain")]
+public async Task ListBuildsAsync_Branch_AppearsInUrl(string branch, string expectedPart) { ... }
+
+// (b) cache key discrimination — [Theory] or [Fact] depending on how many value pairs
+[Theory]
+[InlineData("main", "develop")]
+public async Task ListBuildsAsync_DifferentBranch_DistinctCacheKeys(string b1, string b2)
+{
+    // always-miss cache
+    _cache.GetMetadataAsync(...).Returns((string?)null);
+    _inner.ListBuildsAsync(...).Returns(new List<AzdoBuild>());
+    await _sut.ListBuildsAsync("org", "proj", new AzdoBuildFilter { Branch = b1 });
+    await _sut.ListBuildsAsync("org", "proj", new AzdoBuildFilter { Branch = b2 });
+    // (c) service received check
+    await _inner.Received(1).ListBuildsAsync("org", "proj",
+        Arg.Is<AzdoBuildFilter>(f => f.Branch == b1), Arg.Any<CancellationToken>());
+    await _inner.Received(1).ListBuildsAsync("org", "proj",
+        Arg.Is<AzdoBuildFilter>(f => f.Branch == b2), Arg.Any<CancellationToken>());
+}
+```
+
+Key: (b) and (c) combine naturally — if inner is called 2× with different filters, you get both assertions for free.
+
+#### Redundant-test-removal heuristic
+
+A test in layer L is redundant iff:
+1. It tests only a normalization *rule* (not the layer's behavior), AND
+2. The same rule is now covered by a direct unit test of the shared normalizer.
+
+**Safe to remove:** `AzdoApiClient` tests that only verify "whitespace QueryOrder → default in URL" when the normalizer unit test covers that rule.  
+**Must keep:** Tests that verify URL construction (e.g., `definitions=777` format), cache TTL semantics, or cache hit/miss behavior. These are layer tests, not rule tests.
+
+**Practical rule:** Keep if the test would still fail after a correct normalizer but a broken call site. Remove only if it would pass by testing the normalizer in isolation.
+
+Per Ripley's recommendation for this PR: keep all existing tests. The incremental LOC cost of duplicate rule coverage is negligible; the protection against regression at the call site is real.
+
+#### Pre-existing flaky SQLite test
+
+`SqliteCacheStoreSecurityTests.GetArtifactAsync_ManipulatedDbRow_ThrowsOrReturnsNull` fails intermittently under parallel xUnit execution due to SQLite connection lifetime. Passes in isolation. Pre-existing issue; not caused by these changes.
+

@@ -13,7 +13,6 @@ namespace HelixTool.Core.AzDO;
 public sealed class AzdoApiClient : IAzdoApiClient
 {
     private const int ErrorBodySnippetLimit = 500;
-    internal const string DefaultQueryOrder = "queueTimeDescending";
     private static readonly JsonSerializerOptions s_jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -52,37 +51,39 @@ public sealed class AzdoApiClient : IAzdoApiClient
 
     public async Task<IReadOnlyList<AzdoBuild>> ListBuildsAsync(string org, string project, AzdoBuildFilter filter, CancellationToken ct = default)
     {
+        // Normalize once at the semantic boundary — URL construction is where the value's meaning is consumed.
+        var f = AzdoBuildFilterNormalizer.Normalize(filter);
+
         var queryParams = new List<string>();
 
-        if (filter.Top is > 0)
-            queryParams.Add($"$top={filter.Top}");
+        if (f.Top is > 0)
+            queryParams.Add($"$top={f.Top}");
 
-        if (!string.IsNullOrEmpty(filter.PrNumber))
+        if (!string.IsNullOrEmpty(f.PrNumber))
         {
-            if (!int.TryParse(filter.PrNumber, out var prNum))
+            if (!int.TryParse(f.PrNumber, out var prNum))
                 throw new ArgumentException("prNumber must be a valid integer.", nameof(filter));
             queryParams.Add($"branchName=refs/pull/{prNum}/merge");
         }
-        else if (!string.IsNullOrEmpty(filter.Branch))
+        else if (!string.IsNullOrEmpty(f.Branch))
         {
-            queryParams.Add($"branchName={Uri.EscapeDataString(filter.Branch)}");
+            queryParams.Add($"branchName={Uri.EscapeDataString(f.Branch)}");
         }
 
-        if (filter.DefinitionId is > 0)
-            queryParams.Add($"definitions={filter.DefinitionId}");
+        if (f.DefinitionId is > 0)
+            queryParams.Add($"definitions={f.DefinitionId}");
 
-        if (!string.IsNullOrEmpty(filter.StatusFilter))
-            queryParams.Add($"statusFilter={Uri.EscapeDataString(filter.StatusFilter)}");
+        if (!string.IsNullOrEmpty(f.StatusFilter))
+            queryParams.Add($"statusFilter={Uri.EscapeDataString(f.StatusFilter)}");
 
-        if (filter.MinTime.HasValue)
-            queryParams.Add($"minTime={Uri.EscapeDataString(filter.MinTime.Value.ToString("O", System.Globalization.CultureInfo.InvariantCulture))}");
+        if (f.MinTime.HasValue)
+            queryParams.Add($"minTime={Uri.EscapeDataString(f.MinTime.Value.ToString("O", System.Globalization.CultureInfo.InvariantCulture))}");
 
-        if (filter.MaxTime.HasValue)
-            queryParams.Add($"maxTime={Uri.EscapeDataString(filter.MaxTime.Value.ToString("O", System.Globalization.CultureInfo.InvariantCulture))}");
+        if (f.MaxTime.HasValue)
+            queryParams.Add($"maxTime={Uri.EscapeDataString(f.MaxTime.Value.ToString("O", System.Globalization.CultureInfo.InvariantCulture))}");
 
-        var queryOrder = string.IsNullOrWhiteSpace(filter.QueryOrder)
-            ? DefaultQueryOrder
-            : filter.QueryOrder.Trim();
+        // Null QueryOrder means use server default; resolve to the default string for the URL.
+        var queryOrder = f.QueryOrder ?? AzdoBuildFilterDefaults.QueryOrder;
         queryParams.Add($"queryOrder={Uri.EscapeDataString(queryOrder)}");
 
         var path = "build/builds?" + string.Join("&", queryParams);
@@ -138,7 +139,7 @@ public sealed class AzdoApiClient : IAzdoApiClient
 
     public async Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(string org, string project, int runId, int top = 200, string? outcomes = null, CancellationToken ct = default)
     {
-        var outcomesParam = string.IsNullOrWhiteSpace(outcomes) ? "Failed" : outcomes.Trim();
+        var outcomesParam = string.IsNullOrWhiteSpace(outcomes) ? AzdoBuildFilterDefaults.Outcomes : outcomes.Trim();
         var url = BuildUrl(org, project, $"test/runs/{runId}/results?$top={top}&outcomes={Uri.EscapeDataString(outcomesParam)}");
         return await GetListAsync<AzdoTestResult>(org, project, url, ct);
     }

@@ -88,6 +88,29 @@ The round-3 learning said "Normalization belongs at EVERY layer that touches the
 **Tests:** 1337 passed, 2 skipped (0 failed) — 1 new test added (ListBuildsAsync_DifferentCasingsSameQueryOrder_ShareCacheKey)
 **Branch:** `fix/azdo-param-plumbing`
 
+## 2026-06-24: Issue #81 Stage A — Strict Unknown-Param Rejection + Alias Pre-work (squad/81-strict-mode-stage-a)
+
+### Learnings
+
+**Alias key must be removed after rename or strict mode rejects it:**
+The existing `NormalizeArgumentAliases` set `arguments[canonical]` but never called `arguments.Remove(aliasKey)`. After `UnmappedMemberHandling = Disallow` fires, the original alias key (`build_id`, `result`, etc.) is still in the dict and is rejected as unknown. The fix is `arguments.Remove(aliasKey)` immediately after the copy. This was not caught by existing tests because they asserted canonical presence but not alias absence.
+
+**`return` → loop-continue for multi-canonical correctness:**
+The original loop had `return` after the first successful alias rename, meaning if a caller passed aliases for two different canonicals (e.g. `build_id + result` on `azdo_search_timeline`), only the first would be resolved. Changed to `continue` so all alias-canonical pairs are checked in one pass. The "first match wins" semantic for multiple aliases sharing the same canonical is preserved: once the canonical is set, subsequent entries for the same canonical see `HasArgument(canonical) == true` and skip.
+
+**`WithToolsFromAssembly` accepts a `JsonSerializerOptions` overload:**
+Signature: `WithToolsFromAssembly(Assembly, JsonSerializerOptions?)`. Pass `new JsonSerializerOptions { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow }`. This plumbs through `AIFunctionFactoryOptions.SerializerOptions` → `ReflectionAIFunction.InvokeCoreAsync`'s strict check. Applied to both `HelixTool.Mcp/Program.cs` (HTTP transport) and `HelixTool/Program.cs` (stdio transport).
+
+**`AddBindingErrorFilter` requires no change:**
+Ash's report confirmed the strict-mode exception is `ArgumentException(paramName: "arguments", ...)`. The existing filter already catches `ex.ParamName == "arguments"` and wraps as `McpException`. The error message format is `"The arguments dictionary contains an unexpected key 'X' that does not correspond to any parameter of 'Y'."`.
+
+**Open alias gap found (document only, not fixed in this PR):**
+No additional alias gaps found beyond `result → resultFilter`. The three `buildIdOrUrl` aliases and the new `resultFilter` alias cover all known caller patterns from session logs and PR #78 audit. If new patterns surface, add to `s_argumentAliases` in `McpServerOptionsExtensions.cs`.
+
+**Commits:** `fce8686`
+**Tests:** 1337 passed, 2 skipped (0 failed) — existing 15 alias tests all pass; 0 new tests (Lambert handles tests in follow-up)
+**Branch:** `squad/81-strict-mode-stage-a`
+
 ## Orchestration: Issue #81 + #82 Implementation Plan (2026-06-24)
 Dallas triaged #81 and #82. Your scope: implement Stage 1 (alias pre-work + `UnmappedMemberHandling`), Stage 2 (CallToolFilter hints), and all of #82 (normalizer consolidation + contract tests). See decisions.md for sequencing, effort summary, and blocking dependencies.
 
@@ -121,3 +144,89 @@ The spec said threshold ≤3, but the regression test requires "Did you mean: mi
 **Commits:** TBD (Lambert pushes PR after adding tests)
 **Tests:** 1345 passed, 2 skipped (0 failed) — all existing tests still pass; 0 new tests (Lambert writes tests in follow-up)
 **Branch:** `squad/81-strict-mode-stage-b`
+## 2026-06-24: Issue #81 Stage A — Dallas Pre-Merge Review + Lambert Fix
+
+### Review Finding: Missing TypeInfoResolver
+
+Dallas's pre-merge review of PR #83 (Issue #81 Stage A) identified a critical gap: both `Program.cs` files pass custom `JsonSerializerOptions` to `WithToolsFromAssembly` without `TypeInfoResolver`. The `AIFunctionFactory` (Microsoft.Extensions.AI) calls `MakeReadOnly()` on the options BEFORE schema generation. Then `AIJsonUtilities.CreateJsonSchemaCore` tries to auto-assign `TypeInfoResolver` to the read-only instance, causing `InvalidOperationException` on first tool invocation (not at startup — deferred until the factory lambda fires on first MCP request).
+
+### Lambert's Fix (Commit 443c31f)
+
+Lambert applied the fix across both files:
+1. Added `using System.Text.Json.Serialization.Metadata;`
+2. Set `TypeInfoResolver = new DefaultJsonTypeInfoResolver()` in the `JsonSerializerOptions` passed to `WithToolsFromAssembly`
+3. Updated SKILL.md with the architectural rule: **Any `WithToolsFromAssembly` call with custom `JsonSerializerOptions` must set `TypeInfoResolver`.**
+4. Updated code comments in both `Program.cs` files explaining the SDK's MakeReadOnly-before-schema-gen behavior.
+
+**Test verification:** 1345 tests passing. PR comment left on #83.
+
+### Architectural Rule Captured
+
+**Name:** `TypeInfoResolver` Required with Custom JsonSerializerOptions  
+**Pattern:** Always set `TypeInfoResolver = new DefaultJsonTypeInfoResolver()` when constructing a `JsonSerializerOptions` with custom settings like `UnmappedMemberHandling = Disallow`.  
+**Why:** SDK locks options before running schema generation; schema generation cannot auto-populate TypeInfoResolver on a locked instance.  
+**Documented in:** SKILL.md § "How to Enable" and code comments in both Program.cs files.
+
+### Status: Stage A Approved
+
+PR #83 Stage A is approved with this one reviewer-driven fix. Lambert's implementation closes the gap; next round is Dallas re-review on PR #83 Round 2.
+
+---
+
+
+## 2026-06-24: Issue #82 — Centralized AzDO Filter Normalization (squad/82-centralize-azdo-normalization)
+
+### Normalization sites found (inventory)
+
+Four normalization sites existed before this PR:
+
+1. **`AzdoApiClient.ListBuildsAsync`** — hand-inline: `IsNullOrWhiteSpace` → `DefaultQueryOrder`; else `Trim()`. Used `AzdoApiClient.DefaultQueryOrder = "queueTimeDescending"` (transport-layer constant).
+2. **`CachingAzdoApiClient.HashFilter`** — hand-inline: `IsNullOrWhiteSpace` → null; `Trim()`; `OrdinalIgnoreCase` collapse to null; `ToLowerInvariant()`. Referenced `AzdoApiClient.DefaultQueryOrder` (cross-layer coupling — cache layer depending on transport constant).
+3. **`CachingAzdoApiClient.GetTestResultsAsync`** — inline: `IsNullOrWhiteSpace` → null; `Trim()`; magic string `"Failed"` for default.
+4. **`AzdoApiClient.GetTestResultsAsync`** — inline: `IsNullOrWhiteSpace` → `"Failed"`; `Trim()`.
+
+Sites 1 and 2 are now centralized in `AzdoBuildFilterNormalizer.Normalize()`. Sites 3 and 4 still inline (outcomes is not part of `AzdoBuildFilter` and is a separate parameter), but now reference `AzdoBuildFilterDefaults.Outcomes` instead of the magic string `"Failed"`.
+
+### Decision: `AzdoApiClient.DefaultQueryOrder` — removed, not forwarded
+
+`internal const` with no external consumers. Removed entirely. `AzdoApiClient` and `CachingAzdoApiClient` now reference `AzdoBuildFilterDefaults.QueryOrder`. This eliminates the cross-layer coupling smell where the cache layer (`CachingAzdoApiClient`) depended on a transport-layer constant (`AzdoApiClient.DefaultQueryOrder`).
+
+### JSON stable ordering: `TypeInfoResolver.Modifiers` trick
+
+To get alphabetically-sorted JSON properties in `System.Text.Json` without a custom converter, add a modifier to `DefaultJsonTypeInfoResolver`:
+
+```csharp
+Modifiers =
+{
+    static typeInfo =>
+    {
+        if (typeInfo.Kind != JsonTypeInfoKind.Object) return;
+        var sorted = typeInfo.Properties.OrderBy(p => p.Name, StringComparer.Ordinal).ToList();
+        typeInfo.Properties.Clear();
+        foreach (var p in sorted)
+            typeInfo.Properties.Add(p);
+    }
+}
+```
+
+The modifier fires once per type (cached by the resolver). `StringComparer.Ordinal` (not `OrdinalIgnoreCase`) for predictable sorting of mixed-case names. `WhenWritingNull` omits null fields so an all-null filter hashes as `{}` (stable, unique to "empty filter").
+
+### Cache invalidation note
+
+The new JSON-based cache key is format-incompatible with the old pipe-delimited hash. All `builds:*` cache entries are effectively invalidated on deployment. One-shot invalidation — no data corruption, entries expire naturally under 30s TTL.
+
+### Test updates
+
+Two tests in `AzdoApiClientTests.cs` updated:
+- `ListBuildsAsync_QueryOrder_OverridesDefault` — expected `finishTimeDescending` in URL; updated to `finishtimedescending` (normalizer lowercases non-default values before URL construction)
+- `ListBuildsAsync_TimeRangeAndQueryOrder_AllPresent` — same update
+
+These are layer-behavioral changes, not regressions: the URL still carries a valid AzDO query order value; it's just now in canonical lowercase form.
+
+### Handoff
+
+`handoff-82.md` written for Lambert with: full test matrix (normalizer unit tests, cache-key stability, per-param contract tests), mock patterns, and notes on which existing tests become redundant vs. should be kept as "delegates to normalizer" smokes.
+
+**Commits:** on branch `squad/82-centralize-azdo-normalization`  
+**Tests:** 1359 passed, 2 skipped, 0 failed (baseline: 1359 passed)  
+**New files:** `AzdoBuildFilterNormalizer.cs`, `handoff-82.md`, `ripley-issue-82.md`, `centralized-filter-normalization/SKILL.md`
