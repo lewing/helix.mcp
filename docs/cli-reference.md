@@ -131,14 +131,17 @@ hlx azdo build 12345678
 hlx azdo build "https://dev.azure.com/dnceng-public/public/_build/results?buildId=12345678"
 ```
 
-### `hlx azdo builds [--branch B] [--pr N] [--definition-id D] [--status S] [--top N]`
+### `hlx azdo builds [--branch B] [--pr N] [--definition-id D] [--status S] [--top N] [--min-time ISO8601] [--max-time ISO8601] [--query-order ORDER]`
 
 List recent builds for a project. Defaults to `dnceng-public/public`.
 
 ```bash
 hlx azdo builds --branch main
 hlx azdo builds --pr 12345 --top 5
+hlx azdo builds --min-time 2026-06-01T00:00:00Z --max-time 2026-06-24T00:00:00Z --query-order finishTimeDescending
 ```
+
+`--min-time` and `--max-time` filter the time field determined by `--query-order`. For example, `--query-order finishTimeDescending` means both bounds apply to finish time. Default `--query-order` is `queueTimeDescending`.
 
 ### `hlx azdo timeline <buildId> [--filter failed|all]`
 
@@ -174,13 +177,17 @@ List test runs for a build (total, passed, failed counts).
 hlx azdo test-runs 12345678
 ```
 
-### `hlx azdo test-results <buildId> <runId> [--top N]`
+### `hlx azdo test-results <buildId> <runId> [--top N] [--outcomes OUTCOMES]`
 
 Get test results for a specific test run. Defaults to failed tests (top 200).
 
 ```bash
 hlx azdo test-results 12345678 98765
+hlx azdo test-results 12345678 98765 --outcomes "Passed,Failed"
+hlx azdo test-results 12345678 98765 --outcomes NotExecuted
 ```
+
+`--outcomes` accepts a comma-separated list of AzDO test outcome names (e.g. `Failed`, `Passed`, `NotExecuted`). Default: `Failed`.
 
 ### `hlx azdo artifacts <buildId> [--pattern PAT] [--top N]`
 

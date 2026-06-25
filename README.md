@@ -105,16 +105,18 @@ hlx cache clear    # Wipe all cached data
 | Tool | Description |
 |------|-------------|
 | `azdo_build` | Build details (status, result, branch, timing, URL). Accepts URLs or integer IDs. |
-| `azdo_builds` | List recent builds. Filter by branch, PR, definition, status. |
+| `azdo_builds` | List recent builds. Filter by branch, PR, definition, status, or time range (`minTime`/`maxTime`/`queryOrder`). |
 | `azdo_timeline` | Build timeline (stages, jobs, tasks). Filter: `failed` (default) or `all`. |
 | `azdo_log` | Log content for a specific build step (last N lines, default 500). |
 | `azdo_search_log` | Search a specific build log or all ranked build logs for a pattern with context lines. |
 | `azdo_search_timeline` | Search timeline records by name or issue pattern. |
 | `azdo_changes` | Commits/changes associated with a build. |
 | `azdo_test_runs` | Test run summaries (total, passed, failed counts). |
-| `azdo_test_results` | Individual test results. Defaults to failed tests only (top 200). |
+| `azdo_test_results` | Individual test results. Filter by outcome (`outcomes` param). Defaults to failed tests only (top 200). |
 | `azdo_artifacts` | Build artifacts with pattern filtering (e.g., `*.binlog`). |
 | `azdo_test_attachments` | Test result attachments (screenshots, logs, dumps). |
+
+> **Parameter validation:** MCP tools reject unknown parameter names with a structured error and a "Did you mean?" hint — LLM-hallucinated or mistyped param names get immediate feedback instead of silent drops. Common aliases are resolved automatically before validation: `buildId` / `build_id` / `buildUrl` → `buildIdOrUrl` on all AzDO tools; `result` → `resultFilter` on `azdo_search_timeline`.
 
 ## MCP Resources
 
