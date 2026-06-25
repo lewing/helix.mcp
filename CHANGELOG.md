@@ -67,6 +67,3 @@ Internal refactor — centralized AzDO filter normalization (trim, case-fold, de
 - **User-Agent identifier** (PR #73, @akoeplinger): All outbound HTTP traffic from hlx now carries `User-Agent: helix.mcp/{version}` and a custom `X-Helix-Mcp-Tool: helix.mcp` header on AzDO and Helix clients, enabling arcade-services to distinguish hlx traffic from other callers.
 - **Work item status bucketing fix** (PR #71, backport of #70): `GetWorkItemDetailAsync` now applies `IsCompleted` bucketing correctly — in-progress and waiting work items are no longer miscounted as failed in detailed work item queries.
 
----
-
-For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/lewing/helix.mcp/releases).
