@@ -830,9 +830,10 @@ public class AzdoService
                     // Typical causes: in-progress build (jobs not yet submitted), very old
                     // jobs aged out of the Helix query window, or BuildId property missing.
                 }
-                catch
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     // Helix API unreachable or auth failure — fall through to timeline.
+                    _ = ex; // suppress unused-variable warning
                 }
             }
         }
