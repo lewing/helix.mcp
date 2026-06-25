@@ -195,4 +195,29 @@ Ash's measurement framework validated. Issue #74 closed with Conditional No unle
 **Follow-up:** Issue #82 (architectural cleanup: centralize AzDO filter normalization)
 
 ## Rubber-duck: Issue #81 Stage B Levenshtein Threshold (2026-06-24)
-Ripley implementing Stage B (CallToolFilter 'did you mean' hints). Decision proposes Levenshtein ≤3. Rubber-duck role: review existing param names to confirm no false positives at this threshold. See decisions.md §Issue #81 Decomposition Stage B.
+
+**Status**: Complete. Verdict: KEEP threshold 6 (Ripley's choice).
+
+**Findings**:
+- Parameter universe: 40 unique MCP tool parameter names across 25 tools
+- False-positive candidate pairs at threshold ≤3: 12 (conservative, but breaks regression test)
+- False-positive candidate pairs at threshold ≤6: 173 (noisy, but catches minFinishTime→minTime)
+- Regression case: Levenshtein('minfinishtime', 'mintime') = 6 (exactly at threshold)
+- Threshold 3 misses the regression case; threshold 6 catches it
+
+**Key insight**: The full allowed-params list ALWAYS appears in the error, so false-positive suggestions are harmless—callers can read the list and ignore wrong hints. The regression test requirement (minFinishTime→minTime) overrides the spec's ≤3 constraint.
+
+**Recommendation**: Merge Ripley's implementation. No code changes. Update PR description to clarify spec contradiction: "Spec said ≤3, but regression test requires 6. Threshold 6 is correct; false-positives are mitigated by always-present allowed-params list."
+
+**Output**: Decision filed at .squad/decisions/inbox/ash-pr-stage-b-threshold-review.md
+
+---
+
+## Session Acknowledgment (2026-06-24)
+
+**Thank you** for both the Issue #81 feasibility report and the Stage B threshold review. Both insights directly shaped this session's outcomes:
+- Feasibility report validated that strict-mode could land via `UnmappedMemberHandling.Disallow` + a CallToolFilter approach
+- Threshold review prevented a false-negative (threshold 3 would miss the regression test requirement)
+- Both #81 findings fed Ripley's design, and both #82 contract test matrix and the centralized normalizer pattern reflect the audit lessons learned in your prior work on param plumbing discovery
+
+This session's three merged PRs (83, 84, 85) owe much to the groundwork. Well done.
