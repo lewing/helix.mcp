@@ -227,6 +227,7 @@ public sealed class CiKnowledgeService
                 "helix_parse_uploaded_trx ALWAYS fails — SDK never uploads TRX to Helix",
                 "SDK uses build-as-test pattern — many 'test failures' are actually build errors exercising the SDK",
                 "Helix task name is '🟣 Run TestBuild Tests' (with emoji!) — searching for 'Send to Helix' returns nothing",
+                "azdo_helix_jobs returns 0 jobs for SDK builds — the tool detects Helix by scanning timeline Tasks whose name contains the substring 'helix' (case-insensitive); '🟣 Run TestBuild Tests' contains no such substring, so detection returns 0 even when Helix ran; extract Helix job GUIDs from azdo_test_runs output instead (look for [HelixJob:GUID] in the test run names)",
                 "azdo_test_runs metadata shows failedTests=0 even with hundreds of crashed work items — always drill into azdo_test_results",
                 "Crashed work items produce synthetic results: testCaseTitle='X.dll Work Item', errorMessage='The Helix Work Item failed'",
                 "'  Failed' pattern is unreliable for SDK — use 'Failed' and 'Error' instead since crashes dominate",
@@ -236,7 +237,7 @@ public sealed class CiKnowledgeService
                 "azdo_search_timeline(buildIdOrUrl, 'error') → find failed steps (compact output, preferred for large builds)",
                 "azdo_timeline(buildIdOrUrl, filter='failed') → full timeline when you need complete record details",
                 "Classify: '🟣 Build' failed → SDK build break; '🟣 Run TestBuild Tests' failed → test/infra failure; all tests skipped → upstream build failure",
-                "helix_status(jobId) → exit codes — 130/-4 = infra, 1 = real test failure",
+                "Extract Helix job GUIDs from azdo_test_runs output ([HelixJob:GUID] in run names) — azdo_helix_jobs DOES NOT work for SDK because its task name ('🟣 Run TestBuild Tests') contains no 'helix' substring (the detection rule); then: helix_status(jobId) → exit codes — 130/-4 = infra, 1 = real test failure",
                 "azdo_test_runs(buildIdOrUrl) → get test run IDs",
                 "azdo_test_results(buildIdOrUrl, runId) → check for real vs synthetic (WorkItemExecution = crash, not assertion failure)",
                 "helix_search(jobId, workItem, 'Failed') → console error details",
@@ -762,6 +763,7 @@ public sealed class CiKnowledgeService
         lines.Add("- **azdo_test_runs + azdo_test_results** is the most reliable path for structured results across all repos.");
         lines.Add("- **⚠️ macios and android are on devdiv, not dnceng-public** — authenticate first (`az login` or `AZDO_TOKEN`), and prefer full devdiv build URLs with `azdo_*` tools because bare build IDs default to dnceng-public.");
         lines.Add("- **failedTests=0 is a lie** — always drill into `azdo_test_results`, don't trust run-level summary counts.");
+        lines.Add("- **Pass `outcomes='Failed'` (default) to `azdo_test_results` to skip NotExecuted noise.** Use `outcomes='NotExecuted,Failed'` to also surface platform-conditional skips that cause total≠passed discrepancies in run summaries.");
         lines.Add("");
         lines.Add("## Three-Layer Diagnostic Model");
         lines.Add("");
@@ -775,13 +777,14 @@ public sealed class CiKnowledgeService
         lines.Add("- **Crash dumps** → `helix_files` (*.dmp, core.*)");
         lines.Add("- **Binlogs** → `helix_files` / `helix_find_files` (*.binlog)");
         lines.Add("- **Screenshots** → `azdo_artifacts` (MAUI uitests only: `uitest-snapshot-results-*`)");
-        lines.Add("- **Build logs** → `azdo_artifacts` (Logs_Build_*)");
+        lines.Add("- **Build logs** → `azdo_artifacts` (naming varies by repo: runtime uses `Logs_Build_Attempt1_*`; aspnetcore uses `Linux_x64_Logs_Attempt_1` or `BuildLogs_SourceBuild_*`; call `azdo_artifacts` on a build to list actual names)");
         lines.Add("");
         lines.Add("## Test Results Tool Selection");
         lines.Add("");
         lines.Add("- `helix_parse_uploaded_trx` works ONLY for: CoreCLR tests (XUnitWrapperGenerator) and XHarness device tests.");
         lines.Add("- Everything else: use `azdo_test_runs` + `azdo_test_results`.");
         lines.Add("- `azdo_test_attachments` returns empty arrays across ALL dotnet repos — skip it entirely.");
+        lines.Add("- **⚠️ `azdo_helix_jobs` finds Helix jobs by scanning timeline Task records whose name contains the substring 'helix' (case-insensitive).** If a repo's Helix dispatch task lacks that substring (sdk: '🟣 Run TestBuild Tests'), the tool returns 0 jobs even when Helix ran. Extract Helix job GUIDs from `azdo_test_runs` output instead — they appear as `[HelixJob:GUID]` in the run name string.");
 
         return string.Join('\n', lines);
     }
@@ -911,6 +914,12 @@ public sealed class CiKnowledgeService
                - `'[FAIL]'` — xUnit runner failure marker
                - `'Error Message:'` — test error details
                - `'exit code'` — process crashes
+
+            ## Finding Builds to Investigate
+            - Use `azdo_builds(definitionId=<N>, status="completed")` to list recent builds for a specific pipeline. Pair with `queryOrder="finishTimeDescending"` and `top=5` to get the latest.
+            - Narrow to a time window with `minTime` and `maxTime` (ISO 8601). Narrow to a branch with `branch`.
+            - Use `prNumber` to find the build for a specific PR (e.g., `azdo_builds(prNumber=12345)`).
+            - Definition IDs are listed in each repo profile (e.g., runtime=129, aspnetcore=83, sdk=101).
 
             ## Getting Build Failures
             1. Use `azdo_search_timeline(buildIdOrUrl, 'error')` to find failed steps (compact output, preferred for large builds)

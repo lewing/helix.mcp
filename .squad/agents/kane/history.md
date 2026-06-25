@@ -111,3 +111,52 @@
 **Follow-up:** Issue #82 (architectural cleanup: centralize AzDO filter normalization)
 
 📌 Team update (2026-06-24): PR #85 + Issue #82 merged — Ripley implemented centralized AzDO filter normalization (4 sub-changes consolidated to 1 PR), Lambert added 91 comprehensive tests (44 normalizer + 42 contract + 5 stability). **USER-VISIBLE CHANGE:** `queryOrder` parameter now sends lowercase values in REST URLs (`finishtimedescending` instead of `finishTimeDescending`). AzDO treats this as case-insensitive, so behavior is identical, but any documentation or downstream assertions on exact query-order casing should be reviewed. — decided by Ripley, tested by Lambert
+
+### 2026-06-24: v0.8.0 doc audit + catch-up PR #89
+
+**Audit findings:**
+
+- README install snippet is version-agnostic — fine.
+- No code blocks pin "0.7.6" or any specific version — fine.
+- No MCP config examples implying silent-drop tolerance — fine.
+- `docs/threat-model-azdo-auth.md` unaffected by v0.8.0 changes — fine.
+- `azdo_test_attachments` CLI reference already showed `--top N` — no change needed.
+
+**What needed updating (all addressed in PR #89):**
+
+1. `CHANGELOG.md` — did not exist; created with v0.8.0 + v0.7.6 entries.
+2. README AzDO tools table: `azdo_builds` description was missing `minTime`/`maxTime`/`queryOrder` (PR #78 plumbing fix).
+3. README AzDO tools table: `azdo_test_results` description didn't mention `outcomes` param (PR #78 plumbing fix).
+4. README: no mention of strict param rejection or aliases — added parameter validation callout below AzDO tools table.
+5. `docs/cli-reference.md`: `hlx azdo builds` was missing `--min-time`, `--max-time`, `--query-order` flags (PR #78).
+6. `docs/cli-reference.md`: `hlx azdo test-results` was missing `--outcomes` flag (PR #78).
+
+**Pre-existing issue noted but NOT fixed (out of v0.8.0 scope):**
+
+- README Helix Tools section header says "(9)" but there are 11 Helix tools in the code (helix_auth_status + helix_ci_guide not in the table). Predates v0.8.0.
+- README AzDO Tools section header says "(11)" but there are 14 AzDO tools in the code (azdo_helix_jobs, azdo_build_analysis, azdo_auth_status not in the table). Predates v0.8.0.
+- Logged both as follow-up in `.squad/agents/kane/inbox/kane-v0.8.0-audit.md`.
+
+**PR:** #89 (`docs/v0.8.0-catchup`). Do not merge — Larry presses the button.
+
+### 2026-06-24: CI Guide v0.8.0 Audit-Driven Update — PR #90
+
+**Trigger:** Ash completed a live empirical audit of `helix_ci_guide` against v0.8.0 tool behavior (3 repos: runtime, aspnetcore, sdk). Report: `.squad/decisions/inbox/ash-ci-guide-audit-v0.8.0.md`.
+
+**Changes applied to `CiKnowledgeService.cs`:**
+1. **Artifact pattern** — generalized `Logs_Build_*` to note repo-specific naming (runtime vs aspnetcore patterns, verified by Ash's azdo_artifacts calls).
+2. **SDK KnownGotchas** — added `azdo_helix_jobs` returns 0 caveat (emoji task name not recognized; use azdo_test_runs for [HelixJob:GUID] instead).
+3. **SDK RecommendedInvestigationOrder step 4** — replaced bare `helix_status(jobId)` with explicit GUID extraction path since `azdo_helix_jobs` doesn't work for SDK.
+4. **Global azdo_helix_jobs caveat** — added to Test Results Tool Selection with generic wording covering any repo with non-standard task names.
+5. **outcomes filter** — added Key Insights note on `outcomes='NotExecuted,Failed'` for surfacing platform-conditional skips.
+6. **azdo_builds entry point** — added "Finding Builds to Investigate" section to general guide with definitionId/prNumber/minTime/maxTime/branch examples.
+
+**Verified accurate, left unchanged:** `azdo_test_attachments` claim (confirmed empty across all 3 repos tested).
+
+**Deferred:** aspnetcore helix_parse_uploaded_trx direct verification (no Helix-reaching build available in audit), unverified repo profiles (roslyn/efcore/dotnet/maui/macios/android), failedTests=0 masking real Failed outcomes (edge case untested).
+
+**Key pattern to reuse:** **Verify-before-document.** Never add guide claims that haven't been confirmed by actual tool calls. When Ash's tool budget ran out, we stopped — no speculative additions. This discipline keeps the guide trustworthy.
+
+**Build/test:** 0 warnings, 1450/1452 pass (2 pre-existing skips unrelated to CI guide).
+
+**PR:** #90 (`docs/ci-guide-v0.8.0-audit`). Do not merge — Larry presses the button.
