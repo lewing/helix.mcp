@@ -445,7 +445,7 @@ public class CachingAzdoApiClientTests
     }
 
     [Fact]
-    public async Task GetTestResultsAsync_NullAndExplicitFailedOutcomes_ShareCacheKey2()
+    public async Task GetTestResultsAsync_NullAndWhitespaceTrimmedFailedOutcomes_ShareCacheKey()
     {
         // Explicit "Failed" (the server default) vs null should map to the same cache key.
         // This is the outcomes equivalent of ListBuildsAsync_NullAndExplicitDefaultQueryOrder_ShareCacheKey.

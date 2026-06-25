@@ -196,6 +196,7 @@ public static class McpServerOptionsExtensions
             var hint = FindClosestMatch(unknowns[0], paramInfo.CanonicalSet);
             if (hint is not null)
                 sb.Append($"\nDid you mean: {hint}?");
+            sb.AppendLine();
         }
         else
         {
@@ -280,27 +281,24 @@ public static class McpServerOptionsExtensions
 
         foreach (var (alias, canonical) in s_argumentAliases)
         {
-            if (HasArgument(arguments, canonical))
-            {
-                continue;
-            }
-
             var aliasKey = FindArgumentKey(arguments, alias);
             if (aliasKey is null)
-            {
                 continue;
+
+            if (!HasArgument(arguments, canonical))
+            {
+                // Canonical absent — promote the alias value (first-value-wins).
+                arguments[canonical] = CoerceToStringElement(arguments[aliasKey]);
+                logger?.LogDebug(
+                    "Argument alias resolved: '{Alias}' → '{Canonical}' for tool '{ToolName}'",
+                    aliasKey,
+                    canonical,
+                    parameters?.Name);
             }
 
-            arguments[canonical] = CoerceToStringElement(arguments[aliasKey]);
+            // Always remove the alias key — even when the canonical was already present —
+            // so strict-mode unknown-param checking does not flag it after this filter runs.
             arguments.Remove(aliasKey);
-            logger?.LogDebug(
-                "Argument alias resolved: '{Alias}' → '{Canonical}' for tool '{ToolName}'",
-                aliasKey,
-                canonical,
-                parameters?.Name);
-            // Continue processing — caller may have passed aliases for multiple distinct canonicals
-            // (e.g. build_id + result on azdo_search_timeline). The alias key is removed so strict-mode
-            // unmapped-member checking does not flag it after this filter runs.
         }
     }
 
