@@ -105,16 +105,35 @@ Open as **ready-for-review** (not draft). CCA must review before Larry merges.
 
 ---
 
-## Step 7 — Do NOT push the tag
+## Step 7 — Do NOT push the tag (Ripley's job ends at the open PR)
 
-Ripley's job ends when the PR is open and ready-for-review. Larry merges the bump PR, then runs:
+Ripley's job ends when the PR is open and ready-for-review. After CCA reviews and Larry merges:
 
 ```sh
-git tag vX.Y.Z <merge-commit-sha>
+# 1. Sync local main with the squashed bump commit
+git checkout main
+git pull origin main
+
+# 2. Verify the bump landed
+grep '<Version>' src/HelixTool/HelixTool.csproj                          # expect X.Y.Z
+jq -r '.version, .packages[0].version' src/HelixTool/.mcp/server.json   # expect X.Y.Z twice
+
+# 3. Tag the merged commit on main (annotated)
+git tag -a vX.Y.Z -m "Release vX.Y.Z"
+
+# 4. Push the tag — triggers publish.yml (NuGet push + GitHub release)
 git push origin vX.Y.Z
+
+# 5. Watch the publish workflow
+gh run watch -R lewing/helix.mcp $(gh run list -R lewing/helix.mcp -w publish.yml --limit 1 --json databaseId --jq '.[0].databaseId')
 ```
 
-The `publish.yml` workflow (`on: push: tags: "v*"`) triggers automatically and:
+**Critical correctness notes:**
+- The tag MUST be created on a commit where `csproj <Version>` AND both `server.json` version fields equal the target version. After merging via squash, that commit is the latest on `main` — tag it directly.
+- Do NOT tag the unmerged branch HEAD — squash-merge rewrites the SHA, so a tag on the branch head would be orphaned from `main`.
+- If `publish.yml` fails the validate-version step, the tag is fine but the release won't ship. Fix the mismatch, delete the tag locally and remotely (`git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`), then re-push.
+
+The `publish.yml` workflow (`on: push: tags: "v*"`) then:
 1. Validates all three version fields match the tag.
 2. Packs the NuGet package.
 3. Creates a GitHub Release with the `.nupkg` artifact.
