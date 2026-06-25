@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Text.RegularExpressions;
+using HelixTool.Core.Helix;
 
 namespace HelixTool.Core.AzDO;
 
@@ -11,6 +12,7 @@ namespace HelixTool.Core.AzDO;
 public class AzdoService
 {
     private readonly IAzdoApiClient _client;
+    private readonly IHelixApiClient? _helixApi;
     private const string ValidFilterValues = "'failed', 'all', 'running', 'pending', 'incomplete', or 'issues'";
     private static readonly HashSet<string> s_validFilters = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -42,9 +44,24 @@ public class AzdoService
     ];
     private static readonly HashSet<string> s_validQueryOrders = new(AzdoQueryOrders, StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Initializes a new instance of <see cref="AzdoService"/> with timeline-only job detection.
+    /// Unit tests use this constructor. Production prefers the two-argument overload.
+    /// </summary>
     public AzdoService(IAzdoApiClient client)
+        : this(client, null) { }
+
+    /// <summary>
+    /// Initializes a new instance of <see cref="AzdoService"/> with Helix-side job detection
+    /// as the primary path (falling back to timeline scraping when the Helix query returns 0 results).
+    /// </summary>
+    /// <param name="client">AzDO API client for build/timeline queries.</param>
+    /// <param name="helixApi">Helix API client for canonical <c>Job.ListAsync(source)</c> queries.
+    ///   Pass <c>null</c> to use timeline scraping only.</param>
+    public AzdoService(IAzdoApiClient client, IHelixApiClient? helixApi)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
+        _helixApi = helixApi;
     }
 
     public static string NormalizeFilter(string filter)
@@ -747,7 +764,42 @@ public class AzdoService
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
-    /// Extract Helix job IDs from a build timeline's "Send to Helix" task records.
+    /// Compute the Helix source string for a build, mirroring arcade's
+    /// <c>HelixJobSource.Compute</c> (JobMonitor/HelixJobSource.cs).
+    ///
+    /// Format: {prefix}/{teamProject}/{repository}/{sourceBranch}
+    ///
+    /// Prefix rules (case-insensitive, matching arcade exactly):
+    ///   Build.Reason == "PullRequest"       → "pr"
+    ///   System.TeamProject == "internal"    → "official"
+    ///   anything else                       → "ci"
+    ///
+    /// Note: "official" is keyed off the team project name, not Build.Reason.
+    /// A manually-queued internal build produces "official/internal/...".
+    /// A public manual/scheduled/individualCI/batchedCI build produces "ci/public/...".
+    /// </summary>
+    internal static string ComputeHelixSource(AzdoBuild build)
+    {
+        var teamProject = build.Project?.Name ?? "";
+        var repository  = build.Repository?.Name ?? "";
+        var sourceBranch = build.SourceBranch ?? "";
+
+        string prefix;
+        if (string.Equals(build.Reason, "pullRequest", StringComparison.OrdinalIgnoreCase))
+            prefix = "pr";
+        else if (string.Equals(teamProject, "internal", StringComparison.OrdinalIgnoreCase))
+            prefix = "official";
+        else
+            prefix = "ci";
+
+        return $"{prefix}/{teamProject}/{repository}/{sourceBranch}";
+    }
+
+    /// <summary>
+    /// Extract Helix job IDs for a build, using Helix-side <c>Job.ListAsync(source)</c>
+    /// as the primary path when a <see cref="IHelixApiClient"/> is available.
+    /// Falls back to AzDO timeline task-name scraping when the Helix query returns 0 results
+    /// or when no Helix client was injected.
     /// </summary>
     public async Task<HelixJobsFromBuildResult> GetHelixJobsAsync(
         string buildIdOrUrl, string filter = "failed", CancellationToken ct = default)
@@ -756,6 +808,80 @@ public class AzdoService
         filter = NormalizeFilter(filter);
         ValidateFilter(filter, nameof(filter));
 
+        // ── Primary path: Helix-side Job.ListAsync(source) + BuildId filter ─────────────
+        // Available when IHelixApiClient is injected (production). Unit tests use the
+        // timeline-only constructor and skip this block.
+        if (_helixApi != null)
+        {
+            var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
+            var build = await _client.GetBuildAsync(org, project, buildId, ct);
+            if (build != null)
+            {
+                var source = ComputeHelixSource(build);
+                try
+                {
+                    var jobNames = await _helixApi.ListJobNamesByBuildAsync(
+                        source, buildId.ToString(), count: 100_000, ct: ct);
+
+                    if (jobNames.Count > 0)
+                        return BuildHelixResultFromJobNames(buildIdOrUrl, jobNames, filter);
+
+                    // 0 results: fall through to timeline scraping.
+                    // Typical causes: in-progress build (jobs not yet submitted), very old
+                    // jobs aged out of the Helix query window, or BuildId property missing.
+                }
+                catch
+                {
+                    // Helix API unreachable or auth failure — fall through to timeline.
+                }
+            }
+        }
+
+        // ── Fallback path: AzDO timeline task-name scraping ─────────────────────────────
+        // Used when Helix query is unavailable, returns 0 results, or throws.
+        // Fragile for repos that don't name their Helix dispatch task with "helix"
+        // (e.g. dotnet/sdk uses "🟣 Run TestBuild Tests").
+        return await GetHelixJobsViaTimelineAsync(buildIdOrUrl, filter, ct);
+    }
+
+    /// <summary>Project a list of Helix job name GUIDs into a <see cref="HelixJobsFromBuildResult"/>.</summary>
+    private static HelixJobsFromBuildResult BuildHelixResultFromJobNames(
+        string buildIdOrUrl, IReadOnlyList<string> jobNames, string filter)
+    {
+        // With the Helix-side path we have job GUIDs but not AzDO task-level result or
+        // failed work item lists (those require per-job status calls). ParentJobName and
+        // FailedWorkItems are left empty; Result is "unknown".
+        // The filter parameter is accepted for API compatibility but cannot be applied to
+        // the Helix-side result without expensive per-job calls.
+        var jobs = jobNames
+            .Select(name => new HelixJobFromBuild(
+                HelixJobId: name,
+                ParentJobName: "",
+                Result: "unknown",
+                FailedWorkItems: []))
+            .ToList();
+
+        string? note = null;
+        if (!string.Equals(filter, "all", StringComparison.OrdinalIgnoreCase))
+            note = $"filter='{filter}' is not applied on the Helix-side path; all {jobs.Count} job(s) for this build are returned. " +
+                   "Use helix_status on individual job IDs to determine pass/fail.";
+
+        return new HelixJobsFromBuildResult(
+            BuildId: buildIdOrUrl,
+            TotalHelixJobs: jobs.Count,
+            FailedHelixJobs: 0,
+            Jobs: jobs)
+        { Note = note };
+    }
+
+    /// <summary>
+    /// Legacy timeline-scraping implementation. Finds Helix dispatch tasks by scanning for
+    /// timeline records whose name contains "helix". Fragile for repos that use non-standard
+    /// task names (e.g. dotnet/sdk).
+    /// </summary>
+    private async Task<HelixJobsFromBuildResult> GetHelixJobsViaTimelineAsync(
+        string buildIdOrUrl, string filter, CancellationToken ct)
+    {
         var timeline = await GetTimelineAsync(buildIdOrUrl, ct);
         if (timeline is null)
             throw new InvalidOperationException($"No timeline available for build '{buildIdOrUrl}'.");

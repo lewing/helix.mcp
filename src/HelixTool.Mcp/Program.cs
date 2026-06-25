@@ -88,7 +88,11 @@ builder.Services.AddScoped<IAzdoApiClient>(sp =>
         sp.GetRequiredService<ICacheStore>(),
         sp.GetRequiredService<CacheOptions>(),
         sp.GetRequiredService<IAzdoTokenAccessor>()));
-builder.Services.AddScoped<AzdoService>();
+// Inject IHelixApiClient so GetHelixJobsAsync can use the canonical Helix-side Job.ListAsync(source) path (#92)
+builder.Services.AddScoped<AzdoService>(sp =>
+    new AzdoService(
+        sp.GetRequiredService<IAzdoApiClient>(),
+        sp.GetRequiredService<IHelixApiClient>()));
 
 builder.Services
     .AddMcpServer(options =>

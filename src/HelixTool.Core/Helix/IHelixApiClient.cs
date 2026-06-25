@@ -28,6 +28,18 @@ public interface IHelixApiClient
 
     /// <summary>Download a specific uploaded file by name from a work item.</summary>
     Task<Stream> GetFileAsync(string fileName, string workItemName, string jobId, CancellationToken ct = default);
+
+    /// <summary>
+    /// List Helix job names (GUIDs) submitted under the given source string whose <c>BuildId</c>
+    /// property matches <paramref name="buildId"/>. Uses <c>Job.ListAsync(source, count)</c>
+    /// from the Helix SDK — the canonical Helix-side lookup for AzDO build → Helix jobs.
+    /// </summary>
+    /// <param name="source">Helix source prefix: "{pr|official|ci}/{teamProject}/{repo}/{branch}".</param>
+    /// <param name="buildId">AzDO build ID as a string; matched against the "BuildId" job property.</param>
+    /// <param name="count">Maximum jobs to retrieve from Helix (cap: 100 000 per arcade reference impl).</param>
+    /// <param name="ct">Cancellation token.</param>
+    Task<IReadOnlyList<string>> ListJobNamesByBuildAsync(
+        string source, string buildId, int count = 100_000, CancellationToken ct = default);
 }
 
 /// <summary>Mockable projection of Helix SDK JobDetails.</summary>

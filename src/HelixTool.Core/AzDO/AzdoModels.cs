@@ -56,6 +56,39 @@ public sealed record AzdoBuild
 
     [JsonPropertyName("tags")]
     public IReadOnlyList<string>? Tags { get; init; }
+
+    /// <summary>Why the build was queued: "pullRequest", "manual", "individualCI", "batchedCI", "schedule", etc.</summary>
+    [JsonPropertyName("reason")]
+    public string? Reason { get; init; }
+
+    /// <summary>The team project this build belongs to (e.g. "public" or "internal").</summary>
+    [JsonPropertyName("project")]
+    public AzdoTeamProjectRef? Project { get; init; }
+
+    /// <summary>The source repository for this build.</summary>
+    [JsonPropertyName("repository")]
+    public AzdoBuildRepository? Repository { get; init; }
+}
+
+/// <summary>Team project reference nested in a build response.</summary>
+public sealed record AzdoTeamProjectRef
+{
+    [JsonPropertyName("name")]
+    public string? Name { get; init; }
+}
+
+/// <summary>Build repository reference nested in a build response.</summary>
+public sealed record AzdoBuildRepository
+{
+    [JsonPropertyName("id")]
+    public string? Id { get; init; }
+
+    /// <summary>For GitHub-backed repos this is "owner/repo"; for AzDO Git repos it is the repo name.</summary>
+    [JsonPropertyName("name")]
+    public string? Name { get; init; }
+
+    [JsonPropertyName("type")]
+    public string? Type { get; init; }
 }
 
 /// <summary>Nested build definition reference.</summary>
