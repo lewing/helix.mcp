@@ -435,7 +435,7 @@ public class McpServerOptionsExtensionsTests
         Assert.Contains("Did you mean: minTime?", ex.Message);
         Assert.Contains("Allowed parameters:", ex.Message);
         // Newline must separate the hint from the allowed list so they don't run together.
-        Assert.Contains("Did you mean: minTime?\nAllowed parameters:", ex.Message);
+        Assert.Contains("Did you mean: minTime?" + System.Environment.NewLine + "Allowed parameters:", ex.Message);
     }
 
     [Fact]
@@ -453,7 +453,7 @@ public class McpServerOptionsExtensionsTests
         Assert.DoesNotContain("Did you mean:", ex.Message);
         Assert.Contains("Allowed parameters:", ex.Message);
         // Newline must separate the unknown-param sentence from the allowed list even with no hint.
-        Assert.Contains(".\nAllowed parameters:", ex.Message);
+        Assert.Contains("." + System.Environment.NewLine + "Allowed parameters:", ex.Message);
     }
 
     [Fact]
