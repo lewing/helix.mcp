@@ -173,3 +173,60 @@ PR #83 Stage A is approved with this one reviewer-driven fix. Lambert's implemen
 
 ---
 
+
+## 2026-06-24: Issue #82 — Centralized AzDO Filter Normalization (squad/82-centralize-azdo-normalization)
+
+### Normalization sites found (inventory)
+
+Four normalization sites existed before this PR:
+
+1. **`AzdoApiClient.ListBuildsAsync`** — hand-inline: `IsNullOrWhiteSpace` → `DefaultQueryOrder`; else `Trim()`. Used `AzdoApiClient.DefaultQueryOrder = "queueTimeDescending"` (transport-layer constant).
+2. **`CachingAzdoApiClient.HashFilter`** — hand-inline: `IsNullOrWhiteSpace` → null; `Trim()`; `OrdinalIgnoreCase` collapse to null; `ToLowerInvariant()`. Referenced `AzdoApiClient.DefaultQueryOrder` (cross-layer coupling — cache layer depending on transport constant).
+3. **`CachingAzdoApiClient.GetTestResultsAsync`** — inline: `IsNullOrWhiteSpace` → null; `Trim()`; magic string `"Failed"` for default.
+4. **`AzdoApiClient.GetTestResultsAsync`** — inline: `IsNullOrWhiteSpace` → `"Failed"`; `Trim()`.
+
+Sites 1 and 2 are now centralized in `AzdoBuildFilterNormalizer.Normalize()`. Sites 3 and 4 still inline (outcomes is not part of `AzdoBuildFilter` and is a separate parameter), but now reference `AzdoBuildFilterDefaults.Outcomes` instead of the magic string `"Failed"`.
+
+### Decision: `AzdoApiClient.DefaultQueryOrder` — removed, not forwarded
+
+`internal const` with no external consumers. Removed entirely. `AzdoApiClient` and `CachingAzdoApiClient` now reference `AzdoBuildFilterDefaults.QueryOrder`. This eliminates the cross-layer coupling smell where the cache layer (`CachingAzdoApiClient`) depended on a transport-layer constant (`AzdoApiClient.DefaultQueryOrder`).
+
+### JSON stable ordering: `TypeInfoResolver.Modifiers` trick
+
+To get alphabetically-sorted JSON properties in `System.Text.Json` without a custom converter, add a modifier to `DefaultJsonTypeInfoResolver`:
+
+```csharp
+Modifiers =
+{
+    static typeInfo =>
+    {
+        if (typeInfo.Kind != JsonTypeInfoKind.Object) return;
+        var sorted = typeInfo.Properties.OrderBy(p => p.Name, StringComparer.Ordinal).ToList();
+        typeInfo.Properties.Clear();
+        foreach (var p in sorted)
+            typeInfo.Properties.Add(p);
+    }
+}
+```
+
+The modifier fires once per type (cached by the resolver). `StringComparer.Ordinal` (not `OrdinalIgnoreCase`) for predictable sorting of mixed-case names. `WhenWritingNull` omits null fields so an all-null filter hashes as `{}` (stable, unique to "empty filter").
+
+### Cache invalidation note
+
+The new JSON-based cache key is format-incompatible with the old pipe-delimited hash. All `builds:*` cache entries are effectively invalidated on deployment. One-shot invalidation — no data corruption, entries expire naturally under 30s TTL.
+
+### Test updates
+
+Two tests in `AzdoApiClientTests.cs` updated:
+- `ListBuildsAsync_QueryOrder_OverridesDefault` — expected `finishTimeDescending` in URL; updated to `finishtimedescending` (normalizer lowercases non-default values before URL construction)
+- `ListBuildsAsync_TimeRangeAndQueryOrder_AllPresent` — same update
+
+These are layer-behavioral changes, not regressions: the URL still carries a valid AzDO query order value; it's just now in canonical lowercase form.
+
+### Handoff
+
+`handoff-82.md` written for Lambert with: full test matrix (normalizer unit tests, cache-key stability, per-param contract tests), mock patterns, and notes on which existing tests become redundant vs. should be kept as "delegates to normalizer" smokes.
+
+**Commits:** on branch `squad/82-centralize-azdo-normalization`  
+**Tests:** 1359 passed, 2 skipped, 0 failed (baseline: 1359 passed)  
+**New files:** `AzdoBuildFilterNormalizer.cs`, `handoff-82.md`, `ripley-issue-82.md`, `centralized-filter-normalization/SKILL.md`

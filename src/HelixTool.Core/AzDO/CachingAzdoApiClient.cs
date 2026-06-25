@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using HelixTool.Core.Cache;
 
 namespace HelixTool.Core.AzDO;
@@ -27,6 +29,32 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
     /// <summary>Prefix for plain-text cache entries to avoid JSON wrapping overhead.</summary>
     private const string RawTextPrefix = "\0raw\n";
+
+    /// <summary>
+    /// Stable JSON serializer options for <see cref="HashFilter"/>:
+    /// nulls omitted, properties sorted alphabetically for deterministic output.
+    /// New fields on <see cref="AzdoBuildFilter"/> automatically appear in the cache key.
+    /// </summary>
+    private static readonly JsonSerializerOptions s_stableCacheKeyOptions = new()
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        TypeInfoResolver = new DefaultJsonTypeInfoResolver
+        {
+            Modifiers =
+            {
+                static typeInfo =>
+                {
+                    if (typeInfo.Kind != JsonTypeInfoKind.Object) return;
+                    var sorted = typeInfo.Properties
+                        .OrderBy(p => p.Name, StringComparer.Ordinal)
+                        .ToList();
+                    typeInfo.Properties.Clear();
+                    foreach (var p in sorted)
+                        typeInfo.Properties.Add(p);
+                }
+            }
+        }
+    };
 
     private readonly IAzdoApiClient _inner;
     private readonly ICacheStore _cache;
@@ -247,14 +275,14 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
 
         var normalizedOutcomes = string.IsNullOrWhiteSpace(outcomes) ? null : outcomes.Trim();
-        var key = BuildCacheKey(org, project, $"testresults:{runId}:{top}:{normalizedOutcomes ?? "Failed"}");
+        var key = BuildCacheKey(org, project, $"testresults:{runId}:{top}:{normalizedOutcomes ?? AzdoBuildFilterDefaults.Outcomes}");
         var cached = await _cache.GetMetadataAsync(key, ct);
         var deserialized = TryDeserialize<List<AzdoTestResult>>(cached);
         if (deserialized is not null)
             return deserialized;
 
         var result = await _inner.GetTestResultsAsync(org, project, runId, top, normalizedOutcomes, ct);
-        key = BuildCacheKey(org, project, $"testresults:{runId}:{top}:{normalizedOutcomes ?? "Failed"}");
+        key = BuildCacheKey(org, project, $"testresults:{runId}:{top}:{normalizedOutcomes ?? AzdoBuildFilterDefaults.Outcomes}");
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
 
         return result;
@@ -413,21 +441,12 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
     private static string HashFilter(AzdoBuildFilter filter)
     {
-        // Normalize QueryOrder: treat null/empty/whitespace as null (server default).
-        var normalizedQueryOrder = string.IsNullOrWhiteSpace(filter.QueryOrder)
-            ? null
-            : filter.QueryOrder.Trim();
-        // Collapse the explicit server default to null so it shares the cache key with the null case.
-        if (string.Equals(normalizedQueryOrder, AzdoApiClient.DefaultQueryOrder, StringComparison.OrdinalIgnoreCase))
-            normalizedQueryOrder = null;
-        // Lowercase so different casings of the same value share a cache key (AzDO treats queryOrder case-insensitively).
-        normalizedQueryOrder = normalizedQueryOrder?.ToLowerInvariant();
-
-        var minTime = filter.MinTime?.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
-        var maxTime = filter.MaxTime?.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
-
-        var raw = $"{filter.PrNumber}|{filter.Branch}|{filter.DefinitionId}|{filter.Top}|{filter.StatusFilter}|{minTime}|{maxTime}|{normalizedQueryOrder}";
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(raw));
+        // Normalize once at the cache boundary — the shared algorithm lives in AzdoBuildFilterNormalizer.
+        var normalized = AzdoBuildFilterNormalizer.Normalize(filter);
+        // Serialize to a stable, deterministic JSON string: nulls omitted, properties alphabetically ordered.
+        // New fields on AzdoBuildFilter automatically participate in the cache key without explicit wiring.
+        var json = JsonSerializer.Serialize(normalized, s_stableCacheKeyOptions);
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(json));
         return Convert.ToHexString(hash)[..12].ToLowerInvariant();
     }
 
