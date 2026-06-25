@@ -313,3 +313,59 @@ No test updates needed. All 1452 tests pass unchanged. `HelixServiceStatusOptimi
 **Tests:** 1452 passed, 2 skipped, 0 failed (baseline: same)  
 **Branch:** `feat/91-sdk-bump-workitem-summary`  
 **PR:** TBD
+
+## 2026-06-25: Arcade Canonical Alignment (Issue #93, PR #95)
+
+**Branch:** `feat/93-arcade-canonical-alignment`  
+**Status:** Implemented, PR opened, awaiting CCA review + Larry merge
+
+### Item A — JobDetails.QueueAlias + DockerTag: IMPLEMENTED
+
+Fields present in SDK 11.0.0-beta.26325.102 (confirmed via `strings` on DLL; both `QueueAlias` and `DockerTag` are `JobDetails` properties from arcade PR #17017).
+
+Files changed:
+- `IHelixApiClient.cs` — added `QueueAlias` and `DockerTag` to `IJobDetails` interface (with XML doc)
+- `HelixApiClient.cs` — `JobDetailsAdapter` reads both from SDK `JobDetails`
+- `CachingHelixApiClient.cs` — `JobDetailsDto` record includes both (cache round-trip correct)
+- `HelixService.cs` — `JobSummary` record: `QueueAlias` as positional arg after `QueueId`; `DockerTag` as optional named param (default null)
+- `McpToolResults.cs` — `StatusJobInfo` (MCP surface) and `CliStatusJobJsonResult` (CLI surface): both fields with `JsonIgnore(WhenWritingNull)` — absent from JSON for non-containerized jobs
+- `HelixMcpTools.cs` — projection into `StatusJobInfo` from `JobSummary`
+- `Program.cs` (CLI) — projection into `StatusJobJsonResult`
+
+`QueueAlias` shows alongside `queueId` in output (not replacing it). `DockerTag` is null for non-containerized jobs and suppressed in JSON output.
+
+### Item B — Test-file detection patterns: IMPLEMENTED
+
+Previous `TestResultFilePatterns` had 4 entries:
+```
+*.trx, testResults.xml, *.testResults.xml.txt, testResults.xml.txt
+```
+
+Arcade canonical list (LocalTestResultsReader.cs) has 6:
+```
+*.trx, testResults.xml, test-results.xml, test_results.xml, junit-results.xml, junitresults.xml
+```
+
+Added 4 arcade-canonical patterns: `test-results.xml`, `test_results.xml`, `junit-results.xml`, `junitresults.xml`.
+
+Kept 2 helix.mcp-empirical patterns NOT in arcade canonical:
+- `*.testResults.xml.txt` — CoreCLR XUnitWrapperGenerator pattern observed in production CI output
+- `testResults.xml.txt` — same, exact-name variant
+
+These two are documented inline as "helix.mcp empirical; not in arcade canonical". Decisions inbox entry written.
+
+All 8 patterns now live in one `TestResultFilePatterns` array in `HelixService.cs` — single place to update for future syncs.
+
+### Item C — Portable JSON reporter watch: NOTE ONLY (as specified)
+
+Comment added in `TestResultFilePatterns` `<remarks>` block referencing arcade PR #16774. No code change.
+
+### Build / Tests
+
+**Build:** 0 warnings, 0 errors  
+**Tests:** 1452 passed, 2 skipped, 0 failed (baseline: same)
+
+### Surprises
+
+- helix.mcp had `*.testResults.xml.txt` and `testResults.xml.txt` which are NOT in the arcade canonical list. These are real CoreCLR-specific upload patterns. Kept with documentation.
+- `DockerTag` was empty string (not null) when not set in at least some SDK versions; normalized to null in the projection (`string.IsNullOrEmpty(job.DockerTag) ? null : job.DockerTag`).
