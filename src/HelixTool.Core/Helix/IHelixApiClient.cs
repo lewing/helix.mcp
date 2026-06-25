@@ -35,10 +35,14 @@ public interface IJobDetails
 {
     string? Name { get; }
     string? QueueId { get; }
+    /// <summary>Human-readable queue name (e.g. <c>windows.10.amd64.open</c>). Friendly companion to <see cref="QueueId"/>.</summary>
+    string? QueueAlias { get; }
     string? Creator { get; }
     string? Source { get; }
     string? Created { get; }
     string? Finished { get; }
+    /// <summary>Docker container tag when the work item ran in a Linux container. Null for non-containerized jobs.</summary>
+    string? DockerTag { get; }
 }
 
 /// <summary>Mockable projection of Helix SDK WorkItemSummary.</summary>
