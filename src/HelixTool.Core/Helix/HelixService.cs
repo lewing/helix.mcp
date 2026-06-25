@@ -59,9 +59,10 @@ public class HelixService
 
     /// <summary>Aggregated pass/fail/in-progress summary for all work items in a Helix job.</summary>
     public record JobSummary(
-        string JobId, string Name, string QueueId, string Creator, string Source,
+        string JobId, string Name, string QueueId, string? QueueAlias, string Creator, string Source,
         string? Created, string? Finished,
-        int TotalCount, List<WorkItemResult> Failed, List<WorkItemResult> Passed, List<WorkItemResult> InProgress);
+        int TotalCount, List<WorkItemResult> Failed, List<WorkItemResult> Passed, List<WorkItemResult> InProgress,
+        string? DockerTag = null);
 
     /// <summary>Get a pass/fail summary of all work items in a Helix job.</summary>
     /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
@@ -92,9 +93,10 @@ public class HelixService
 
             return new JobSummary(
                 id,
-                job.Name ?? "", job.QueueId ?? "", job.Creator ?? "", job.Source ?? "",
+                job.Name ?? "", job.QueueId ?? "", job.QueueAlias, job.Creator ?? "", job.Source ?? "",
                 job.Created, job.Finished,
-                workItems.Count, failed, passed, inProgress);
+                workItems.Count, failed, passed, inProgress,
+                string.IsNullOrEmpty(job.DockerTag) ? null : job.DockerTag);
 
             static WorkItemResult CreatePassedResult(IWorkItemSummary summary, string resolvedJobId)
                 => new(summary.Name, 0, null, null, null, BuildConsoleLogUrl(resolvedJobId, summary.Name), null);
@@ -933,12 +935,26 @@ public class HelixService
     }
 
     /// <summary>Patterns used to discover test result files in work item file lists, in priority order.</summary>
+    /// <remarks>
+    /// Synced with arcade canonical list from LocalTestResultsReader.cs (dotnet/arcade, 2026-06-25):
+    ///   *.trx, testResults.xml, test-results.xml, test_results.xml, junit-results.xml, junitresults.xml
+    /// We additionally keep *.testResults.xml.txt and testResults.xml.txt which are CoreCLR-specific
+    /// XUnitWrapperGenerator patterns not in the arcade canonical list but observed in production CI output.
+    ///
+    /// NOTE (2026-06-25): arcade PR #16774 added portable JSON test-result output from the Helix reporter.
+    /// This is NOT yet picked up by arcade's canonical LooksLikeTestResultFile filter (.trx + *Results.xml + junit*.xml).
+    /// When JSON reporter blobs appear in production CI output, add to this list and update the parser.
+    /// </remarks>
     internal static readonly string[] TestResultFilePatterns =
     [
-        "*.trx",                     // VSTest / dotnet test TRX files
-        "testResults.xml",           // XHarness / xUnit XML (exact name)
-        "*.testResults.xml.txt",     // CoreCLR XUnitWrapperGenerator pattern
-        "testResults.xml.txt",       // CoreCLR variant (exact name)
+        "*.trx",                     // VSTest / dotnet test TRX files (arcade canonical)
+        "testResults.xml",           // XHarness / xUnit XML exact name (arcade canonical)
+        "test-results.xml",          // xUnit/NUnit variant (arcade canonical)
+        "test_results.xml",          // xUnit/NUnit variant (arcade canonical)
+        "junit-results.xml",         // JUnit XML (arcade canonical)
+        "junitresults.xml",          // JUnit XML alternate name (arcade canonical)
+        "*.testResults.xml.txt",     // CoreCLR XUnitWrapperGenerator pattern (helix.mcp empirical; not in arcade canonical)
+        "testResults.xml.txt",       // CoreCLR variant exact name (helix.mcp empirical; not in arcade canonical)
     ];
 
     /// <summary>Check whether a file name matches any known test result pattern.</summary>

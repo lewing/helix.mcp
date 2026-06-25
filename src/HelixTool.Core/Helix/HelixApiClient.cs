@@ -63,10 +63,12 @@ public sealed class HelixApiClient : IHelixApiClient
     {
         public string? Name => details.Name;
         public string? QueueId => details.QueueId;
+        public string? QueueAlias => details.QueueAlias;
         public string? Creator => details.Creator;
         public string? Source => details.Source;
         public string? Created => details.Created;
         public string? Finished => details.Finished;
+        public string? DockerTag => details.DockerTag;
     }
 
     private sealed class WorkItemSummaryAdapter(WorkItemSummary summary) : IWorkItemSummary

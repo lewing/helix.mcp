@@ -49,11 +49,13 @@ public sealed class HelixMcpTools
                     JobId = summary.JobId,
                     Name = summary.Name,
                     QueueId = summary.QueueId,
+                    QueueAlias = summary.QueueAlias,
                     Creator = summary.Creator,
                     Source = summary.Source,
                     Created = summary.Created,
                     Finished = summary.Finished,
-                    HelixUrl = $"https://helix.dot.net/api/jobs/{summary.JobId}/details"
+                    HelixUrl = $"https://helix.dot.net/api/jobs/{summary.JobId}/details",
+                    DockerTag = summary.DockerTag
                 },
                 TotalWorkItems = summary.TotalCount,
                 FailedCount = summary.Failed.Count,

@@ -302,10 +302,12 @@ public class Commands
                     JobId = summary.JobId,
                     Name = summary.Name,
                     QueueId = summary.QueueId,
+                    QueueAlias = summary.QueueAlias,
                     Creator = summary.Creator,
                     Source = summary.Source,
                     Created = summary.Created,
-                    Finished = summary.Finished
+                    Finished = summary.Finished,
+                    DockerTag = summary.DockerTag
                 },
                 TotalWorkItems = summary.TotalCount,
                 FailedCount = summary.Failed.Count,

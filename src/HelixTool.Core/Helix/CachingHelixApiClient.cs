@@ -170,9 +170,9 @@ public sealed class CachingHelixApiClient : IHelixApiClient
 
     // DTOs for JSON serialization of interface types
 
-    private record JobDetailsDto(string? Name, string? QueueId, string? Creator, string? Source, string? Created, string? Finished) : IJobDetails
+    private record JobDetailsDto(string? Name, string? QueueId, string? QueueAlias, string? Creator, string? Source, string? Created, string? Finished, string? DockerTag) : IJobDetails
     {
-        public static JobDetailsDto From(IJobDetails d) => new(d.Name, d.QueueId, d.Creator, d.Source, d.Created, d.Finished);
+        public static JobDetailsDto From(IJobDetails d) => new(d.Name, d.QueueId, d.QueueAlias, d.Creator, d.Source, d.Created, d.Finished, d.DockerTag);
     }
 
     private record WorkItemSummaryDto(string Name, int? ExitCode, string? ConsoleOutputUri) : IWorkItemSummary

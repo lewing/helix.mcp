@@ -23,10 +23,14 @@ public sealed class CliStatusJobJsonResult
     [JsonPropertyName("jobId")] public string JobId { get; init; } = "";
     public string Name { get; init; } = "";
     public string QueueId { get; init; } = "";
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? QueueAlias { get; init; }
     public string Creator { get; init; } = "";
     public string Source { get; init; } = "";
     public string? Created { get; init; }
     public string? Finished { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DockerTag { get; init; }
 }
 
 public sealed class CliStatusWorkItemJsonResult
@@ -73,11 +77,17 @@ public sealed class StatusJobInfo
     [JsonPropertyName("jobId")] public string JobId { get; init; } = "";
     [JsonPropertyName("name")] public string Name { get; init; } = "";
     [JsonPropertyName("queueId")] public string QueueId { get; init; } = "";
+    [JsonPropertyName("queueAlias")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? QueueAlias { get; init; }
     [JsonPropertyName("creator")] public string Creator { get; init; } = "";
     [JsonPropertyName("source")] public string Source { get; init; } = "";
     [JsonPropertyName("created")] public string? Created { get; init; }
     [JsonPropertyName("finished")] public string? Finished { get; init; }
     [JsonPropertyName("helixUrl")] public string HelixUrl { get; init; } = "";
+    [JsonPropertyName("dockerTag")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DockerTag { get; init; }
 }
 
 public sealed class StatusWorkItem

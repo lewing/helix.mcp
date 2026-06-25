@@ -97,6 +97,10 @@ public class XunitXmlParsingTests
     [InlineData("testResults.xml.txt", true)]            // CoreCLR exact name variant
     [InlineData("results.trx", true)]                    // Standard TRX
     [InlineData("helix-linux-03_20250215.trx", true)]    // Machine+timestamp TRX
+    [InlineData("test-results.xml", true)]               // xUnit/NUnit variant (arcade canonical)
+    [InlineData("test_results.xml", true)]               // xUnit/NUnit variant (arcade canonical)
+    [InlineData("junit-results.xml", true)]              // JUnit XML (arcade canonical)
+    [InlineData("junitresults.xml", true)]               // JUnit XML alternate name (arcade canonical)
     [InlineData("random.xml", false)]                    // Generic XML — too generic
     [InlineData("dotnetTestLog.log", false)]              // Log file — not recognized
     [InlineData("AOTBuild.binlog", false)]                // Binary log — not recognized
@@ -117,6 +121,11 @@ public class XunitXmlParsingTests
         Assert.Contains("testResults.xml", HelixService.TestResultFilePatterns);
         Assert.Contains("*.testResults.xml.txt", HelixService.TestResultFilePatterns);
         Assert.Contains("testResults.xml.txt", HelixService.TestResultFilePatterns);
+        // Arcade-canonical patterns added in PR #95
+        Assert.Contains("test-results.xml", HelixService.TestResultFilePatterns);
+        Assert.Contains("test_results.xml", HelixService.TestResultFilePatterns);
+        Assert.Contains("junit-results.xml", HelixService.TestResultFilePatterns);
+        Assert.Contains("junitresults.xml", HelixService.TestResultFilePatterns);
     }
 
     // ========================================================================
