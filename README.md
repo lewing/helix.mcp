@@ -116,7 +116,8 @@ hlx cache clear    # Wipe all cached data
 | `azdo_artifacts` | Build artifacts with pattern filtering (e.g., `*.binlog`). |
 | `azdo_test_attachments` | Test result attachments (screenshots, logs, dumps). |
 
-> **Parameter validation:** MCP tools reject unknown parameter names with a structured error and a "Did you mean?" hint — LLM-hallucinated or mistyped param names get immediate feedback instead of silent drops. Common aliases are resolved automatically before validation: `buildId` / `build_id` / `buildUrl` → `buildIdOrUrl` on AzDO tools that accept a build identifier; `result` → `resultFilter` on `azdo_search_timeline`.
+> **Parameter validation:** MCP tools reject unknown parameter names with a structured error (including a "Did you mean?" hint when the unknown name is close to a known parameter) — LLM-hallucinated or mistyped param names get immediate feedback instead of silent drops.
+> Common aliases are resolved automatically before validation: `buildId` / `build_id` / `buildUrl` → `buildIdOrUrl` on AzDO tools that accept a build identifier; `result` → `resultFilter` on `azdo_search_timeline`.
 
 ## MCP Resources
 
