@@ -9,7 +9,7 @@
     <PackAsTool>true</PackAsTool>
     <PackageType>McpServer</PackageType>
     <ToolCommandName>hlx</ToolCommandName>
-    <Version>0.7.6</Version>
+    <Version>0.8.0</Version>
   </PropertyGroup>
 
   <PropertyGroup Label="Package Metadata">

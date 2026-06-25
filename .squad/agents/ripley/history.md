@@ -230,3 +230,44 @@ These are layer-behavioral changes, not regressions: the URL still carries a val
 **Commits:** on branch `squad/82-centralize-azdo-normalization`  
 **Tests:** 1359 passed, 2 skipped, 0 failed (baseline: 1359 passed)  
 **New files:** `AzdoBuildFilterNormalizer.cs`, `handoff-82.md`, `ripley-issue-82.md`, `centralized-filter-normalization/SKILL.md`
+
+## 2026-06-24: v0.8.0 Release Prep (release/v0.8.0, PR #88)
+
+### What was done
+
+Prepped the v0.8.0 release as a PR per the new "no auto-merge by squad reviewers" rule.
+
+**Version files bumped (3 occurrences, all must match the tag):**
+- `src/HelixTool/HelixTool.csproj` — `<Version>0.7.6</Version>` → `0.8.0`
+- `src/HelixTool/.mcp/server.json` — top-level `"version"` → `"0.8.0"`
+- `src/HelixTool/.mcp/server.json` — `packages[0].version` → `"0.8.0"`
+
+**Release notes:** `.squad/release-notes/v0.8.0.md` created.
+
+**Build/test:** `dotnet build` — 0 warnings. `dotnet test` — 1452 passed, 2 skipped, 0 failed.
+
+**PR:** https://github.com/lewing/helix.mcp/pull/88  
+**Branch:** `release/v0.8.0` off `dcd0ec9` (origin/main tip)
+
+### Version mismatch discoveries
+
+None. All three version sites were consistently at `0.7.6` and bumped cleanly to `0.8.0`.
+
+### Version rationale
+
+**v0.8.0 (minor bump):**
+- Strict param rejection is a new observable behavior that callers must be aware of (previously unknown params were silently dropped; now they are errors).
+- AzDO param plumbing changes the returned data shape and adds new filter surface.
+- Centralized normalization changes `builds:*` cache-key format (one-shot cache invalidation on deploy).
+- SDK bump 1.3→1.4 is a minor version change upstream.
+- All changes are backward-compatible for correct callers; not 1.0.0 material because there is no stable public API contract yet.
+
+### Next steps (Larry)
+
+After CCA reviews and Larry merges PR #88:
+```sh
+git tag v0.8.0 <merge-commit-sha>
+git push origin v0.8.0
+```
+The `publish.yml` workflow triggers automatically and publishes to NuGet.
+
