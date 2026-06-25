@@ -192,11 +192,10 @@ public static class McpServerOptionsExtensions
         var sb = new StringBuilder();
         if (unknowns.Count == 1)
         {
-            sb.Append($"Unknown parameter '{unknowns[0]}' for tool '{toolName}'.");
+            sb.AppendLine($"Unknown parameter '{unknowns[0]}' for tool '{toolName}'.");
             var hint = FindClosestMatch(unknowns[0], paramInfo.CanonicalSet);
             if (hint is not null)
-                sb.Append($"\nDid you mean: {hint}?");
-            sb.AppendLine();
+                sb.AppendLine($"Did you mean: {hint}?");
         }
         else
         {
