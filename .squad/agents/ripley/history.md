@@ -271,3 +271,45 @@ git push origin v0.8.0
 ```
 The `publish.yml` workflow triggers automatically and publishes to NuGet.
 
+
+## 2026-06-25: Issue #91 — Helix.Client SDK Bump + WorkItemSummary fast-path (feat/91-sdk-bump-workitem-summary)
+
+### Context
+
+Issue #91 asked to adopt `ExitCode` and `ConsoleOutputUri` from the updated `WorkItemSummary` type in newer versions of `Microsoft.DotNet.Helix.Client`, eliminating per-item `DetailsAsync` calls for passed work items.
+
+### SDK diff: 26265.121 → 26325.102
+
+- **No breaking changes** in the models we use. Build: 0 errors, 0 warnings, all 1452 tests still pass.
+- The `WorkItemSummary.ExitCode` and `WorkItemSummary.ConsoleOutputUri` properties already existed in the model class in `26265.121` (that's why `WorkItemSummaryAdapter` compiled before the bump). The runtime difference is that the Helix server now actually populates `ExitCode` in the list response, making the existing fast-path in `GetJobStatusAsync` work in production.
+
+### Call-site audit: DetailsAsync usage
+
+| Call site | Fields consumed from details | Can skip? | Decision |
+|---|---|---|---|
+| `GetJobStatusAsync` — `CreatePassedResult` fast-path | none (ExitCode=0 from summary) | ✅ Already skips DetailsAsync | No change needed |
+| `GetJobStatusAsync` — `CreateDetailedResultAsync` | ExitCode, State, MachineName, Started, Finished | ❌ State/MachineName/Duration needed | Keep DetailsAsync |
+| `GetWorkItemDetailAsync` | ExitCode, State, MachineName, Started, Finished + ListFilesAsync | ❌ All fields needed for single-item detail view | Keep DetailsAsync |
+
+No `DetailsAsync` call site was ONLY using ExitCode/ConsoleOutputUri. The existing optimization (ExitCode=0 fast-path in `GetJobStatusAsync`) is the correct and complete refactor.
+
+### IsCompleted semantics: verified unchanged
+
+- `summary.ExitCode == null` → in-progress (no DetailsAsync called for passed items; Waiting items with `null` summary ExitCode still go to `CreateDetailedResultAsync` and get `isCompleted = false`)
+- `summary.ExitCode == 0` → pass, skip DetailsAsync (fast-path)
+- `summary.ExitCode != 0 or null` → call DetailsAsync (need State/MachineName/Duration)
+
+The bucketing rule is fully preserved: `isCompleted = details.ExitCode.HasValue`, `exitCode = details.ExitCode ?? -1`, fail only when `isCompleted && exitCode != 0`.
+
+### Code change
+
+Single file changed: `Directory.Packages.props` — `Microsoft.DotNet.Helix.Client` `11.0.0-beta.26265.121` → `11.0.0-beta.26325.102`. No production C# changes required; the code was already correctly written for this SDK version.
+
+### Tests
+
+No test updates needed. All 1452 tests pass unchanged. `HelixServiceStatusOptimizationTests` already verifies the ExitCode=0 fast-path behavior (mocking `IWorkItemSummary` directly, independent of SDK version).
+
+**Build:** 0 warnings, 0 errors  
+**Tests:** 1452 passed, 2 skipped, 0 failed (baseline: same)  
+**Branch:** `feat/91-sdk-bump-workitem-summary`  
+**PR:** TBD
