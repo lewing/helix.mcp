@@ -295,3 +295,42 @@ Per Ripley's recommendation for this PR: keep all existing tests. The incrementa
 
 `SqliteCacheStoreSecurityTests.GetArtifactAsync_ManipulatedDbRow_ThrowsOrReturnsNull` fails intermittently under parallel xUnit execution due to SQLite connection lifetime. Passes in isolation. Pre-existing issue; not caused by these changes.
 
+
+## 2026-06-24: PR #87 — CCA Follow-Up Cleanup for #83 #84 #85
+
+**Branch:** `squad/cca-cleanup-83-84-85`, commit `820830c`
+**PR:** https://github.com/lewing/helix.mcp/pull/87 — ready-for-review (non-draft)
+**Status:** Open, awaiting CCA second pass + Larry merge
+
+### Context
+
+Copilot Coding Agent reviewed all three PRs (#83, #84, #85) but auto-merge ran before CCA could weigh in. Dallas corrected the workflow (no auto-merge — Larry presses the button after CCA review). This PR is the retroactive cleanup for the five findings. Lambert applied the two real bug fixes (lockout-compliant: different agent from Ripley, the original author).
+
+### Fixes applied
+
+**Real bugs:**
+
+1. **Alias-removal hole** (`McpServerOptionsExtensions.cs:75`, CCA PR #83): `NormalizeArgumentAliases` used `continue` when canonical was already present — alias key was never removed. Callers passing `{ buildIdOrUrl: "42", build_id: "42" }` got strict-mode rejection on `build_id`. Fix: always remove alias key; skip only the canonical-value promotion when canonical already exists. First-value-wins semantics preserved.
+
+2. **Missing newline** (`McpServerOptionsExtensions.cs:199`, CCA PR #84): single-unknown path had no trailing `\n`, producing `Did you mean: X?Allowed parameters: …`. Fix: `sb.AppendLine()` at end of single-unknown block.
+
+**Cleanups:**
+
+3. `maxTime` (valid param) replaced with `maxFinishTime` (genuinely unknown) in `StrictOptions_MultipleUnknownParams` test.
+4. Handoff doc threshold updated from ≤3 to 6 with regression-case note.
+5. `ShareCacheKey2` renamed to `NullAndWhitespaceTrimmedFailedOutcomes_ShareCacheKey`.
+
+### Tests
+
+- +2 new alias-collision regression tests:
+  - `NormalizeArgumentAliases_AliasAndCanonicalBothPresent_RemovesAliasKeepsCanonical`
+  - `NormalizeArgumentAliases_TwoAliasesSameCanonical_BothRemovedFirstValueWins`
+- 2 existing message-format tests updated with `\n`-transition assertions.
+- **Before:** 1450 passed / 2 skipped; **After:** 1452 passed / 2 skipped.
+
+### CCA-follow-up cycle (reusable pattern)
+
+**Cycle:** CCA finds bug → Ripley (author) locked out → Lambert fixes + tests under lockout → Larry reviews CCA second pass → Larry merges.
+
+**Key lesson captured below in decisions inbox.** Short version: when a fix is merged, check that it closes the *entire bug class*, not just the case in the test. The alias-removal hole passed the existing rename-only tests because those tests only had alias-without-canonical; they didn't catch alias-plus-canonical.
+
