@@ -36,7 +36,8 @@ Unknown parameters for tool 'azdo_builds':
 Allowed parameters: org, project, top, branch, prNumber, ...
 ```
 
-**Levenshtein threshold:** ≤ 3. Omits "Did you mean" if no candidate within threshold.
+**Levenshtein threshold:** 6. Omits "Did you mean" if no candidate within threshold.
+(Threshold raised from the original spec's ≤3 to 6 to cover the `minFinishTime`→`minTime` regression case, which has distance 6. Ash validated the choice.)
 
 ---
 

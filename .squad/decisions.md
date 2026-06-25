@@ -58,6 +58,7 @@ so callers know to pair them with the right `queryOrder`.
   queueTimeDescending, outcomes defaults to Failed).
 - Pattern is consistent with existing `filter`/`recordType` validation on
   Timeline and SearchTimeline tools.
+
 # Decision: Issue #81 + #82 Triage — Sequencing and Scoping
 
 **Date:** 2026-06-24  

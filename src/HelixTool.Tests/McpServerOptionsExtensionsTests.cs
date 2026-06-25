@@ -279,7 +279,7 @@ public class McpServerOptionsExtensionsTests
         var handler = CreateStrictFilteredToolHandler("azdo_builds", tools);
         var request = CreateRequest("azdo_builds", Arguments(
             ("minFinishTime", "2024-01-01"),
-            ("maxTime", "2024-12-31")));
+            ("maxFinishTime", "2024-12-31")));
 
         var ex = await Assert.ThrowsAsync<McpException>(async () =>
             await handler(request, CancellationToken.None));
@@ -287,7 +287,7 @@ public class McpServerOptionsExtensionsTests
         Assert.Contains("Parameter binding error", ex.Message);
         var fullMessage = ex.Message + " " + ex.InnerException?.Message;
         Assert.True(
-            fullMessage.Contains("minFinishTime") || fullMessage.Contains("maxTime"),
+            fullMessage.Contains("minFinishTime") || fullMessage.Contains("maxFinishTime"),
             $"Expected at least one unknown key name in error message, got: {fullMessage}");
     }
 
@@ -346,6 +346,49 @@ public class McpServerOptionsExtensionsTests
         await handler(request, CancellationToken.None);
     }
 
+    [Fact]
+    public async Task NormalizeArgumentAliases_AliasAndCanonicalBothPresent_RemovesAliasKeepsCanonical()
+    {
+        // Regression: when both canonical 'buildIdOrUrl' and alias 'build_id' are present,
+        // the alias key must be removed even though the canonical already has a value.
+        // Previously the early-continue skipped alias removal, leaving 'build_id' as an
+        // unknown param for strict-mode checking.
+        var handler = CreateFilteredHandler((request, _) =>
+        {
+            var args = request.Params!.Arguments!;
+            Assert.False(args.ContainsKey("build_id"), "'build_id' alias must be removed even when canonical already present");
+            Assert.True(args.ContainsKey("buildIdOrUrl"), "'buildIdOrUrl' canonical must survive");
+            Assert.Equal("42", args["buildIdOrUrl"].GetString());
+            return ValueTask.FromResult(new CallToolResult());
+        });
+        var request = CreateRequest("azdo_build", Arguments(
+            ("buildIdOrUrl", "42"),
+            ("build_id", "42")));
+
+        await handler(request, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task NormalizeArgumentAliases_TwoAliasesSameCanonical_BothRemovedFirstValueWins()
+    {
+        // Regression: two aliases for the same canonical ('build_id' and 'buildId' both map to
+        // 'buildIdOrUrl'). Both alias keys must be removed; the first alias's value must win.
+        var handler = CreateFilteredHandler((request, _) =>
+        {
+            var args = request.Params!.Arguments!;
+            Assert.False(args.ContainsKey("build_id"), "'build_id' must be removed");
+            Assert.False(args.ContainsKey("buildId"), "'buildId' must be removed");
+            Assert.True(args.ContainsKey("buildIdOrUrl"), "canonical 'buildIdOrUrl' must be present");
+            Assert.Equal("42", args["buildIdOrUrl"].GetString());
+            return ValueTask.FromResult(new CallToolResult());
+        });
+        var request = CreateRequest("azdo_build", Arguments(
+            ("build_id", "42"),
+            ("buildId", "99")));
+
+        await handler(request, CancellationToken.None);
+    }
+
     // ── Stage B: Unknown-param filter with Levenshtein hints (Issue #81) ──────
 
     [Fact]
@@ -391,6 +434,8 @@ public class McpServerOptionsExtensionsTests
         Assert.Contains("minFinishTime", ex.Message);
         Assert.Contains("Did you mean: minTime?", ex.Message);
         Assert.Contains("Allowed parameters:", ex.Message);
+        // Newline must separate the hint from the allowed list so they don't run together.
+        Assert.Contains("Did you mean: minTime?" + System.Environment.NewLine + "Allowed parameters:", ex.Message);
     }
 
     [Fact]
@@ -407,6 +452,8 @@ public class McpServerOptionsExtensionsTests
         Assert.Contains("zzzzzzzzzz", ex.Message);
         Assert.DoesNotContain("Did you mean:", ex.Message);
         Assert.Contains("Allowed parameters:", ex.Message);
+        // Newline must separate the unknown-param sentence from the allowed list even with no hint.
+        Assert.Contains("." + System.Environment.NewLine + "Allowed parameters:", ex.Message);
     }
 
     [Fact]

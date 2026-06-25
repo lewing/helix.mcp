@@ -109,3 +109,5 @@
 
 **Related:** Session log: `.squad/log/2026-06-24-pr78-azdo-param-plumbing-and-followups.md`
 **Follow-up:** Issue #82 (architectural cleanup: centralize AzDO filter normalization)
+
+📌 Team update (2026-06-24): PR #85 + Issue #82 merged — Ripley implemented centralized AzDO filter normalization (4 sub-changes consolidated to 1 PR), Lambert added 91 comprehensive tests (44 normalizer + 42 contract + 5 stability). **USER-VISIBLE CHANGE:** `queryOrder` parameter now sends lowercase values in REST URLs (`finishtimedescending` instead of `finishTimeDescending`). AzDO treats this as case-insensitive, so behavior is identical, but any documentation or downstream assertions on exact query-order casing should be reviewed. — decided by Ripley, tested by Lambert
