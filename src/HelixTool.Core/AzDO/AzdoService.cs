@@ -833,7 +833,6 @@ public class AzdoService
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     // Helix API unreachable or auth failure — fall through to timeline.
-                    _ = ex; // suppress unused-variable warning
                 }
             }
         }
