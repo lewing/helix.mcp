@@ -322,4 +322,54 @@ public class GetHelixJobsOrchestrationTests
         await _azdo.DidNotReceive()
                    .GetTimelineAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
     }
+
+    // ── Note population: non-"all" filter sets Note; "all" leaves it null ────
+    // BuildHelixResultFromJobNames cannot apply per-job filtering on the Helix path
+    // (no per-job status available without expensive extra calls). The Note warns
+    // callers that filtering was skipped and all jobs are returned regardless.
+
+    [Fact]
+    public async Task GetHelixJobsAsync_HelixSuccess_FilterFailed_NotePopulatedAndProjectionCorrect()
+    {
+        var jobGuid = "cccccccc-dddd-eeee-ffff-000000000000";
+        _helix.ListJobNamesByBuildAsync(
+                Arg.Any<string>(), BuildIdStr, Arg.Any<int>(), Arg.Any<CancellationToken>())
+              .Returns(Task.FromResult<IReadOnlyList<string>>([jobGuid]));
+
+        var result = await _svc.GetHelixJobsAsync(BuildIdStr, filter: "failed");
+
+        // Note must be populated when filter != "all".
+        Assert.NotNull(result.Note);
+        Assert.Equal(
+            "filter='failed' is not applied on the Helix-side path; all 1 job(s) for this build are returned. " +
+            "Use helix_status on individual job IDs to determine pass/fail.",
+            result.Note);
+
+        // Helix-side projection: FailedHelixJobs is always 0 (no per-job status calls).
+        Assert.Equal(0, result.FailedHelixJobs);
+
+        // Each job gets Result="unknown" and empty FailedWorkItems (no AzDO task metadata).
+        Assert.Equal("unknown", result.Jobs[0].Result);
+        Assert.Empty(result.Jobs[0].FailedWorkItems);
+        Assert.Empty(result.Jobs[0].ParentJobName);
+
+        // Timeline must NOT have been consulted (Helix returned results).
+        await _azdo.DidNotReceive()
+                   .GetTimelineAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetHelixJobsAsync_HelixSuccess_FilterAll_NoteIsNull()
+    {
+        var jobGuid = "dddddddd-eeee-ffff-0000-111111111111";
+        _helix.ListJobNamesByBuildAsync(
+                Arg.Any<string>(), BuildIdStr, Arg.Any<int>(), Arg.Any<CancellationToken>())
+              .Returns(Task.FromResult<IReadOnlyList<string>>([jobGuid]));
+
+        var result = await _svc.GetHelixJobsAsync(BuildIdStr, filter: "all");
+
+        // filter="all" means no filtering is attempted, so no warning Note is needed.
+        Assert.Null(result.Note);
+        Assert.Equal(0, result.FailedHelixJobs);
+    }
 }
