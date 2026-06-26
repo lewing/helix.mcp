@@ -41,23 +41,7 @@ LABEL org.opencontainers.image.source="https://github.com/lewing/helix.mcp"
 LABEL org.opencontainers.image.description="hlx — CLI and stdio MCP server for investigating .NET CI failures in Helix and Azure DevOps"
 LABEL org.opencontainers.image.licenses="MIT"
 
-# Create a non-root user with a stable UID for predictable bind-mount
-# semantics. useradd -r (system user, no aging) -u 1000 -m (create HOME).
-# UID 1000 is the conventional first non-system user on Linux.
-# docker run --rm -i (stdio MCP via gh-aw) is unaffected — stdin/stdout
-# are file descriptors and do not require host-side UID matching.
-RUN useradd -r -u 1000 -d /home/hlx -m hlx
-
-# Cache lives under the user's home by default
-# (Environment.SpecialFolder.UserProfile → $HOME on Linux per
-# src/HelixTool.Core/Cache/CacheOptions.cs). The -m flag above creates
-# /home/hlx owned by hlx:hlx, so no extra chmod is needed.
-ENV HOME=/home/hlx \
-    DOTNET_NOLOGO=1 \
-    DOTNET_CLI_TELEMETRY_OPTOUT=1
-
-WORKDIR /app
-COPY --from=build /publish .
+COPY --from=build /publish /app
 
 # Expose the binary on PATH as `hlx` (the tool's canonical command name,
 # matching `<ToolCommandName>hlx</ToolCommandName>` in HelixTool.csproj).
@@ -66,7 +50,13 @@ COPY --from=build /publish .
 # in /app/.
 RUN ln -s /app/HelixTool /usr/local/bin/hlx
 
-# Switch to non-root before runtime.
-USER hlx
+# Cache lives under the user's home by default
+# (Environment.SpecialFolder.UserProfile → $HOME on Linux per
+# src/HelixTool.Core/Cache/CacheOptions.cs). Provide a writable home
+# so non-root containers can still open the SQLite cache.
+ENV HOME=/home/hlx \
+    DOTNET_NOLOGO=1 \
+    DOTNET_CLI_TELEMETRY_OPTOUT=1
+RUN mkdir -p /home/hlx && chmod 0777 /home/hlx
 
 ENTRYPOINT ["hlx"]
