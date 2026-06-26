@@ -152,6 +152,13 @@ public sealed class CachingHelixApiClient : IHelixApiClient
         return (await _cache.GetArtifactAsync(cacheKey, ct))!;
     }
 
+    /// <inheritdoc />
+    /// <remarks>Not cached — source-scoped queries span many jobs; the TTL policy is unclear.
+    /// Callers get fresh results on every call.</remarks>
+    public Task<IReadOnlyList<string>> ListJobNamesByBuildAsync(
+        string source, string buildId, int count = 100_000, CancellationToken ct = default)
+        => _inner.ListJobNamesByBuildAsync(source, buildId, count, ct);
+
     private async Task<bool> IsJobCompletedAsync(string jobId, CancellationToken ct)
     {
         var cached = await _cache.IsJobCompletedAsync(jobId, ct);

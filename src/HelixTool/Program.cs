@@ -81,7 +81,11 @@ services.AddSingleton<IAzdoApiClient>(sp =>
         sp.GetRequiredService<ICacheStore>(),
         sp.GetRequiredService<CacheOptions>(),
         sp.GetRequiredService<IAzdoTokenAccessor>()));
-services.AddSingleton<AzdoService>();
+// Inject IHelixApiClient so GetHelixJobsAsync can use the canonical Helix-side Job.ListAsync(source) path (#92)
+services.AddSingleton<AzdoService>(sp =>
+    new AzdoService(
+        sp.GetRequiredService<IAzdoApiClient>(),
+        sp.GetRequiredService<IHelixApiClient>()));
 
 ConsoleApp.ServiceProvider = services.BuildServiceProvider();
 
@@ -915,7 +919,11 @@ Available as `failureCategory` in JSON and MCP output.
                 sp.GetRequiredService<ICacheStore>(),
                 sp.GetRequiredService<CacheOptions>(),
                 sp.GetRequiredService<IAzdoTokenAccessor>()));
-        builder.Services.AddSingleton<AzdoService>();
+        // Inject IHelixApiClient so GetHelixJobsAsync can use the canonical Helix-side Job.ListAsync(source) path (#92)
+        builder.Services.AddSingleton<AzdoService>(sp =>
+            new AzdoService(
+                sp.GetRequiredService<IAzdoApiClient>(),
+                sp.GetRequiredService<IHelixApiClient>()));
 
         builder.Services
             .AddMcpServer(options =>

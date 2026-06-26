@@ -485,4 +485,45 @@ public class CachingHelixApiClientTests
         // Cache is never consulted when disabled
         await _cache.DidNotReceive().GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
+
+    // =========================================================================
+    // ListJobNamesByBuildAsync — no-cache forwarding (PR #96)
+    // CachingHelixApiClient delegates directly to inner without caching.
+    // =========================================================================
+
+    [Fact]
+    public async Task ListJobNamesByBuildAsync_ForwardsToInnerAndReturnsResult()
+    {
+        const string source = "ci/public/dotnet/runtime/refs/heads/main";
+        const string buildId = "12345";
+        IReadOnlyList<string> expected = ["job-guid-1", "job-guid-2"];
+
+        _inner.ListJobNamesByBuildAsync(source, buildId, 100_000, Arg.Any<CancellationToken>())
+              .Returns(Task.FromResult(expected));
+
+        var result = await _sut.ListJobNamesByBuildAsync(source, buildId);
+
+        Assert.Equal(expected, result);
+        await _inner.Received(1)
+                    .ListJobNamesByBuildAsync(source, buildId, 100_000, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ListJobNamesByBuildAsync_NoCache_InnerCalledTwiceOnTwoCalls()
+    {
+        // Verifies the "no cache" decision for this method:
+        // two calls to the wrapper must produce two calls to the inner client, not one.
+        const string source = "ci/public/dotnet/runtime/refs/heads/main";
+        const string buildId = "12345";
+        IReadOnlyList<string> jobs = ["job-guid-1"];
+
+        _inner.ListJobNamesByBuildAsync(source, buildId, Arg.Any<int>(), Arg.Any<CancellationToken>())
+              .Returns(Task.FromResult(jobs));
+
+        await _sut.ListJobNamesByBuildAsync(source, buildId);
+        await _sut.ListJobNamesByBuildAsync(source, buildId);
+
+        await _inner.Received(2)
+                    .ListJobNamesByBuildAsync(source, buildId, Arg.Any<int>(), Arg.Any<CancellationToken>());
+    }
 }

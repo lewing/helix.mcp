@@ -57,6 +57,21 @@ public sealed class HelixApiClient : IHelixApiClient
     public Task<Stream> GetFileAsync(string fileName, string workItemName, string jobId, CancellationToken ct = default)
         => _api.WorkItem.GetFileAsync(fileName, workItemName, jobId, cancellationToken: ct);
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<string>> ListJobNamesByBuildAsync(
+        string source, string buildId, int count = 100_000, CancellationToken ct = default)
+    {
+        // count: 100_000 cap mirrors the arcade HelixService reference implementation.
+        // In practice a single AzDO build submits ~1k–5k Helix jobs; the cap is generous.
+        var jobs = await _api.Job.ListAsync(source: source, count: count, cancellationToken: ct);
+        return jobs
+            .Where(j => j.Properties is Newtonsoft.Json.Linq.JObject props
+                && props.TryGetValue("BuildId", out var id)
+                && id.ToString() == buildId)
+            .Select(j => j.Name)
+            .ToList();
+    }
+
     // Adapters to bridge SDK concrete types to our mockable interfaces
 
     private sealed class JobDetailsAdapter(JobDetails details) : IJobDetails

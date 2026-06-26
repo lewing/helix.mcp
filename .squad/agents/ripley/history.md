@@ -369,3 +369,70 @@ Comment added in `TestResultFilePatterns` `<remarks>` block referencing arcade P
 
 - helix.mcp had `*.testResults.xml.txt` and `testResults.xml.txt` which are NOT in the arcade canonical list. These are real CoreCLR-specific upload patterns. Kept with documentation.
 - `DockerTag` was empty string (not null) when not set in at least some SDK versions; normalized to null in the projection (`string.IsNullOrEmpty(job.DockerTag) ? null : job.DockerTag`).
+## 2026-06-25: Issue #92 — Canonical Helix Job Enumeration (feat/92-helix-job-list-source)
+
+### What was done
+
+Replaced the fragile AzDO timeline task-name scraping path in `GetHelixJobsAsync` with a
+canonical Helix-side `Job.ListAsync(source) + BuildId` filter, mirroring arcade's own Helix
+Job Monitor (`HelixService.GetJobsForBuildAsync` + `HelixJobSource.Compute`).
+
+### Source-prefix formula (arcade canonical, mirrored exactly)
+
+```
+source = "{prefix}/{teamProject}/{repository}/{sourceBranch}"
+prefix = "pr"       if Build.Reason == "PullRequest"   (case-insensitive)
+prefix = "official" if System.TeamProject == "internal" (case-insensitive)
+prefix = "ci"       otherwise
+```
+
+Edge cases from arcade's `HelixJobSource.GetSourcePrefix` docs:
+- Manual builds on public project → `ci/public/…` (NOT official — only teamProject drives "official")
+- Scheduled builds → `ci/…`
+- IndividualCI / BatchedCI → `ci/…`
+- Internal manual/scheduled → `official/internal/…`
+- PR builds → `pr/{project}/…` regardless of teamProject
+
+### Replace vs augment decision
+
+**Chosen: Augment (Helix primary, timeline fallback on 0-result or exception)**
+
+Rationale:
+- 0-result fallback handles in-progress builds (no Helix jobs submitted yet), old jobs
+  that aged out of the Helix query window, and jobs without BuildId property
+- Exception fallback handles transient Helix auth failures
+- Existing unit tests use single-arg constructor `AzdoService(IAzdoApiClient)` — they
+  exercise the timeline path unchanged; no test updates needed
+
+### AzdoBuild model additions
+
+Added `Reason`, `Project` (`AzdoTeamProjectRef`), and `Repository` (`AzdoBuildRepository`)
+fields. `Build.Repository.Name` for GitHub-backed AzDO pipelines is `owner/repo` (e.g.
+`dotnet/runtime`).
+
+### BuildId comparison
+
+`JobSummary.Properties` is a `Newtonsoft.Json.Linq.JObject`. BuildId is a string-valued
+JToken. Comparison uses `id.ToString() == buildId.ToString()` — avoids integer cast issues,
+works correctly since JToken.ToString() on a string token returns the raw string value.
+
+### Behavioral change on Helix-side success
+
+- `HelixJobFromBuild.Result` → "unknown" (AzDO task result not available from Helix)
+- `HelixJobFromBuild.ParentJobName` → "" (AzDO stage name not available from Helix)
+- `HelixJobFromBuild.FailedWorkItems` → [] (requires per-job status calls)
+- `HelixJobsFromBuildResult.FailedHelixJobs` → 0
+- `Note` field set when filter != "all" explaining per-job filtering was skipped
+
+### Handoff to Kane
+
+The `helix_ci_guide` SDK profile has a caveat about emoji task names and Helix detection
+failures. After this PR merges, that caveat is wrong and should be removed (or replaced with
+a brief "now uses Helix-side Job.ListAsync query" note). Filed as follow-up for Kane.
+
+### Build/test
+
+**Build:** 0 warnings, 0 errors  
+**Tests:** 1452 passed, 2 skipped, 0 failed (baseline: same)  
+**Branch:** `feat/92-helix-job-list-source`  
+**Files changed:** 7
