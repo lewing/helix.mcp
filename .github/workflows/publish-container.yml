@@ -45,23 +45,31 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
+          # Two related but distinct concerns:
+          #   nuget_version — no `v` prefix; passed as /p:Version= (NuGet rejects 'v0.8.0').
+          #   tag_version   — v-prefixed; canonical container tag matching git tag convention.
+          # Both tag-push and workflow_dispatch produce the same outputs regardless of whether
+          # the caller supplied a `v` prefix.
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/v}"
+            RAW="${GITHUB_REF#refs/tags/}"
           elif [[ -n "${INPUT_VERSION}" ]]; then
-            VERSION="${INPUT_VERSION}"
+            RAW="${INPUT_VERSION}"
           else
-            VERSION="0.0.0-dispatch-${GITHUB_SHA::7}"
+            RAW="0.0.0-dispatch-${GITHUB_SHA::7}"
           fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Resolved version: ${VERSION}"
+          NUGET_VERSION="${RAW#v}"
+          TAG_VERSION="v${NUGET_VERSION}"
+          echo "nuget_version=${NUGET_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag_version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Resolved: nuget=${NUGET_VERSION} tag=${TAG_VERSION}"
 
       - name: Validate version consistency
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          TAG_VERSION="${{ steps.version.outputs.version }}"
+          NUGET_VERSION="${{ steps.version.outputs.nuget_version }}"
           CSPROJ_VERSION=$(grep -oP '(?<=<Version>)[^<]+' src/HelixTool/HelixTool.csproj)
-          if [ "$CSPROJ_VERSION" != "$TAG_VERSION" ]; then
-            echo "::error::Version mismatch: tag=${TAG_VERSION} csproj=${CSPROJ_VERSION}"
+          if [ "$CSPROJ_VERSION" != "$NUGET_VERSION" ]; then
+            echo "::error::Version mismatch: tag=${NUGET_VERSION} csproj=${CSPROJ_VERSION}"
             exit 1
           fi
 
@@ -84,7 +92,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/helix.mcp
           tags: |
-            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=${{ steps.version.outputs.tag_version }}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
           labels: |
             org.opencontainers.image.title=hlx
@@ -92,7 +100,7 @@ jobs:
             org.opencontainers.image.licenses=MIT
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.version=${{ steps.version.outputs.nuget_version }}
 
       - name: Build and push
         id: build
@@ -105,6 +113,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ steps.version.outputs.version }}
+            VERSION=${{ steps.version.outputs.nuget_version }}
           provenance: true
           sbom: true
