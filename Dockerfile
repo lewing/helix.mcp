@@ -7,10 +7,10 @@
 # ENTRYPOINT can stay bare. An MCP gateway connecting over stdio gets
 # the stdio MCP server transparently.
 
-ARG DOTNET_VERSION=10.0
-
 # ---------- Stage 1: publish the framework-dependent binaries ----------
-FROM mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION} AS build
+# Tag kept for human debuggability; the digest is what actually gets pulled.
+# Future bumps via Dependabot will update both tag and digest together.
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:ea8bde36c11b6e7eec2656d0e59101d4462f6bd630730f2c8201ed0572b295d5 AS build
 WORKDIR /src
 
 # Copy manifests first so layer caching survives source-only changes.
@@ -33,13 +33,31 @@ RUN dotnet publish src/HelixTool \
       /p:ContinuousIntegrationBuild=true
 
 # ---------- Stage 2: minimal runtime image ----------
-FROM mcr.microsoft.com/dotnet/runtime:${DOTNET_VERSION}
+# Tag kept for human debuggability; the digest is what actually gets pulled.
+# Future bumps via Dependabot will update both tag and digest together.
+FROM mcr.microsoft.com/dotnet/runtime:10.0@sha256:6a40d375e9c8432fcf4adebae05d7e0a276e9a90dd01174df6709a090771bebc
 
 LABEL org.opencontainers.image.source="https://github.com/lewing/helix.mcp"
 LABEL org.opencontainers.image.description="hlx — CLI and stdio MCP server for investigating .NET CI failures in Helix and Azure DevOps"
 LABEL org.opencontainers.image.licenses="MIT"
 
-COPY --from=build /publish /app
+# Create a non-root user with a stable UID for predictable bind-mount
+# semantics. useradd -r (system user, no aging) -u 1000 -m (create HOME).
+# UID 1000 is the conventional first non-system user on Linux.
+# docker run --rm -i (stdio MCP via gh-aw) is unaffected — stdin/stdout
+# are file descriptors and do not require host-side UID matching.
+RUN useradd -r -u 1000 -d /home/hlx -m hlx
+
+# Cache lives under the user's home by default
+# (Environment.SpecialFolder.UserProfile → $HOME on Linux per
+# src/HelixTool.Core/Cache/CacheOptions.cs). The -m flag above creates
+# /home/hlx owned by hlx:hlx, so no extra chmod is needed.
+ENV HOME=/home/hlx \
+    DOTNET_NOLOGO=1 \
+    DOTNET_CLI_TELEMETRY_OPTOUT=1
+
+WORKDIR /app
+COPY --from=build /publish .
 
 # Expose the binary on PATH as `hlx` (the tool's canonical command name,
 # matching `<ToolCommandName>hlx</ToolCommandName>` in HelixTool.csproj).
@@ -48,13 +66,7 @@ COPY --from=build /publish /app
 # in /app/.
 RUN ln -s /app/HelixTool /usr/local/bin/hlx
 
-# Cache lives under the user's home by default
-# (Environment.SpecialFolder.UserProfile → $HOME on Linux per
-# src/HelixTool.Core/Cache/CacheOptions.cs). Provide a writable home
-# so non-root containers can still open the SQLite cache.
-ENV HOME=/home/hlx \
-    DOTNET_NOLOGO=1 \
-    DOTNET_CLI_TELEMETRY_OPTOUT=1
-RUN mkdir -p /home/hlx && chmod 0777 /home/hlx
+# Switch to non-root before runtime.
+USER hlx
 
 ENTRYPOINT ["hlx"]
