@@ -436,3 +436,103 @@ a brief "now uses Helix-side Job.ListAsync query" note). Filed as follow-up for 
 **Tests:** 1452 passed, 2 skipped, 0 failed (baseline: same)  
 **Branch:** `feat/92-helix-job-list-source`  
 **Files changed:** 7
+
+## 2026-06-25: PR #77 Container Image Hardening (feat/publish-container-image → PureWeen fork)
+
+### Context
+
+PR #77 (PureWeen's container publish) was approved and waiting to merge. Larry asked us to apply three pre-merge hardening changes directly to PureWeen's branch ("Allow edits from maintainers" enabled).
+
+### Cross-fork push workflow
+
+```bash
+# Add fork as named remote (idempotent)
+git remote add pureween https://github.com/PureWeen/helix.mcp.git 2>/dev/null || true
+
+# Fetch the PR branch
+git fetch pureween feat/publish-container-image
+
+# Check out tracking the fork (not origin)
+git checkout -B feat/publish-container-image pureween/feat/publish-container-image
+
+# Verify push access (must succeed before editing anything)
+git push --dry-run pureween feat/publish-container-image 2>&1 | head -10
+# "Everything up-to-date" or "To https://..." = access OK
+# "Permission denied" or "403" = stop, report to Larry, fall back to follow-up PR
+
+# After edits + commit:
+git push pureween feat/publish-container-image
+```
+
+**If the dry-run fails:** Stop immediately. Larry must merge PR as-is and open a follow-up.
+
+### Container image hardening: three changes
+
+#### Change 1 — Non-root user
+
+Replace `chmod 0777 /home/hlx` (world-writable HOME, runs as root) with:
+```dockerfile
+RUN useradd -r -u 1000 -d /home/hlx -m hlx
+ENV HOME=/home/hlx ...
+WORKDIR /app
+COPY --from=build /publish .
+RUN ln -s /app/HelixTool /usr/local/bin/hlx
+USER hlx
+ENTRYPOINT ["hlx"]
+```
+
+- `-r` = system user (no password aging)
+- `-u 1000` = stable UID (conventional first non-system user on Linux, predictable bind-mount semantics)
+- `-m` = create home dir owned by hlx:hlx — no extra `chown` or `chmod` needed
+- `USER hlx` must come AFTER the symlink RUN (symlink to /usr/local/bin/ requires root)
+- `docker run --rm -i` (stdio MCP via gh-aw) is unaffected — stdin/stdout are FDs, not UID-gated
+
+#### Change 2 — Digest-pin base images
+
+```bash
+# Get digest via registry HTTP API (works without docker daemon)
+curl -s -I -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
+  "https://mcr.microsoft.com/v2/dotnet/sdk/manifests/10.0" | grep -i "docker-content-digest"
+curl -s -I -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
+  "https://mcr.microsoft.com/v2/dotnet/runtime/manifests/10.0" | grep -i "docker-content-digest"
+```
+
+Then: `FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:<digest>`  
+Keep the human-readable tag for debuggability; digest is what actually gets pulled. Dependabot will bump both.
+
+**Note:** When using `ARG DOTNET_VERSION` with digest-pinned FROM lines, the ARG can no longer be used for the FROM line (digest is tag-specific). Drop the ARG and hard-code both FROM lines.
+
+#### Change 3 — Workflow SHA pin comment verification
+
+```bash
+# For annotated tags, the refs/tags endpoint returns the tag *object* SHA,
+# not the commit SHA. Use git/tags/<tag-object-sha> to resolve to commit SHA.
+gh api repos/<owner>/<repo>/git/refs/tags/v6.0.3 | jq -r '.object.sha'
+# If that's a tag object SHA:
+gh api repos/<owner>/<repo>/git/tags/<tag-object-sha> | jq -r '.object.sha'
+# The final commit SHA should match what's in the workflow YAML.
+```
+
+Verified for PR #77: all six action SHA pins (`actions/checkout`, `docker/setup-qemu-action`, `docker/setup-buildx-action`, `docker/login-action`, `docker/metadata-action`, `docker/build-push-action`) had correct trailing comments. No edits needed.
+
+### Smoke-test sequence (when Docker is available)
+
+```bash
+# Build the image locally
+docker buildx build --load -t hlx-prerelease-test .
+
+# 1. Help path (interactive — exits immediately)
+docker run --rm hlx-prerelease-test --help | head -5
+
+# 2. Stdio MCP path (JSON-RPC initialize round-trip)
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}' \
+  | docker run --rm -i hlx-prerelease-test | head -5
+
+# 3. Confirm non-root
+docker run --rm hlx-prerelease-test id
+# Expected: uid=1000(hlx) gid=65534(nogroup) groups=65534(nogroup)
+```
+
+### Commit pattern
+
+Single commit for all pre-merge hardening changes; include clear pre-merge attribution in commit message. Follow with a PR comment crediting the original author and explaining what landed + what's filed as backlog.

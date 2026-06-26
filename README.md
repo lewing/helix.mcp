@@ -267,6 +267,27 @@ For HTTP (remote/shared servers):
 }
 ```
 
+For MCP gateways that spawn stdio MCP servers as Docker subprocesses
+(e.g. [GitHub Agentic Workflows][gh-aw]'s MCP Gateway), use the
+published container image:
+
+```yaml
+# Recommended (pinned release):
+mcp-servers:
+  hlx:
+    container: ghcr.io/lewing/helix.mcp:v0.8.0
+    env:
+      AZURE_DEVOPS_EXT_PAT: ""
+      HELIX_ACCESS_TOKEN: ""
+
+# Or, for following the latest release:
+#   container: ghcr.io/lewing/helix.mcp:latest
+```
+
+Images are published on tagged releases (`v*`); the publish workflow also supports `workflow_dispatch` for backfilling images for an existing tag or publishing ad-hoc validation tags. Multi-arch: `linux/amd64`, `linux/arm64`.
+
+[gh-aw]: https://github.com/github/gh-aw
+
 ## Security
 
 - **Safe XML parsing** — DTD processing prohibited, XmlResolver disabled, 50 MB character limit (XXE/billion-laughs protection)
