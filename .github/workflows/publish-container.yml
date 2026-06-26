@@ -69,7 +69,7 @@ jobs:
           NUGET_VERSION="${{ steps.version.outputs.nuget_version }}"
           CSPROJ_VERSION=$(grep -oP '(?<=<Version>)[^<]+' src/HelixTool/HelixTool.csproj)
           if [ "$CSPROJ_VERSION" != "$NUGET_VERSION" ]; then
-            echo "::error::Version mismatch: tag=${NUGET_VERSION} csproj=${CSPROJ_VERSION}"
+            echo "::error::Version mismatch: nuget=${NUGET_VERSION} csproj=${CSPROJ_VERSION}"
             exit 1
           fi
 
