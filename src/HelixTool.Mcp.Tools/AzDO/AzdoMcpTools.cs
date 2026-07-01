@@ -94,7 +94,10 @@ public sealed class AzdoMcpTools
             ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
 
         if (timeline is null)
-            return null;
+            return new TimelineResponse
+            {
+                Note = $"No timeline available for build {buildIdOrUrl}. The build may still be initializing, was canceled before any leg reported, or has no timeline data."
+            };
 
         List<AzdoTimelineRecord> records;
 

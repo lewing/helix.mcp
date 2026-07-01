@@ -193,11 +193,25 @@ public sealed class AzdoApiClient : IAzdoApiClient
 
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
 
-        if (response.StatusCode == HttpStatusCode.NotFound)
+        if (response.StatusCode == HttpStatusCode.NotFound ||
+            response.StatusCode == HttpStatusCode.NoContent)
             return null;
 
         ThrowOnAuthFailure(response, org, project, credential);
         await ThrowOnUnexpectedError(response, ct).ConfigureAwait(false);
+
+        // Guard against empty-body 2xx (e.g. server returns 200 with Content-Length: 0).
+        // Check the header first; if absent, buffer the body to detect an empty response.
+        var contentLength = response.Content.Headers.ContentLength;
+        if (contentLength == 0)
+            return null;
+
+        if (contentLength is null)
+        {
+            // No Content-Length header — buffer to detect an empty body before deserializing.
+            var bytes = await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+            return bytes.Length == 0 ? null : JsonSerializer.Deserialize<T>(bytes, s_jsonOptions);
+        }
 
         await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
         return await JsonSerializer.DeserializeAsync<T>(stream, s_jsonOptions, ct).ConfigureAwait(false);
@@ -210,15 +224,29 @@ public sealed class AzdoApiClient : IAzdoApiClient
 
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
 
-        if (response.StatusCode == HttpStatusCode.NotFound)
+        if (response.StatusCode == HttpStatusCode.NotFound ||
+            response.StatusCode == HttpStatusCode.NoContent)
             return [];
 
         ThrowOnAuthFailure(response, org, project, credential);
         await ThrowOnUnexpectedError(response, ct).ConfigureAwait(false);
 
+        var contentLength = response.Content.Headers.ContentLength;
+        if (contentLength == 0)
+            return [];
+
+        if (contentLength is null)
+        {
+            var bytes = await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+            if (bytes.Length == 0)
+                return [];
+            var wrapper = JsonSerializer.Deserialize<AzdoListResponse<T>>(bytes, s_jsonOptions);
+            return wrapper?.Value ?? [];
+        }
+
         await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-        var wrapper = await JsonSerializer.DeserializeAsync<AzdoListResponse<T>>(stream, s_jsonOptions, ct).ConfigureAwait(false);
-        return wrapper?.Value ?? [];
+        var wrapperDirect = await JsonSerializer.DeserializeAsync<AzdoListResponse<T>>(stream, s_jsonOptions, ct).ConfigureAwait(false);
+        return wrapperDirect?.Value ?? [];
     }
 
     private void ThrowOnAuthFailure(HttpResponseMessage response, string org, string project, AzdoCredential? credential)

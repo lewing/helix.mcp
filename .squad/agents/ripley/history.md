@@ -536,3 +536,72 @@ docker run --rm hlx-prerelease-test id
 ### Commit pattern
 
 Single commit for all pre-merge hardening changes; include clear pre-merge attribution in commit message. Follow with a PR comment crediting the original author and explaining what landed + what's filed as backlog.
+
+## 2026-06-30: Issue #105 — HTTP 204 No Content in AzDO GET helpers (fix/105-azdo-204-handling)
+
+### Context
+
+Larry hit a live crash while investigating canceled runtime PR build 1488806:
+```
+hlx-azdo_timeline buildIdOrUrl=1488806
+→ Unexpected error during get build timeline:
+  The input does not contain any JSON tokens. Expected the input to
+  start with a valid JSON token, when isFinalBlock is true.
+```
+The AzDO Timeline API returns `HTTP 204 No Content` (with `Content-Length: 0`) for
+builds that were canceled before any stage reported. `GetAsync<T>` only handled 404 →
+null; 204 fell through to `JsonSerializer.DeserializeAsync` on an empty stream, which
+throws. Same root cause in `GetListAsync<T>`.
+
+### Changes
+
+**`AzdoApiClient.GetAsync<T>` and `GetListAsync<T>`** — two new guards added:
+1. `204 No Content` → return null / `[]`, same as 404.
+2. `Content-Length == 0` → return null / `[]` (handles 200 with empty body).
+3. If `Content-Length` header is absent → `ReadAsByteArrayAsync`, check `Length == 0`
+   → return null / `[]`. Otherwise deserialize from the byte array (avoids stream
+   re-read after the empty-check).
+
+**`AzdoService.SearchTimelineAsync`** — replaced `throw InvalidOperationException` on
+null timeline with a `TimelineSearchResult { Note = "No timeline available..." }`.
+
+**`AzdoService.GetHelixJobsViaTimelineAsync`** — replaced `throw` with
+`HelixJobsFromBuildResult(buildIdOrUrl, 0, 0, []) { Note = "No timeline available..." }`.
+
+**`AzdoMcpTools.Timeline` (`azdo_timeline`)** — replaced `return null` with
+`TimelineResponse { Note = "No timeline available..." }`.
+
+### Ripple check
+
+All `GetTimelineAsync` call sites audited:
+- `SearchTimelineAsync` (line 296) — fixed (friendly result, not throw)
+- `GetHelixJobsViaTimelineAsync` (line 890) — fixed (friendly result, not throw)
+- `GetBuildAnalysisAsync` (line 642) — already null-safe (`timeline?.Records is { Count: > 0 }`)
+- `SearchBuildLogsAsync` (line ~396) — already null-safe (`timeline?.Records ?? []`)
+- CLI `Program.cs` (line 1392) — already null-safe (`if (timeline is null) Console.Error.WriteLine...`)
+- `AzdoMcpTools.Timeline` (line 96) — fixed (friendly `TimelineResponse`)
+- `AzdoMcpTools.SearchTimeline` (line 281) — handled via `SearchTimelineAsync` fix above
+
+### Reusable convention: HTTP-helper null-body defense
+
+> **When an AzDO GET helper receives 204, or a 2xx with empty body, treat it as
+> "resource absent" (null / empty-list) — the same as 404.**
+>
+> Check order:
+> 1. `404 Not Found` or `204 No Content` → return null / `[]`
+> 2. `Content-Length == 0` → return null / `[]`
+> 3. `Content-Length` absent → `ReadAsByteArrayAsync`, check `Length == 0` → null/`[]`
+> 4. Else → stream deserialize
+
+This is now the permanent pattern for all `GetAsync<T>` / `GetListAsync<T>` overloads.
+If new callers of these helpers are added, the 204/empty-body defense is inherited
+automatically (it's in the private helpers, not the call sites).
+
+### Handoff
+
+Test scenarios documented in `.squad/agents/ripley/handoff-105.md`.
+Other unhandled status codes (304, 429, 503) noted in `.squad/decisions/inbox/ripley-issue-105.md`.
+
+**Tests:** Build clean. Tests not run (Lambert owns testing for this PR).
+**Branch:** `fix/105-azdo-204-handling`
+**PR:** (opened after this entry — see PR body)
