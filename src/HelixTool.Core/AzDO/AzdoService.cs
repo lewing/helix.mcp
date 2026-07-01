@@ -891,7 +891,7 @@ public class AzdoService
         if (timeline is null)
             return new HelixJobsFromBuildResult(buildIdOrUrl, 0, 0, [])
             {
-                Note = $"No timeline available for build {buildIdOrUrl}. The build may still be initializing, was canceled before any leg reported, or has no timeline data. No Helix jobs found."
+                Note = $"No timeline available for build {buildIdOrUrl} — Helix jobs cannot be discovered via the timeline. The build may still be initializing, was canceled before any leg reported, or has no timeline data."
             };
 
         var recordById = timeline.Records
