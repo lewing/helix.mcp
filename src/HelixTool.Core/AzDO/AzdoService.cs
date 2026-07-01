@@ -295,7 +295,12 @@ public class AzdoService
 
         var timeline = await GetTimelineAsync(buildIdOrUrl, ct);
         if (timeline is null)
-            throw new InvalidOperationException($"No timeline available for build '{buildIdOrUrl}'.");
+            return new TimelineSearchResult
+            {
+                Build = buildIdOrUrl,
+                Pattern = pattern,
+                Note = $"No timeline available for build {buildIdOrUrl}. The build may still be initializing, was canceled before any leg reported, or has no timeline data."
+            };
 
         var records = timeline.Records;
         var recordById = records
@@ -884,7 +889,10 @@ public class AzdoService
     {
         var timeline = await GetTimelineAsync(buildIdOrUrl, ct);
         if (timeline is null)
-            throw new InvalidOperationException($"No timeline available for build '{buildIdOrUrl}'.");
+            return new HelixJobsFromBuildResult(buildIdOrUrl, 0, 0, [])
+            {
+                Note = $"No timeline available for build {buildIdOrUrl} — Helix jobs cannot be discovered via the timeline. The build may still be initializing, was canceled before any leg reported, or has no timeline data."
+            };
 
         var recordById = timeline.Records
             .Where(r => r.Id is not null)

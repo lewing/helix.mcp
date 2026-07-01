@@ -216,12 +216,15 @@ public class AzdoSearchTimelineTests
     }
 
     [Fact]
-    public async Task SearchTimelineAsync_NullTimeline_ThrowsInvalidOperation()
+    public async Task SearchTimelineAsync_NullTimeline_ReturnsFriendlyNote()
     {
         SetupTimeline(null);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => _svc.SearchTimelineAsync("42", "error"));
+        var result = await _svc.SearchTimelineAsync("42", "error");
+
+        Assert.NotNull(result);
+        Assert.Contains("No timeline available", result.Note, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(result.Matches);
     }
 
     // ── Parent context ──────────────────────────────────────────────
