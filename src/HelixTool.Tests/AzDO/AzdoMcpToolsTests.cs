@@ -149,14 +149,29 @@ public class AzdoMcpToolsTests
     }
 
     [Fact]
-    public async Task Timeline_NullResult_ReturnsNull()
+    public async Task Timeline_NullResult_ReturnsFriendlyNote()
     {
         _mockApi.GetTimelineAsync("dnceng-public", "public", 10, Arg.Any<CancellationToken>())
             .Returns((AzdoTimeline?)null);
 
         var result = await _tools.Timeline("10");
 
-        Assert.Null(result);
+        Assert.NotNull(result);
+        Assert.Contains("No timeline available", result!.Note, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(result.Records);
+    }
+
+    [Fact]
+    public async Task SearchTimeline_NullTimeline_ReturnsFriendlyResult()
+    {
+        _mockApi.GetTimelineAsync("dnceng-public", "public", 42, Arg.Any<CancellationToken>())
+            .Returns((AzdoTimeline?)null);
+
+        var result = await _tools.SearchTimeline("42", "error");
+
+        Assert.NotNull(result);
+        Assert.Contains("No timeline available", result.Note, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(result.Matches);
     }
 
     [Fact]

@@ -116,15 +116,19 @@ public class AzdoHelixJobsTests
         Assert.Equal(0, result.TotalHelixJobs);
     }
 
-    // ── Null timeline throws ────────────────────────────────────────
+    // ── Null timeline returns friendly note ─────────────────────────
 
     [Fact]
-    public async Task GetHelixJobsAsync_NullTimeline_ThrowsInvalidOperation()
+    public async Task GetHelixJobsAsync_NullTimeline_ReturnsFriendlyNote()
     {
         SetupTimeline(null);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => _svc.GetHelixJobsAsync("42"));
+        var result = await _svc.GetHelixJobsAsync("42");
+
+        Assert.NotNull(result);
+        Assert.Contains("No timeline available", result.Note, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, result.TotalHelixJobs);
+        Assert.Empty(result.Jobs);
     }
 
     // ── Invalid filter throws ───────────────────────────────────────

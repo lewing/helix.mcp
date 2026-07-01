@@ -464,6 +464,111 @@ public class AzdoApiClientTests
         Assert.Empty(result);
     }
 
+    // ── HTTP 204 and empty-body handling ────────────────────────────
+
+    [Fact]
+    public async Task GetAsync_204_ReturnsNull()
+    {
+        _handler.StatusCode = HttpStatusCode.NoContent;
+
+        var result = await _client.GetTimelineAsync("dnceng", "internal", 999);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task GetListAsync_204_ReturnsEmpty()
+    {
+        _handler.StatusCode = HttpStatusCode.NoContent;
+
+        var result = await _client.ListBuildsAsync("dnceng", "internal", new AzdoBuildFilter());
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task GetAsync_200_EmptyBodyWithContentLength_ReturnsNull()
+    {
+        _handler.ResponseHttpContent = new ByteArrayContent([]);
+
+        var result = await _client.GetTimelineAsync("dnceng", "internal", 999);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task GetListAsync_200_EmptyBodyWithContentLength_ReturnsEmpty()
+    {
+        _handler.ResponseHttpContent = new ByteArrayContent([]);
+
+        var result = await _client.ListBuildsAsync("dnceng", "internal", new AzdoBuildFilter());
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task GetAsync_200_EmptyBodyNoContentLength_ReturnsNull()
+    {
+        _handler.ResponseHttpContent = new EmptyNoLengthContent();
+
+        var result = await _client.GetTimelineAsync("dnceng", "internal", 999);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task GetListAsync_200_EmptyBodyNoContentLength_ReturnsEmpty()
+    {
+        _handler.ResponseHttpContent = new EmptyNoLengthContent();
+
+        var result = await _client.ListBuildsAsync("dnceng", "internal", new AzdoBuildFilter());
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task GetAsync_200_ValidJson_ReturnsDeserialized()
+    {
+        _handler.ResponseContent = """{"id":"tl-happy","records":[{"id":"r1","name":"Build"}]}""";
+
+        var result = await _client.GetTimelineAsync("dnceng", "internal", 42);
+
+        Assert.NotNull(result);
+        Assert.Equal("tl-happy", result!.Id);
+        Assert.Single(result.Records);
+        Assert.Equal("Build", result.Records[0].Name);
+    }
+
+    [Fact]
+    public async Task GetListAsync_200_ValidJson_ReturnsDeserialized()
+    {
+        _handler.ResponseContent = """{"value":[{"id":1},{"id":2}],"count":2}""";
+
+        var result = await _client.ListBuildsAsync("dnceng", "internal", new AzdoBuildFilter());
+
+        Assert.Equal(2, result.Count);
+    }
+
+    [Fact]
+    public async Task GetAsync_404_ReturnsNull_RegressionGuard()
+    {
+        _handler.StatusCode = HttpStatusCode.NotFound;
+
+        var result = await _client.GetTimelineAsync("dnceng", "internal", 999);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task GetListAsync_404_ReturnsEmpty_RegressionGuard()
+    {
+        _handler.StatusCode = HttpStatusCode.NotFound;
+
+        var result = await _client.ListBuildsAsync("dnceng", "internal", new AzdoBuildFilter());
+
+        Assert.Empty(result);
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.Unauthorized)]
     [InlineData(HttpStatusCode.Forbidden)]
@@ -936,6 +1041,8 @@ public class AzdoApiClientTests
     {
         public HttpStatusCode StatusCode { get; set; } = HttpStatusCode.OK;
         public string ResponseContent { get; set; } = "{}";
+        /// <summary>When set, used as the response content instead of building from <see cref="ResponseContent"/>.</summary>
+        public HttpContent? ResponseHttpContent { get; set; }
         public HttpRequestMessage? LastRequest { get; private set; }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
@@ -943,8 +1050,16 @@ public class AzdoApiClientTests
             LastRequest = request;
             return Task.FromResult(new HttpResponseMessage(StatusCode)
             {
-                Content = new StringContent(ResponseContent, Encoding.UTF8, "application/json")
+                Content = ResponseHttpContent ?? new StringContent(ResponseContent, Encoding.UTF8, "application/json")
             });
         }
+    }
+
+    /// <summary>HttpContent that reports no Content-Length and streams an empty body.</summary>
+    private sealed class EmptyNoLengthContent : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+            => Task.CompletedTask;
+        protected override bool TryComputeLength(out long length) { length = 0; return false; }
     }
 }
