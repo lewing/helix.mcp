@@ -85,3 +85,48 @@ See `.squad/agents/dallas/history-archive-2026-06-01.md` for:
 - **Issue #81/#82:** Stage A (strict unknown-param) correct; Stage A/B can coexist; centralize normalization (cleanup after correctness).
 - **PR #78:** Param plumbing shipped; auth + cache remain; 14 new tests added.
 - **Lever 1 (Tiered outputSchema):** Ready for go/no-go; ~5,450 bytes savings with extraction guidance preserved.
+
+---
+
+## 2026-07-20: Progressive Disclosure Analysis
+
+### Finding: SDK supports dynamic ToolCollection (v1.4.0)
+- `ToolCollection` property on server supports Add/Remove at runtime
+- SDK auto-sends `notifications/tools/list_changed` to clients
+- Mechanism exists in protocol and SDK — feasible technically
+
+### Finding: No natural trigger in MCP protocol
+- No client gesture / context hint flows server-side mid-session
+- Server has no visibility into what the model is doing
+- Only triggers available: (a) tool A was called → reveal tool B, (b) timer/config
+
+### Tool Bucketing (25 tools, ~29 KB total)
+**CORE (always needed, 8 tools, ~12.8 KB):**
+azdo_build (1531), azdo_builds (2103), azdo_timeline (2099), azdo_helix_jobs (1425), azdo_search_log (2027), helix_status (1771), azdo_build_analysis (est ~1200), helix_ci_guide (479)
+
+**WORKFLOW-GATED (need build/job in hand, 11 tools, ~12.5 KB):**
+azdo_log, azdo_changes, azdo_test_runs, azdo_test_results, azdo_search_timeline, azdo_artifacts, helix_logs, helix_files, helix_work_item, helix_search, helix_find_files
+
+**NICHE (narrow scenarios, 6 tools, ~4.6 KB):**
+helix_parse_uploaded_trx (1703, self-identifies "Niche"), helix_batch_status, helix_download, azdo_test_attachments, helix_auth_status (330), azdo_auth_status (330)
+
+### Mechanism Feasibility
+1. **Dynamic list + list_changed:** FEASIBLE in SDK 1.4.0. But trigger problem is real — after azdo_builds/helix_status called, reveal drill-down tools. Complexity: moderate (state machine per session).
+2. **Meta/gateway tool:** FEASIBLE but anti-pattern for models. Worse tool-use accuracy. Not recommended.
+3. **Resources vs Tools:** CiKnowledgeResource ALREADY exists alongside helix_ci_guide tool. Resources are NOT in tools/list — they're in resources/list. Moving guide to resource-only saves 479 bytes but loses tool-call discoverability. Marginal.
+4. **Config-based profiles:** FEASIBLE, simplest. Operator picks "minimal" (8 core) or "full" (25). Static at startup. No runtime complexity.
+
+### Verdict
+Progressive disclosure is NOT worth pursuing as a primary lever here.
+- Maximum reclaim from hiding NICHE bucket: ~4.6 KB (16% of total)
+- Maximum reclaim from hiding WORKFLOW-GATED: ~12.5 KB (43%)
+- But WORKFLOW-GATED tools are what models need to SEE to plan multi-step investigations — hiding them degrades planning quality
+- The trigger problem means you'd reveal tools AFTER the model already decided it needed them (chicken-and-egg)
+- flatten-10/keep-3 outputSchema lever saves ~5.5 KB with ZERO ergonomic cost and no runtime complexity
+- Combined: flatten + description trim could reach ~8-9 KB savings without progressive disclosure
+
+### Recommendation
+1. Ship flatten-10/keep-3 (outputSchema tiering) — already designed, zero-risk
+2. If further cuts needed: config-based "minimal" profile (option 4) for operators who only need AzDO OR only Helix
+3. Do NOT pursue runtime dynamic disclosure — complexity/trigger problem outweighs marginal byte gain
+4. Progressive disclosure and outputSchema flatten compose (orthogonal) but overlap in motivation — flatten is strictly better ROI

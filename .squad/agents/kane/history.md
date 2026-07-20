@@ -68,6 +68,25 @@
 
 ---
 
+## Learnings
+
+### 2026-07-20: hlx CLI Skill Discoverability Assessment
+**Question:** Do we have something like maestro's `helix-cli` SKILL.md? Is it good? How do people find it when MCP isn't running?
+
+**Answer:** We already have `.github/skills/helix-cli/SKILL.md`. It's richer than maestro's in progressive discovery (4-level ladder), jq examples (real field paths), and workflow patterns (7 numbered). Three gaps in the skill doc: no `dnx` install path, stub Cache section (doesn't say "CLI warms cache for MCP"), and frontmatter doesn't trigger on "MCP fails to start."
+
+**Bigger finding:** The skill is good once found, but **discoverability when MCP is absent** has four weak points:
+1. README headline is self-deprecating about the CLI, no "works standalone" callout near the top.
+2. MCP Configuration section doesn't mention CLI fallback.
+3. SKILL.md frontmatter says "not loaded" not "not configured / fails to start."
+4. docs/cli-reference.md doesn't open with "works without MCP."
+
+**Top edits ranked:** (1) README top — add "No MCP? `hlx` works standalone" callout. (2) SKILL.md — add `dnx` install + expand Cache section. (3) README MCP config section — add CLI fallback note. (4) cli-reference.md first line. (5) SKILL.md frontmatter USE FOR phrase.
+
+**Decision filed:** `.squad/decisions/inbox/kane-hlx-cli-skill-discoverability.md`
+
+---
+
 ## Prior Work Archive
 
 See `.squad/agents/kane/history-archive.md` for detailed work on:
