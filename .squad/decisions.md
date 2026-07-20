@@ -280,3 +280,127 @@ If a future tool gains a DI-injected parameter (`HasCustomParameterBinding = tru
 > When Stage B lands, should `UnmappedMemberHandling = Disallow` from Stage A be removed or kept as defense-in-depth?
 
 **Recommendation:** Keep both. Stage B fires first in the filter pipeline and provides better UX (did-you-mean hints, full allowed-param list). Stage A's `Disallow` setting catches the `HasCustomParameterBinding == true` blind spot. Defense-in-depth at the serializer level costs nothing — it's a one-line option flag, not duplicated algorithm code.
+
+# Decision: MCP Schema Token Cost Measurement (Issue #74)
+
+**Date:** 2026-07-20T14:10:14-05:00  
+**Author:** Ripley  
+**Status:** Measurement complete — decision deferred to Dallas
+
+## Measurement Details
+
+Empirical ground truth from live MCP server:
+- **25 tools**, **32,703 bytes**, **~8,175 tokens** for `tools/list` payload
+- **outputSchema breakdown:** 10,862 bytes (~2,715 tokens) — 33.2% of total
+- **inputSchema structure:** 12,370 bytes (~3,092 tokens) — 37.8% of total
+- **Parameter descriptions:** 5,379 bytes (~1,344 tokens) — 16.4% of total
+- **Tool descriptions:** 3,189 bytes (~797 tokens) — 9.8% of total
+
+### Repeated Param Description Waste
+- **buildIdOrUrl:** 106 bytes × 11 tools = 1,060 bytes wasted
+- **jobId:** 102 bytes × 8 tools = 714 bytes wasted
+- **Total deduplication opportunity:** 2,543 bytes (~635 tokens)
+
+### Reduction Levers for Evaluation
+1. **Strip outputSchema → minimal `{"type":"object"}`** — ~8.9 KB / 33% savings, zero runtime impact
+2. **Description tightening** — ~1 KB from deduplication and shortening repeated boilerplate
+3. **Enum/AllowedValues removal** — not recommended; breaks validation contract
+4. **Tool gating/removal** — deferred; needs usage telemetry
+5. **$ref shared schemas** — SDK does not support; skipped
+
+Decision ownership: Dallas (awaiting go/no-go on implementation).
+
+---
+
+# Decision: MCP Schema Size Reduction — Ranked Levers and Recommendations
+
+**Date:** 2026-07-20  
+**Author:** Dallas  
+**Status:** Proposed (pending Ripley's measurement)
+
+## Top Recommendation: DO FIRST — Minimal outputSchema (Lever 1)
+
+**What:** Replace auto-generated `outputSchema` (full property graph of each return DTO) with minimal `{"type":"object"}`.
+
+**How:** `McpServerToolCreateOptions.OutputSchema` is explicitly settable. Post-registration loop iterates tools and sets `tool.ProtocolTool.OutputSchema` to `{"type":"object"}`.
+
+**Impact:** ~8.5–8.9 KB removed from `tools/list` (31% of baseline). 20 structured tools × ~440 bytes average → ~17 bytes each.
+
+**Risk:** LOW
+- Runtime responses identical — structured content continues to emit
+- No known MCP client parses `outputSchema` for validation
+- Reversible if consumer emerges
+
+**Effort:** S (half-day Ripley)
+
+**Compatibility:** Works with Lever 2 (description tightening), does NOT interact with strict-mode PR #83.
+
+## Secondary Considerations
+
+- **Lever 2 (description tightening):** ~1 KB, low-medium risk, incremental effort
+- **Lever 3 (AllowedValues):** DO NOT PURSUE — breaks validation contract
+- **Lever 4 (tool gating):** DEFER — needs usage telemetry
+- **Lever 5 ($ref):** SKIP — SDK doesn't support
+
+## Decision Gate
+
+Proceed with Lever 1 if **any** of:
+1. Per-turn `tools/list` re-fetch confirmed (not hypothetical)
+2. Tool count grows >30 (currently 20)
+3. User reports token budget pressure with evidence
+
+OR proceed now as low-risk hygiene improvement (Lever 1 effort is S, risk is provably zero).
+
+---
+
+# Decision: Issue #81 Stage B — Unknown-Param Filter Design
+
+**Date:** 2026-06-24  
+**Author:** Ripley  
+**Status:** Implemented (branch `squad/81-strict-mode-stage-b`)
+
+## Filter Pipeline Architecture
+
+**New sibling extension:** `AddUnknownParameterFilter(Assembly, ILogger?)` — separate from `AddBindingErrorFilter` for clarity.
+
+Pipeline order:
+1. `AddBindingErrorFilter` — alias normalization + exception wrapping
+2. `AddUnknownParameterFilter` — proactive unknown-param check (did-you-mean hints)
+3. SDK dispatch with `UnmappedMemberHandling.Disallow` (defense-in-depth)
+
+## Key Implementation Decisions
+
+### Schema Extraction
+- Use `RuntimeHelpers.GetUninitializedObject(type)` pattern to extract `ProtocolTool.InputSchema["properties"]` without DI construction
+- One shell per type, reused across methods, created lazily inside type loop
+- Pattern mirrors `McpToolsListPayloadTests` (documented in mcp-wire-format-trim SKILL.md)
+
+### Levenshtein Threshold: 6 (not 3)
+- Threshold 3 only catches typos (single-char transpositions)
+- Threshold 6 catches hallucinated compound names ("minFinishTime" → "minTime" is distance 6)
+- Spec regression test (`minFinishTime` → `minTime` hint) requires threshold 6
+- False positives harmless; full allowed-params list always shown
+
+### Edge Cases Handled
+- Missing schema (`Undefined`/`Null`) — skip filter, log warning
+- Parameterless tools — empty canonical set, any arg is unknown
+- `additionalProperties: true` — skip filter, log debug
+- Schema extraction throws — skip filter, log warning
+
+### Allowed-Param List
+Displayed in schema-declaration order (mirrors method signature), not alphabetical.
+
+---
+
+# Decision: Compatibility — Lever 1 + Strict-Mode (PR #83)
+
+**Date:** 2026-07-20  
+**Author:** Dallas, Ripley  
+**Status:** Confirmed compatible
+
+Minimal outputSchema (Lever 1) does NOT interact with `UnmappedMemberHandling.Disallow` or `TypeInfoResolver` requirements.
+
+- **outputSchema:** Governs tool response *documentation* in `tools/list` — purely informational
+- **inputSchema + TypeInfoResolver:** Governs parameter binding — architectural requirement for Disallow mode
+
+Both can coexist without conflict. `TypeInfoResolver = new DefaultJsonTypeInfoResolver()` is required regardless of outputSchema minimization.

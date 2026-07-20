@@ -334,3 +334,16 @@ Copilot Coding Agent reviewed all three PRs (#83, #84, #85) but auto-merge ran b
 
 **Key lesson captured below in decisions inbox.** Short version: when a fix is merged, check that it closes the *entire bug class*, not just the case in the test. The alias-removal hole passed the existing rename-only tests because those tests only had alias-without-canonical; they didn't catch alias-plus-canonical.
 
+
+## 2026-07-20: Heads-up — Upcoming Cross-Agent Task (schema-reduction decision pending)
+
+**Context:** Dallas + Ripley completed MCP schema token cost measurement + reduction lever analysis (Issue #74).
+
+**Potential Lambert work (contingent on user approval):** If Lever 1 (minimal outputSchema) is approved:
+- **Integration test:** Confirm `tools/list` response shrinks by ~8.9 KB after outputSchema minimization
+- **StructuredContent validation:** Verify tools still emit `StructuredContent` in responses despite minimal schema
+- **Test file:** Add to `HelixTool.Tests/Mcp/` if new tests needed; reuse existing `MCP_*` patterns
+
+**Decision gate:** Dallas + Ripley documented in `decisions.md` (merged from inbox 2026-07-20). Awaiting user go/no-go.
+
+**No action required now.** FYI for upcoming sprint planning.

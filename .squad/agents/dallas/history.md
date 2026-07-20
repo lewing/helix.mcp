@@ -63,6 +63,24 @@ See `.squad/decisions.md` for full decision documentation on Issue #61 Policy (C
 
 ## Learnings
 
+### Issue #74 Revisit — Schema Reduction Lever Analysis (2026-07-20)
+
+**Finding: outputSchema and structured content are decoupled in the SDK (ModelContextProtocol.Core 1.4.0).**
+
+Decompiled `CreateOutputSchema()` and `CreateStructuredResponse()` in the SDK. Key discovery:
+- `CreateStructuredResponse()` gates on `ProtocolTool.OutputSchema.HasValue` — if the schema is non-null (even minimal `{"type":"object"}`), structured JSON responses are emitted
+- `Tool.OutputSchema` is a public settable `JsonElement?` — can be mutated post-registration
+- `McpServerToolCreateOptions.OutputSchema` accepts an explicit value that bypasses auto-gen from ReturnJsonSchema
+- The declared outputSchema in `tools/list` does NOT validate or constrain runtime responses — it's pure documentation
+
+**Implication:** Setting all tools' `OutputSchema` to `{"type":"object"}` preserves structured content at runtime while eliminating ~8.9 KB (31%) from the `tools/list` payload. This is a provably zero-risk change — no consumer parses outputSchema from `tools/list`.
+
+**Decision:** Lever 1 (minimal outputSchema) is the dominant move. Recommended as "DO FIRST" in `.squad/decisions/inbox/dallas-schema-reduction.md`. Prior CONDITIONAL NO on #74 is updated with a concrete execution plan if the team decides to proceed.
+
+**Compatibility:** Does not interact with strict-mode (`UnmappedMemberHandling.Disallow` + `TypeInfoResolver`). Those govern inputSchema/binding only.
+
+---
+
 ### Issue #81/#82 Triage — Framing Decisions (2026-06-24)
 
 **Sequencing heuristic applied:** User-visible correctness fix (#81 Stage A: silent → structured error) goes before architectural cleanup (#82: normalization centralization). The cleanup does not unblock the correctness fix; ship value first, clean house after.
