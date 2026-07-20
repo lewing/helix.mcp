@@ -465,3 +465,94 @@ CiKnowledgeResource already exists. Moving helix_ci_guide to resource-only saves
 2. **If further cuts are needed:** implement config-based profiles (option 4) — a `--tools-profile minimal|azdo|helix|full` flag at startup.
 3. **Do NOT invest in runtime dynamic disclosure** — the trigger problem makes it a net-negative for model planning quality.
 4. **Interaction with flatten-10/keep-3:** Orthogonal. Flatten reduces per-tool cost (descriptions stay, schemas shrink). Profiles reduce tool count. They compose cleanly but flatten is strictly higher ROI as the first move.
+
+---
+
+# Kane: hlx CLI Skill & Discoverability Assessment
+**Date:** 2026-07-20T16:52:27-05:00  
+**Author:** Kane (Docs)  
+**Status:** Recommendation — awaiting approval before edits
+
+## Verdict
+
+We already have `.github/skills/helix-cli/SKILL.md` and it's **good** — arguably richer than maestro-cli's in the places that matter most (4-level progressive discovery ladder, 7 workflow-oriented patterns, real jq field paths with comments). However, three small gaps exist in the skill doc itself, and the **bigger problem is discoverability**: nothing in the MCP configuration path, the README header, or the cli-reference explicitly tells someone "if MCP isn't running, use `hlx` directly."
+
+## Part A — Gap Analysis
+
+### Where ours is already better
+| Area | Our advantage |
+|------|--------------|
+| Progressive discovery | 4-level ladder (`hlx describe` → `hlx describe <cmd>` → `--schema` → `--help`) vs. maestro's 3-step; `describe` specifically surfaced as "the fastest first step" |
+| jq examples | Real field paths with inline comments (`.failed[].Name`, `.records[].log.id`, `.steps[].matchCount`); maestro's are sparser |
+| Common patterns | 7 numbered, workflow-oriented patterns (build → timeline → logs → tests) vs. maestro's per-command snippets |
+| AzDO auth chain | 4-tier chain with scheme-aware description (PAT vs Entra auto-detected); maestro has a simpler 3-tier |
+| jq-not-required note | Explicit: "if jq is not available, plain CLI output is still useful" |
+
+### Where maestro has an edge or we have gaps
+| Area | Gap |
+|------|-----|
+| Cache sharing callout | Maestro explicitly says "using CLI warms cache for MCP and vice versa" as a named feature. Our Cache section has one sentence: "shared SQLite-backed cache across CLI and stdio MCP usage" — accurate but easy to miss and not framed as a benefit |
+| `dnx` no-install path | SKILL.md shows `dotnet tool install -g` and `dotnet run` but not `dnx lewing.helix.mcp` — the README's recommended no-install path. Maestro equivalently documents its single install command |
+| Cache section depth | Maestro's cache note is a bullet under Usage; ours is a stub that says "full TTL details in `hlx llms-txt`" — an unnecessary chase for the reader |
+| Frontmatter trigger | Both say "when MCP tools aren't loaded" — neither says "when the MCP server fails to start or is not configured," which is the primary real-world scenario the user is asking about |
+
+## Part B — Concrete SKILL.md Edits (ranked by impact)
+
+### 1. Add `dnx` to Installation (highest impact / zero risk)
+Current Installation block shows `dotnet tool install -g` and `dotnet run`. Add:
+```bash
+# Zero-install (requires .NET 10 SDK):
+dnx lewing.helix.mcp <command>
+```
+Place it first — it's the lowest-friction entry.
+
+### 2. Expand the Cache section (one sentence addition)
+Current: `hlx uses a shared SQLite-backed cache across CLI and stdio MCP usage.`  
+Add after: `Running \`hlx\` from the terminal warms that cache for later MCP calls — and vice versa — so you never pay the API cost twice.`
+
+### 3. Widen the frontmatter USE FOR trigger
+Current: `when MCP tools aren't loaded`  
+Change to: `when MCP tools aren't loaded, when the MCP server isn't configured or fails to start`  
+This is the phrase an agent would have in its context when the MCP isn't running.
+
+### 4. Inline the key cache locations in the Cache section
+Rather than "full TTL details in `hlx llms-txt`," add the two-line OS table (already in README) so the section is self-contained. Reduces chase.
+
+## Part C — Discoverability (the heart of the question)
+
+A `.github/skills/` file is surfaced to agents that load skill manifests — but **not** to humans who can't start the MCP server, and **not** to agents whose MCP session failed to initialize. The skill doc is good once someone finds it; the problem is the path to finding it.
+
+### Recommended touchpoints (ranked by leverage)
+
+**1. README headline / top of file** ← highest leverage  
+Line 3 says "An increasingly inaccurately named CLI and MCP server" — self-deprecating about the CLI. Replace or augment with a one-line callout in the Why? section or just below the title:
+> **No MCP? `hlx` works standalone.** Install with `dotnet tool install -g lewing.helix.mcp` or run `dnx lewing.helix.mcp <command>`. [CLI reference →](docs/cli-reference.md)
+
+This is the first thing a human reads when they find the repo and MCP is unavailable.
+
+**2. MCP Configuration section in README** ← high leverage  
+The MCP config block ends with client config tables. Add one sentence after:
+> If MCP configuration isn't working, the same commands are available directly: `hlx azdo timeline <id>`, `hlx status <jobId>`, etc. — see the [CLI reference](docs/cli-reference.md).
+
+**3. SKILL.md frontmatter description** ← medium leverage (agent-facing)  
+Add "when the MCP server isn't configured or fails to start" to USE FOR (see Part B #3 above). Agents whose MCP init failed will match this description and route here.
+
+**4. docs/cli-reference.md first line** ← medium leverage  
+Currently: "`hlx` is the command-line interface for helix.mcp."  
+Change to: "`hlx` is the standalone CLI for helix.mcp — it works without any MCP server or configuration."  
+This is what someone lands on from Google or a direct link, and it should immediately confirm this is the fallback path.
+
+### Not recommended
+- Adding a new separate CLI-only README or docs file — creates maintenance split. All edits belong in existing files.
+- Changing the skill location — `.github/skills/helix-cli/SKILL.md` is exactly right.
+
+## Summary Edit List (ranked)
+
+| Rank | File | Change | Size |
+|------|------|--------|------|
+| 1 | README.md (near top) | Add "No MCP? `hlx` works standalone" callout | 1-2 lines |
+| 2 | SKILL.md | Add `dnx` install option first in Installation | 3 lines |
+| 3 | SKILL.md | Expand Cache section with "warms cache for both" | 1 sentence |
+| 4 | README.md (MCP Config section) | Add "same commands available as `hlx` if MCP not working" | 1 sentence |
+| 5 | SKILL.md frontmatter | Widen USE FOR to include "MCP not configured or fails to start" | phrase edit |
+| 6 | docs/cli-reference.md (line 1) | Add "works without any MCP server" to opening sentence | phrase edit |
