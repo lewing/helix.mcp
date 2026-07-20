@@ -89,3 +89,27 @@
 ---
 
 ## 2026-07-20: MCP Schema Token-Cost Measurement (READ-ONLY — no code changes)
+
+---
+
+## 2026-07-20: Dallas Tiered outputSchema Recommendation — NEXT IMPLEMENTER (Ripley)
+
+**Status:** Refined recommendation ready for go/no-go.
+
+**Prior:** Blanket flatten all 20 structured tools' outputSchema to `{"type":"object"}` for ~31% savings.
+
+**Refined Decision:** TIERED approach (see `.squad/decisions/decisions.md`):
+- **FLATTEN 10**: helix_status, azdo_build, helix_parse_uploaded_trx, azdo_search_timeline, helix_batch_status, helix_work_item, helix_search, helix_find_files, helix_files, helix_download → `{"type":"object"}`
+- **KEEP 3**: azdo_timeline (log.id extraction), azdo_helix_jobs (HelixJobId extraction), azdo_build_analysis (known/unmatched discrimination)
+- **LEAVE 12**: Already minimal or degenerate (68-byte LimitedResults wrappers, string-only tools)
+
+**Net Savings:** ~5,450 bytes (18% vs. 28% blanket). Retains extraction-critical guidance on 3 chaining-junction tools.
+
+**Measurement Baseline:** Current tools/list = 30,056 bytes authoritative (inputSchema 12,104; outputSchema 8,961; 20/25 structured).
+
+**Implementation Order:**
+1. Single PR: flatten 10 tools
+2. Follow-up (optional): micro-enrich azdo_timeline.log.id and azdo_helix_jobs.HelixJobId (descriptions)
+3. Leave 68-byte cluster unchanged
+
+**Handoff:** See `.squad/log/2026-07-20T21:08:57Z-schema-keep-vs-flatten.md` for full context and `.squad/orchestration-log/2026-07-20T21:08:57Z-dallas.md` for lead notes.
