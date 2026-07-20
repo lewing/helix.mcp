@@ -404,3 +404,64 @@ Minimal outputSchema (Lever 1) does NOT interact with `UnmappedMemberHandling.Di
 - **inputSchema + TypeInfoResolver:** Governs parameter binding — architectural requirement for Disallow mode
 
 Both can coexist without conflict. `TypeInfoResolver = new DefaultJsonTypeInfoResolver()` is required regardless of outputSchema minimization.
+
+# Decision: Progressive Disclosure for tools/list
+
+**Date:** 2026-07-20T16:16:05-05:00  
+**Author:** Dallas  
+**Status:** Evaluated — NOT RECOMMENDED as primary lever
+
+---
+
+## Context
+
+tools/list is ~29 KB / 25 tools, all advertised on every session. Question: can we hide niche/rarely-used tools and reveal them only when needed?
+
+## Tool Bucketing
+
+| Bucket | Count | Est. Bytes | Tools |
+|--------|-------|-----------|-------|
+| CORE (always needed) | 8 | ~12.8 KB | azdo_build, azdo_builds, azdo_timeline, azdo_helix_jobs, azdo_search_log, helix_status, azdo_build_analysis, helix_ci_guide |
+| WORKFLOW-GATED (need build/job first) | 11 | ~12.5 KB | azdo_log, azdo_changes, azdo_test_runs, azdo_test_results, azdo_search_timeline, azdo_artifacts, helix_logs, helix_files, helix_work_item, helix_search, helix_find_files |
+| NICHE (narrow scenarios) | 6 | ~4.6 KB | helix_parse_uploaded_trx¹, helix_batch_status, helix_download, azdo_test_attachments, helix_auth_status, azdo_auth_status |
+
+¹ Self-identifies as "Niche" in description.
+
+## Mechanism Feasibility (SDK 1.4.0)
+
+### 1. Dynamic ToolCollection + `notifications/tools/list_changed`
+**SDK support: YES.** ToolCollection supports Add/Remove; SDK auto-sends the notification.  
+**Practical problem: NO TRIGGER.** MCP has no client→server signal for "I'm about to need drill-down tools." The server can only react AFTER a core tool is called — but models plan multi-step chains BEFORE calling anything. Hiding workflow-gated tools degrades the model's ability to plan an investigation sequence. The chicken-and-egg problem is fundamental.
+
+### 2. Meta/gateway tool (single dispatcher)
+**Feasible** but degrades model accuracy. Models are trained on discrete tool schemas; a dispatcher with sub-operation names reduces tool-use precision. Not recommended for a 25-tool server.
+
+### 3. Resources instead of Tools
+CiKnowledgeResource already exists. Moving helix_ci_guide to resource-only saves 479 bytes but loses tool-call discoverability (models invoke tools, they don't proactively read resources). Marginal gain.
+
+### 4. Config-based profiles (static filtering)
+**Simplest and most practical.** Operator picks a profile at server startup: "minimal" (core 8), "azdo-only" (14), "full" (25). No runtime complexity. Useful for embedded deployments that only need one system.
+
+## Verdict
+
+**Progressive disclosure is NOT the right lever for this server.**
+
+| Option | Token Savings | Feasibility | Ergonomic Cost | Score |
+|--------|:---:|:---:|:---:|:---:|
+| flatten-10/keep-3 (outputSchema) | ~5.5 KB | Trivial | Zero | ★★★★★ |
+| Config profiles (option 4) | up to ~16 KB | Easy | Per-deployment | ★★★☆☆ |
+| Dynamic disclosure (option 1) | ~4.6–12.5 KB | Moderate | Model planning degradation | ★★☆☆☆ |
+| Meta/gateway (option 2) | ~4.6 KB | Easy | Worse accuracy | ★☆☆☆☆ |
+
+**Reasoning:**
+- The NICHE bucket (only realistic disclosure candidates) saves just 4.6 KB — less than outputSchema flattening alone.
+- The WORKFLOW-GATED bucket is 12.5 KB but hiding it breaks investigation planning.
+- flatten-10/keep-3 delivers comparable savings with zero ergonomic risk and zero runtime complexity.
+- These levers compose (flatten reduces per-tool cost; profiles reduce tool count) but addressing them in priority order means flatten first, profiles only if an operator actively needs a smaller surface.
+
+## Recommendation
+
+1. **Ship flatten-10/keep-3** as designed (outputSchema tiering). Already scoped, no risk.
+2. **If further cuts are needed:** implement config-based profiles (option 4) — a `--tools-profile minimal|azdo|helix|full` flag at startup.
+3. **Do NOT invest in runtime dynamic disclosure** — the trigger problem makes it a net-negative for model planning quality.
+4. **Interaction with flatten-10/keep-3:** Orthogonal. Flatten reduces per-tool cost (descriptions stay, schemas shrink). Profiles reduce tool count. They compose cleanly but flatten is strictly higher ROI as the first move.

@@ -113,3 +113,16 @@
 3. Leave 68-byte cluster unchanged
 
 **Handoff:** See `.squad/log/2026-07-20T21:08:57Z-schema-keep-vs-flatten.md` for full context and `.squad/orchestration-log/2026-07-20T21:08:57Z-dallas.md` for lead notes.
+
+## 2026-07-20: Dallas Progressive Disclosure Analysis — Config-Profiles Concept (Future Backlog)
+
+**Decision:** Dynamic progressive disclosure NOT recommended. Static config-profiles model identified as practical alternative if further size reduction needed beyond flatten-10/keep-3.
+
+**Concept:** Operator-selectable `--tools-profile` flag at startup:
+- `minimal` (8 tools, CORE only)
+- `azdo-only` (14 tools, CORE + WORKFLOW-GATED for AzDO)
+- `full` (25 tools, current)
+
+**Why later:** flatten-10/keep-3 (5.5 KB savings) is higher ROI and orthogonal. Profiles compose as second-stage lever if token pressure persists.
+
+**Reference:** `.squad/decisions/decisions.md` entry "Progressive Disclosure for tools/list".
