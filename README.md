@@ -2,6 +2,8 @@
 
 An increasingly inaccurately named [CLI](docs/cli-reference.md) and [MCP](https://github.com/lewing/helix.mcp/blob/main/README.md#mcp-tools) server for AI agents investigating .NET CI/CD failures across [Helix](https://helix.dot.net) and [Azure DevOps](https://dev.azure.com).
 
+> **No MCP needed.** `hlx` works as a standalone CLI — `dnx lewing.helix.mcp <command>` (zero-install) or `dotnet tool install -g lewing.helix.mcp`. See the [CLI reference](docs/cli-reference.md).
+
 Built with [Squad](https://github.com/bradygaster/squad) — [meet the squad](.ai-team/SQUAD.md).
 
 ## Why?
@@ -253,6 +255,8 @@ Add to your MCP client config:
 | **Claude Code / Cursor** | `.cursor/mcp.json` | `mcpServers` |
 
 > VS Code uses `servers`. Claude Desktop, Claude Code, and Cursor use `mcpServers` — the rest is identical.
+
+> If MCP isn't working, the same data is available via `hlx <command>` directly — see the [CLI reference](docs/cli-reference.md).
 
 For HTTP (remote/shared servers):
 

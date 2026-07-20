@@ -4,7 +4,8 @@ description: >
   Investigate .NET CI failures using the hlx CLI tool via bash.
   USE FOR: checking Helix job status, searching build logs, downloading
   test results, AzDO build timeline analysis — when MCP tools aren't
-  loaded or when scripting with JSON output and jq.
+  loaded, when the MCP server isn't configured or fails to start,
+  or when scripting with JSON output and jq.
   DO NOT USE FOR: tasks where Helix/AzDO MCP tools are already available
   in context (prefer ci-analysis skill when MCP server is loaded).
   INVOKES: bash (hlx CLI commands with --json output).
@@ -20,6 +21,11 @@ Use this skill when:
 - You are working in a plain terminal, CI job, or one-off bash session where CLI output is easier than MCP round-trips.
 Prefer MCP tools or the `ci-analysis` skill when those tools are already loaded in context. The CLI is the context-efficient fallback.
 ## Installation
+Zero-install (requires .NET 10 SDK):
+```bash
+dnx lewing.helix.mcp <command>
+```
+Or install as a global tool:
 ```bash
 dotnet tool install -g lewing.helix.mcp
 ```
@@ -27,7 +33,7 @@ Local repo fallback:
 ```bash
 dotnet run --project src/HelixTool -- <command>
 ```
-Examples in this skill use `hlx`; replace it with the local `dotnet run` form if needed.
+Examples in this skill use `hlx`; replace with the `dnx` or `dotnet run` form if needed.
 ## Authentication
 `hlx` supports anonymous access for public data and explicit auth for private Helix/AzDO.
 - Helix: set `HELIX_ACCESS_TOKEN=...` or run `hlx login`; `hlx logout` removes the stored token.
@@ -113,4 +119,4 @@ hlx azdo test-results "$BUILD" "$RUN" --json \
 ```
 `hlx azdo builds --json` returns a bare array. `hlx search-log` (Helix) is text output only in the CLI; use MCP `helix_search` for structured matches.
 ## Cache
-`hlx` uses a shared SQLite-backed cache across CLI and stdio MCP usage. Use `hlx cache status` to inspect the current auth context and `hlx cache clear` to wipe all contexts. Full TTL and sizing details live in `hlx llms-txt`.
+`hlx` and the stdio MCP server share the same SQLite-backed cache. Running `hlx` from the terminal warms that cache for later MCP calls — and vice versa — so you never pay the API cost twice. Use `hlx cache status` to inspect the current auth context and `hlx cache clear` to wipe all contexts. Full TTL and sizing details live in `hlx llms-txt`.

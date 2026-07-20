@@ -280,3 +280,279 @@ If a future tool gains a DI-injected parameter (`HasCustomParameterBinding = tru
 > When Stage B lands, should `UnmappedMemberHandling = Disallow` from Stage A be removed or kept as defense-in-depth?
 
 **Recommendation:** Keep both. Stage B fires first in the filter pipeline and provides better UX (did-you-mean hints, full allowed-param list). Stage A's `Disallow` setting catches the `HasCustomParameterBinding == true` blind spot. Defense-in-depth at the serializer level costs nothing — it's a one-line option flag, not duplicated algorithm code.
+
+# Decision: MCP Schema Token Cost Measurement (Issue #74)
+
+**Date:** 2026-07-20T14:10:14-05:00  
+**Author:** Ripley  
+**Status:** Measurement complete — decision deferred to Dallas
+
+## Measurement Details
+
+Empirical ground truth from live MCP server:
+- **25 tools**, **32,703 bytes**, **~8,175 tokens** for `tools/list` payload
+- **outputSchema breakdown:** 10,862 bytes (~2,715 tokens) — 33.2% of total
+- **inputSchema structure:** 12,370 bytes (~3,092 tokens) — 37.8% of total
+- **Parameter descriptions:** 5,379 bytes (~1,344 tokens) — 16.4% of total
+- **Tool descriptions:** 3,189 bytes (~797 tokens) — 9.8% of total
+
+### Repeated Param Description Waste
+- **buildIdOrUrl:** 106 bytes × 11 tools = 1,060 bytes wasted
+- **jobId:** 102 bytes × 8 tools = 714 bytes wasted
+- **Total deduplication opportunity:** 2,543 bytes (~635 tokens)
+
+### Reduction Levers for Evaluation
+1. **Strip outputSchema → minimal `{"type":"object"}`** — ~8.9 KB / 33% savings, zero runtime impact
+2. **Description tightening** — ~1 KB from deduplication and shortening repeated boilerplate
+3. **Enum/AllowedValues removal** — not recommended; breaks validation contract
+4. **Tool gating/removal** — deferred; needs usage telemetry
+5. **$ref shared schemas** — SDK does not support; skipped
+
+Decision ownership: Dallas (awaiting go/no-go on implementation).
+
+---
+
+# Decision: MCP Schema Size Reduction — Ranked Levers and Recommendations
+
+**Date:** 2026-07-20  
+**Author:** Dallas  
+**Status:** Proposed (pending Ripley's measurement)
+
+## Top Recommendation: DO FIRST — Minimal outputSchema (Lever 1)
+
+**What:** Replace auto-generated `outputSchema` (full property graph of each return DTO) with minimal `{"type":"object"}`.
+
+**How:** `McpServerToolCreateOptions.OutputSchema` is explicitly settable. Post-registration loop iterates tools and sets `tool.ProtocolTool.OutputSchema` to `{"type":"object"}`.
+
+**Impact:** ~8.5–8.9 KB removed from `tools/list` (31% of baseline). 20 structured tools × ~440 bytes average → ~17 bytes each.
+
+**Risk:** LOW
+- Runtime responses identical — structured content continues to emit
+- No known MCP client parses `outputSchema` for validation
+- Reversible if consumer emerges
+
+**Effort:** S (half-day Ripley)
+
+**Compatibility:** Works with Lever 2 (description tightening), does NOT interact with strict-mode PR #83.
+
+## Secondary Considerations
+
+- **Lever 2 (description tightening):** ~1 KB, low-medium risk, incremental effort
+- **Lever 3 (AllowedValues):** DO NOT PURSUE — breaks validation contract
+- **Lever 4 (tool gating):** DEFER — needs usage telemetry
+- **Lever 5 ($ref):** SKIP — SDK doesn't support
+
+## Decision Gate
+
+Proceed with Lever 1 if **any** of:
+1. Per-turn `tools/list` re-fetch confirmed (not hypothetical)
+2. Tool count grows >30 (currently 20)
+3. User reports token budget pressure with evidence
+
+OR proceed now as low-risk hygiene improvement (Lever 1 effort is S, risk is provably zero).
+
+---
+
+# Decision: Issue #81 Stage B — Unknown-Param Filter Design
+
+**Date:** 2026-06-24  
+**Author:** Ripley  
+**Status:** Implemented (branch `squad/81-strict-mode-stage-b`)
+
+## Filter Pipeline Architecture
+
+**New sibling extension:** `AddUnknownParameterFilter(Assembly, ILogger?)` — separate from `AddBindingErrorFilter` for clarity.
+
+Pipeline order:
+1. `AddBindingErrorFilter` — alias normalization + exception wrapping
+2. `AddUnknownParameterFilter` — proactive unknown-param check (did-you-mean hints)
+3. SDK dispatch with `UnmappedMemberHandling.Disallow` (defense-in-depth)
+
+## Key Implementation Decisions
+
+### Schema Extraction
+- Use `RuntimeHelpers.GetUninitializedObject(type)` pattern to extract `ProtocolTool.InputSchema["properties"]` without DI construction
+- One shell per type, reused across methods, created lazily inside type loop
+- Pattern mirrors `McpToolsListPayloadTests` (documented in mcp-wire-format-trim SKILL.md)
+
+### Levenshtein Threshold: 6 (not 3)
+- Threshold 3 only catches typos (single-char transpositions)
+- Threshold 6 catches hallucinated compound names ("minFinishTime" → "minTime" is distance 6)
+- Spec regression test (`minFinishTime` → `minTime` hint) requires threshold 6
+- False positives harmless; full allowed-params list always shown
+
+### Edge Cases Handled
+- Missing schema (`Undefined`/`Null`) — skip filter, log warning
+- Parameterless tools — empty canonical set, any arg is unknown
+- `additionalProperties: true` — skip filter, log debug
+- Schema extraction throws — skip filter, log warning
+
+### Allowed-Param List
+Displayed in schema-declaration order (mirrors method signature), not alphabetical.
+
+---
+
+# Decision: Compatibility — Lever 1 + Strict-Mode (PR #83)
+
+**Date:** 2026-07-20  
+**Author:** Dallas, Ripley  
+**Status:** Confirmed compatible
+
+Minimal outputSchema (Lever 1) does NOT interact with `UnmappedMemberHandling.Disallow` or `TypeInfoResolver` requirements.
+
+- **outputSchema:** Governs tool response *documentation* in `tools/list` — purely informational
+- **inputSchema + TypeInfoResolver:** Governs parameter binding — architectural requirement for Disallow mode
+
+Both can coexist without conflict. `TypeInfoResolver = new DefaultJsonTypeInfoResolver()` is required regardless of outputSchema minimization.
+
+# Decision: Progressive Disclosure for tools/list
+
+**Date:** 2026-07-20T16:16:05-05:00  
+**Author:** Dallas  
+**Status:** Evaluated — NOT RECOMMENDED as primary lever
+
+---
+
+## Context
+
+tools/list is ~29 KB / 25 tools, all advertised on every session. Question: can we hide niche/rarely-used tools and reveal them only when needed?
+
+## Tool Bucketing
+
+| Bucket | Count | Est. Bytes | Tools |
+|--------|-------|-----------|-------|
+| CORE (always needed) | 8 | ~12.8 KB | azdo_build, azdo_builds, azdo_timeline, azdo_helix_jobs, azdo_search_log, helix_status, azdo_build_analysis, helix_ci_guide |
+| WORKFLOW-GATED (need build/job first) | 11 | ~12.5 KB | azdo_log, azdo_changes, azdo_test_runs, azdo_test_results, azdo_search_timeline, azdo_artifacts, helix_logs, helix_files, helix_work_item, helix_search, helix_find_files |
+| NICHE (narrow scenarios) | 6 | ~4.6 KB | helix_parse_uploaded_trx¹, helix_batch_status, helix_download, azdo_test_attachments, helix_auth_status, azdo_auth_status |
+
+¹ Self-identifies as "Niche" in description.
+
+## Mechanism Feasibility (SDK 1.4.0)
+
+### 1. Dynamic ToolCollection + `notifications/tools/list_changed`
+**SDK support: YES.** ToolCollection supports Add/Remove; SDK auto-sends the notification.  
+**Practical problem: NO TRIGGER.** MCP has no client→server signal for "I'm about to need drill-down tools." The server can only react AFTER a core tool is called — but models plan multi-step chains BEFORE calling anything. Hiding workflow-gated tools degrades the model's ability to plan an investigation sequence. The chicken-and-egg problem is fundamental.
+
+### 2. Meta/gateway tool (single dispatcher)
+**Feasible** but degrades model accuracy. Models are trained on discrete tool schemas; a dispatcher with sub-operation names reduces tool-use precision. Not recommended for a 25-tool server.
+
+### 3. Resources instead of Tools
+CiKnowledgeResource already exists. Moving helix_ci_guide to resource-only saves 479 bytes but loses tool-call discoverability (models invoke tools, they don't proactively read resources). Marginal gain.
+
+### 4. Config-based profiles (static filtering)
+**Simplest and most practical.** Operator picks a profile at server startup: "minimal" (core 8), "azdo-only" (14), "full" (25). No runtime complexity. Useful for embedded deployments that only need one system.
+
+## Verdict
+
+**Progressive disclosure is NOT the right lever for this server.**
+
+| Option | Token Savings | Feasibility | Ergonomic Cost | Score |
+|--------|:---:|:---:|:---:|:---:|
+| flatten-10/keep-3 (outputSchema) | ~5.5 KB | Trivial | Zero | ★★★★★ |
+| Config profiles (option 4) | up to ~16 KB | Easy | Per-deployment | ★★★☆☆ |
+| Dynamic disclosure (option 1) | ~4.6–12.5 KB | Moderate | Model planning degradation | ★★☆☆☆ |
+| Meta/gateway (option 2) | ~4.6 KB | Easy | Worse accuracy | ★☆☆☆☆ |
+
+**Reasoning:**
+- The NICHE bucket (only realistic disclosure candidates) saves just 4.6 KB — less than outputSchema flattening alone.
+- The WORKFLOW-GATED bucket is 12.5 KB but hiding it breaks investigation planning.
+- flatten-10/keep-3 delivers comparable savings with zero ergonomic risk and zero runtime complexity.
+- These levers compose (flatten reduces per-tool cost; profiles reduce tool count) but addressing them in priority order means flatten first, profiles only if an operator actively needs a smaller surface.
+
+## Recommendation
+
+1. **Ship flatten-10/keep-3** as designed (outputSchema tiering). Already scoped, no risk.
+2. **If further cuts are needed:** implement config-based profiles (option 4) — a `--tools-profile minimal|azdo|helix|full` flag at startup.
+3. **Do NOT invest in runtime dynamic disclosure** — the trigger problem makes it a net-negative for model planning quality.
+4. **Interaction with flatten-10/keep-3:** Orthogonal. Flatten reduces per-tool cost (descriptions stay, schemas shrink). Profiles reduce tool count. They compose cleanly but flatten is strictly higher ROI as the first move.
+
+---
+
+# Kane: hlx CLI Skill & Discoverability Assessment
+**Date:** 2026-07-20T16:52:27-05:00  
+**Author:** Kane (Docs)  
+**Status:** Recommendation — awaiting approval before edits
+
+## Verdict
+
+We already have `.github/skills/helix-cli/SKILL.md` and it's **good** — arguably richer than maestro-cli's in the places that matter most (4-level progressive discovery ladder, 7 workflow-oriented patterns, real jq field paths with comments). However, three small gaps exist in the skill doc itself, and the **bigger problem is discoverability**: nothing in the MCP configuration path, the README header, or the cli-reference explicitly tells someone "if MCP isn't running, use `hlx` directly."
+
+## Part A — Gap Analysis
+
+### Where ours is already better
+| Area | Our advantage |
+|------|--------------|
+| Progressive discovery | 4-level ladder (`hlx describe` → `hlx describe <cmd>` → `--schema` → `--help`) vs. maestro's 3-step; `describe` specifically surfaced as "the fastest first step" |
+| jq examples | Real field paths with inline comments (`.failed[].Name`, `.records[].log.id`, `.steps[].matchCount`); maestro's are sparser |
+| Common patterns | 7 numbered, workflow-oriented patterns (build → timeline → logs → tests) vs. maestro's per-command snippets |
+| AzDO auth chain | 4-tier chain with scheme-aware description (PAT vs Entra auto-detected); maestro has a simpler 3-tier |
+| jq-not-required note | Explicit: "if jq is not available, plain CLI output is still useful" |
+
+### Where maestro has an edge or we have gaps
+| Area | Gap |
+|------|-----|
+| Cache sharing callout | Maestro explicitly says "using CLI warms cache for MCP and vice versa" as a named feature. Our Cache section has one sentence: "shared SQLite-backed cache across CLI and stdio MCP usage" — accurate but easy to miss and not framed as a benefit |
+| `dnx` no-install path | SKILL.md shows `dotnet tool install -g` and `dotnet run` but not `dnx lewing.helix.mcp` — the README's recommended no-install path. Maestro equivalently documents its single install command |
+| Cache section depth | Maestro's cache note is a bullet under Usage; ours is a stub that says "full TTL details in `hlx llms-txt`" — an unnecessary chase for the reader |
+| Frontmatter trigger | Both say "when MCP tools aren't loaded" — neither says "when the MCP server fails to start or is not configured," which is the primary real-world scenario the user is asking about |
+
+## Part B — Concrete SKILL.md Edits (ranked by impact)
+
+### 1. Add `dnx` to Installation (highest impact / zero risk)
+Current Installation block shows `dotnet tool install -g` and `dotnet run`. Add:
+```bash
+# Zero-install (requires .NET 10 SDK):
+dnx lewing.helix.mcp <command>
+```
+Place it first — it's the lowest-friction entry.
+
+### 2. Expand the Cache section (one sentence addition)
+Current: `hlx uses a shared SQLite-backed cache across CLI and stdio MCP usage.`  
+Add after: `Running \`hlx\` from the terminal warms that cache for later MCP calls — and vice versa — so you never pay the API cost twice.`
+
+### 3. Widen the frontmatter USE FOR trigger
+Current: `when MCP tools aren't loaded`  
+Change to: `when MCP tools aren't loaded, when the MCP server isn't configured or fails to start`  
+This is the phrase an agent would have in its context when the MCP isn't running.
+
+### 4. Inline the key cache locations in the Cache section
+Rather than "full TTL details in `hlx llms-txt`," add the two-line OS table (already in README) so the section is self-contained. Reduces chase.
+
+## Part C — Discoverability (the heart of the question)
+
+A `.github/skills/` file is surfaced to agents that load skill manifests — but **not** to humans who can't start the MCP server, and **not** to agents whose MCP session failed to initialize. The skill doc is good once someone finds it; the problem is the path to finding it.
+
+### Recommended touchpoints (ranked by leverage)
+
+**1. README headline / top of file** ← highest leverage  
+Line 3 says "An increasingly inaccurately named CLI and MCP server" — self-deprecating about the CLI. Replace or augment with a one-line callout in the Why? section or just below the title:
+> **No MCP? `hlx` works standalone.** Install with `dotnet tool install -g lewing.helix.mcp` or run `dnx lewing.helix.mcp <command>`. [CLI reference →](docs/cli-reference.md)
+
+This is the first thing a human reads when they find the repo and MCP is unavailable.
+
+**2. MCP Configuration section in README** ← high leverage  
+The MCP config block ends with client config tables. Add one sentence after:
+> If MCP configuration isn't working, the same commands are available directly: `hlx azdo timeline <id>`, `hlx status <jobId>`, etc. — see the [CLI reference](docs/cli-reference.md).
+
+**3. SKILL.md frontmatter description** ← medium leverage (agent-facing)  
+Add "when the MCP server isn't configured or fails to start" to USE FOR (see Part B #3 above). Agents whose MCP init failed will match this description and route here.
+
+**4. docs/cli-reference.md first line** ← medium leverage  
+Currently: "`hlx` is the command-line interface for helix.mcp."  
+Change to: "`hlx` is the standalone CLI for helix.mcp — it works without any MCP server or configuration."  
+This is what someone lands on from Google or a direct link, and it should immediately confirm this is the fallback path.
+
+### Not recommended
+- Adding a new separate CLI-only README or docs file — creates maintenance split. All edits belong in existing files.
+- Changing the skill location — `.github/skills/helix-cli/SKILL.md` is exactly right.
+
+## Summary Edit List (ranked)
+
+| Rank | File | Change | Size |
+|------|------|--------|------|
+| 1 | README.md (near top) | Add "No MCP? `hlx` works standalone" callout | 1-2 lines |
+| 2 | SKILL.md | Add `dnx` install option first in Installation | 3 lines |
+| 3 | SKILL.md | Expand Cache section with "warms cache for both" | 1 sentence |
+| 4 | README.md (MCP Config section) | Add "same commands available as `hlx` if MCP not working" | 1 sentence |
+| 5 | SKILL.md frontmatter | Widen USE FOR to include "MCP not configured or fails to start" | phrase edit |
+| 6 | docs/cli-reference.md (line 1) | Add "works without any MCP server" to opening sentence | phrase edit |

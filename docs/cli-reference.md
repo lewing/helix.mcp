@@ -1,6 +1,6 @@
 # hlx CLI Reference
 
-`hlx` is the command-line interface for [helix.mcp](../README.md). It provides direct access to Helix and Azure DevOps CI data from the terminal.
+`hlx` is the standalone CLI for [helix.mcp](../README.md) — it works without any MCP server or configuration. It provides direct access to Helix and Azure DevOps CI data from the terminal.
 
 > **Investigation path:** use `hlx test-results` only when the work item uploads structured results to Helix; otherwise pivot to `hlx azdo test-runs` + `hlx azdo test-results`, or `hlx search-log` when the useful signal is only in console output. In MCP mode, `helix_ci_guide(repo)` is the repo-specific entry point when that choice varies by repo.
 

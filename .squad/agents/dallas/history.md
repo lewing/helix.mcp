@@ -1,167 +1,132 @@
-# Dallas — History (Summarized)
+# Dallas — History (Condensed)
 
-## Current Work (2026-05-25 through 2026-06-01)
+## Executive Summary
 
-### Summary of Recent Decisions
+**Role:** Decision lead on MCP schema reduction, parameter aliasing, parameter plumbing, and strict-mode architecture.
 
-**Issue #61 — Silent MCP Failures (May 22–25):** Re-triaged boilerplate exception handling. Promoted Finding #2 (catch-throw pattern) from Q3 deferral to "fix now" based on user-visible evidence (silent failures in production on May 25). Key learning: **Name exceptions by exercising them, not by source-read.** Verified via C# repro that `await Task.WhenAll` unwraps to the inner exception (not AggregateException as narrative suggested). Fix still correct. PRs #62 (parameter standardization), #64 (exception centralization), #63 (exception coverage) all merged.
-
-**PR #66 Review (May 28):** Approved external contributor's fix for Helix waiting work items miscounted as failed. ExitCode null handling pattern corrected; identified same pattern in GetWorkItemDetailAsync for follow-up. Calibration: **Additive wire-format claims must be verified** (new fields use defaults, no renames/type changes). External PR reviews require clear feedback, merge promptly when correct, file follow-ups ourselves.
-
-**Issue #74 — Ground-Truth Schema Measurement (June 1):** Ripley completed measurement of `tools/list` payload per Ash's decision gate. Real payload: **28.26 KB** (44% larger than issue estimate of 16.2 KB). inputSchema verified at 11.07 KB (within 2% of Ash's estimate). outputSchema contributes 8.88 KB (critical discovery). Payload is in-scope for trimming per decision criteria (>15 KB if per-turn). **Decision gate:** go/no-go on trimming, measure live caching behavior, or defer.
-
----
-
-## Detailed Work Log (Archived)
-
-See sections below for full context on Issue #61 and PR #66 decisions, calibration learnings, and technical findings.
-
-### Issue #61 — Silent MCP Failures (May 22–25)
-
-#### Bug B Re-triage & Merge Gate (Archived Details)
-
-The May 22 deferral of Finding #2 (boilerplate, Q3 2026) was no longer valid by May 25. Production-impact evidence emerged: silent failures in live session caused by uncaught exception types. **VERDICT: PROMOTE Finding #2 to FIX NOW** — 3–4h Ripley work.
-
-**Why May 22 deferral was defensible then; invalid now:**
-- **Then:** No documented user-visible impact; extraction risk without test evidence
-- **Now:** User-visible bug in production; test evidence provided by Ash
-
-**Technical findings:**
-- `await Task.WhenAll(t1, t2)` unwraps to the first inner exception, NOT AggregateException (only `.Wait()` throws AggregateException)
-- Ash's narrative was imprecise but the fix (centralized catch-all) was correct regardless
-- Actual uncaught types: TaskCanceledException, OperationCanceledException (already caught by fix)
-- Defensive dead code in McpExceptionHandler approved (harmless guard against future `.Wait()` callers)
-
-**Merge order & PRs:**
-- PR #62 (Ripley, parameter standardization): ✅ Merged
-- PR #64 (Ripley, exception centralization): ✅ Merged
-- PR #63 (Lambert, exception coverage): ✅ Merged with follow-ups
-
-**Calibration learning:** Control boundaries (exception handlers, routers, validators) deserve special triage attention. Boilerplate at control boundaries masks gaps that surface under load. Heuristic: if refactoring target is at control boundary, flag as "lower priority unless user impact emerges," not "safe to defer indefinitely." Future deferrals should include **revisit triggers** (event or time-based), not hard dates.
+**Recent Focus (2026-06-24 through 2026-07-20):**
+- Refined blanket "flatten all outputSchema" → tiered approach (FLATTEN 10 / KEEP 3 / LEAVE 12)
+- Authorized PR #78 (azdo param plumbing: minTime/maxTime/queryOrder, top, outcomes)
+- Designed CallToolFilter layer for unknown-param rejection (Issue #81) vs SDK-layer strict mode
+- Triaged Issue #81/#82 sequencing (correctness before cleanup)
 
 ---
 
-### PR #66 — External Contributor Review (May 28)
+## 2026-07-20: Tiered outputSchema Recommendation (REFINED)
 
-**Fix:** Helix waiting work items miscounted as failed due to null ExitCode → sentinel -1 coercion.
+**Challenge:** User questioned blanket "flatten all 20 tools" — which genuinely warrant richer schema?
 
-**Root cause:** ExitCode == null for Waiting/Running/Unscheduled states. Code `details.ExitCode ?? -1` coerced null to -1, then results filtered by `r.ExitCode != 0` classified -1 as failed. Fix: derive `IsCompleted = details.ExitCode.HasValue`, three-way bucket (InProgress / Failed / Passed).
+**Method:** Read result DTOs; assess each tool on: (1) output chained downstream, (2) shape ambiguous, (3) drives decision.
 
-**Pattern hazard:** Null-coercion of nullable ints to sentinels is recurring when the sentinel value (-1) falls in the domain of valid failure codes.
+**Recommendation:**
+- **FLATTEN 10:** helix_status, azdo_build, helix_parse_uploaded_trx, azdo_search_timeline, helix_batch_status, helix_work_item, helix_search, helix_find_files, helix_files, helix_download (5,541 bytes, 18% savings)
+- **KEEP 3:** azdo_timeline (log.id disambiguation), azdo_helix_jobs (HelixJobId bridge), azdo_build_analysis (known/unmatched discrimination) (2,212 bytes retained)
+- **LEAVE 12:** Already minimal or degenerate (68-byte LimitedResults, string-only returns, azdo_search_log)
+- **Optional enrich:** 2 field descriptions (~90 bytes)
 
-**Additive wire-format verification:** Confirmed new fields use `init` properties with defaults, no renames/type changes, no tests assert absence of new fields.
+**Net savings:** ~5,450 bytes (18% vs. 28% blanket). Retains extraction-critical guidance on 3 chaining junctions.
 
-**External PR best practices:** (a) Be clear and specific in feedback. (b) Merge promptly when correct; don't delay external contributors behind internal PRs. (c) Production evidence in PR body (AzDO IDs, Helix job IDs) enables efficient verification. (d) File follow-ups ourselves.
-
-**Follow-up:** Same ExitCode null-coercion pattern found in GetWorkItemDetailAsync line 563 (deliberately scoped out; detail view is informational).
-
----
-
-## Decision Archive
-
-See `.squad/decisions.md` for full decision documentation on Issue #61 Policy (CallToolFilters), Issue #74 Schema Cost Framework, and Issue #74 Ground-Truth Measurement.
-
-## Learnings
-
-### Issue #81/#82 Triage — Framing Decisions (2026-06-24)
-
-**Sequencing heuristic applied:** User-visible correctness fix (#81 Stage A: silent → structured error) goes before architectural cleanup (#82: normalization centralization). The cleanup does not unblock the correctness fix; ship value first, clean house after.
-
-**Pre-work scope rule:** Any alias that currently "works" via silent tolerance must be in the alias table BEFORE strict mode enables. Source-confirmed: `result` → `resultFilter` is absent from `s_argumentAliases`; must land in the Stage A PR, not as a follow-up. General principle: when enabling a new enforcement gate, grep the session telemetry and issue history for known-tolerated variants before flipping the switch.
-
-**#82 one-PR vs. multiple PRs:** Sub-changes with a dependency chain (domain defaults → normalizer → JSON cache key → tests) should ship as one PR. Partial refactor state in `main` is worse than a larger diff. Independent sub-changes only justify separate PRs when they have different risk profiles or different owners.
-
-**#74 stays deferred:** Strict unknown-param rejection (#81) is invocation-time; schema trimming (#74) is cold-load size. Orthogonal concerns. The CONDITIONAL NO verdict on #74 is unaffected.
-
-**Stage A/B coexistence question:** Left as an open question for Ripley at implementation time. Both `UnmappedMemberHandling = Disallow` (Stage A, SDK-layer) and the CallToolFilter "did you mean" (Stage B, filter-pipeline layer) can coexist as defense-in-depth, but Stage B makes Stage A redundant for our tool set. Document the choice in the PR, don't silently remove Stage A without noting why.
-
-### Parameter Alias Layer Choice — `buildIdOrUrl` Review (2026-06-01)
-
-**Problem:** Agents supplied `build_id`/`buildUrl` (intuitive names) instead of canonical `buildIdOrUrl`, causing MCP SDK binding failure before tool code executed. Two rejection patterns confirmed from session e9c219bd telemetry.
-
-**Layer decision: `CallToolFilter` in `McpServerOptionsExtensions`, not per-tool attribute metadata.**
-
-Rationale: The failure is a *key*-normalization problem, not a *value*-normalization problem. `AzdoService.NormalizeFilter` handles value normalization post-binding — it cannot help when the binder rejects a call because the required key is absent. The only layer with access to `CallToolRequestParams.Arguments` before binding is a `CallToolFilter`. `McpServerToolAttribute` has no alias-map surface in MCP SDK 1.3.0. Per-tool method signatures (adding `buildId`/`buildUrl` as optional params) would require 11 method signature changes, add schema bytes to `tools/list`, and create coalesce logic in 11 bodies — wrong granularity.
-
-**One flat global alias map is correct until a second use case appears.** `buildIdOrUrl` is unique enough as a canonical key that global scope is safe. Pattern: `Dictionary<string, string>(OrdinalIgnoreCase)` mapping alias → canonical; first match wins; insertion order is significant for multi-alias calls.
-
-**Combine normalization INTO the existing binding-error filter, or enforce order via a composite helper.** Separate filter registration leaves an ordering dependency unchecked by the type system. Pre-invocation hygiene concerns (alias normalization + exception translation) belong together.
-
-**Drift telemetry must be built in from day one.** An alias filter with no logging cannot tell us whether the problem is improving. `ILogger? logger = null` parameter; `Debug`-level log when alias fires. Cheap to add; expensive to retrofit.
-
-**Approved: APPROVE WITH CHANGES.** Verdict at `.squad/decisions/inbox/dallas-buildidorurl-verdict-2026-06-01.md`.
-
-**Status:** Verdict approved 2026-06-01. Ripley implemented same date per 4 directives. Lambert completed 11 test cases (all 7 scenarios), full suite 1312 pass / 2 skip. Decision merged to decisions.md.
+**Decision filed:** `.squad/decisions/decisions.md` (merged from inbox 2026-07-20)
 
 ---
 
-### Issue #74 Schema Trim — Lead Verdict (2026-06-01)
+## 2026-06-24: Param Plumbing & Alias Coercion
 
-**Verdict: CONDITIONAL NO.** Do not pursue active `tools/list` trimming at 28.26 KB. Rationale: `tools/list` is a cold-load cost cached per-session by all major MCP clients. 28 KB amortized over sessions processing hundreds of KB of build/test data is <1% of token budget. The GitHub study's caveat ("0% benefit when context dominated by other content") applies directly.
+### PR #78 — Three AzDO Bugs Fixed
+1. **azdo_builds:** minTime/maxTime/queryOrder missing from filter + URL
+2. **azdo_test_attachments:** top param not forwarded to REST URL
+3. **azdo_test_results:** outcomes hardcoded (no override)
 
-**Lever ranking (value-vs-risk):**
-1. **Selective outputSchema removal** (4.5–8.9 KB, 16–31%): Best lever, HOLD until needed. Pattern 2 in SKILL.md preserves wire payload. No known consumer parses `tools/list` outputSchema.
-2. **Description tightening** (~0.5–1 KB): Do opportunistically during normal tool work, not as a dedicated project.
-3. **Lazy/scoped tool loading** (up to 50%): Architecturally interesting, defer to v0.9+. Premature at 25 tools.
-4. **Parameter consolidation** (~0.5 KB): REJECTED. Breaks v0.7.x API contracts for negligible savings.
+Four Copilot review rounds; 14 new tests added; all 1337 tests pass.
 
-**Decision flip trigger:** Consumer confirmed to re-fetch `tools/list` per-turn, tool count >40, or real user reports token budget pressure.
-
-**Calibration learning:** Estimated-vs-measured gap was 44% (16.2 KB estimate vs 28.9 KB real). Two errors partially cancelled (inputSchema overcount + outputSchema omission). Lesson: **always measure the full wire path before deciding on optimization work**. Ash's decision to gate on ground-truth measurement before approving any trim work was correct and saved us from acting on wrong numbers in either direction.
-
-For full work history from earlier 2026 sessions, see `.squad/agents/dallas/history-archive-2026-06-01.md`.
+### PR #75 — Numeric Alias Coercion (Gap fix)
+**Finding:** Numeric `build_id` values (JSON numbers) fail string parameter binding.
+**Fix:** Implement `CoerceToStringElement()` in CallToolFilter. Ripley + Lambert executed.
 
 ---
 
-## Gap Identification: Copilot PR #75 Review (2026-06-01)
+## 2026-06-01: Parameter Alias Layer Decision
 
-Copilot bot review flagged critical gap in prior approval: numeric `build_id` / `buildId` alias values (JSON numbers) would fail SDK binding to string parameter `buildIdOrUrl`. This was missed in original `AddBindingErrorFilter` design (PR #69).
+**Problem:** Agents passed `build_id`/`buildUrl` instead of canonical `buildIdOrUrl`.
 
-**Finding:** Alias coercion must handle JSON value-kind conversion (Number → String), not just parameter renaming.
+**Layer choice:** CallToolFilter in McpServerOptionsExtensions (pre-binding), not per-tool attributes or method signatures.
 
-**Remediation:** Ripley implemented `CoerceToStringElement(...)` in filter logic. Lambert added end-to-end regression tests. Now all numeric aliases coerce before binding.
+**Rationale:** Key-normalization problem, not value problem. MCP SDK 1.3.0 has no tool-level alias surface.
 
-**Lesson for future filter designs:** When binding alias parameters, validate all upstream value kinds (not just assumes upstream matches parameter type). Consider jsonElement.ValueKind early.
+**Pattern:** Flat global alias map (OrdinalIgnoreCase); insertion order significant; combine with binding-error filter.
 
-**Commits:** `92c2655` (Ripley fix), `015d304` (Lambert tests)
-
-
-### 2026-06-24: PR #78 AzDO Param Plumbing Shipped
-
-- Ripley implemented three parameter plumbing bugs (minTime/maxTime/queryOrder, top forwarding, outcomes filter)
-- Four Copilot review rounds: whitespace normalization, cache semantics, boundary protection, API stability
-- Duck architectural review clarified principle: "canonicalize at boundaries, centralize the algorithm" (not "normalize at every layer")
-- All 1337 tests pass; 14 new tests added
-
-**Related:** Session log: `.squad/log/2026-06-24-pr78-azdo-param-plumbing-and-followups.md`
-**Follow-up:** Issue #82 (architectural cleanup: centralize AzDO filter normalization)
+**Calibration:** Drift telemetry must be built in from day one (Debug-level logging).
 
 ---
 
-### 2026-06-24: PR #83 Review — Issue #81 Stage A (strict unknown-param rejection)
+## Issue #81/#82 Framing (2026-06-24)
 
-**Verdict: REQUEST CHANGES — blocking bug found.**
+**Sequencing heuristic:** User-visible correctness (#81 Stage A) before architectural cleanup (#82).
 
-**Non-blocking items all pass:**
-- Stage B scope is correctly absent
-- `("result", "resultFilter")` alias landed correctly; `arguments.Remove(aliasKey)` is in the right place; `return` → `continue` is sound
-- Both HTTP and stdio transports configured consistently
-- `AddBindingErrorFilter` interaction is correct — existing `ex.ParamName == "arguments"` catch covers the strict-mode throw
-- 8 tests cover all 7 Ripley scenarios plus build_id removal regression
+**Stage A/B coexistence:** Both UnmappedMemberHandling.Disallow (SDK layer) and CallToolFilter "did you mean" (pipeline layer) can coexist; Stage B makes Stage A redundant for our tools. Document the choice in PR, don't silently remove.
 
-**Blocking issue: missing `TypeInfoResolver` in both `Program.cs` files.**
+**Pre-work scope rule:** When enabling enforcement gate, grep telemetry/issue history for known-tolerated variants before flipping switch. Example: `result` → `resultFilter` alias landed in Stage A PR, not as follow-up.
 
-Root cause discovered via SDK decompilation (`Microsoft.Extensions.AI.Abstractions 10.5.2`):
-1. `AIFunctionFactory.ReflectionAIFunctionDescriptor.GetOrCreate` calls `jsonSerializerOptions.MakeReadOnly()` BEFORE constructing the descriptor
-2. The descriptor constructor calls `AIJsonUtilities.CreateFunctionJsonSchema` → `CreateJsonSchemaCore`
-3. `CreateJsonSchemaCore` (line 13866) tries to auto-assign `TypeInfoResolver` when null: `jsonSerializerOptions.TypeInfoResolver = DefaultOptions.TypeInfoResolver`
-4. Setting any property on read-only `JsonSerializerOptions` → `InvalidOperationException`
-5. This is a **first-request crash** (not a startup crash — tools are registered via DI factory lambdas that run on first request)
+---
 
-Lambert correctly fixed this in `CreateStrictFilteredToolHandler` but the fix was not applied to production `Program.cs`.
+## Previous Work Archive
 
-**Fix:** Add `TypeInfoResolver = new DefaultJsonTypeInfoResolver()` to `JsonSerializerOptions` in both `Program.cs` files. Also update `SKILL.md` to document this as a required companion.
+See `.squad/agents/dallas/history-archive-2026-06-01.md` for:
+- Issue #61 (silent MCP failures, exception centralization)
+- PR #66 (external contributor review, null-coercion pattern)
+- Issue #74 (schema measurement, 28.26 KB baseline, conditional NO)
+- MCP 1.4.0 bump safety analysis
 
-**Who fixes:** Larry (one-liner; reviewer lockout prevents routing to Ripley).
+---
 
-**Architectural note:** This is a subtle SDK ordering hazard — the "MakeReadOnly before schema gen" pattern requires callers to pre-populate TypeInfoResolver. Future callers of `WithToolsFromAssembly` with custom options must always include `TypeInfoResolver`. Captured in follow-up decision file.
+## Key Decisions Referenced
+
+- **Issue #74:** Conditional NO on active trimming (28.26 KB, <1% session budget). Lever 1 available (~8.9 KB zero-risk).
+- **Issue #81/#82:** Stage A (strict unknown-param) correct; Stage A/B can coexist; centralize normalization (cleanup after correctness).
+- **PR #78:** Param plumbing shipped; auth + cache remain; 14 new tests added.
+- **Lever 1 (Tiered outputSchema):** Ready for go/no-go; ~5,450 bytes savings with extraction guidance preserved.
+
+---
+
+## 2026-07-20: Progressive Disclosure Analysis
+
+### Finding: SDK supports dynamic ToolCollection (v1.4.0)
+- `ToolCollection` property on server supports Add/Remove at runtime
+- SDK auto-sends `notifications/tools/list_changed` to clients
+- Mechanism exists in protocol and SDK — feasible technically
+
+### Finding: No natural trigger in MCP protocol
+- No client gesture / context hint flows server-side mid-session
+- Server has no visibility into what the model is doing
+- Only triggers available: (a) tool A was called → reveal tool B, (b) timer/config
+
+### Tool Bucketing (25 tools, ~29 KB total)
+**CORE (always needed, 8 tools, ~12.8 KB):**
+azdo_build (1531), azdo_builds (2103), azdo_timeline (2099), azdo_helix_jobs (1425), azdo_search_log (2027), helix_status (1771), azdo_build_analysis (est ~1200), helix_ci_guide (479)
+
+**WORKFLOW-GATED (need build/job in hand, 11 tools, ~12.5 KB):**
+azdo_log, azdo_changes, azdo_test_runs, azdo_test_results, azdo_search_timeline, azdo_artifacts, helix_logs, helix_files, helix_work_item, helix_search, helix_find_files
+
+**NICHE (narrow scenarios, 6 tools, ~4.6 KB):**
+helix_parse_uploaded_trx (1703, self-identifies "Niche"), helix_batch_status, helix_download, azdo_test_attachments, helix_auth_status (330), azdo_auth_status (330)
+
+### Mechanism Feasibility
+1. **Dynamic list + list_changed:** FEASIBLE in SDK 1.4.0. But trigger problem is real — after azdo_builds/helix_status called, reveal drill-down tools. Complexity: moderate (state machine per session).
+2. **Meta/gateway tool:** FEASIBLE but anti-pattern for models. Worse tool-use accuracy. Not recommended.
+3. **Resources vs Tools:** CiKnowledgeResource ALREADY exists alongside helix_ci_guide tool. Resources are NOT in tools/list — they're in resources/list. Moving guide to resource-only saves 479 bytes but loses tool-call discoverability. Marginal.
+4. **Config-based profiles:** FEASIBLE, simplest. Operator picks "minimal" (8 core) or "full" (25). Static at startup. No runtime complexity.
+
+### Verdict
+Progressive disclosure is NOT worth pursuing as a primary lever here.
+- Maximum reclaim from hiding NICHE bucket: ~4.6 KB (16% of total)
+- Maximum reclaim from hiding WORKFLOW-GATED: ~12.5 KB (43%)
+- But WORKFLOW-GATED tools are what models need to SEE to plan multi-step investigations — hiding them degrades planning quality
+- The trigger problem means you'd reveal tools AFTER the model already decided it needed them (chicken-and-egg)
+- flatten-10/keep-3 outputSchema lever saves ~5.5 KB with ZERO ergonomic cost and no runtime complexity
+- Combined: flatten + description trim could reach ~8-9 KB savings without progressive disclosure
+
+### Recommendation
+1. Ship flatten-10/keep-3 (outputSchema tiering) — already designed, zero-risk
+2. If further cuts needed: config-based "minimal" profile (option 4) for operators who only need AzDO OR only Helix
+3. Do NOT pursue runtime dynamic disclosure — complexity/trigger problem outweighs marginal byte gain
+4. Progressive disclosure and outputSchema flatten compose (orthogonal) but overlap in motivation — flatten is strictly better ROI
