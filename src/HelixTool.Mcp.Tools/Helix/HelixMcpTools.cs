@@ -214,21 +214,33 @@ public sealed class HelixMcpTools
         }, "download files", isKnownException: IsHelixKnownException);
     }
 
-    [McpServerTool(Name = "helix_find_files", Title = "Find Files in Helix Job", ReadOnly = true, Idempotent = true, UseStructuredContent = true), Description("Search work items in a Helix job for uploaded files matching a glob pattern. Requires a Helix job GUID/URL, not an AzDO build ID.")]
+    [McpServerTool(Name = "helix_find_files", Title = "Find Files in Helix Job", ReadOnly = true, Idempotent = true, UseStructuredContent = true), Description("Search work items in a Helix job for uploaded files matching a glob pattern. Requires a Helix job GUID/URL, not an AzDO build ID. When workItem is supplied, scopes the search to that single work item (equivalent to helix_files + glob filter) instead of scanning up to maxItems work items.")]
     public async Task<FindFilesResult> FindFiles(
         [Description("Helix job ID as a JSON string (GUID), Helix job URL, or full Helix work item URL; not an AzDO build ID")] string jobId,
+        [Description("Helix work item name; optional only when jobId is a full Helix work item URL")] string? workItem = null,
         [Description("File name or glob pattern (e.g., *.binlog). Default: all files")] string pattern = "*",
         [Description("Maximum work items to scan. Default: 50")] int maxItems = 50,
         IProgress<ProgressNotificationValue>? progress = null)
     {
+        // If workItem not provided, try to extract from jobId URL
+        if (string.IsNullOrEmpty(workItem) && HelixIdResolver.TryResolveJobAndWorkItem(jobId, out var resolvedJobId, out var resolvedWorkItem))
+        {
+            if (!string.IsNullOrEmpty(resolvedWorkItem))
+            {
+                jobId = resolvedJobId;
+                workItem = resolvedWorkItem;
+            }
+        }
+
         return await McpExceptionHandler.RunServiceCallAsync(async () =>
         {
-            var results = await _svc.FindFilesAsync(jobId, pattern, maxItems, McpProgressAdapter.Wrap(progress));
+            var results = await _svc.FindFilesAsync(jobId, pattern, maxItems, McpProgressAdapter.Wrap(progress), workItem);
+            var scannedItems = string.IsNullOrEmpty(workItem) ? maxItems : 1;
 
             return new FindFilesResult
             {
                 Pattern = pattern,
-                ScannedItems = maxItems,
+                ScannedItems = scannedItems,
                 Found = results.Results.Count,
                 Results = results.Results.Select(r => new FindFilesWorkItem
                 {

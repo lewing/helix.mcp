@@ -6,6 +6,18 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ---
 
+## [Unreleased]
+
+### helix_find_files — optional `workItem` parameter for faster, scoped searches
+
+`helix_find_files` now accepts an optional `workItem` parameter, making it compatible with all other Helix job-inspection tools and enabling LLMs to pass the parameter without triggering a hard validation error.
+
+When `workItem` is supplied, the search is scoped to that single work item (equivalent to calling `helix_files` on that item and filtering by pattern), avoiding costly scans of up to 50 work items.
+
+This fixes a common LLM error: calling models that passed `workItem` to `helix_find_files` encountered a strict parameter-rejection error because it was the only work-item-accepting tool in its family missing that parameter. Now all Helix tools that accept a `jobId` also accept `workItem`.
+
+---
+
 ## [v0.8.0] — 2026-06-24
 
 ### Strict parameter rejection with "Did you mean?" hints (#81, PRs #83/#84/#87)
