@@ -130,3 +130,20 @@ Progressive disclosure is NOT worth pursuing as a primary lever here.
 2. If further cuts needed: config-based "minimal" profile (option 4) for operators who only need AzDO OR only Helix
 3. Do NOT pursue runtime dynamic disclosure — complexity/trigger problem outweighs marginal byte gain
 4. Progressive disclosure and outputSchema flatten compose (orthogonal) but overlap in motivation — flatten is strictly better ROI
+
+---
+
+## Learnings
+
+### 2026-07-28: helix_find_files workItem review
+
+**Finding:** When adding an optional parameter to an MCP tool, parameter position matters for C# test callers but NOT for MCP wire callers (JSON binds by name). The sibling convention (jobId → workItem → pattern → maxItems) is the right ordering for MCP tools even if it shifts positional args in tests — tests should use named arguments.
+
+**Finding:** Anticipatory tests written via reflection (to compile before the implementation) become technical debt once the implementation lands — they should be simplified to direct named-argument calls. Flag for Lambert.
+
+**Finding:** Hardcoded `[InlineData]` lists for schema-consistency `[Theory]` tests are pragmatic when no attribute/marker distinguishes the target tool class, but carry a maintenance burden. A code comment near the list is the minimum viable guard.
+
+**Decision:** APPROVED Ripley's implementation + Lambert's tests. Non-blocking: simplify reflection-based tests to named-arg calls, clean up stale "RED until" comments.
+
+## 2026-07-28 — helix_find_files workItem parameter review
+Reviewed Ripley's FindFilesAsync + MCP tool implementation and Lambert's test suite. Verified parameter ordering consistency, fast-path correctness, error handling, and tool description. APPROVED. No source-compat concerns. Assigned Lambert non-blocking follow-up tasks: simplify tests, remove stale comments, harden schema test.

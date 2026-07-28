@@ -556,3 +556,138 @@ This is what someone lands on from Google or a direct link, and it should immedi
 | 4 | README.md (MCP Config section) | Add "same commands available as `hlx` if MCP not working" | 1 sentence |
 | 5 | SKILL.md frontmatter | Widen USE FOR to include "MCP not configured or fails to start" | phrase edit |
 | 6 | docs/cli-reference.md (line 1) | Add "works without any MCP server" to opening sentence | phrase edit |
+---
+date: 2026-07-28
+author: ripley
+status: decided
+---
+
+# Decision: Add `workItem` parameter to `helix_find_files`
+
+## Problem
+
+A calling model passed `workItem` to `helix_find_files` and received a hard schema-rejection error from strict-mode parameter validation:
+
+> Unknown parameter 'workItem' for tool 'helix_find_files'. Did you mean: maxItems?
+
+All sibling tools (`helix_files`, `helix_logs`, `helix_search`, `helix_download`, `helix_work_item`, `helix_parse_uploaded_trx`) accept `workItem`. `helix_find_files` was the sole exception.
+
+## Decision
+
+Add `workItem` as an optional parameter to `helix_find_files`. When supplied:
+- Skip `ListWorkItemsAsync` (which pages through all work items in the job)
+- Call `ListWorkItemFilesAsync` directly on the named work item
+- Return a `FindFilesResults` with `TotalWorkItems = 1`, `Truncated = false`
+
+This is equivalent to `helix_files` + client-side glob filter, implemented at the service layer for proper error handling.
+
+## Rationale
+
+- Consistency: models learn the jobId/workItem pattern from one sibling and apply it to all. Breaking consistency is a usability defect, not a feature.
+- Performance: single-work-item fast path avoids listing all work items in the job.
+- No breaking change: `workItem` is optional with `null` default; existing callers unaffected.
+
+## Scope
+
+- `src/HelixTool.Core/Helix/HelixService.cs` — `FindFilesAsync` signature + single-item fast path
+- `src/HelixTool.Mcp.Tools/Helix/HelixMcpTools.cs` — MCP tool: added `workItem`, URL extraction, updated description
+- `FindBinlogsAsync` internal caller updated to use named `cancellationToken:` arg
+
+## Other inconsistencies checked
+
+No other schema inconsistencies found. `helix_status` and `helix_batch_status` are intentionally job-scoped and do not need `workItem`.
+
+---
+date: 2026-07-28T16:18:09-05:00
+author: lambert
+status: proposed
+---
+
+# Decision: Schema Consistency Tests for Work-Item-Scoped Helix Tools
+
+## Problem
+
+A hard schema-rejection error (`Unknown parameter 'workItem' for tool 'helix_find_files'`) reached production because there was no automated gate catching when a new tool in the Helix family omitted a parameter that all its siblings had. The parameter validation layer did exactly what it should — it rejected the unknown param — but the gap in the schema itself was never caught before ship.
+
+The existing `McpServerToolParameters_HaveDiscoverableDescriptions` test in `McpToolDescriptionTests.cs` guards descriptions but not cross-sibling parameter consistency.
+
+## Decision: Explicit Enumeration Test in McpToolDescriptionTests
+
+Add a `[Theory]` test (`WorkItemScopedHelixTools_HaveOptionalWorkItemParameter`) that enumerates every Helix MCP tool expected to have an optional `workItem` parameter:
+
+```
+helix_logs, helix_files, helix_download, helix_find_files,
+helix_work_item, helix_search, helix_parse_uploaded_trx
+```
+
+The test uses reflection to assert each tool has a `workItem` parameter that is optional (nullable string with null default).
+
+## Rationale
+
+- **Explicit enumeration > heuristic derivation.** The description-based approach (look for "work item" in the description) doesn't work reliably: `helix_find_files` says "Search work items" (plural), while the tools that had it say "for a Helix work item" (singular). The explicit list is the ground truth.
+- **Fails loudly on regression.** If a new tool is added to this family without `workItem`, the test fails with a message that names the tool and its actual parameter list.
+- **Self-documents the invariant.** The test and its inline comments are the canonical answer to "which Helix tools need workItem?"
+
+## Alternatives Rejected
+
+- **Heuristic over description text:** Unreliable (see above).
+- **Single `[Fact]` over all tools:** No — `[Theory]` is better so each tool gets its own pass/fail row in the test runner.
+
+## Consequences
+
+- Any future Helix tool in the work-item-scoped family must be added to the `[InlineData]` list, or the test will error with "tool not found."
+- The test is green today (Ripley's fix already landed) and must stay green.
+
+## Companion Tests Added
+
+- `HelixMcpToolsTests.FindFiles_WithWorkItem_ScansOnlyNamedWorkItem` — behavioral: when `workItem` is provided, only that item is queried; `ListWorkItemsAsync` is not called.
+- `HelixMcpToolsTests.FindFiles_WithWorkItem_DoesNotReturnOtherWorkItems` — behavioral: results contain only the requested work item.
+- Two pre-existing tests fixed to use named args (`pattern: "*.trx"`, `pattern: "*"`) after Ripley's parameter ordering change.
+
+# Review: helix_find_files workItem parameter addition
+
+**Date:** 2026-07-28T16:18:09-05:00
+**Reviewer:** Dallas (Lead)
+**Artifacts:** Ripley (implementation), Lambert (tests)
+**Verdict:** ✅ APPROVE
+
+---
+
+## 1. Parameter Ordering — Acceptable
+
+**MCP tool level (`FindFiles`):** `workItem` is placed after `jobId` and before `pattern`. This matches the sibling convention exactly — `Download`, `Logs`, `Files`, `Search`, and `ParseUploadedTrx` all place `workItem` as the second parameter after `jobId`. MCP parameters bind by name (JSON schema), not positionally, so the wire protocol is unaffected. The two test callsites updated to named arguments (`pattern: "*.trx"`) are the only C# callers outside tests. No package is published; this is not external API surface.
+
+**Service level (`FindFilesAsync`):** `workItem` is appended after `progress` and before `cancellationToken` — the lowest-disruption position. The only internal caller change is `FindBinlogsAsync` switching `cancellationToken` from positional to named, which Ripley handled correctly. `Program.cs` passes 3 positional args and is unaffected.
+
+No source-compat concern. Ordering follows established convention.
+
+## 2. Fast Path Correctness — Sound
+
+- **Glob matching:** Fast path uses the same `MatchesPattern(f.Name, pattern)` as the scan path. ✓
+- **Error handling:** A nonexistent work item will hit `ListWorkItemFilesAsync` → HTTP 404 → caught by the existing `catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)` block → surfaces as `HelixException`. Same behavior as the scan path hitting a missing job. ✓
+- **`maxItems` interaction:** Silently ignored when `workItem` is set. The tool description says "instead of scanning up to maxItems work items," which is clear. The MCP tool sets `ScannedItems = 1` in the response, so callers see the actual scope. Acceptable.
+- **`Truncated` flag:** Fast path returns `Truncated: false`, `TotalWorkItems: 1` — correct since there is no truncation when targeting a single item. ✓
+
+## 3. Tool Description — Clear and Consistent
+
+The updated description adds: "When workItem is supplied, scopes the search to that single work item (equivalent to helix_files + glob filter) instead of scanning up to maxItems work items."
+
+The `workItem` parameter description — "Helix work item name; optional only when jobId is a full Helix work item URL" — is character-for-character identical to sibling tools (`helix_logs`, `helix_files`, `helix_search`, etc.). ✓
+
+The URL-extraction fallback (`HelixIdResolver.TryResolveJobAndWorkItem`) matches the pattern in all sibling tools. ✓
+
+## 4. Test Quality — Adequate with Caveats
+
+**Schema consistency test (`WorkItemScopedHelixTools_HaveOptionalWorkItemParameter`):**
+Uses `[InlineData]` with a hardcoded list of 7 tool names. This means a future work-item-scoped tool added without `workItem` will NOT be caught unless someone remembers to add it to the list. However, auto-detection of "work-item-scoped" tools is non-trivial (no attribute or marker distinguishes them), so a hardcoded list is a pragmatic choice. The `GetMcpToolMethods()` discovery mechanism is sound for the tools it covers.
+
+**Behavioral tests:** Correct in their assertions — they verify `ListWorkItemsAsync` is NOT called and only the named work item is scanned. However, both tests use reflection-based invocation unnecessarily complex for this scenario. Named arguments (`FindFiles(ValidJobId, workItem: "target-wi", pattern: "*.trx")`) would be simpler and more readable.
+
+**Stale comments:** Test doc-comments say "RED until Ripley adds the optional workItem parameter" — but the parameter already exists. These are harmless but noisy.
+
+## Non-Blocking Follow-Ups
+
+1. **Lambert:** Simplify the two behavioral tests to use direct named-argument calls instead of reflection. The reflection was needed when writing tests anticipatorily (before the param existed), but now that it's landed, direct calls are clearer.
+2. **Lambert:** Remove or update the "RED until Ripley's fix" comments — the fix has landed.
+3. **Future consideration:** If a new work-item-scoped tool is added, the `[Theory]` list in `McpToolDescriptionTests` must be updated manually. Consider adding a code comment near the `[InlineData]` block reminding future authors to extend the list.
+

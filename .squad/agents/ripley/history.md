@@ -126,3 +126,31 @@
 **Why later:** flatten-10/keep-3 (5.5 KB savings) is higher ROI and orthogonal. Profiles compose as second-stage lever if token pressure persists.
 
 **Reference:** `.squad/decisions/decisions.md` entry "Progressive Disclosure for tools/list".
+
+---
+
+## 2026-07-28: helix_find_files workItem consistency fix
+
+### Summary
+Added `workItem` optional parameter to `helix_find_files` / `FindFilesAsync` to match sibling tools (`helix_files`, `helix_logs`, `helix_search`, etc.). A calling model passed `workItem` to `helix_find_files` and got a hard schema-rejection error (strict-mode did-you-mean → "Did you mean: maxItems?").
+
+### Learnings
+
+**Tool schema layout (Helix tools):**
+- All work-item-scoped Helix tools (`helix_files`, `helix_logs`, `helix_search`, `helix_download`, `helix_work_item`, `helix_parse_uploaded_trx`) accept `workItem` as an optional second parameter after `jobId`.
+- The URL extraction pattern (`HelixIdResolver.TryResolveJobAndWorkItem`) is replicated identically in each tool method before the service call.
+- `helix_find_files` was the sole exception — it scans multiple work items by design, but callers naturally try `workItem` by analogy with siblings. The fix adds a fast-path: when `workItem` is supplied, skip `ListWorkItemsAsync` and call `ListWorkItemFilesAsync` directly on that one item.
+
+**Service-layer signature change:**
+- Added `string? workItem = null` as a new optional param between `progress` and `cancellationToken` in `FindFilesAsync`.
+- `FindBinlogsAsync` (the only other internal caller) needed `cancellationToken: cancellationToken` (named arg) to avoid it landing on the new `workItem` slot — a compile-time catch, not a runtime one.
+
+**Other schema inconsistencies found:**
+- None in the Helix tool family. `helix_status` and `helix_batch_status` are intentionally job-scoped and do not need `workItem`. All other tools are now consistent.
+
+**Files changed:**
+- `src/HelixTool.Core/Helix/HelixService.cs` — `FindFilesAsync` + `FindBinlogsAsync` fix
+- `src/HelixTool.Mcp.Tools/Helix/HelixMcpTools.cs` — `FindFiles` MCP tool: added `workItem` param, URL extraction, updated description
+
+## 2026-07-28 — helix_find_files workItem parameter
+Implemented optional `workItem` parameter on FindFilesAsync service method and helix_find_files MCP tool. Fast path skips ListWorkItemsAsync when work item is named. Approved by Dallas. Shipped clean (0 errors/0 warnings).

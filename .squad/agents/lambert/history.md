@@ -104,6 +104,31 @@ See `.squad/agents/lambert/history-archive.md` for:
 
 ---
 
+## 2026-07-28: helix_find_files workItem schema consistency tests
+
+### Context
+
+User reported hard schema-rejection error: `helix_find_files` was missing `workItem` while all 6 sibling work-item tools had it. Ripley was concurrently implementing the fix.
+
+### Learnings
+
+**Test infrastructure:**
+- `McpToolDescriptionTests.cs` is the home for MCP schema/contract tests. It already had `McpServerToolParameters_HaveDiscoverableDescriptions` using reflection over `HelixMcpTools`, `AzdoMcpTools`, `CiKnowledgeTool`. Adding a `[Theory]` with `[InlineData]` for each expected tool is the right extension point for schema consistency tests.
+- The existing test class exposes `GetMcpToolMethods()` and `GetToolName()` as private statics — add new tests to the same class to reuse them without changing visibility.
+- `HelixMcpToolsTests.cs` is the home for per-tool behavioral tests. Setup pattern: `IHelixApiClient` mock via NSubstitute, `HelixService` + `HelixMcpTools` wired together.
+
+**Reflection-based behavioral tests for anticipated parameters:**
+- When testing behavior that depends on a parameter not yet in the codebase, use `method.GetParameters().FirstOrDefault(p => p.Name == "X")` as a guard inside the test. If the parameter is absent, the test fails early with a clear message. If present, the test proceeds with reflection-based invocation using a name-based arg selector (`p.Name switch { ... }`) — this is position-independent and survives Ripley inserting the param at any slot.
+- `Task<T>` return types can be cast directly from `method.Invoke(...)` if you know the concrete generic type.
+
+**Parameter ordering hazard:**
+- When a new optional parameter is inserted before existing optional parameters in a method, callers using positional args silently bind to the wrong slot (or fail to compile). Two pre-existing tests (`FindFiles_ReturnsValidJsonWithScanResults`, `FindFiles_WildcardPattern_ReturnsAllFiles`) broke this way — `"*.trx"` bound to the new `workItem` slot instead of `pattern`. Fix: use named args (`pattern: "*.trx"`) for all optional params after the first.
+
+**`ScannedItems` adjustment:**
+- Ripley's implementation sets `ScannedItems = string.IsNullOrEmpty(workItem) ? maxItems : 1` when workItem is provided. Tests that assert `ScannedItems == 50` remain valid when no workItem is given.
+
+---
+
 ## Known Patterns & Conventions
 
 - **Validation layers:** Validate at user boundary (CLI/MCP) → canonicalize at semantic boundary (cache key, URL) → share algorithm across layers
@@ -111,3 +136,7 @@ See `.squad/agents/lambert/history-archive.md` for:
 - **Cache key normalization:** Always normalize null/whitespace/defaults to identical representations before hashing
 - **External PR reviews:** Clear feedback → merge promptly → file follow-ups ourselves
 - **CCA follow-up cycle:** Expects author lockout; fixer can be different agent; ensure fix closes entire bug class, not just test case
+- **Schema consistency guard:** Use `[Theory] + [InlineData(toolName)]` in `McpToolDescriptionTests` to explicitly enumerate the set of tools that must share a parameter; fails loudly when a new tool is added without it
+
+## 2026-07-28 — helix_find_files workItem parameter test coverage
+Added schema-consistency test (WorkItemScopedHelixTools_HaveOptionalWorkItemParameter) covering 7 work-item-scoped Helix tools. Added 2 behavioral tests for workItem fast path. Fixed 2 pre-existing tests after parameter ordering change. Full suite: 1506 passed. Approved by Dallas; assigned non-blocking cleanup (simplify reflection-based tests, remove stale comments, harden schema test).
