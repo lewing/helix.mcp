@@ -27,6 +27,36 @@ Scribe agents can now commit agent-extracted skills directly, removing a manual 
 
 ---
 
+## [v0.9.0] — 2026-07-14
+
+### Containerized MCP server (#77)
+
+New `Dockerfile` publishes a multi-platform stdio MCP image (`linux/amd64`, `linux/arm64`) to `ghcr.io/lewing/helix.mcp` on release tags.
+
+### Canonical Helix-side job enumeration for AzDO builds (#92, #96)
+
+`azdo_helix_jobs` now resolves job IDs via canonical Helix metadata (`Job.ListAsync`); AzDO timeline task-name parsing is retained as fallback when Helix returns no results.
+
+### Arcade alignment — JobDetails fields and test-file extensions (#93, #95)
+
+`JobDetails` field surface aligned with arcade canonical definitions; expanded test-result file extension recognition.
+
+### Work item `ExitCode` and `ConsoleOutputUri` (#91, #94)
+
+`WorkItemSummary` now surfaces `ExitCode` and `ConsoleOutputUri` following the `Microsoft.DotNet.Helix.Client 11.0.0-beta.26325.102` bump.
+
+### HTTP 204 No Content handling (#105, #106)
+
+AzDO GET helpers now treat 204 No Content as an empty result instead of throwing; consistent with 200 + empty-body responses.
+
+### Dependency updates
+
+- `Microsoft.DotNet.Helix.Client` → 11.0.0-beta.26325.102 (#91, #94)
+- `actions/checkout` (#103), `actions/setup-dotnet` (#107), `zizmorcore/zizmor-action` 0.5.6 → 0.5.7 (#104)
+- Docker CI actions: `docker/build-push-action` → 7.3.0 (#108), `docker/metadata-action` → 6.2.0 (#109), `docker/setup-buildx-action` → 4.2.0 (#110), `docker/setup-qemu-action` → 4.2.0 (#111), `docker/login-action` → 4.4.0 (#112)
+
+---
+
 ## [v0.8.0] — 2026-06-24
 
 ### Strict parameter rejection with "Did you mean?" hints (#81, PRs #83/#84/#87)
