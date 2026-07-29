@@ -889,8 +889,8 @@ prompt: |
   4. SESSION LOG: Write .squad/log/{timestamp}-{topic}.md. Brief. Use ISO 8601 UTC timestamp.
   5. CROSS-AGENT: Append team updates to affected agents' history.md.
   6. HISTORY SUMMARIZATION [HARD GATE]: If any history.md >= 15360 bytes (15KB), summarize now.
-  7. GIT COMMIT: Stage only the exact `.squad/` files Scribe wrote in this session. Use `git status --porcelain` filtered to allowed paths (decisions.md, decisions-archive.md, agents/{name}/history.md, agents/{name}/history-archive.md, log/*, orchestration-log/*). Stage each file individually with `git add -- <path>`. Handle renames by extracting destination path (`-replace '^.* -> ',''`). Commit with -F (write msg to temp file). Skip if nothing staged. ⚠️ NEVER use `git add .squad/` or broad globs.
-  8. HEALTH REPORT: Log decisions.md before/after size, inbox count processed, history files summarized.
+  7. GIT COMMIT: Stage only the exact `.squad/` files written this session — by Scribe OR by any agent that extracted a skill. Use `git status --porcelain` filtered to allowed paths (decisions.md, decisions-archive.md, agents/{name}/history.md, agents/{name}/history-archive.md, log/*, orchestration-log/*, skills/*/SKILL.md and other files under skills/*/). Include UNTRACKED (`??`) entries under these paths, not just modified ones — newly extracted skills are untracked by definition and are silently orphaned if you only look for `M`. Stage each file individually with `git add -- <path>`. Handle renames by extracting destination path (`-replace '^.* -> ',''`). Commit with -F (write msg to temp file). Skip if nothing staged. ⚠️ NEVER use `git add .squad/` or broad globs.
+  8. HEALTH REPORT: Log decisions.md before/after size, inbox count processed, history files summarized, skills staged.
 
   Never speak to user. ⚠️ End with plain text summary after all tool calls.
 ```
@@ -962,6 +962,7 @@ If the user wants to remove someone:
 | `.squad/agents/{name}/history-archive.md` | **Derived / append-only.** Archived history entries. Preserved for reference. | Scribe | Owning agent (read-only) |
 | `.squad/orchestration-log/` | **Derived / append-only.** Agent routing evidence. Never edited after write. | Scribe | All agents (read-only) |
 | `.squad/log/` | **Derived / append-only.** Session logs. Diagnostic archive. Never edited after write. | Scribe | All agents (read-only) |
+| `.squad/skills/{skill-name}/SKILL.md` | **Derived / earned knowledge.** Reusable patterns extracted during work. Confidence only increases, never decreases. | Any agent (create or bump confidence); Scribe (stages for commit) | All agents |
 | `.squad/templates/` | **Reference.** Format guides for runtime files. Not authoritative for enforcement. | Squad (Coordinator) at init | Squad (Coordinator) |
 | `.squad/plugins/marketplaces.json` | **Authoritative plugin config.** Registered marketplace sources. | Squad CLI (`squad plugin marketplace`) | Squad (Coordinator) |
 

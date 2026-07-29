@@ -404,7 +404,7 @@ public class HelixMcpToolsTests
         _mockApi.ListWorkItemFilesAsync("wi-with-trx", ValidJobId, Arg.Any<CancellationToken>())
             .Returns(new List<IWorkItemFile> { trxFile, txtFile });
 
-        var result = await _tools.FindFiles(ValidJobId, "*.trx");
+        var result = await _tools.FindFiles(ValidJobId, pattern: "*.trx");
 
         Assert.Equal("*.trx", result.Pattern);
         Assert.Equal(50, result.ScannedItems);
@@ -440,11 +440,54 @@ public class HelixMcpToolsTests
         _mockApi.ListWorkItemFilesAsync("wi-all", ValidJobId, Arg.Any<CancellationToken>())
             .Returns(new List<IWorkItemFile> { f1, f2, f3 });
 
-        var result = await _tools.FindFiles(ValidJobId, "*");
+        var result = await _tools.FindFiles(ValidJobId, pattern: "*");
 
         Assert.Equal("*", result.Pattern);
         Assert.Equal(1, result.Found);
         Assert.Equal(3, result.Results[0].Files.Count);
+    }
+
+    // --- FindFiles workItem scoping tests ---
+
+    [Fact]
+    public async Task FindFiles_WithWorkItem_ScansOnlyNamedWorkItem()
+    {
+        var trxFile = Substitute.For<IWorkItemFile>();
+        trxFile.Name.Returns("results.trx");
+        trxFile.Link.Returns("https://helix.dot.net/files/results.trx");
+
+        _mockApi.ListWorkItemFilesAsync("target-wi", ValidJobId, Arg.Any<CancellationToken>())
+            .Returns(new List<IWorkItemFile> { trxFile });
+
+        var result = await _tools.FindFiles(jobId: ValidJobId, workItem: "target-wi", pattern: "*.trx");
+
+        Assert.Equal("*.trx", result.Pattern);
+        Assert.Equal(1, result.Found);
+        Assert.Single(result.Results);
+        Assert.Equal("target-wi", result.Results[0].WorkItem);
+        Assert.Single(result.Results[0].Files);
+        Assert.Equal("results.trx", result.Results[0].Files[0].Name);
+
+        // Single-item fast path: job-wide enumeration must not occur
+        await _mockApi.DidNotReceive().ListWorkItemsAsync(ValidJobId, Arg.Any<CancellationToken>());
+        await _mockApi.Received(1).ListWorkItemFilesAsync("target-wi", ValidJobId, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task FindFiles_WithWorkItem_DoesNotReturnOtherWorkItems()
+    {
+        var matchingFile = Substitute.For<IWorkItemFile>();
+        matchingFile.Name.Returns("build.binlog");
+        matchingFile.Link.Returns("https://helix.dot.net/files/build.binlog");
+
+        _mockApi.ListWorkItemFilesAsync("requested-wi", ValidJobId, Arg.Any<CancellationToken>())
+            .Returns(new List<IWorkItemFile> { matchingFile });
+
+        var result = await _tools.FindFiles(jobId: ValidJobId, workItem: "requested-wi", pattern: "*.binlog");
+
+        Assert.Equal(1, result.Found);
+        Assert.All(result.Results, wi => Assert.Equal("requested-wi", wi.WorkItem));
+        await _mockApi.DidNotReceive().ListWorkItemFilesAsync("other-wi", ValidJobId, Arg.Any<CancellationToken>());
     }
 
     // --- BatchStatus tests ---

@@ -1,286 +1,3 @@
-**Date:** 2026-06-24T15:37:15-05:00
-**Author:** Ripley
-**Branch:** fix/azdo-param-plumbing
-**Status:** Implemented
-
-## Context
-
-Audit of AzDO MCP tools found three cases where REST API capabilities were
-not reachable from callers: `minTime`/`maxTime`/`queryOrder` on builds,
-the `top` parameter not forwarded to the test attachments URL, and the
-`outcomes` filter hardcoded to `Failed` in test results.
-
-## Decision: AllowedValues + server-side normalizer pattern for enum-like params
-
-For string parameters that accept a fixed set of values (queryOrder,
-filter, recordType, etc.), always apply the following defense-in-depth:
-
-1. **`[AllowedValues(...)]`** on the MCP tool parameter — prevents binding
-   unknown values before the method body runs.
-2. **`Normalize*(string?)` helper on `AzdoService`** — trim + canonicalize
-   (e.g., case-fold, alias expansion). Maps empty/whitespace → null.
-3. **`IsValid*(string?)` check + `McpException` throw** in the tool method —
-   server-side validation for callers who bypass schema constraints.
-4. **Expose the constant array** (e.g., `AzdoQueryOrders`) as a public
-   `static readonly string[]` on `AzdoService` so the tool's `AllowedValues`
-   attribute can spread it without duplication.
-
-## Decision: Cache key must include all discriminating params
-
-When `CachingAzdoApiClient.HashFilter` or per-endpoint cache keys are
-built, they must include **every parameter that affects the server response**
-(not just the historically-implemented ones). Failure to include a new
-param (e.g., `outcomes`, `queryOrder`) causes stale cache hits that return
-wrong data silently.
-
-Checklist for new params:
-- [ ] Add to `AzdoBuildFilter` record (or method signature)
-- [ ] Forward to REST URL
-- [ ] Include in `HashFilter` / cache key string
-- [ ] Expose on MCP tool
-- [ ] Expose on CLI command
-
-## Decision: AzDO REST time-range semantics
-
-`minTime` / `maxTime` parameters are named generically. The time field
-they filter against is determined by `queryOrder`:
-- `queueTimeDescending` → filters queue time
-- `finishTimeDescending` → filters finish time
-- etc.
-
-Document this coupling in the `minTime`/`maxTime` parameter descriptions
-so callers know to pair them with the right `queryOrder`.
-
-## Consequences
-
-- Tools gain new capabilities without breaking existing callers (defaults
-  preserve prior behavior in all cases: queryOrder defaults to
-  queueTimeDescending, outcomes defaults to Failed).
-- Pattern is consistent with existing `filter`/`recordType` validation on
-  Timeline and SearchTimeline tools.
-
-# Decision: Issue #81 + #82 Triage — Sequencing and Scoping
-
-**Date:** 2026-06-24  
-**Author:** Dallas  
-**Status:** Proposed
-
----
-
-## Sequencing Decision
-
-**Recommended order:**
-
-1. **Pre-work alias + #81 Stage A** (one PR, size S)
-2. **#81 Stage B** (one PR, size M)
-3. **#82 — full normalization refactor** (one PR, size M)
-
-### Rationale
-
-#81 Stage A is the highest-value/lowest-risk item in the set: a single serializer option change converts silent data-corruption failures into structured errors. It ships immediately, closes the production footgun, and has no dependency on #82. Getting the "did you mean" UX (#81 Stage B) in before the normalization refactor (#82) means callers start seeing useful errors sooner, and the refactor (#82) gets to land on a codebase where strict mode is already exercising the filter pipeline.
-
-#82 is independent of both #81 stages but benefits from landing after #81 Stage A is in, so its contract tests can exercise the full failure surface (hallucinated params AND declared-but-not-forwarded params).
-
----
-
-## Pre-work Required for #81 Stage A
-
-### `result` → `resultFilter` alias **must land in the same PR as Stage A**
-
-`azdo_search_timeline` exposes its filter param as `resultFilter`. The alias table (`NormalizeArgumentAliases` in `McpServerOptionsExtensions.cs`) has no entry for `result` → `resultFilter`. Once `UnmappedMemberHandling = Disallow` is set, any caller currently passing `result: 'failed'` will receive a hard rejection. Confirmed absent by source inspection — the alias array only contains three `buildIdOrUrl` aliases.
-
-Action: add `("result", "resultFilter")` to `s_argumentAliases` in the same PR that enables strict mode. Lambert adds a regression test (alias normalizes before strict check fires).
-
-### Scan for any other silent-tolerance aliases
-
-Before Stage A ships, do a one-pass grep of session logs / issue history for other params being passed by callers in non-canonical form that the SDK currently tolerates. No further instances found in PR #78 / Ash's feasibility report, but confirm at implementation time.
-
----
-
-## Issue #81 Decomposition
-
-### Stage A (size S — one PR)
-- Add `("result", "resultFilter")` alias entry
-- Set `JsonSerializerOptions.UnmappedMemberHandling = Disallow` on `McpServerToolCreateOptions.SerializerOptions` at tool registration
-- Tests: existing alias tests still pass; new rejection test confirms `ArgumentException` from `InvokeCoreAsync` is caught by existing `AddBindingErrorFilter` and wrapped as `McpException`
-
-**Owner:** Ripley implements, Lambert writes tests. No doc surface change (error message is machine-generated, not schema-visible).
-
-### Stage B (size M — one PR)
-- Extend `AddBindingErrorFilter` (or a sibling CallToolFilter registered immediately after) with the canonical-param diffing logic
-- Build `toolName → IReadOnlySet<string>(canonicalParams)` map at server startup from `tool.ProtocolTool.InputSchema["properties"]`, captured in the filter closure
-- Compute `unknowns = normalizedArgKeys − canonicalParams`
-- On non-empty unknowns: throw structured `McpException` with "did you mean" (Levenshtein ≤3) and full allowed-param list
-- Stage A's `UnmappedMemberHandling = Disallow` can be removed if Stage B is in place (Stage B fires first in the filter pipeline, before SDK dispatch); or both can coexist as defense-in-depth
-
-Tests per issue body: per-tool canonical pass, alias pass, unknown rejected, close-match hint present, no-match list only, multiple unknowns. Add `minFinishTime` → `azdo_builds` regression from PR #78's root cause.
-
-**Owner:** Ripley implements. Lambert writes tests (reference `mcp-calltoolfilter-tests` SKILL.md for `RequestContext<CallToolRequestParams>` pattern). Kane: no user-visible schema change; the error message is in the response, not the schema — no doc update needed.
-
-**Note:** Ash adds value here as a rubber-duck on the Levenshtein threshold (≤3 is Ash's recommendation; confirm no false positives in the existing param name set).
-
----
-
-## Issue #82 Decomposition — One PR
-
-All four sub-changes ship as a single coherent PR. Sub-changes 1 (normalizer), 2 (JSON cache key), and 3 (move defaults to domain) have a dependency chain and partial state in `main` is worse than the consolidated diff. Sub-change 4 (contract tests) validates the whole unit.
-
-### Sub-change 3 first (no external dependency)
-Move `AzdoApiClient.DefaultQueryOrder` to `AzdoBuildFilterDefaults` in the domain model. This is a pure rename/move with no behavioral change and unblocks sub-changes 1 and 2.
-
-### Sub-change 1: `AzdoBuildFilterNormalizer`
-Extract the normalization rules (whitespace → null, trim, default-collapse, lowercase) into a single static helper. Both `AzdoApiClient.ListBuildsAsync` and `CachingAzdoApiClient.HashFilter` call it; neither reimplements the rules. Apply the same pattern to `AzdoTestResultFilter` if it accumulates similar concerns.
-
-### Sub-change 2: JSON-derived cache key
-Replace hand-built `HashFilter` string concatenation with `JsonSerializer.Serialize(normalizedFilter, stableOptions)`. Stable options: alphabetical property ordering, omit nulls/defaults, invariant culture. New fields fail-safe — no explicit wiring needed.
-
-### Sub-change 4: Contract tests per param
-Per MCP/CLI param: (a) REST URL contains the value, (b) cache key contains the value, (c) service call shape is correct. Reference `azdo-rest-param-surface-audit` SKILL.md for pattern. This is the largest piece; estimate ~half the total effort for this issue.
-
-**Owner:** Ripley implements all four. Lambert writes the normalizer unit tests and contract tests. No schema surface change → Kane not needed.
-
----
-
-## Issue #74 Overlap
-
-**No bundling.** #74 (schema token cost) is a `tools/list` cold-load size problem. #81 strict rejection is a runtime invocation-time problem. They are orthogonal — enabling strict mode does not add or remove bytes from `tools/list`. Dallas's existing CONDITIONAL NO verdict on #74 stands. Revisit triggers remain: per-turn re-fetch, tool count >40, or user-reported token pressure.
-
----
-
-## Effort Summary
-
-| Item | Size | Owner | Blocker for |
-|------|------|-------|------------|
-| Pre-work: `result` → `resultFilter` alias | S | Ripley + Lambert | #81 Stage A |
-| #81 Stage A: `UnmappedMemberHandling = Disallow` | S | Ripley + Lambert | #81 Stage B |
-| #81 Stage B: "did you mean" CallToolFilter | M | Ripley + Lambert (+ Ash rubber-duck) | — |
-| #82: Centralize normalization (all 4 sub-changes) | M | Ripley + Lambert | — |
-
-Total: ~1.5–2 days of Ripley + Lambert time.
-
----
-
-## Open Questions
-
-1. **Stage A vs. Stage B coexistence:** When Stage B lands, should `UnmappedMemberHandling = Disallow` from Stage A be removed (Stage B supersedes it) or kept as defense-in-depth for the `HasCustomParameterBinding == true` edge case? Decision deferred to Ripley at implementation time; document the choice in the PR.
-
-2. **`AzdoQueryOrder` value object (#82 optional):** The issue mentions the `mcp-enum-with-aliases` skill as a natural fit. Not required for the core cleanup. Defer unless the normalizer helper reveals a natural seam for it.
-# Decision: PR #83 Review Finding — `TypeInfoResolver` Required with `UnmappedMemberHandling.Disallow`
-
-**Date:** 2026-06-24  
-**Author:** Dallas  
-**Status:** Blocking — change requested on PR #83
-
----
-
-## Finding
-
-Both `Program.cs` files in PR #83 pass `new JsonSerializerOptions { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow }` to `WithToolsFromAssembly` without a `TypeInfoResolver`. This is a **first-request crash** (not a startup crash).
-
-## Root Cause (SDK Analysis)
-
-Decompiled from `Microsoft.Extensions.AI.Abstractions 10.5.2`:
-
-**`AIFunctionFactory.ReflectionAIFunctionDescriptor.GetOrCreate`:**
-```csharp
-JsonSerializerOptions jsonSerializerOptions = options.SerializerOptions ?? AIJsonUtilities.DefaultOptions;
-jsonSerializerOptions.MakeReadOnly();                          // ← locks options here
-...
-value = new ReflectionAIFunctionDescriptor(key, jsonSerializerOptions);   // ← schema gen happens inside
-```
-
-**`AIJsonUtilities.CreateJsonSchemaCore`:**
-```csharp
-if (jsonSerializerOptions.TypeInfoResolver == null)
-{
-    // ← throws InvalidOperationException: Cannot mutate a read-only instance of 'JsonSerializerOptions'
-    jsonSerializerOptions.TypeInfoResolver = DefaultOptions.TypeInfoResolver;
-}
-```
-
-The SDK locks options BEFORE schema generation, then schema generation tries to auto-assign `TypeInfoResolver`. Setting any property on read-only `JsonSerializerOptions` throws.
-
-## Impact
-
-- All MCP tool registrations that pass custom `JsonSerializerOptions` without `TypeInfoResolver` will crash on first tool call
-- Not caught at startup (factory lambdas are deferred)
-- Lambert's test fix (`TypeInfoResolver = new DefaultJsonTypeInfoResolver()` in `CreateStrictFilteredToolHandler`) is correct but was not applied back to `Program.cs`
-
-## Required Fix
-
-In both `HelixTool.Mcp/Program.cs` and `HelixTool/Program.cs`:
-```csharp
-.WithToolsFromAssembly(typeof(HelixMcpTools).Assembly, new JsonSerializerOptions
-{
-    UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
-    TypeInfoResolver = new DefaultJsonTypeInfoResolver(),  // required — SDK MakeReadOnly before schema gen
-})
-```
-
-## Architectural Rule
-
-**Any call to `WithToolsFromAssembly` (or `McpServerTool.Create`) with custom `JsonSerializerOptions` MUST include `TypeInfoResolver = new DefaultJsonTypeInfoResolver()`.** The SDK does not auto-populate it before calling `MakeReadOnly()`.
-
-This rule should be documented in:
-- `.squad/skills/mcp-strict-param-rejection/SKILL.md` — add `TypeInfoResolver` to the "How to Enable" code example
-- Code comments in both `Program.cs` files (done as part of the fix)
-
-## SKILL.md Update Required
-
-Current `## How to Enable` example:
-```csharp
-.WithToolsFromAssembly(typeof(MyTools).Assembly, new JsonSerializerOptions
-{
-    UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
-})
-```
-
-Must become:
-```csharp
-.WithToolsFromAssembly(typeof(MyTools).Assembly, new JsonSerializerOptions
-{
-    UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
-    TypeInfoResolver = new DefaultJsonTypeInfoResolver(),  // required: SDK calls MakeReadOnly() before schema generation
-})
-```
-# Decision: Issue #81 Stage A — Alias Key Removal and Loop Restructure
-
-**Date:** 2026-06-24  
-**Author:** Ripley  
-**Status:** Implemented (branch `squad/81-strict-mode-stage-a`, commit `fce8686`)
-
----
-
-## Design Choice: Remove Alias Key After Rename
-
-`NormalizeArgumentAliases` previously added the canonical key but left the alias key in the dict. With `UnmappedMemberHandling = Disallow` enabled, the alias key (e.g. `build_id`) would have been flagged as an unknown param and thrown `ArgumentException` — defeating the purpose of the alias system.
-
-**Decision:** Call `arguments.Remove(aliasKey)` immediately after setting the canonical value. The canonical is already set first so there is no window where neither key is in the dict (not relevant for single-threaded filter execution, but defensively correct).
-
----
-
-## Design Choice: `return` → `continue` in Alias Loop
-
-The previous `return` after the first successful alias rename was intentional for the original 3-alias case (all mapping to `buildIdOrUrl`). With the addition of `("result", "resultFilter")` — a different canonical — a caller to `azdo_search_timeline` that passes both `build_id` and `result` would have only `build_id` resolved. The `result` alias would remain in the dict and be rejected by strict mode.
-
-**Decision:** Replace `return` with `continue`. "First match wins per canonical" is preserved because once the canonical is set, all subsequent entries for the same canonical see `HasArgument(canonical) == true` and skip.
-
----
-
-## Design Choice: `AddBindingErrorFilter` Unchanged
-
-Ash's feasibility report (2026-06-24) confirmed the strict-mode path throws `ArgumentException(paramName: "arguments")`. The existing catch clause matches on `ex.ParamName == BinderArgumentsParamName`. No extension needed.
-
-If a future tool gains a DI-injected parameter (`HasCustomParameterBinding = true`), the SDK silently disables the strict check for that tool. Stage B's CallToolFilter-based approach is immune to this edge case and will supersede Stage A's defense.
-
----
-
-## Open Question Resolution (from Dallas's triage)
-
-> When Stage B lands, should `UnmappedMemberHandling = Disallow` from Stage A be removed or kept as defense-in-depth?
-
-**Recommendation:** Keep both. Stage B fires first in the filter pipeline and provides better UX (did-you-mean hints, full allowed-param list). Stage A's `Disallow` setting catches the `HasCustomParameterBinding == true` blind spot. Defense-in-depth at the serializer level costs nothing — it's a one-line option flag, not duplicated algorithm code.
-
 # Decision: MCP Schema Token Cost Measurement (Issue #74)
 
 **Date:** 2026-07-20T14:10:14-05:00  
@@ -350,45 +67,6 @@ Proceed with Lever 1 if **any** of:
 3. User reports token budget pressure with evidence
 
 OR proceed now as low-risk hygiene improvement (Lever 1 effort is S, risk is provably zero).
-
----
-
-# Decision: Issue #81 Stage B — Unknown-Param Filter Design
-
-**Date:** 2026-06-24  
-**Author:** Ripley  
-**Status:** Implemented (branch `squad/81-strict-mode-stage-b`)
-
-## Filter Pipeline Architecture
-
-**New sibling extension:** `AddUnknownParameterFilter(Assembly, ILogger?)` — separate from `AddBindingErrorFilter` for clarity.
-
-Pipeline order:
-1. `AddBindingErrorFilter` — alias normalization + exception wrapping
-2. `AddUnknownParameterFilter` — proactive unknown-param check (did-you-mean hints)
-3. SDK dispatch with `UnmappedMemberHandling.Disallow` (defense-in-depth)
-
-## Key Implementation Decisions
-
-### Schema Extraction
-- Use `RuntimeHelpers.GetUninitializedObject(type)` pattern to extract `ProtocolTool.InputSchema["properties"]` without DI construction
-- One shell per type, reused across methods, created lazily inside type loop
-- Pattern mirrors `McpToolsListPayloadTests` (documented in mcp-wire-format-trim SKILL.md)
-
-### Levenshtein Threshold: 6 (not 3)
-- Threshold 3 only catches typos (single-char transpositions)
-- Threshold 6 catches hallucinated compound names ("minFinishTime" → "minTime" is distance 6)
-- Spec regression test (`minFinishTime` → `minTime` hint) requires threshold 6
-- False positives harmless; full allowed-params list always shown
-
-### Edge Cases Handled
-- Missing schema (`Undefined`/`Null`) — skip filter, log warning
-- Parameterless tools — empty canonical set, any arg is unknown
-- `additionalProperties: true` — skip filter, log debug
-- Schema extraction throws — skip filter, log warning
-
-### Allowed-Param List
-Displayed in schema-declaration order (mirrors method signature), not alphabetical.
 
 ---
 
@@ -556,3 +234,201 @@ This is what someone lands on from Google or a direct link, and it should immedi
 | 4 | README.md (MCP Config section) | Add "same commands available as `hlx` if MCP not working" | 1 sentence |
 | 5 | SKILL.md frontmatter | Widen USE FOR to include "MCP not configured or fails to start" | phrase edit |
 | 6 | docs/cli-reference.md (line 1) | Add "works without any MCP server" to opening sentence | phrase edit |
+---
+date: 2026-07-28
+author: ripley
+status: decided
+---
+
+# Decision: Add `workItem` parameter to `helix_find_files`
+
+## Problem
+
+A calling model passed `workItem` to `helix_find_files` and received a hard schema-rejection error from strict-mode parameter validation:
+
+> Unknown parameter 'workItem' for tool 'helix_find_files'. Did you mean: maxItems?
+
+All sibling tools (`helix_files`, `helix_logs`, `helix_search`, `helix_download`, `helix_work_item`, `helix_parse_uploaded_trx`) accept `workItem`. `helix_find_files` was the sole exception.
+
+## Decision
+
+Add `workItem` as an optional parameter to `helix_find_files`. When supplied:
+- Skip `ListWorkItemsAsync` (which pages through all work items in the job)
+- Call `ListWorkItemFilesAsync` directly on the named work item
+- Return a `FindFilesResults` with `TotalWorkItems = 1`, `Truncated = false`
+
+This is equivalent to `helix_files` + client-side glob filter, implemented at the service layer for proper error handling.
+
+## Rationale
+
+- Consistency: models learn the jobId/workItem pattern from one sibling and apply it to all. Breaking consistency is a usability defect, not a feature.
+- Performance: single-work-item fast path avoids listing all work items in the job.
+- No breaking change: `workItem` is optional with `null` default; existing callers unaffected.
+
+## Scope
+
+- `src/HelixTool.Core/Helix/HelixService.cs` — `FindFilesAsync` signature + single-item fast path
+- `src/HelixTool.Mcp.Tools/Helix/HelixMcpTools.cs` — MCP tool: added `workItem`, URL extraction, updated description
+- `FindBinlogsAsync` internal caller updated to use named `cancellationToken:` arg
+
+## Other inconsistencies checked
+
+No other schema inconsistencies found. `helix_status` and `helix_batch_status` are intentionally job-scoped and do not need `workItem`.
+
+---
+date: 2026-07-28T16:18:09-05:00
+author: lambert
+status: proposed
+---
+
+# Decision: Schema Consistency Tests for Work-Item-Scoped Helix Tools
+
+## Problem
+
+A hard schema-rejection error (`Unknown parameter 'workItem' for tool 'helix_find_files'`) reached production because there was no automated gate catching when a new tool in the Helix family omitted a parameter that all its siblings had. The parameter validation layer did exactly what it should — it rejected the unknown param — but the gap in the schema itself was never caught before ship.
+
+The existing `McpServerToolParameters_HaveDiscoverableDescriptions` test in `McpToolDescriptionTests.cs` guards descriptions but not cross-sibling parameter consistency.
+
+## Decision: Explicit Enumeration Test in McpToolDescriptionTests
+
+Add a `[Theory]` test (`WorkItemScopedHelixTools_HaveOptionalWorkItemParameter`) that enumerates every Helix MCP tool expected to have an optional `workItem` parameter:
+
+```
+helix_logs, helix_files, helix_download, helix_find_files,
+helix_work_item, helix_search, helix_parse_uploaded_trx
+```
+
+The test uses reflection to assert each tool has a `workItem` parameter that is optional (nullable string with null default).
+
+## Rationale
+
+- **Explicit enumeration > heuristic derivation.** The description-based approach (look for "work item" in the description) doesn't work reliably: `helix_find_files` says "Search work items" (plural), while the tools that had it say "for a Helix work item" (singular). The explicit list is the ground truth.
+- **Fails loudly on regression.** If a new tool is added to this family without `workItem`, the test fails with a message that names the tool and its actual parameter list.
+- **Self-documents the invariant.** The test and its inline comments are the canonical answer to "which Helix tools need workItem?"
+
+## Alternatives Rejected
+
+- **Heuristic over description text:** Unreliable (see above).
+- **Single `[Fact]` over all tools:** No — `[Theory]` is better so each tool gets its own pass/fail row in the test runner.
+
+## Consequences
+
+- Any future Helix tool in the work-item-scoped family must be added to the `[InlineData]` list, or the test will error with "tool not found."
+- The test is green today (Ripley's fix already landed) and must stay green.
+
+## Companion Tests Added
+
+- `HelixMcpToolsTests.FindFiles_WithWorkItem_ScansOnlyNamedWorkItem` — behavioral: when `workItem` is provided, only that item is queried; `ListWorkItemsAsync` is not called.
+- `HelixMcpToolsTests.FindFiles_WithWorkItem_DoesNotReturnOtherWorkItems` — behavioral: results contain only the requested work item.
+- Two pre-existing tests fixed to use named args (`pattern: "*.trx"`, `pattern: "*"`) after Ripley's parameter ordering change.
+
+# Review: helix_find_files workItem parameter addition
+
+**Date:** 2026-07-28T16:18:09-05:00
+**Reviewer:** Dallas (Lead)
+**Artifacts:** Ripley (implementation), Lambert (tests)
+**Verdict:** ✅ APPROVE
+
+---
+
+## 1. Parameter Ordering — Acceptable
+
+**MCP tool level (`FindFiles`):** `workItem` is placed after `jobId` and before `pattern`. This matches the sibling convention exactly — `Download`, `Logs`, `Files`, `Search`, and `ParseUploadedTrx` all place `workItem` as the second parameter after `jobId`. MCP parameters bind by name (JSON schema), not positionally, so the wire protocol is unaffected. The two test callsites updated to named arguments (`pattern: "*.trx"`) are the only C# callers outside tests. No package is published; this is not external API surface.
+
+**Service level (`FindFilesAsync`):** `workItem` is appended after `progress` and before `cancellationToken` — the lowest-disruption position. The only internal caller change is `FindBinlogsAsync` switching `cancellationToken` from positional to named, which Ripley handled correctly. `Program.cs` passes 3 positional args and is unaffected.
+
+No source-compat concern. Ordering follows established convention.
+
+## 2. Fast Path Correctness — Sound
+
+- **Glob matching:** Fast path uses the same `MatchesPattern(f.Name, pattern)` as the scan path. ✓
+- **Error handling:** A nonexistent work item will hit `ListWorkItemFilesAsync` → HTTP 404 → caught by the existing `catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)` block → surfaces as `HelixException`. Same behavior as the scan path hitting a missing job. ✓
+- **`maxItems` interaction:** Silently ignored when `workItem` is set. The tool description says "instead of scanning up to maxItems work items," which is clear. The MCP tool sets `ScannedItems = 1` in the response, so callers see the actual scope. Acceptable.
+- **`Truncated` flag:** Fast path returns `Truncated: false`, `TotalWorkItems: 1` — correct since there is no truncation when targeting a single item. ✓
+
+## 3. Tool Description — Clear and Consistent
+
+The updated description adds: "When workItem is supplied, scopes the search to that single work item (equivalent to helix_files + glob filter) instead of scanning up to maxItems work items."
+
+The `workItem` parameter description — "Helix work item name; optional only when jobId is a full Helix work item URL" — is character-for-character identical to sibling tools (`helix_logs`, `helix_files`, `helix_search`, etc.). ✓
+
+The URL-extraction fallback (`HelixIdResolver.TryResolveJobAndWorkItem`) matches the pattern in all sibling tools. ✓
+
+## 4. Test Quality — Adequate with Caveats
+
+**Schema consistency test (`WorkItemScopedHelixTools_HaveOptionalWorkItemParameter`):**
+Uses `[InlineData]` with a hardcoded list of 7 tool names. This means a future work-item-scoped tool added without `workItem` will NOT be caught unless someone remembers to add it to the list. However, auto-detection of "work-item-scoped" tools is non-trivial (no attribute or marker distinguishes them), so a hardcoded list is a pragmatic choice. The `GetMcpToolMethods()` discovery mechanism is sound for the tools it covers.
+
+**Behavioral tests:** Correct in their assertions — they verify `ListWorkItemsAsync` is NOT called and only the named work item is scanned. However, both tests use reflection-based invocation unnecessarily complex for this scenario. Named arguments (`FindFiles(ValidJobId, workItem: "target-wi", pattern: "*.trx")`) would be simpler and more readable.
+
+**Stale comments:** Test doc-comments say "RED until Ripley adds the optional workItem parameter" — but the parameter already exists. These are harmless but noisy.
+
+## Non-Blocking Follow-Ups
+
+1. **Lambert:** Simplify the two behavioral tests to use direct named-argument calls instead of reflection. The reflection was needed when writing tests anticipatorily (before the param existed), but now that it's landed, direct calls are clearer.
+2. **Lambert:** Remove or update the "RED until Ripley's fix" comments — the fix has landed.
+3. **Future consideration:** If a new work-item-scoped tool is added, the `[Theory]` list in `McpToolDescriptionTests` must be updated manually. Consider adding a code comment near the `[InlineData]` block reminding future authors to extend the list.
+
+# PR #117 Reviewer Fixes — Decisions & Patterns
+
+**Date:** 2026-07-28  
+**Author:** Ripley  
+**Branch:** lewing-fix-find-files-workitem-param  
+**Commit:** 6d95624
+
+---
+
+## Decision: Use `IsNullOrWhiteSpace` as the canonical "absent" predicate for optional string tool params
+
+**Context:** `HelixMcpTools.FindFiles` used `IsNullOrEmpty`; `HelixService.FindFilesAsync` used `IsNullOrWhiteSpace`. A whitespace-only `workItem` was treated differently by each layer — the MCP layer skipped URL extraction while the service treated it as absent and ran a full scan. The `scannedItems` metadata then reported `1` (MCP path said "scoped") while the service returned results for all items.
+
+**Decision:** Standardize on `IsNullOrWhiteSpace` at every layer boundary that guards an optional user-supplied string. A whitespace-only name is never a valid work item identifier.
+
+**Scope:** All Helix MCP tool methods that check `workItem` before URL extraction or branching logic.
+
+---
+
+## Decision: Use `GetWorkItemFilesAsync` (not `_api.ListWorkItemFilesAsync`) in single-item fast paths
+
+**Context:** `FindFilesAsync`'s single-item fast path called `_api.ListWorkItemFilesAsync` directly. The outer catch blocks map HTTP 404 → "Job 'X' not found", so a missing work item produced the wrong error message.
+
+**Decision:** When a method-level sibling (`GetWorkItemFilesAsync`) already encapsulates the right error context for a resource, call the sibling instead of the raw API client. This keeps error messages accurate without duplicating catch logic.
+
+**Scope:** Any future fast-path additions in `HelixService` that operate on a single work item within a method otherwise scoped to jobs.
+
+---
+
+## Pattern: Schema consistency guard is discovery-based, not enumeration-based
+
+**Context:** The skill I authored described a `[Theory]`/`[InlineData]` pattern for the schema-consistency test. Lambert implemented a `[Fact]` with reflection-based discovery (`HelixJobIdTools_HaveWorkItemOrAreExplicitlyJobScoped`) that automatically catches new tools and requires explicit opt-out for job-scoped tools.
+
+**Preferred pattern:** Discovery-based `[Fact]` with an `intentionallyJobScopedTools` exclusion set. New work-item-scoped tools require zero test changes. New job-scoped tools require one line in the exclusion set with a justification comment.
+
+**Recommendation to Dallas:** Consider applying this same discovery-based guard pattern to other cross-cutting invariants (e.g., all tools with `jobId` must have a `Description` attribute, all tools using `CancellationToken` must not expose it in the MCP schema).
+# Decision: Reflection contract tests must assert parameter shape, not just presence
+
+**Date:** 2026-07-28  
+**Author:** Lambert  
+**Context:** PR #117 — helix_find_files workItem parameter, follow-up review comment
+
+## Decision
+
+When a reflection-based guard asserts that a parameter exists, it must also assert the **full behavioral shape** of that parameter:
+
+1. **Name** — parameter named as expected
+2. **Type** — `ParameterType == typeof(T)` for the expected CLR type
+3. **Optionality and default** — `HasDefaultValue && DefaultValue is null` for an optional-with-null-default pattern
+
+Asserting only the name allows wrong-type or required parameters to slip through while still violating the MCP schema contract.
+
+## Rationale
+
+The original guard in `HelixJobIdTools_HaveWorkItemOrAreExplicitlyJobScoped` only checked `p.Name == "workItem"`. A future author declaring `string workItem` (required), `int workItem`, or `string workItem = "default"` would pass the guard while producing an inconsistent MCP schema — exactly the bug class PR #117 was preventing.
+
+## Applied in
+
+`src/HelixTool.Tests/McpToolDescriptionTests.cs` — `HelixJobIdTools_HaveWorkItemOrAreExplicitlyJobScoped`, committed on branch `lewing-fix-find-files-workitem-param`.
+
+## Generalization
+
+Any schema-consistency guard that uses reflection to check a parameter convention should validate the complete contract: name + type + optionality. This applies equally to future guards for other cross-tool conventions (e.g., `filter`, `top`, `org`).

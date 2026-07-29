@@ -324,20 +324,38 @@ public class HelixService
     /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
     /// <param name="pattern">File name or glob pattern (e.g., <c>*.binlog</c>). Default: all files.</param>
     /// <param name="maxItems">Maximum number of work items to scan (default 30).</param>
+    /// <param name="workItem">Optional work item name. When provided, scopes the search to that single work item instead of scanning up to <paramref name="maxItems"/> work items.</param>
     /// <param name="cancellationToken">Optional cancellation token.</param>
     /// <returns>A <see cref="FindFilesResults"/> envelope containing matched work items plus truncation metadata.</returns>
     /// <exception cref="HelixException">Thrown when the job is not found or the API is unreachable.</exception>
-    public async Task<FindFilesResults> FindFilesAsync(string jobId, string pattern = "*", int maxItems = 30, IProgress<ProgressUpdate>? progress = null, CancellationToken cancellationToken = default)
+    public async Task<FindFilesResults> FindFilesAsync(string jobId, string pattern = "*", int maxItems = 30, IProgress<ProgressUpdate>? progress = null, string? workItem = null, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
         var id = HelixIdResolver.ResolveJobId(jobId);
 
         try
         {
-            var workItems = await _api.ListWorkItemsAsync(id, cancellationToken);
-            var totalWorkItems = workItems.Count;
-            var toScan = workItems.Take(maxItems).ToList();
-            var results = new List<FileSearchResult>();
+            // Single-work-item fast path: skip listing all work items.
+            if (!string.IsNullOrWhiteSpace(workItem))
+            {
+                progress?.Report(new ProgressUpdate(0, 1, $"Scanning work item '{workItem}'"));
+                // Use GetWorkItemFilesAsync so a missing work item is reported as
+                // "Work item 'X' in job 'Y' not found" rather than the job-level 404 message.
+                var files = await GetWorkItemFilesAsync(id, workItem, cancellationToken);
+                var matching = files
+                    .Where(f => MatchesPattern(f.Name, pattern))
+                    .ToList();
+                var results = matching.Count > 0
+                    ? [new FileSearchResult(workItem, matching)]
+                    : new List<FileSearchResult>();
+                progress?.Report(new ProgressUpdate(1, 1, $"Scanned 1 work item ({results.Count} match(es))"));
+                return new FindFilesResults(results, Truncated: false, TotalWorkItems: 1);
+            }
+
+            var allWorkItems = await _api.ListWorkItemsAsync(id, cancellationToken);
+            var totalWorkItems = allWorkItems.Count;
+            var toScan = allWorkItems.Take(maxItems).ToList();
+            var scanResults = new List<FileSearchResult>();
 
             int total = toScan.Count;
             int step = ProgressReporter.ItemStep(total);
@@ -353,17 +371,17 @@ public class HelixService
                     .Select(f => new FileEntry(f.Name, f.Link ?? ""))
                     .ToList();
                 if (matching.Count > 0)
-                    results.Add(new FileSearchResult(wi.Name, matching));
+                    scanResults.Add(new FileSearchResult(wi.Name, matching));
 
                 scanned++;
                 if (progress is not null && (scanned % step == 0 || scanned == total))
                 {
                     progress.Report(new ProgressUpdate(scanned, total,
-                        $"Scanned {scanned} of {total} work item(s) ({results.Count} match(es))"));
+                        $"Scanned {scanned} of {total} work item(s) ({scanResults.Count} match(es))"));
                 }
             }
 
-            return new FindFilesResults(results, totalWorkItems > maxItems, totalWorkItems);
+            return new FindFilesResults(scanResults, totalWorkItems > maxItems, totalWorkItems);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
         {
@@ -393,7 +411,7 @@ public class HelixService
 
     /// <summary>Scan work items in a job to find which ones contain binlog files.</summary>
     public Task<FindFilesResults> FindBinlogsAsync(string jobId, int maxItems = 30, CancellationToken cancellationToken = default)
-        => FindFilesAsync(jobId, "*.binlog", maxItems, progress: null, cancellationToken);
+        => FindFilesAsync(jobId, "*.binlog", maxItems, progress: null, cancellationToken: cancellationToken);
 
     /// <summary>Download files matching a pattern from a work item to a temp directory.</summary>
     /// <param name="jobId">Helix job ID (GUID) or full Helix URL.</param>
