@@ -6,15 +6,54 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ---
 
-## [Unreleased]
+## [v0.9.1] — 2026-07-28
 
-### helix_find_files — optional `workItem` parameter for faster, scoped searches
+### helix_find_files — optional `workItem` parameter for faster, scoped searches (#117)
 
-`helix_find_files` now accepts an optional `workItem` parameter, making it compatible with all other Helix job-inspection tools and enabling LLMs to pass the parameter without triggering a hard validation error.
+`helix_find_files` now accepts an optional `workItem` parameter, making it compatible with all other Helix job-inspection tools and eliminating the hard parameter-rejection error callers hit when passing `workItem` to this tool.
 
 When `workItem` is supplied, the search is scoped to that single work item (equivalent to calling `helix_files` on that item and filtering by pattern), avoiding costly scans of up to 50 work items.
 
 This fixes a common LLM error: calling models that passed `workItem` to `helix_find_files` encountered a strict parameter-rejection error because it was the only work-item-scoped tool in its family missing that parameter. Now all work-item-scoped Helix tools accept `workItem`; `helix_status` and `helix_batch_status` intentionally remain job-scoped and do not expose `workItem`.
+
+Additional fixes in PR #117:
+- Missing work items now report a specific "work item not found" error instead of "Job not found".
+- Fixed a whitespace-predicate mismatch (`IsNullOrEmpty` vs `IsNullOrWhiteSpace`) that caused `workItem: " "` to silently scan the whole job while the tool reported only one item scanned.
+- Added a reflected schema guard asserting every `jobId`-taking tool also takes an optional `string? workItem` (with explicit exceptions for `helix_status` and `helix_batch_status`).
+
+### Squad governance (#117)
+
+Scribe agents can now commit agent-extracted skills directly, removing a manual step from the skill-extraction workflow.
+
+---
+
+## [v0.9.0] — 2026-07-14
+
+### Containerized MCP server (#77)
+
+New `Dockerfile` publishes a multi-platform stdio MCP image (`linux/amd64`, `linux/arm64`) to `ghcr.io/lewing/helix.mcp` on release tags.
+
+### Canonical Helix-side job enumeration for AzDO builds (#92, #96)
+
+`azdo_helix_jobs` now resolves job IDs via canonical Helix metadata (`Job.ListAsync`); AzDO timeline task-name parsing is retained as fallback when Helix returns no results.
+
+### Arcade alignment — JobDetails fields and test-file extensions (#93, #95)
+
+`JobDetails` field surface aligned with arcade canonical definitions; expanded test-result file extension recognition.
+
+### Work item `ExitCode` and `ConsoleOutputUri` (#91, #94)
+
+`WorkItemSummary` now surfaces `ExitCode` and `ConsoleOutputUri` following the `Microsoft.DotNet.Helix.Client 11.0.0-beta.26325.102` bump.
+
+### HTTP 204 No Content handling (#105, #106)
+
+AzDO GET helpers now treat 204 No Content as an empty result instead of throwing; consistent with 200 + empty-body responses.
+
+### Dependency updates
+
+- `Microsoft.DotNet.Helix.Client` → 11.0.0-beta.26325.102 (#91, #94)
+- `actions/checkout` (#103), `actions/setup-dotnet` (#107), `zizmorcore/zizmor-action` 0.5.6 → 0.5.7 (#104)
+- Docker CI actions: `docker/build-push-action` → 7.3.0 (#108), `docker/metadata-action` → 6.2.0 (#109), `docker/setup-buildx-action` → 4.2.0 (#110), `docker/setup-qemu-action` → 4.2.0 (#111), `docker/login-action` → 4.4.0 (#112)
 
 ---
 
