@@ -129,6 +129,20 @@ User reported hard schema-rejection error: `helix_find_files` was missing `workI
 
 ---
 
+## 2026-07-28 — PR #117 guard hardening (workItem shape validation)
+
+### Learnings
+
+**Reflection-based contract tests must assert parameter SHAPE, not just presence.**
+Checking `p.Name == "workItem"` only proves the parameter exists; it does not prevent a future tool from declaring `string workItem` (required), `int workItem`, or `string workItem = "default"`, all of which would pass the old guard while still breaking callers. The correct assertion is all three:
+1. `p.Name == "workItem"` — parameter exists
+2. `p.ParameterType == typeof(string)` — correct CLR type
+3. `p.HasDefaultValue && p.DefaultValue is null` — optional with a null default
+
+Each distinct failure path should carry a self-contained message naming the tool and quoting the required declaration (`string? workItem = null`) so the author has an actionable fix without reading the test body.
+
+---
+
 ## Known Patterns & Conventions
 
 - **Validation layers:** Validate at user boundary (CLI/MCP) → canonicalize at semantic boundary (cache key, URL) → share algorithm across layers
@@ -140,3 +154,25 @@ User reported hard schema-rejection error: `helix_find_files` was missing `workI
 
 ## 2026-07-28 — helix_find_files workItem parameter test coverage
 Added schema-consistency test (WorkItemScopedHelixTools_HaveOptionalWorkItemParameter) covering 7 work-item-scoped Helix tools. Added 2 behavioral tests for workItem fast path. Fixed 2 pre-existing tests after parameter ordering change. Full suite: 1506 passed. Approved by Dallas; assigned non-blocking cleanup (simplify reflection-based tests, remove stale comments, harden schema test).
+
+## 2026-07-28: PR #117 Review Round — Guard Hardening (lewing-fix-find-files-workitem-param)
+
+### Task
+Route final review comment on helix_find_files workItem parameter — hardening schema-consistency guard assertions.
+
+### Fix Applied
+**Hardened HelixJobIdTools_HaveWorkItemOrAreExplicitlyJobScoped** reflection guard:
+- Added parameter type assertion (`typeof(string)`)
+- Added optionality assertion (`HasDefaultValue && DefaultValue is null`)
+- Each with distinct, actionable failure message
+
+Prevents future regressions from wrong-type or required parameters slipping through while still violating MCP contract.
+
+**Commit:** 445abcb  
+**Test outcome:** 1500/0 failed / 2 skipped  
+**Branch:** lewing-fix-find-files-workitem-param
+
+### Lesson: Skill Extraction Timing
+**TEAM LESSON (cross-agent):** Skill was extracted mid-session and captured the INTENDED design. Subsequent discovery-based implementation (Lambert) replaced the referenced method with superior pattern, leaving skill pointing at code that never existed. Consider deferring skill extraction until after review completion to capture actual shipped behavior.
+
+---

@@ -154,3 +154,45 @@ Added `workItem` optional parameter to `helix_find_files` / `FindFilesAsync` to 
 
 ## 2026-07-28 — helix_find_files workItem parameter
 Implemented optional `workItem` parameter on FindFilesAsync service method and helix_find_files MCP tool. Fast path skips ListWorkItemsAsync when work item is named. Approved by Dallas. Shipped clean (0 errors/0 warnings).
+
+## 2026-07-28: PR #117 Copilot reviewer fixes — predicate consistency, error context, changelog, skill
+
+### Summary
+Addressed four bugs/deficiencies raised by the Copilot PR reviewer on PR #117 (helix_find_files workItem param).
+
+### Learnings
+
+**Predicate mismatch is a layer-boundary bug class:**
+The MCP layer used `IsNullOrEmpty` while the service used `IsNullOrWhiteSpace`. A caller passing `workItem: " "` (whitespace) would be treated as a scoped item by the URL-extraction guard (no extraction attempt) but as an absent item by the service (triggers multi-item scan). The `scannedItems` metadata in the response then said `1` while the service actually scanned all items. Rule: **pick one predicate at the semantic entry point and use it identically at every boundary that guards the same value in the same layer chain.** `IsNullOrWhiteSpace` is almost always correct for user-supplied optional strings; a whitespace-only name is never meaningful.
+
+**Fast-path calls that bypass method-level error handlers inherit wrong error messages:**
+`FindFilesAsync` wraps its inner `_api.ListWorkItemFilesAsync` calls with job-level 404 handlers ("Job 'X' not found"). The single-item fast path called `_api.ListWorkItemFilesAsync` directly, so a missing work item was reported as a missing job. Fix: call `GetWorkItemFilesAsync` (which has its own work-item-scoped 404 handler) so the error reads "Work item 'X' in job 'Y' not found." **When a method has a specialized sibling with the right error context, prefer the sibling over calling the raw API client.**
+
+**Release notes must be scoped precisely:**
+"Now all Helix tools that accept `jobId` also accept `workItem`" was false — `helix_status` and `helix_batch_status` accept `jobId` but are intentionally job-scoped. Qualified to "all work-item-scoped Helix tools." Lesson: changelog claims about a whole family must be verified against every member.
+
+**Skill docs must describe the test that was actually built:**
+I described a `[Theory]`/`[InlineData]` pattern; Lambert built a superior `[Fact]` with reflection-based discovery and an `intentionallyJobScopedTools` exclusion set. Always update authored skill docs immediately when implementation diverges — stale skills mislead the next contributor.
+
+**Files changed:** `HelixMcpTools.cs`, `HelixService.cs`, `CHANGELOG.md`, `.squad/skills/mcp-sibling-schema-consistency/SKILL.md`
+**Tests:** 1500 passed, 2 skipped (0 failed) — commit `6d95624`
+
+## 2026-07-28: PR #117 Review Round — Comment Routing (lewing-fix-find-files-workitem-param)
+
+### Task
+Route 4 of 5 review comments on helix_find_files workItem parameter change.
+
+### Fixes Applied
+1. **Whitespace predicate unification:** `IsNullOrWhiteSpace` across MCP + service layers for optional strings
+2. **Error context isolation:** `FindFilesAsync` fast path now calls `GetWorkItemFilesAsync` (not raw API) to preserve error context
+3. **CHANGELOG correction:** Removed false claim about helix_status/helix_batch_status param surface
+4. **SKILL.md update:** Replaced stale [Theory]/[InlineData] reference with shipped discovery-based [Fact]
+
+**Commits:** 6d95624  
+**Test outcome:** 1500/0 failed / 2 skipped  
+**Branch:** lewing-fix-find-files-workitem-param
+
+### Lesson: Skill Extraction Timing
+**TEAM LESSON (cross-agent):** Skill was extracted mid-session and captured the INTENDED design. Subsequent discovery-based implementation (Lambert) replaced the referenced method with superior pattern, leaving skill pointing at code that never existed. Consider deferring skill extraction until after review completion to capture actual shipped behavior.
+
+---
