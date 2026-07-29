@@ -66,13 +66,19 @@ When adding a new tool to a family:
 3. Ensure the new tool includes all canonical params (at minimum as optional)
 4. Confirm URL extraction is present if siblings do it
 5. Add the single-item fast path at the service layer if the tool does multi-item iteration
-6. **Add the tool name to `McpToolDescriptionTests.WorkItemScopedHelixTools_HaveOptionalWorkItemParameter`** (the schema consistency guard)
+6. **No test change needed for new work-item-scoped tools** — the guard `HelixJobIdTools_HaveWorkItemOrAreExplicitlyJobScoped` discovers tools automatically via reflection. Simply adding `workItem` to the method signature is sufficient. For a new **job-scoped** tool (intentionally no `workItem`), add its MCP name to the `intentionallyJobScopedTools` set in that test with an explanatory comment.
 
 ## Testing Considerations
 
 ### Schema consistency test pattern
 
-In `McpToolDescriptionTests.cs`, add a `[Theory]` with explicit `[InlineData(toolName)]` entries for each tool that must have the parameter. Uses the existing `GetMcpToolMethods()` / `GetToolName()` private statics in the same class.
+The guard is `HelixJobIdTools_HaveWorkItemOrAreExplicitlyJobScoped` in `McpToolDescriptionTests.cs` — a `[Fact]` that **automatically discovers** all `HelixMcpTools` methods via reflection. It fails if any tool accepts `jobId` but omits `workItem` and is not in the `intentionallyJobScopedTools` exclusion set.
+
+**Adding a work-item-scoped tool:** add `workItem` to the method signature. No test edit required.
+
+**Adding a job-scoped tool:** add the tool's MCP name (with a justification comment) to `intentionallyJobScopedTools` in the test. Current job-scoped tools: `helix_status`, `helix_batch_status`.
+
+Describe the PATTERN in documentation (reflection-based discovery + explicit declared exclusions) rather than pinning exact assertion text, because the exclusion set evolves as new tools are added.
 
 ### Reflection-based behavioral tests (for anticipated params)
 

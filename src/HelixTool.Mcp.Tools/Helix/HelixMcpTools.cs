@@ -223,9 +223,9 @@ public sealed class HelixMcpTools
         IProgress<ProgressNotificationValue>? progress = null)
     {
         // If workItem not provided, try to extract from jobId URL
-        if (string.IsNullOrEmpty(workItem) && HelixIdResolver.TryResolveJobAndWorkItem(jobId, out var resolvedJobId, out var resolvedWorkItem))
+        if (string.IsNullOrWhiteSpace(workItem) && HelixIdResolver.TryResolveJobAndWorkItem(jobId, out var resolvedJobId, out var resolvedWorkItem))
         {
-            if (!string.IsNullOrEmpty(resolvedWorkItem))
+            if (!string.IsNullOrWhiteSpace(resolvedWorkItem))
             {
                 jobId = resolvedJobId;
                 workItem = resolvedWorkItem;
@@ -235,7 +235,7 @@ public sealed class HelixMcpTools
         return await McpExceptionHandler.RunServiceCallAsync(async () =>
         {
             var results = await _svc.FindFilesAsync(jobId, pattern, maxItems, McpProgressAdapter.Wrap(progress), workItem);
-            var scannedItems = string.IsNullOrEmpty(workItem) ? maxItems : 1;
+            var scannedItems = string.IsNullOrWhiteSpace(workItem) ? maxItems : 1;
 
             return new FindFilesResult
             {

@@ -14,7 +14,7 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 When `workItem` is supplied, the search is scoped to that single work item (equivalent to calling `helix_files` on that item and filtering by pattern), avoiding costly scans of up to 50 work items.
 
-This fixes a common LLM error: calling models that passed `workItem` to `helix_find_files` encountered a strict parameter-rejection error because it was the only work-item-accepting tool in its family missing that parameter. Now all Helix tools that accept a `jobId` also accept `workItem`.
+This fixes a common LLM error: calling models that passed `workItem` to `helix_find_files` encountered a strict parameter-rejection error because it was the only work-item-scoped tool in its family missing that parameter. Now all work-item-scoped Helix tools accept `workItem`; `helix_status` and `helix_batch_status` intentionally remain job-scoped and do not expose `workItem`.
 
 ---
 

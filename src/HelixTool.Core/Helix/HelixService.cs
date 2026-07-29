@@ -339,10 +339,11 @@ public class HelixService
             if (!string.IsNullOrWhiteSpace(workItem))
             {
                 progress?.Report(new ProgressUpdate(0, 1, $"Scanning work item '{workItem}'"));
-                var files = await _api.ListWorkItemFilesAsync(workItem, id, cancellationToken);
+                // Use GetWorkItemFilesAsync so a missing work item is reported as
+                // "Work item 'X' in job 'Y' not found" rather than the job-level 404 message.
+                var files = await GetWorkItemFilesAsync(id, workItem, cancellationToken);
                 var matching = files
                     .Where(f => MatchesPattern(f.Name, pattern))
-                    .Select(f => new FileEntry(f.Name, f.Link ?? ""))
                     .ToList();
                 var results = matching.Count > 0
                     ? [new FileSearchResult(workItem, matching)]
