@@ -6,15 +6,24 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ---
 
-## [Unreleased]
+## [v0.9.1] — 2026-07-28
 
-### helix_find_files — optional `workItem` parameter for faster, scoped searches
+### helix_find_files — optional `workItem` parameter for faster, scoped searches (#117)
 
-`helix_find_files` now accepts an optional `workItem` parameter, making it compatible with all other Helix job-inspection tools and enabling LLMs to pass the parameter without triggering a hard validation error.
+`helix_find_files` now accepts an optional `workItem` parameter, making it compatible with all other Helix job-inspection tools and eliminating the hard parameter-rejection error callers hit when passing `workItem` to this tool.
 
 When `workItem` is supplied, the search is scoped to that single work item (equivalent to calling `helix_files` on that item and filtering by pattern), avoiding costly scans of up to 50 work items.
 
 This fixes a common LLM error: calling models that passed `workItem` to `helix_find_files` encountered a strict parameter-rejection error because it was the only work-item-scoped tool in its family missing that parameter. Now all work-item-scoped Helix tools accept `workItem`; `helix_status` and `helix_batch_status` intentionally remain job-scoped and do not expose `workItem`.
+
+Additional fixes in PR #117:
+- Missing work items now report a specific "work item not found" error instead of "Job not found".
+- Fixed a whitespace-predicate mismatch (`IsNullOrEmpty` vs `IsNullOrWhiteSpace`) that caused `workItem: " "` to silently scan the whole job while the tool reported only one item scanned.
+- Added a reflected schema guard asserting every `jobId`-taking tool also takes an optional `string? workItem` (with explicit exceptions for `helix_status` and `helix_batch_status`).
+
+### Squad governance (#117)
+
+Scribe agents can now commit agent-extracted skills directly, removing a manual step from the skill-extraction workflow.
 
 ---
 
