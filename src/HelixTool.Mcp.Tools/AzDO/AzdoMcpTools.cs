@@ -35,7 +35,8 @@ public sealed class AzdoMcpTools
             ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
     }
 
-    [McpServerTool(Name = "azdo_builds", Title = "AzDO Build List", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
+    [McpServerTool(Name = "azdo_builds", Title = "AzDO Build List", ReadOnly = true, Idempotent = true, UseStructuredContent = true,
+                   OutputSchemaType = typeof(LimitedResultsSchema<AzdoBuild>)),
      Description("List recent Azure DevOps (AzDO) builds for a project. Filter by PR, branch, definition, or status.")]
     public async Task<LimitedResults<AzdoBuild>> Builds(
         [Description("Azure DevOps organization. Default: dnceng-public"), AllowedValues("dnceng-public", "dnceng", "devdiv")] string org = "dnceng-public",
@@ -172,7 +173,8 @@ public sealed class AzdoMcpTools
         return content ?? string.Empty;
     }
 
-    [McpServerTool(Name = "azdo_changes", Title = "AzDO Build Changes", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
+    [McpServerTool(Name = "azdo_changes", Title = "AzDO Build Changes", ReadOnly = true, Idempotent = true, UseStructuredContent = true,
+                   OutputSchemaType = typeof(LimitedResultsSchema<AzdoBuildChange>)),
      Description("Get commits/changes for an Azure DevOps (AzDO) build. Returns commit IDs, messages, authors, and timestamps.")]
     public async Task<LimitedResults<AzdoBuildChange>> Changes(
         [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
@@ -184,7 +186,8 @@ public sealed class AzdoMcpTools
             ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
     }
 
-    [McpServerTool(Name = "azdo_test_runs", Title = "AzDO Test Runs", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
+    [McpServerTool(Name = "azdo_test_runs", Title = "AzDO Test Runs", ReadOnly = true, Idempotent = true, UseStructuredContent = true,
+                   OutputSchemaType = typeof(LimitedResultsSchema<AzdoTestRun>)),
      Description("Get Azure DevOps (AzDO) test run summaries for a build with total/passed/failed counts. ⚠️ Run-level failedTests can be inaccurate — always drill into azdo_test_results to verify.")]
     public async Task<LimitedResults<AzdoTestRun>> TestRuns(
         [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
@@ -196,7 +199,8 @@ public sealed class AzdoMcpTools
             ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
     }
 
-    [McpServerTool(Name = "azdo_test_results", Title = "AzDO Test Results", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
+    [McpServerTool(Name = "azdo_test_results", Title = "AzDO Test Results", ReadOnly = true, Idempotent = true, UseStructuredContent = true,
+                   OutputSchemaType = typeof(LimitedResultsSchema<AzdoTestResult>)),
      Description("Get Azure DevOps (AzDO) test results for a specific test run. Defaults to failed tests only.")]
     public async Task<LimitedResults<AzdoTestResult>> TestResults(
         [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
@@ -210,7 +214,8 @@ public sealed class AzdoMcpTools
             ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
     }
 
-    [McpServerTool(Name = "azdo_artifacts", Title = "AzDO Build Artifacts", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
+    [McpServerTool(Name = "azdo_artifacts", Title = "AzDO Build Artifacts", ReadOnly = true, Idempotent = true, UseStructuredContent = true,
+                   OutputSchemaType = typeof(LimitedResultsSchema<AzdoBuildArtifact>)),
      Description("List Azure DevOps (AzDO) build artifacts such as logs, test results, and binlogs. Supports glob-style artifact-name filtering.")]
     public async Task<LimitedResults<AzdoBuildArtifact>> Artifacts(
         [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
@@ -287,7 +292,8 @@ public sealed class AzdoMcpTools
             ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
     }
 
-    [McpServerTool(Name = "azdo_test_attachments", Title = "AzDO Test Attachments", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
+    [McpServerTool(Name = "azdo_test_attachments", Title = "AzDO Test Attachments", ReadOnly = true, Idempotent = true, UseStructuredContent = true,
+                   OutputSchemaType = typeof(LimitedResultsSchema<AzdoTestAttachment>)),
      Description("List Azure DevOps (AzDO) attachments for a test result, such as screenshots, logs, and dumps. Requires run ID and result ID from azdo_test_results.")]
     public async Task<LimitedResults<AzdoTestAttachment>> TestAttachments(
         [Description("Azure DevOps test run ID from azdo_test_runs")] int runId,
@@ -446,6 +452,42 @@ public sealed class LimitedResults<T> : IReadOnlyList<T>
 
     public IEnumerator<T> GetEnumerator() => Results.GetEnumerator();
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+}
+
+/// <summary>
+/// Schema-only mirror of the JSON written by <see cref="LimitedResultsJsonConverter{T}"/>.
+///
+/// <para><see cref="LimitedResults{T}"/> implements <see cref="IReadOnlyList{T}"/> for caller
+/// ergonomics, which forces the custom <see cref="LimitedResultsJsonConverterFactory"/> (without it
+/// System.Text.Json would serialize it as a bare array). A custom converter makes the type opaque to
+/// STJ's schema exporter, which then emits the permissive schema <c>true</c> — and MCP SDK 2.x
+/// decides the <c>structuredContent</c> envelope by inspecting that schema, not the CLR type. A
+/// non-object schema makes the SDK wrap the value in <c>{"result": …}</c> for pre-2026-07-28 clients
+/// while leaving it unwrapped for newer ones, so one tool would present two shapes.</para>
+///
+/// <para>This record is never instantiated or serialized. It exists solely so the six capped/truncating AzDO
+/// tools can declare <c>OutputSchemaType = typeof(LimitedResultsSchema&lt;T&gt;)</c> and advertise an
+/// honest object schema. <c>LimitedResultsSchemaContractTests</c> pins it to the converter's output.</para>
+/// </summary>
+public sealed record LimitedResultsSchema<T>
+{
+    /// <summary>The page of results. Always present.</summary>
+    [JsonPropertyName("results")]
+    public IReadOnlyList<T> Results { get; init; } = [];
+
+    /// <summary>True when the underlying source had more items than were returned. Always present.</summary>
+    [JsonPropertyName("truncated")]
+    public bool Truncated { get; init; }
+
+    /// <summary>Total available items when known. Omitted otherwise.</summary>
+    [JsonPropertyName("total")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Total { get; init; }
+
+    /// <summary>Human-readable note explaining a truncation. Omitted otherwise.</summary>
+    [JsonPropertyName("note")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Note { get; init; }
 }
 
 public sealed class LimitedResultsJsonConverterFactory : JsonConverterFactory

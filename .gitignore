@@ -5,11 +5,13 @@ nupkg/
 *.user
 *.suo
 .vs/
-# Squad: ignore runtime state (logs, inbox, sessions)
+# Squad: ignore runtime state (logs, inbox, sessions, scratch research/evidence)
 .squad/orchestration-log/
 .squad/log/
 .squad/decisions/inbox/
 .squad/sessions/
+.squad/artifacts/
+.squad/evidence/
 # Squad: SubSquad activation file (local to this machine)
 .squad-workstream
 .ai-team-backup/
