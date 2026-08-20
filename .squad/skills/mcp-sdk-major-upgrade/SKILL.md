@@ -87,7 +87,7 @@ operator-readable intent, and a home for the escape-hatch comment.
 })
 ```
 
-Then pin it with an assertion test (see §7 T3) so deleting the line fails CI.
+Then pin it with an assertion test (see §7 T3) so the effective resolved value is guarded against changes to `Stateful`/`StatefulForInitializeClients` and future default changes; this catches intent regressions even though SDK 2.2 itself defaults to `Stateless`, so deletion while that default holds is indistinguishable from absence. Explicit source configuration remains the reviewability rule.
 
 ### 5. Prefer a new enum over a retained bool proxy
 

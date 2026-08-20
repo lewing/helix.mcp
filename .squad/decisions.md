@@ -40,7 +40,7 @@ The ModelContextProtocol C# SDK is upgrading from v1.4.0 to v2.2.0 (released 202
 
 **Fix:** `AttachApiKeyIfConfigured()` helper reads the *same* `HLX_API_KEY` variable through *same* production constant `ApiKeyMiddleware.EnvVarName`, applies *same* predicate, attaches header when needed. `HlxApiKeyEnvCollection` serializes xUnit test execution to eliminate cross-class parallelism races. Both worlds (key set/unset) now green.
 
-**Verification:** Full suite 1560 tests (1558 passed, 2 pre-existing skips) — identical in both env worlds.
+**Verification:** Full suite 1,570 tests (1,568 passed, 2 pre-existing skips / 0 failed) — identical in both env worlds.
 
 ### F2 — Scratch artifacts & licensing (RESOLVED by Kane)
 
@@ -74,9 +74,9 @@ The ModelContextProtocol C# SDK is upgrading from v1.4.0 to v2.2.0 (released 202
 | Gate | Owner | Status | Notes |
 |------|-------|--------|-------|
 | **G1** Clean build | Ripley | ✅ | 0 warnings, 0 errors |
-| **G2** Full suite | Lambert | ✅ | 1558 passed / 2 skipped (pre-existing) / 0 failed |
+| **G2** Full suite | Lambert | ✅ | 1,568 passed / 2 pre-existing skipped / 0 failed (1,570 total) |
 | **G3** Progress over stateless HTTP (T1, blocking) | Lambert | ✅ | Progress notifications survive SSE stream end-to-end |
-| **G4** tools/list wire parity | Lambert | ✅ | 30,366 bytes (v1.4.0) → 29,085 bytes (v2.2.0); delta explained (schema compaction + B1 fix) |
+| **G4** tools/list wire parity | Lambert | ✅ | 30,366 bytes (v1.4.0) → 29,163 bytes (v2.2.0); delta explained (six minimal schemas 408→102 bytes [−306], removed task-support metadata [−897], −1,203 bytes total, −3.96%, approximately −301 tokens) |
 | **G5** GET/DELETE contract | Lambert | ✅ | Asserts 405 on stateless endpoint; API key auth gates tested |
 | **G6** Stdio smoke | Ripley | ✅ | hlx mcp over stdio; tools/list + live call succeed |
 | **G7** HTTP smoke (F3 gate) | Lambert | ✅ | Two-request auth + token/cache scoping verified |
@@ -92,14 +92,17 @@ The ModelContextProtocol C# SDK is upgrading from v1.4.0 to v2.2.0 (released 202
 - **Result:** ✅ PASS
 
 ### T2 — Structured-content return-type guard
-- Reflects over 20 methods in `AzdoMcpTools`, `HelixMcpTools`, `CiKnowledgeTool` with `UseStructuredContent = true`
-- Asserts each returns non-primitive, non-string object type (SDK 2.x rule: scalars emit raw value, not `{"result": …}`)
-- Floor guard (≥20 methods) prevents future silent regression
+- Real `McpServerTool` schema generation over tool discovery
+- Discovery across structured tool classes (≥20 methods in `AzdoMcpTools`, `HelixMcpTools`, `CiKnowledgeTool` with `UseStructuredContent = true`)
+- Six `LimitedResults<T>` tools pinned to exactly `{"type":"object"}` schema
+- Current and down-level wire assertions prove natural unwrapped `structuredContent` behavior
+- Anti-vacuity coverage prevents future silent regression
 - **Result:** ✅ PASS
 
-### T3 — Session mode explicitly pinned to Stateless
-- Asserts `HttpServerTransportOptions.SessionMode` resolves to `HttpServerSessionMode.Stateless`
-- Pins intent against future default changes
+### T3 — Session mode effective-value regression guard
+- Effective-value regression guard: asserts `HttpServerTransportOptions.SessionMode` resolves to `HttpServerSessionMode.Stateless`
+- Catches changes to `Stateful`/`StatefulForInitializeClients` and future default changes
+- Cannot distinguish deletion while SDK 2.2 itself defaults to `Stateless`, hence explicit source configuration remains the reviewability rule
 - **Result:** ✅ PASS (both test constructs + mutation-verified on Program.cs line flip)
 
 ### T4 — GET/DELETE return 405 under stateless
