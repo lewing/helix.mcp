@@ -35,10 +35,13 @@ namespace HelixTool.Tests;
 /// asserted on CLR shape and so green-lit all six <c>LimitedResults&lt;T&gt;</c> tools, which
 /// were exactly the ones affected.</para>
 ///
-/// <para><b>What an object schema buys us.</b> An honest object schema makes
+/// <para><b>What an object schema buys us.</b> An object-typed schema makes
 /// <c>ShouldWrapValueForLegacyWire</c> return <see langword="false"/> at every protocol version,
-/// so a tool presents one <c>structuredContent</c> shape to every client instead of two — and
-/// schema-driven clients get a real contract instead of the information-free <c>true</c>.</para>
+/// so a tool presents one <c>structuredContent</c> shape to every client instead of two. The
+/// <see cref="LimitedResults{T}"/> tools get that from the shared, deliberately empty
+/// <c>MinimalObjectSchema</c> marker, whose generated schema is exactly <c>{"type":"object"}</c> —
+/// object-typed (so the envelope is stable) without paying fixed-context rent for a property
+/// mirror in every session's <c>tools/list</c>. See <c>LimitedResultsOutputSchemaTests</c>.</para>
 /// </summary>
 public class StructuredContentReturnTypeTests
 {
@@ -48,6 +51,9 @@ public class StructuredContentReturnTypeTests
         typeof(HelixMcpTools),
         typeof(CiKnowledgeTool),
     ];
+
+    /// <summary>Schema every <c>LimitedResults&lt;T&gt;</c> tool advertises; see <c>MinimalObjectSchema</c>.</summary>
+    private const string MinimalObjectSchemaJson = """{"type":"object"}""";
 
     public static IEnumerable<object[]> StructuredContentMethods() =>
         ToolTypes
@@ -93,8 +99,8 @@ public class StructuredContentReturnTypeTests
         "(not the CLR type), so pre-2026-07-28 clients receive {\"result\": <value>} while 2026-07-28+ " +
         "clients receive <value> unwrapped — the same tool ships two different shapes. The usual cause is a " +
         "custom [JsonConverter] on the return type, which makes it opaque to System.Text.Json's schema " +
-        "exporter (it then emits the permissive schema `true`). Fix by declaring the wire shape explicitly, " +
-        "e.g. [McpServerTool(..., OutputSchemaType = typeof(<shape>))].";
+        "exporter (it then emits the permissive schema `true`). Fix by declaring an object-typed schema " +
+        "explicitly, e.g. [McpServerTool(..., OutputSchemaType = typeof(MinimalObjectSchema))].";
 
     /// <summary>
     /// Secondary assertion, retained from the original guard: the unwrapped CLR return type must
@@ -184,8 +190,9 @@ public class StructuredContentReturnTypeTests
             $"JSON text block ({textBlock.Text}). The SDK wraps structuredContent in a {{\"result\": …}} " +
             "envelope for clients older than 2026-07-28 whenever the tool's generated outputSchema is not an " +
             "object schema, so an opaque schema makes the same tool present two different shapes depending on " +
-            "which client is connected. Give the return type a real object schema (OutputSchemaType) so every " +
-            "client sees the LimitedResults envelope {results, truncated, total?, note?}.");
+            "which client is connected. The fix is an object-typed outputSchema (OutputSchemaType = " +
+            "typeof(MinimalObjectSchema)), which leaves the natural {results, truncated, total?, note?} envelope " +
+            "unwrapped for every client.");
 
         // The pagination envelope itself must survive, not merely be self-consistent.
         Assert.Equal(JsonValueKind.Array, structured.GetProperty("results").ValueKind);
@@ -193,16 +200,20 @@ public class StructuredContentReturnTypeTests
     }
 
     /// <summary>
-    /// The wire schema advertised in <c>tools/list</c> must also describe the real
-    /// <c>LimitedResults&lt;T&gt;</c> envelope at every protocol version — including after the
-    /// pre-SEP-2106 wire rewrite performed by <c>BuildLegacyWireProtocolTool</c>, which would
-    /// otherwise turn an opaque schema into the placeholder
-    /// <c>{"type":"object","properties":{"result":true}}</c>.
+    /// The wire schema advertised in <c>tools/list</c> must stay the minimal object constraint at
+    /// every protocol version — including after the pre-SEP-2106 wire rewrite performed by
+    /// <c>BuildLegacyWireProtocolTool</c>. That rewrite only touches non-object schemas: it would
+    /// turn an opaque <c>true</c> into the placeholder
+    /// <c>{"type":"object","properties":{"result":true}}</c> (a different, larger schema, and the
+    /// tell that the payload is being wrapped), while an already-object-typed schema passes through
+    /// byte-for-byte. Asserting equality against the schema advertised to a SEP-2106 client is
+    /// therefore a direct check that no rewrite happened, which is the same condition that keeps
+    /// <c>structuredContent</c> unwrapped.
     /// </summary>
     [Theory]
     [InlineData("2025-06-18")]
     [InlineData("2026-07-28")]
-    public async Task LimitedResultsTool_AdvertisesMeaningfulOutputSchema_AtEveryProtocolVersion(string protocolVersion)
+    public async Task LimitedResultsTool_AdvertisesMinimalObjectSchema_AtEveryProtocolVersion(string protocolVersion)
     {
         var api = Substitute.For<IAzdoApiClient>();
 
@@ -214,22 +225,31 @@ public class StructuredContentReturnTypeTests
             transport, new McpClientOptions { ProtocolVersion = protocolVersion });
 
         var tools = await client.ListToolsAsync();
-        var builds = tools.Single(t => t.Name == "azdo_builds").ProtocolTool;
 
-        Assert.True(builds.OutputSchema.HasValue, "azdo_builds advertised no outputSchema on the wire.");
-        var schema = builds.OutputSchema!.Value;
-        var rendered = JsonSerializer.Serialize(schema, McpJsonUtilities.DefaultOptions);
+        // Every LimitedResults<T> tool, not just one: they share a single marker type, so a drift in
+        // any one of them is a drift in the shared contract.
+        string[] limitedResultsTools =
+        [
+            "azdo_builds", "azdo_changes", "azdo_test_runs",
+            "azdo_test_results", "azdo_artifacts", "azdo_test_attachments",
+        ];
 
-        Assert.True(
-            schema.ValueKind is JsonValueKind.Object
-            && schema.TryGetProperty("properties", out var properties)
-            && properties.TryGetProperty("results", out _)
-            && properties.TryGetProperty("truncated", out _),
-            $"At protocol version {protocolVersion}, azdo_builds advertised the outputSchema {rendered}, which " +
-            "does not describe the LimitedResults envelope {results, truncated, total?, note?}. A permissive " +
-            "`true` schema (what System.Text.Json emits for a type with a custom JsonConverter) tells " +
-            "schema-driven clients nothing, and is rewritten to the placeholder " +
-            "{\"type\":\"object\",\"properties\":{\"result\":true}} for pre-2026-07-28 clients.");
+        foreach (var name in limitedResultsTools)
+        {
+            var protocolTool = tools.Single(t => t.Name == name).ProtocolTool;
+
+            Assert.True(protocolTool.OutputSchema.HasValue, $"{name} advertised no outputSchema on the wire.");
+            var rendered = JsonSerializer.Serialize(protocolTool.OutputSchema!.Value, McpJsonUtilities.DefaultOptions);
+
+            Assert.True(
+                rendered == MinimalObjectSchemaJson,
+                $"At protocol version {protocolVersion}, {name} advertised the outputSchema {rendered}, expected " +
+                $"exactly {MinimalObjectSchemaJson}. Pre-2026-07-28 clients get their outputSchema through " +
+                "BuildLegacyWireProtocolTool, which rewrites any non-object schema into " +
+                "{\"type\":\"object\",\"properties\":{\"result\":<schema>}} — seeing that rewrite here means the " +
+                "SDK also considers the tool's structuredContent wrappable, so this client is receiving a " +
+                "different payload shape than a SEP-2106 client. An object-typed schema passes through unchanged.");
+        }
     }
 
     private static async Task<IHost> CreateAzdoMcpHostAsync(IAzdoApiClient api) =>
