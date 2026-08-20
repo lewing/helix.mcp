@@ -355,3 +355,84 @@ without it the run aborts with a runtime-not-found error that looks like a test 
 
 **Validation:** targeted 68/68; build 0 warnings / 0 errors; full suite 1,556 total, 1,554
 passed, 2 pre-existing skips, 0 failed; no `MCP9xxx`. Not committed.
+
+## 2026-08-20: Minimal `{"type":"object"}` outputSchema for the six `LimitedResults<T>` tools
+
+Larry directed a revision of the same PR: my B1 fix bought envelope stability by declaring a
+full `LimitedResultsSchema<T>` property mirror, and that cost **+3,745 B** of `tools/list` fixed
+context across six tools. Replaced all six with one shared, deliberately empty marker —
+`public sealed record MinimalObjectSchema;` in `HelixTool.Mcp.Tools` — declared the same
+documented way (`OutputSchemaType = typeof(MinimalObjectSchema)`).
+
+**The SDK only asks one question, so only answer that one.** `ShouldWrapValueForLegacyWire`
+tests whether the schema's `type` is `object` (or `["object","null"]`). It does not read
+`properties`, `required`, or anything else. Every byte beyond `{"type":"object"}` is therefore
+paid on every session by every client and buys *nothing* from the SDK — it only buys
+documentation, in the one place documentation is most expensive and least enforceable. A
+hand-written property mirror of a hand-written converter has no compiler tie either way, so the
+"contract" it advertised was maintained by convention only. Deleting it removed both the rent and
+the drift surface; the payload shape stays documented in the tool description and in the returned
+JSON, which are authoritative.
+
+**Probe the exporter, don't reason about it.** I stood up a throwaway tool host declaring
+`OutputSchemaType` against seven candidate types and printed the generated schema for each:
+
+| Marker type | Generated schema | Usable |
+|---|---|---|
+| empty `record` / empty `class` | `{"type":"object"}` (17 B) | ✅ |
+| `JsonObject`, `Dictionary<string,JsonElement>`, `Dictionary<string,object>` | `{"type":"object"}` (17 B) | ✅ |
+| `typeof(object)` | `true` (4 B) | ❌ non-object ⇒ legacy wrap |
+| `typeof(JsonElement)` | `true` (4 B) | ❌ same |
+
+**The intuitive choice is the wrong one.** `typeof(object)` is what you reach for when you want
+"just an object", and it produces the exact schema that reintroduces the bug — 4 bytes that split
+the wire contract by protocol version. An empty user-defined type is 13 bytes more expensive and
+correct. Cheapest ≠ smallest schema; cheapest is *smallest schema that is still object-typed*.
+
+`McpServerToolCreateOptions.OutputSchema` accepts an explicit `JsonElement` and would give exact
+byte control, but it is not reachable from the attribute — using it means abandoning
+`WithTools<T>()` attribute registration for hand-built `McpServerTool.Create(...)` calls for six
+tools. Rejected: much larger production change for a 0-byte gain. Post-registration schema
+mutation rejected outright per the brief.
+
+**The empty type's emptiness is load-bearing, so pin it.** Any member added to
+`MinimalObjectSchema` silently inflates all six tools. `LimitedResultsOutputSchemaTests` asserts
+(a) exactly six tools are discovered, (b) all six declare `typeof(MinimalObjectSchema)`, (c) each
+advertises byte-exact `{"type":"object"}`, (d) the marker has no serializable members. The
+version-parameterized wire theory in `StructuredContentReturnTypeTests` now loops all six rather
+than sampling `azdo_builds`, since one shared type means a drift in any one is a shared-contract
+drift.
+
+**Measured wire, both versions, literal output** (throwaway probe over real Streamable-HTTP,
+deleted after):
+
+```
+WIRE[2026-07-28] outputSchema={"type":"object"}  structuredContent={"results":[…],"truncated":false}  hasResultWrapper=False
+WIRE[2025-06-18] outputSchema={"type":"object"}  structuredContent={"results":[…],"truncated":false}  hasResultWrapper=False
+```
+
+Identical at both — which is the point: `BuildLegacyWireProtocolTool` rewrites only non-object
+schemas, so schema pass-through *is* the observable proof that no payload wrap happened.
+
+**Byte ledger** (25 tools, `ProtocolTool` + `McpJsonUtilities.DefaultOptions`, UTF-8):
+
+| State | `tools/list` | six schemas | per tool |
+|---|---|---|---|
+| main (SDK 1.4.0, 6eb3905) | 30,366 | 408 | 68 (`{"type":"object","properties":{"result":true},"required":["result"]}`) |
+| pre-revision PR (mirror) | 32,806 | 3,745 | 1319/422/653/476/454/421 |
+| revised PR (marker) | **29,163** | **102** | **17** |
+
+Revised is **−1,203 B (−3.96%, ≈−301 tokens) below main** — the first time this PR is net-cheaper
+than the baseline it replaces — and −3,643 B (−11.10%, ≈−911 tokens) below my own prior revision.
+
+**main was already wrapping.** Worth recording because it reframes the "breaking change" question:
+main's six schemas are `{"type":"object","properties":{"result":true},"required":["result"]}`,
+i.e. SDK 1.4.0 wrapped eagerly at creation time and shipped `{"result": …}` `structuredContent` to
+*every* client. So this PR does change the payload for existing clients — from uniformly wrapped
+to uniformly natural — it just changes it once, consistently, instead of splitting it by version.
+That is a real migration note, not a no-op, and it should be stated plainly rather than implied by
+a byte table.
+
+**Validation:** build 0 warnings / 0 errors (Debug + Release); targeted 81/81; full suite
+1,568 passed / 2 pre-existing skips / 0 failed, identical with `HLX_API_KEY` unset and set; no
+`MCP9xxx`. `DOTNET_ROLL_FORWARD=Major` still mandatory on every `dotnet test`. Not committed.

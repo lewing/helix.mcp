@@ -253,12 +253,24 @@ non-object branch and gets a version-dependent wire contract, plus an informatio
 `outputSchema` for modern clients. **Enumerate every `[JsonConverter]`-annotated type reachable
 from a tool return type before the upgrade; those are your suspects.**
 
-Fix, smallest first: SDK 2.x's `[McpServerTool(OutputSchemaType = typeof(TSchemaMirror))]`
-(requires `UseStructuredContent = true`) lets you declare a schema-only mirror record whose
-properties match the converter's actual `Write` output. **A hand-maintained mirror needs its own
-drift guard** — a test asserting property-name set equality in both directions between the
-mirror and the real serialized output, since nothing in the compiler ties them together.
-Removing the custom converter is cleaner but usually refactors a DTO you were told not to touch.
+Fix, smallest first: SDK 2.x's `[McpServerTool(OutputSchemaType = typeof(TSchema))]` (requires
+`UseStructuredContent = true`) lets you declare the schema explicitly. **Prefer an empty marker
+type over a property mirror.** `ShouldWrapValueForLegacyWire` reads only the schema's `type`; it
+never inspects `properties`/`required`, and the C# SDK does not validate `structuredContent`
+against `outputSchema` at runtime. So `public sealed record MinimalObjectSchema;` — which the STJ
+exporter renders as exactly `{"type":"object"}` (17 B) — fixes the envelope just as completely as a
+full mirror, at a fraction of the `tools/list` fixed-context cost, and with no hand-maintained
+mirror to drift. Measured here: six tools, 3,745 B of mirror → 102 B of marker, identical wire
+payloads. If you *do* hand-write a mirror, **it needs its own drift guard** — nothing in the
+compiler ties it to the converter. If you use a marker, guard its *emptiness* instead: one added
+member inflates every tool that shares it.
+
+**Beware the intuitive marker.** `typeof(object)` and `typeof(JsonElement)` export as `true` — not
+object-typed — so they reintroduce exactly the version-split wrap you are fixing, while *looking*
+like the most minimal possible answer. Empty `record`/`class`, `JsonObject`, and
+`Dictionary<string, …>` all export as `{"type":"object"}`. Probe the exporter with a throwaway tool
+and print `ProtocolTool.OutputSchema` rather than reasoning about it. Removing the custom converter
+is cleaner still, but usually refactors a DTO you were told not to touch.
 
 **Guard tests must assert on the protocol surface, never on CLR shape.** A test that checks
 "the return type is not a scalar" passes for exactly the types that are broken. Create the real
@@ -266,6 +278,19 @@ Removing the custom converter is cleaner but usually refactors a DTO you were to
 real server + real client **pinned to both an old and a new protocol version** and assert
 `structuredContent` is identical across them (and matches `content[0].text`). The
 version-parameterized theory is what catches an envelope that splits by client.
+
+**Schema pass-through is the cheapest proof.** The legacy rewrite
+(`BuildLegacyWireProtocolTool`) touches *only* non-object schemas. So asserting that a down-level
+client is advertised byte-identical schema bytes to a SEP-2106 client is a direct check that no
+rewrite ran — the same condition that keeps `structuredContent` unwrapped. It fails loudly and
+legibly (you see the `{"result": …}` placeholder appear in the schema) where a payload-only
+assertion can fail obscurely.
+
+**Check whether the old SDK was already wrapping before calling the fix a no-op.** Here, SDK 1.4.0
+wrapped eagerly, so main shipped `{"result": …}` to *every* client; the fix moves all clients to
+the natural shape at once. That is still a real observable payload change for existing consumers —
+better than a version-dependent split, but it belongs in the PR description and changelog, not
+implied by a byte table.
 
 ### `ProtocolTool.OutputSchema` semantics can change between majors — byte baselines lie
 

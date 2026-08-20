@@ -410,3 +410,75 @@ the rejection; new observations get filed, not escalated.**
 worlds, before and after mutation testing. Cheap, and it converts a claim into a fact. It also
 caught a small transcription error in Kane's report (files listed as `M` that are actually `??`),
 harmless here but the kind of thing that misleads a later reader.
+
+---
+
+## 2026-08-20T18:00:34.354-05:00 — Review of Ripley's fixed-context revision → APPROVED (minimal `{"type":"object"}` outputSchema)
+
+**Verdict:** APPROVED, no blocking code findings. Every claim reproduced independently.
+Decision: `.squad/decisions/inbox/dallas-minimal-schema-review.md`. Only outstanding gate is the
+PR #123 body, which I found materially inaccurate and for which I supplied exact replacement text.
+
+### Learnings
+
+**`git checkout --` is not a mutation-restore tool when the work under review is uncommitted.**
+Mid-mutation I reverted `AzdoMcpTools.cs` with `git checkout --` and silently destroyed Ripley's
+undelivered changes — the file went back to `HEAD`, not to the state I was reviewing. The only
+reason I caught it is that I had taken SHA-256 checksums *before* mutating and compared after every
+restore; the hash came back `a6d9d2d0…` instead of `61db2141…`. I rebuilt the six substitutions and
+the record deletion from the diff I had captured in context and re-verified byte identity. **On an
+uncommitted diff, restore by exact reverse string replacement, never by `git checkout`** — and treat
+the pre-mutation checksum as mandatory, not as diligence theatre. It is the difference between a
+recoverable slip and destroying a subordinate's unpushed work.
+
+**A constant remainder is a stronger "nothing else changed" proof than reading the diff.** Rather
+than eyeballing that only six attribute lines moved, I subtracted the six `LimitedResults<T>`
+schemas from the all-tools `outputSchema` total in each of the three states: 8,961−408, 12,298−3,745,
+8,655−102 — **8,553 every time**. One arithmetic identity certifies that all 14 other structured
+tools are byte-identical across a *major SDK boundary*, which no amount of diff-reading does.
+Prefer an invariant that must hold over an enumeration that must be complete.
+
+**Verify the baseline's behaviour from the old SDK's source, not from the new one's model.** The PR's
+compatibility note claimed the fix only moves pre-`2026-07-28` clients. I fetched
+`AIFunctionMcpServerTool.cs` at tag **v1.4.0** and found `CreateStructuredResponse(object?)` — no
+protocol-version parameter at all, wrapping decided once at creation time. `main` therefore shipped
+`{"result": …}` to *every* client, so the change is universal, not down-level-only. The note wasn't
+merely imprecise; it understated the blast radius, and it did so because it described the
+*intermediate* PR state (2.2.0 without the fix) as if it were the merge target. **When a compat note
+describes "before," pin which commit "before" means and read that commit's SDK.**
+
+**Reproduce the numbers by re-running the repo's own harness in throwaway worktrees.** Detached
+`git worktree add` at `6eb3905` and `9f007f19` let me run the existing
+`McpToolsListPayloadTests.ToolsListPayload_ReportActualBytes` unmodified in each and get
+30,366 / 32,806 / 29,163 — all three matching Ripley exactly, including the six per-tool sizes in
+declaration order. Cheaper and far less error-prone than writing a probe, and it uses the same
+measurement definition the branch is being judged by. Remove the worktrees in the same session;
+`git worktree list` is the check that you did.
+
+**Demand that the delta decompose, then check the decomposition at tool granularity too.**
+−1,203 = −306 (schemas) + −897 (dropped `execution.taskSupport`), zero residual — and
+`azdo_builds` alone: 2,103 → 2,013 = −51 − 39. A total that closes to zero can still hide two
+compensating errors; a per-tool row that also closes to zero cannot.
+
+**Mutation-test the *documented trap*, not just the guard.** The skill Ripley wrote warns that
+`typeof(object)` exports as `true` and reintroduces the version split. I mutated one tool to
+`typeof(object)` and watched the advertised schema become `true` at `2026-07-28` and the 68-byte
+`{"result":true}` placeholder at `2025-06-18` — the split rendered visible in the schema itself. That
+single mutation simultaneously proved the guard discriminates *and* that the skill's claim is true.
+When a subordinate's write-up asserts a trap, the mutation that proves the guard should be the trap.
+
+**"Weakened validation" must be judged against the merge target, not against the rejected draft.**
+My instinct was that dropping a property mirror weakens the contract. It does — relative to the
+*pre-revision PR*, which never shipped. Relative to `main`, whose schema was
+`{"properties":{"result":true}}` (the permissive any-schema), descriptiveness is a **wash**, and
+self-consistency actually improves because `main` advertised `required:["result"]` for a payload the
+revision no longer emits. The C# SDK never validated `structuredContent` against `outputSchema` in
+either version, so nothing enforceable was lost. **Ask "what does this PR change for a consumer of
+`main`" before calling anything a regression.**
+
+**Explicit `OutputSchema` short-circuits the return-schema path — the marker is more robust than
+claimed.** SDK 2.2.0's `CreateOutputSchema` returns `toolCreateOptions.OutputSchema` *before*
+consulting `function.ReturnJsonSchema`, so a future `[return: Description]` or `<returns>` doc
+cannot inflate these six tools' 17 bytes. Reading two functions past the one under discussion turned
+a maintenance worry into a documented guarantee. Read the caller and the fallback, not just the
+predicate.

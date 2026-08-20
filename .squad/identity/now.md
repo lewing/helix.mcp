@@ -1,12 +1,12 @@
 ---
-updated_at: 2026-08-20T17:46:54Z
-focus_area: MCP SDK 2.2.0 migration approved — awaiting PR creation.
+updated_at: 2026-08-20T18:24:39Z
+focus_area: MCP context optimization approved — PR #123 awaiting body update per Dallas review.
 active_issues: []
 ---
 
 # What We're Focused On
 
-**APPROVED:** ModelContextProtocol C# SDK 1.4.0 → 2.2.0 migration. Dependency bump, one-line session-mode config, five new gate tests (T1–T4 + F1/F3/G7), artifact cleanup. Dallas final verdict: all blocking findings (F1, F2, F3) resolved. PR ready to open.
+**APPROVED:** Minimal `{"type":"object"}` output schema for six capped `LimitedResults<T>` AzDO tools. Revised PR (29,163 bytes, −1,203 vs main, ≈−301 tokens) is net cheaper than baseline while fixing envelope split across all protocol versions. Dallas independent Opus 5 review: approved, with mandatory PR #123 body update per §6 (Summary bullet, entire Compatibility note, two Validation lines).
 
-**Next:** Ripley to create PR with migration changes. All gates (G1–G7) passing (1558 tests, 0 failures).
+**Next:** Update PR #123 description with exact Dallas-supplied replacement text. Minor findings (MIN-1 through MIN-3) recorded as follow-ups, not merge blockers.
 

@@ -572,3 +572,6 @@ The original guard in `HelixJobIdTools_HaveWorkItemOrAreExplicitlyJobScoped` onl
 ## Generalization
 
 Any schema-consistency guard that uses reflection to check a parameter convention should validate the complete contract: name + type + optionality. This applies equally to future guards for other cross-tool conventions (e.g., `filter`, `top`, `org`).
+
+---
+
