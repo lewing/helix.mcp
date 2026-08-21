@@ -1,3 +1,146 @@
+# Decision: ModelContextProtocol C# SDK 1.4.0 → 2.2.0 Migration — APPROVED
+
+**Date:** 2026-08-20  
+**Status:** ✅ **APPROVED** — Ready for PR creation  
+**Final verdict by:** Dallas (Lead Architect)  
+**Agents:** Ash (analysis), Ripley (implementation + B1–B3 fix), Lambert (T1–T4 + F1/F3), Kane (F2)
+
+---
+
+## Executive Summary
+
+The ModelContextProtocol C# SDK is upgrading from v1.4.0 to v2.2.0 (released 2026-08-13). This is a major version migration requiring dependency bump + one-line session-mode configuration. All blocking findings (F1, F2, F3) are resolved. Tests (T1–T4) implemented and passing. Migration is low-risk; no tool refactoring required.
+
+---
+
+## Timeline & Key Decisions
+
+### Phase 1 Approved (Dallas Architecture Review, Final Review, Re-Review)
+
+**Approved changes:**
+1. `Directory.Packages.props`: bump `ModelContextProtocol` + `ModelContextProtocol.AspNetCore` to 2.2.0 (locked in sync)
+2. `src/HelixTool.Mcp/Program.cs`: add explicit `SessionMode = HttpServerSessionMode.Stateless` in `.WithHttpTransport()` options
+3. `src/HelixTool.Mcp.Tools/AzDO/AzdoMcpTools.cs`: add `LimitedResultsSchema<T>` record + `OutputSchemaType` annotations on six tools (B1 fix by Ripley)
+4. New test files (5 total, T1–T4 + F1/F3/G7 gates): T1 blocking; T2/T3/T4 supporting gates
+5. Cleanup: `.gitignore` additions, XML-doc URL rewrites (F2 by Kane), auth-scoped test isolation (F3 by Lambert)
+
+**Rejected (NOT in phase 1):**
+- Ash's Option A (hybrid session mode): explicitly rejected — stateless is already the correct mode
+- Phase-2 stateless refactor: no stateful tool code exists; close this thread
+
+---
+
+## Key Findings & Resolutions
+
+### F1 — Session-mode test hermetic defect (RESOLVED by Lambert)
+
+**Problem:** `HttpTransportSessionModeTests.cs` was non-deterministic: failed when `HLX_API_KEY` env var was set.
+
+**Root cause:** Test used `WebApplicationFactory<Program>`, which boots the real `ApiKeyMiddleware` reading the ambient environment variable at pipeline-build time. No `X-Api-Key` header sent → 401 auth rejection before transport even runs.
+
+**Fix:** `AttachApiKeyIfConfigured()` helper reads the *same* `HLX_API_KEY` variable through *same* production constant `ApiKeyMiddleware.EnvVarName`, applies *same* predicate, attaches header when needed. `HlxApiKeyEnvCollection` serializes xUnit test execution to eliminate cross-class parallelism races. Both worlds (key set/unset) now green.
+
+**Verification:** Full suite 1,570 tests (1,568 passed, 2 pre-existing skips / 0 failed) — identical in both env worlds.
+
+### F2 — Scratch artifacts & licensing (RESOLVED by Kane)
+
+**Problem:** `.squad/artifacts/upstream-StatelessServerTests.cs` (642-line third-party copy with no license header) and `.squad/evidence/b2-{red,green}.txt` (generated test logs) were about to be committed.
+
+**Fix:**
+- Deleted both directories entirely
+- Added `.squad/artifacts/` and `.squad/evidence/` to `.gitignore`
+- Rewrote two test file XML-doc references from local paths to stable upstream GitHub URLs (`https://github.com/modelcontextprotocol/csharp-sdk/blob/v2.2.0/tests/ModelContextProtocol.AspNetCore.Tests/StatelessServerTests.cs`)
+- Kept `.squad/skills/mcp-sdk-major-upgrade/SKILL.md` (first-party, durable knowledge)
+- Corrected `AzdoMcpTools.cs` XML-doc misnomer: "paginated" → "capped/truncating"
+
+**Verification:** `git status` confirms no untracked paths under deleted dirs; grep confirms no dangling references.
+
+### F3 / G7 — HTTP auth + per-request token/cache isolation (RESOLVED by Lambert)
+
+**Problem:** No gate verified that auth gating + per-request scoping survive sessionless HTTP mode.
+
+**Fix:** New `ApiKeyScopedRequestIsolationTests.cs` using real `WebApplicationFactory<Program>` (not mocked host). Four facts:
+1. Missing `X-Api-Key` header → 401
+2. Incorrect key → 401
+3. Correct key → proceeds
+4. Two consecutive requests with different `Authorization: Bearer` tokens resolve independent tokens + cache partitions (verified via recording factories for `IHelixApiClientFactory`/`ICacheStoreFactory`)
+
+**Verification:** Identical 4-pass results with `HLX_API_KEY` unset and set (ambient).
+
+---
+
+## Validation Gates (All Passing)
+
+| Gate | Owner | Status | Notes |
+|------|-------|--------|-------|
+| **G1** Clean build | Ripley | ✅ | 0 warnings, 0 errors |
+| **G2** Full suite | Lambert | ✅ | 1,568 passed / 2 pre-existing skipped / 0 failed (1,570 total) |
+| **G3** Progress over stateless HTTP (T1, blocking) | Lambert | ✅ | Progress notifications survive SSE stream end-to-end |
+| **G4** tools/list wire parity | Lambert | ✅ | 30,366 bytes (v1.4.0) → 29,163 bytes (v2.2.0); delta explained (six minimal schemas 408→102 bytes [−306], removed task-support metadata [−897], −1,203 bytes total, −3.96%, approximately −301 tokens) |
+| **G5** GET/DELETE contract | Lambert | ✅ | Asserts 405 on stateless endpoint; API key auth gates tested |
+| **G6** Stdio smoke | Ripley | ✅ | hlx mcp over stdio; tools/list + live call succeed |
+| **G7** HTTP smoke (F3 gate) | Lambert | ✅ | Two-request auth + token/cache scoping verified |
+
+---
+
+## Test Summary (T1–T4)
+
+### T1 — Progress notifications over stateless HTTP (BLOCKING)
+- Hosts real `HelixMcpTools` over `TestHost` with `SessionMode.Stateless`
+- Real `McpClient` over `HttpClientTransport`; passes `progressToken` in request meta
+- Asserts ≥1 `notifications/progress` arrives, with values matching `ProgressUpdate` → `ProgressNotificationValue` adapter mapping
+- **Result:** ✅ PASS
+
+### T2 — Structured-content return-type guard
+- Real `McpServerTool` schema generation over tool discovery
+- Discovery across structured tool classes (≥20 methods in `AzdoMcpTools`, `HelixMcpTools`, `CiKnowledgeTool` with `UseStructuredContent = true`)
+- Six `LimitedResults<T>` tools pinned to exactly `{"type":"object"}` schema
+- Current and down-level wire assertions prove natural unwrapped `structuredContent` behavior
+- Anti-vacuity coverage prevents future silent regression
+- **Result:** ✅ PASS
+
+### T3 — Session mode effective-value regression guard
+- Effective-value regression guard: asserts `HttpServerTransportOptions.SessionMode` resolves to `HttpServerSessionMode.Stateless`
+- Catches changes to `Stateful`/`StatefulForInitializeClients` and future default changes
+- Cannot distinguish deletion while SDK 2.2 itself defaults to `Stateless`, hence explicit source configuration remains the reviewability rule
+- **Result:** ✅ PASS (both test constructs + mutation-verified on Program.cs line flip)
+
+### T4 — GET/DELETE return 405 under stateless
+- Contract test on MCP endpoint asserting GET / DELETE yield `HttpStatusCode.MethodNotAllowed` (405)
+- Documents endpoint surface change for readers
+- **Result:** ✅ PASS
+
+---
+
+## Migration Plan (Dallas)
+
+### Why Stateless is Correct
+- Our entire server is already per-request-scoped (token accessor, cache store, API clients all `AddScoped`)
+- We hold no cross-request server state
+- We issue no server→client requests (progress is request-bound, injected parameter)
+- Stateless mode removes session affinity requirement for load-balanced deployments
+- SDK 2.x flipped the default from stateful → stateless; we are explicitly declaring the intention
+
+### Rollback Plan
+Revert `Directory.Packages.props` to **v1.4.1** (2026-07-09, the 1.x servicing release) + revert `Program.cs` hunk. Two-file revert; all other changes are independent.
+
+### Effort Estimate
+- Ripley: 0.5–1 day (dependency bump + smoke tests G6/G7)
+- Lambert: 0.5 day (test gates T1–T4, G2–G5)
+- Kane: 0.25 day (artifact cleanup F2)
+- Total: ~1.25 days
+
+---
+
+## Key Learnings
+
+1. **Session mode is the critical change.** SDK 2.x flipped the default; without explicit source declaration, reviewers cannot see the intent and default-change regressions are invisible.
+2. **Hybrid mode adds legacy session debt unnecessarily.** Stateless is already our architecture; adopting hybrid would re-introduce session affinity for load-balanced deployments, on day one of a deprecated API.
+3. **Wire-format claims require evidence.** Dallas's initial concern about "silent breaking changes to 6 tools" was real in schema structure but not in wire payloads to legacy clients. B1 fix is still correct; frame it as schema clarity improvement, not legacy regression repair.
+4. **Auth + scoping under stateless requires proof.** T1 (progress) and F3 (per-request token/cache isolation) are the blocking facts that justify the mode choice; do not assume existing unit tests catch them.
+
+---
+
 # Decision: MCP Schema Token Cost Measurement (Issue #74)
 
 **Date:** 2026-07-20T14:10:14-05:00  
@@ -432,3 +575,6 @@ The original guard in `HelixJobIdTools_HaveWorkItemOrAreExplicitlyJobScoped` onl
 ## Generalization
 
 Any schema-consistency guard that uses reflection to check a parameter convention should validate the complete contract: name + type + optionality. This applies equally to future guards for other cross-tool conventions (e.g., `filter`, `top`, `org`).
+
+---
+

@@ -1,0 +1,289 @@
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Text.Json;
+using HelixTool.Core.AzDO;
+using HelixTool.Mcp.Tools;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using ModelContextProtocol;
+using ModelContextProtocol.AspNetCore;
+using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
+using ModelContextProtocol.Server;
+using NSubstitute;
+using Xunit;
+
+namespace HelixTool.Tests;
+
+/// <summary>
+/// T2 (mandatory gate, .squad/decisions/inbox/dallas-csharp-mcp-sdk-review.md §B2): a
+/// protocol-level guard that every <c>[McpServerTool(UseStructuredContent = true)]</c> method
+/// generates an <em>object</em> output schema, and that the resulting
+/// <c>structuredContent</c> envelope is the same on every negotiated protocol version.
+///
+/// <para><b>Why the schema, not the CLR type.</b> SDK 2.x's structured-content envelope is
+/// selected by <c>AIFunctionMcpServerTool.ShouldWrapValueForLegacyWire</c>, which inspects the
+/// <em>generated JSON schema</em> — specifically whether it is <c>"type":"object"</c>. It never
+/// looks at the CLR type. A CLR class whose schema is opaque to <c>System.Text.Json</c>'s
+/// schema exporter (the exporter emits the permissive schema <c>true</c> for any type carrying
+/// a custom <c>JsonConverter</c>) is therefore classified as a <em>non-object</em> return, and
+/// the SDK wraps its structured content in <c>{"result": …}</c> for pre-SEP-2106 clients while
+/// leaving it unwrapped for <c>2026-07-28</c>+ clients. The original version of this test
+/// asserted on CLR shape and so green-lit all six <c>LimitedResults&lt;T&gt;</c> tools, which
+/// were exactly the ones affected.</para>
+///
+/// <para><b>What an object schema buys us.</b> An object-typed schema makes
+/// <c>ShouldWrapValueForLegacyWire</c> return <see langword="false"/> at every protocol version,
+/// so a tool presents one <c>structuredContent</c> shape to every client instead of two. The
+/// <see cref="LimitedResults{T}"/> tools get that from the shared, deliberately empty
+/// <c>MinimalObjectSchema</c> marker, whose generated schema is exactly <c>{"type":"object"}</c> —
+/// object-typed (so the envelope is stable) without paying fixed-context rent for a property
+/// mirror in every session's <c>tools/list</c>. See <c>LimitedResultsOutputSchemaTests</c>.</para>
+/// </summary>
+public class StructuredContentReturnTypeTests
+{
+    private static readonly Type[] ToolTypes =
+    [
+        typeof(AzdoMcpTools),
+        typeof(HelixMcpTools),
+        typeof(CiKnowledgeTool),
+    ];
+
+    /// <summary>Schema every <c>LimitedResults&lt;T&gt;</c> tool advertises; see <c>MinimalObjectSchema</c>.</summary>
+    private const string MinimalObjectSchemaJson = """{"type":"object"}""";
+
+    public static IEnumerable<object[]> StructuredContentMethods() =>
+        ToolTypes
+            .SelectMany(t => t.GetMethods(BindingFlags.Instance | BindingFlags.Public)
+                .Where(m => m.GetCustomAttribute<McpServerToolAttribute>()?.UseStructuredContent == true)
+                .Select(m => new object[] { t, m }));
+
+    /// <summary>
+    /// Primary assertion: build the real <see cref="McpServerTool"/> the server would register
+    /// and inspect its generated <c>OutputSchema</c>. It must be a JSON object schema with
+    /// <c>"type":"object"</c> — never the permissive boolean schema <c>true</c>/<c>false</c>.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(StructuredContentMethods))]
+    public void UseStructuredContent_Method_GeneratesObjectOutputSchema(Type toolType, MethodInfo method)
+    {
+        // Uninitialized shell: no constructor runs, no DI needed. The tool is never invoked here.
+        var shell = RuntimeHelpers.GetUninitializedObject(toolType);
+        var protocolTool = McpServerTool.Create(method, shell, options: null).ProtocolTool;
+
+        Assert.True(protocolTool.OutputSchema.HasValue,
+            $"{toolType.Name}.{method.Name} ('{protocolTool.Name}') is " +
+            "[McpServerTool(UseStructuredContent = true)] but generated no outputSchema at all.");
+
+        var schema = protocolTool.OutputSchema!.Value;
+        var rendered = JsonSerializer.Serialize(schema, McpJsonUtilities.DefaultOptions);
+
+        Assert.False(schema.ValueKind is JsonValueKind.True or JsonValueKind.False,
+            OpaqueSchemaFailure(toolType, method, protocolTool.Name, rendered));
+
+        Assert.True(
+            schema.ValueKind is JsonValueKind.Object
+            && schema.TryGetProperty("type", out var typeProperty)
+            && typeProperty.ValueKind is JsonValueKind.String
+            && typeProperty.GetString() == "object",
+            OpaqueSchemaFailure(toolType, method, protocolTool.Name, rendered));
+    }
+
+    private static string OpaqueSchemaFailure(Type toolType, MethodInfo method, string toolName, string rendered) =>
+        $"{toolType.Name}.{method.Name} (MCP tool '{toolName}') generated the outputSchema {rendered}, " +
+        "which is not an object schema (\"type\":\"object\"). An opaque or non-object schema changes the " +
+        "structuredContent envelope: SDK 2.x's ShouldWrapValueForLegacyWire inspects the generated schema " +
+        "(not the CLR type), so pre-2026-07-28 clients receive {\"result\": <value>} while 2026-07-28+ " +
+        "clients receive <value> unwrapped — the same tool ships two different shapes. The usual cause is a " +
+        "custom [JsonConverter] on the return type, which makes it opaque to System.Text.Json's schema " +
+        "exporter (it then emits the permissive schema `true`). Fix by declaring an object-typed schema " +
+        "explicitly, e.g. [McpServerTool(..., OutputSchemaType = typeof(MinimalObjectSchema))].";
+
+    /// <summary>
+    /// Secondary assertion, retained from the original guard: the unwrapped CLR return type must
+    /// not be a scalar. Correct as far as it goes — a scalar return would also produce a
+    /// non-object schema — but it is not sufficient on its own (see the class remarks).
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(StructuredContentMethods))]
+    public void UseStructuredContent_Method_ReturnsNonScalarType(Type toolType, MethodInfo method)
+    {
+        var returnType = UnwrapAsyncReturnType(method.ReturnType);
+
+        bool isScalarWireType =
+            returnType.IsPrimitive
+            || returnType.IsEnum
+            || returnType == typeof(string)
+            || returnType == typeof(decimal)
+            || returnType == typeof(Guid)
+            || returnType == typeof(DateTime)
+            || returnType == typeof(DateTimeOffset);
+
+        Assert.False(isScalarWireType,
+            $"{toolType.Name}.{method.Name} is [McpServerTool(UseStructuredContent = true)] but its " +
+            $"unwrapped return type is '{returnType.Name}', a scalar, which cannot produce an object " +
+            "output schema. Wrap the value in a DTO/record, or remove UseStructuredContent for this tool.");
+    }
+
+    /// <summary>
+    /// Guards the guard: if a refactor silently removed every UseStructuredContent=true
+    /// annotation, the theories above would enumerate zero cases and vacuously pass. Pin a
+    /// floor so that disappearance is caught.
+    /// </summary>
+    [Fact]
+    public void AtLeastOneStructuredContentMethod_IsGuarded()
+    {
+        var count = StructuredContentMethods().Count();
+        Assert.True(count >= 20,
+            $"Expected at least 20 UseStructuredContent=true tool methods across " +
+            $"{string.Join(", ", ToolTypes.Select(t => t.Name))} (matched the 2.2.0 tools/list " +
+            $"baseline of 20/25 structured tools), found {count}. If tools were intentionally " +
+            "added/removed, adjust this floor.");
+    }
+
+    /// <summary>
+    /// Wire-level companion to the schema assertion, run against a real MCP server over real
+    /// Streamable-HTTP JSON-RPC with a real <see cref="McpClient"/>: <c>azdo_builds</c> (a
+    /// <c>LimitedResults&lt;T&gt;</c> tool) must emit <c>structuredContent</c> that agrees with
+    /// its own JSON text block on <em>both</em> a pre-SEP-2106 client (<c>2025-06-18</c>) and a
+    /// SEP-2106 client (<c>2026-07-28</c>).
+    ///
+    /// This is precisely what an opaque schema breaks: the SDK applies the <c>{"result": …}</c>
+    /// legacy envelope only on the older version, so the two clients disagree with each other
+    /// and the older one disagrees with the tool's own JSON body. Asserting agreement with the
+    /// text block pins the envelope without hard-coding which envelope the SDK chose.
+    /// </summary>
+    [Theory]
+    [InlineData("2025-06-18")]   // pre-SEP-2106: SDK applies the legacy {"result": …} envelope to non-object schemas
+    [InlineData("2026-07-28")]   // SEP-2106: natural (unwrapped) shape
+    public async Task LimitedResultsTool_StructuredContentMatchesItsJsonBody_AtEveryProtocolVersion(string protocolVersion)
+    {
+        var api = Substitute.For<IAzdoApiClient>();
+        api.ListBuildsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>())
+            .Returns([new AzdoBuild { Id = 1, BuildNumber = "b1" }]);
+
+        using var host = await CreateAzdoMcpHostAsync(api);
+        using var httpClient = host.GetTestServer().CreateClient();
+        await using var transport = new HttpClientTransport(
+            new HttpClientTransportOptions { Endpoint = new Uri("http://localhost/") }, httpClient);
+        await using var client = await McpClient.CreateAsync(
+            transport, new McpClientOptions { ProtocolVersion = protocolVersion });
+
+        Assert.Equal(protocolVersion, client.NegotiatedProtocolVersion);
+
+        var result = await client.CallToolAsync("azdo_builds", new Dictionary<string, object?> { ["top"] = 5 });
+
+        Assert.True(result.StructuredContent.HasValue,
+            "azdo_builds returned no structuredContent; UseStructuredContent = true should always populate it.");
+        var structured = result.StructuredContent!.Value;
+
+        var textBlock = Assert.IsType<TextContentBlock>(Assert.Single(result.Content));
+        using var textJson = JsonDocument.Parse(textBlock.Text);
+
+        Assert.True(
+            JsonElement.DeepEquals(structured, textJson.RootElement),
+            $"At protocol version {protocolVersion}, azdo_builds' structuredContent " +
+            $"({JsonSerializer.Serialize(structured, McpJsonUtilities.DefaultOptions)}) does not match its own " +
+            $"JSON text block ({textBlock.Text}). The SDK wraps structuredContent in a {{\"result\": …}} " +
+            "envelope for clients older than 2026-07-28 whenever the tool's generated outputSchema is not an " +
+            "object schema, so an opaque schema makes the same tool present two different shapes depending on " +
+            "which client is connected. The fix is an object-typed outputSchema (OutputSchemaType = " +
+            "typeof(MinimalObjectSchema)), which leaves the natural {results, truncated, total?, note?} envelope " +
+            "unwrapped for every client.");
+
+        // The pagination envelope itself must survive, not merely be self-consistent.
+        Assert.Equal(JsonValueKind.Array, structured.GetProperty("results").ValueKind);
+        Assert.Equal(JsonValueKind.False, structured.GetProperty("truncated").ValueKind);
+    }
+
+    /// <summary>
+    /// The wire schema advertised in <c>tools/list</c> must stay the minimal object constraint at
+    /// every protocol version — including after the pre-SEP-2106 wire rewrite performed by
+    /// <c>BuildLegacyWireProtocolTool</c>. That rewrite only touches non-object schemas: it would
+    /// turn an opaque <c>true</c> into the placeholder
+    /// <c>{"type":"object","properties":{"result":true}}</c> (a different, larger schema, and the
+    /// tell that the payload is being wrapped), while an already-object-typed schema passes through
+    /// byte-for-byte. Asserting equality against the schema advertised to a SEP-2106 client is
+    /// therefore a direct check that no rewrite happened, which is the same condition that keeps
+    /// <c>structuredContent</c> unwrapped.
+    /// </summary>
+    [Theory]
+    [InlineData("2025-06-18")]
+    [InlineData("2026-07-28")]
+    public async Task LimitedResultsTool_AdvertisesMinimalObjectSchema_AtEveryProtocolVersion(string protocolVersion)
+    {
+        var api = Substitute.For<IAzdoApiClient>();
+
+        using var host = await CreateAzdoMcpHostAsync(api);
+        using var httpClient = host.GetTestServer().CreateClient();
+        await using var transport = new HttpClientTransport(
+            new HttpClientTransportOptions { Endpoint = new Uri("http://localhost/") }, httpClient);
+        await using var client = await McpClient.CreateAsync(
+            transport, new McpClientOptions { ProtocolVersion = protocolVersion });
+
+        var tools = await client.ListToolsAsync();
+
+        // Every LimitedResults<T> tool, not just one: they share a single marker type, so a drift in
+        // any one of them is a drift in the shared contract.
+        string[] limitedResultsTools =
+        [
+            "azdo_builds", "azdo_changes", "azdo_test_runs",
+            "azdo_test_results", "azdo_artifacts", "azdo_test_attachments",
+        ];
+
+        foreach (var name in limitedResultsTools)
+        {
+            var protocolTool = tools.Single(t => t.Name == name).ProtocolTool;
+
+            Assert.True(protocolTool.OutputSchema.HasValue, $"{name} advertised no outputSchema on the wire.");
+            var rendered = JsonSerializer.Serialize(protocolTool.OutputSchema!.Value, McpJsonUtilities.DefaultOptions);
+
+            Assert.True(
+                rendered == MinimalObjectSchemaJson,
+                $"At protocol version {protocolVersion}, {name} advertised the outputSchema {rendered}, expected " +
+                $"exactly {MinimalObjectSchemaJson}. Pre-2026-07-28 clients get their outputSchema through " +
+                "BuildLegacyWireProtocolTool, which rewrites any non-object schema into " +
+                "{\"type\":\"object\",\"properties\":{\"result\":<schema>}} — seeing that rewrite here means the " +
+                "SDK also considers the tool's structuredContent wrappable, so this client is receiving a " +
+                "different payload shape than a SEP-2106 client. An object-typed schema passes through unchanged.");
+        }
+    }
+
+    private static async Task<IHost> CreateAzdoMcpHostAsync(IAzdoApiClient api) =>
+        await new HostBuilder()
+            .ConfigureWebHost(webBuilder =>
+            {
+                webBuilder.UseTestServer();
+                webBuilder.ConfigureServices(services =>
+                {
+                    services.AddRouting();
+                    services.AddSingleton(api);
+                    services.AddSingleton(Substitute.For<IAzdoTokenAccessor>());
+                    services.AddSingleton(sp => new AzdoService(sp.GetRequiredService<IAzdoApiClient>()));
+
+                    services.AddMcpServer()
+                        .WithHttpTransport(options => options.SessionMode = HttpServerSessionMode.Stateless)
+                        .WithTools<AzdoMcpTools>();
+                });
+                webBuilder.Configure(app =>
+                {
+                    app.UseRouting();
+                    app.UseEndpoints(endpoints => endpoints.MapMcp());
+                });
+            })
+            .StartAsync();
+
+    private static Type UnwrapAsyncReturnType(Type returnType)
+    {
+        if (returnType.IsGenericType)
+        {
+            var def = returnType.GetGenericTypeDefinition();
+            if (def == typeof(Task<>) || def == typeof(ValueTask<>))
+                return returnType.GetGenericArguments()[0];
+        }
+        return returnType;
+    }
+}

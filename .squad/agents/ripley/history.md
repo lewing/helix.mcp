@@ -196,3 +196,243 @@ Route 4 of 5 review comments on helix_find_files workItem parameter change.
 **TEAM LESSON (cross-agent):** Skill was extracted mid-session and captured the INTENDED design. Subsequent discovery-based implementation (Lambert) replaced the referenced method with superior pattern, leaving skill pointing at code that never existed. Consider deferring skill extraction until after review completion to capture actual shipped behavior.
 
 ---
+
+## 2026-08-20: C# MCP SDK Audit — v1.4.0 → v2.2.0 Migration Surface Map
+
+### Summary
+Conducted complete audit of ModelContextProtocol SDK usage across the helix.mcp repo to assess compatibility with the upcoming v2.0.0 major release (breaking changes) and stable v2.2.0 release. Goal was to identify compile/runtime risks, breaking changes affecting this repo, and a concrete implementation plan WITHOUT making code changes—this is purely a pre-update audit for later handoff.
+
+### Key Findings
+
+**Migration Complexity:** MEDIUM  
+**Estimated Implementation:** 0.5–1 day (Ripley) + 0.5 day (Lambert for test validation)  
+
+**Breaking Changes in v2.0.0 (10 major):**
+1. **HTTP transport now stateless by default** — `HttpServerTransportOptions.Stateless` defaults to `true` (was `false`). No unsolicited server-to-client requests. Repo architecture already stateless; this is PREFERRED. No code changes needed.
+2. **Non-object structured-content returns emit raw value** — e.g., `42` instead of `{ "result": 42 }`. **NOT BREAKING for this repo** — all tools return objects or plain strings; no wire-format change.
+3. **Tool inputSchema now required on deserialization** — Protects against malformed payloads. **NOT BREAKING** — repo generates canonical schema.
+4. **Deprecation warnings:** Tasks, Roots, Sampling, Logging APIs. **NOT BREAKING** — repo doesn't use these.
+5. **Tasks API moved to extension package.** **NOT APPLICABLE** — repo doesn't use Tasks.
+6. **OAuth validation strengthened.** **NOT BREAKING** — repo is server (MCP provider), not OAuth client.
+7. **SSE exception propagation.** LOW RISK — error messages improve; no code changes.
+8–10. **Minor changes:** PKCE validation, Legacy session cleanup, etc. **NOT AFFECTING.**
+
+**Files Requiring NO Code Changes But Verification:**
+- `Program.cs` — Verify stateless mode is desired behavior (it is). No changes needed.
+- `McpServerOptionsExtensions.cs` — Custom filter chain API is stable. Test only.
+- `AzdoMcpTools.cs`, `HelixMcpTools.cs` — Structured-content wrapping unchanged (all return objects). Test schema generation only.
+- `McpProgressAdapter.cs` — ProgressNotificationValue API is stable. No changes.
+- `CiKnowledgeResource.cs` — Resource API unchanged. No changes.
+
+**Package Dependency Change:**
+- `Directory.Packages.props`: Bump `ModelContextProtocol` and `ModelContextProtocol.AspNetCore` from 1.4.0 → 2.2.0 (keep in sync).
+
+**Test Coverage Impact:**
+- 5 core test files require re-validation: `McpServerOptionsExtensionsTests.cs`, `AzdoMcpToolsTests.cs`, `HelixMcpToolsTests.cs`, `McpToolsListPayloadTests.cs`, `McpBindingErrorFilterTests.cs`.
+- 1500+ existing tests to re-run (no test infrastructure changes expected).
+- Strategy: `dotnet build` → `dotnet test` → manual schema inspection → smoke test with real client.
+
+### Learnings
+
+1. **Non-breaking server migration for simple use cases:** v1.4.0 → v2.0.0 is dramatic in scope but **non-breaking for servers that use only basic tool/resource patterns** (no Tasks, Roots, Sampling, custom session handling). This repo is a textbook example.
+
+2. **Stateless servers are future-proof:** The stateless default in v2.0.0 aligns with modern cloud-native architecture (per-request scoping, no session state). Repo's design assumed this from the start; no defensive coding needed.
+
+3. **Schema stability for object returns:** Structured-content wrapping changes only affect non-object types. Repo's all-objects-and-strings pattern means wire format is stable despite dramatic SDK changes.
+
+4. **Filter chain resilience:** Custom implementations using `options.Filters.Request.CallToolFilters` are unaffected by breaking changes. Filter API is a stable extension point.
+
+5. **Progress notifications are decoupled from core SDK changes:** The `ProgressNotificationValue` shape and adapter pattern remain unchanged. Existing progress instrumentation needs no updates.
+
+6. **Protocol negotiation is transparent:** v2.0.0 adds `/server/discover` probe; `MapMcp()` handles this automatically. No explicit route registration required.
+
+7. **Dependency lockstep is critical:** `ModelContextProtocol` and `ModelContextProtocol.AspNetCore` MUST always be the same version. Minor version mismatch causes runtime errors.
+
+### Recommendations
+
+- **Test with real clients:** After migration, smoke-test with Claude Desktop and mcp-inspector to catch wire-format regressions.
+- **Enable deprecation-as-error in CI:** Set `-Werror` for MCP SDK deprecation warnings so future deprecations are caught early.
+- **Document stateless assumptions:** If repo later needs stateful server behavior (session tracking, unsolicited push), document why and set `Stateless = false` explicitly.
+
+### Artifacts
+
+**Decision document:** `.squad/decisions/inbox/ripley-csharp-mcp-sdk-update.md`  
+**Migration stages:**
+1. Update `Directory.Packages.props` (1–2 hours)
+2. Compile + test (2–3 hours)
+3. Verify + CI (1 hour)
+
+**Ready for implementation handoff to Stage 1.**
+
+---
+
+## 2026-08-20: MCP SDK 1.4.0 → 2.2.0 Phase-1 Implementation
+
+Implemented Dallas's accepted phase-1 plan (`.squad/decisions/inbox/dallas-csharp-mcp-sdk-update.md`), instructions §9.
+
+**Changes (2 files, surgical):**
+- `Directory.Packages.props`: `ModelContextProtocol` and `ModelContextProtocol.AspNetCore` 1.4.0 → 2.2.0, lockstep, no other package touched.
+- `src/HelixTool.Mcp/Program.cs`: added `using ModelContextProtocol.AspNetCore;`; replaced bare `.WithHttpTransport()` with `.WithHttpTransport(options => { options.SessionMode = HttpServerSessionMode.Stateless; })` plus a 5-line comment (trimmed from Dallas's draft to fit this repo's comment density) explaining the flipped default, why our per-request-scoped DI needs no sessions, and naming the correct escape hatch (`StatefulForInitializeClients`, not `Stateless = false`).
+- `src/HelixTool/Program.cs` (stdio host), tool classes, filters, progress adapter, resources: untouched, as scoped.
+
+**Build:** `dotnet restore HelixTool.slnx` clean. `dotnet build HelixTool.slnx --no-restore`: **Build succeeded, 0 Warning(s), 0 Error(s).** No `MCP9xxx` diagnostic anywhere in the output — confirms Dallas's §1.5 stability matrix (no Roots/Sampling/Logging/Tasks/OAuth-client usage) held in practice, not just on paper. Only noise was the expected `NETSDK1057` preview-SDK notice (net10.0/dotnet 11 preview), unrelated to this change.
+
+**Stdio smoke (G6):** No MCP Inspector/VS Code available in this environment, so I drove the stdio transport directly with a small Python harness (newline-delimited JSON-RPC over stdin/stdout to `dotnet HelixTool.dll mcp`) rather than fake the client-based gate. Sequence: `initialize` → response includes `serverInfo.version` with the build's informational version, confirming the 2.2.0 SDK is actually loaded → `notifications/initialized` → `tools/list` → returned real tool schemas (`helix_work_item`, ...) → `tools/call` on `azdo_auth_status` (chosen because its description states "No API call made," so the result is deterministic without live credentials) → got back a well-formed `structuredContent` result. All four legs succeeded; this satisfies "starts and responds" plus Dallas's fuller G6 bar (tools/list + a live tool call). HTTP smoke (G7) intentionally left for Lambert's TestHost coverage per task scope.
+
+**No new decision needed** — the migration executed exactly as Dallas specified with zero surprises (no MCP9xxx, no compile break, no missing API). Nothing to escalate.
+
+**Skill update:** Added §9 to `.squad/skills/mcp-sdk-major-upgrade/SKILL.md` — a reusable pattern for stdio smoke-testing an MCP server without a GUI client (raw JSON-RPC-over-stdio Python harness), plus the tip to pick a tool call whose description guarantees no live network/credential dependency for a deterministic gate.
+
+---
+
+## 2026-08-20: B1–B3 revision — SDK 2.2.0 structured-content wire fix
+
+Dallas rejected Lambert's T2/T3 and the G4 explanation and assigned me B1–B3
+(`.squad/decisions/inbox/dallas-csharp-mcp-sdk-review.md` §5). Full write-up:
+`.squad/decisions/inbox/ripley-csharp-mcp-sdk-wire-fix.md`.
+
+**The lesson that generalizes: verify the reviewer's severity claim, not just his mechanism.**
+Dallas was right that the six `LimitedResults<T>` tools lost their `outputSchema`, and right
+about why (custom `JsonConverter` ⇒ opaque to STJ's schema exporter ⇒ permissive `true` schema
+⇒ SDK's `ShouldWrapValueForLegacyWire` classifies it as scalar-ish). He was wrong that a
+"silent breaking wire change" was shipping. I stood up a real MCP server with a real `McpClient`
+pinned to three protocol versions and measured: every pre-`2026-07-28` client was still getting
+byte-identical 1.4.0 output. The 68→4 byte "regression" was measured on
+`ProtocolTool.OutputSchema` — a property whose *meaning changed between SDK majors* (1.4.0
+stored the already-wrapped legacy schema; 2.2.0 stores the natural one and defers wrapping to
+the wire-emission sites, gated on `SupportsNaturalOutputSchemas(negotiatedVersion)`). It was
+never a wire measurement in 2.2.0. The real defects were information-free schemas for new
+clients plus one tool serving *two different `structuredContent` shapes* by client version. Fix
+was still right; the framing was not, and I said so rather than shipping under a claim a
+reviewer could disprove in ten minutes.
+
+**Corollary I had to own: my fix introduces the only real legacy-facing change in the whole
+migration.** Doing nothing would have preserved pre-`2026-07-28` clients exactly. Escalated
+that inversion to Dallas explicitly (§6 of the findings) instead of burying it — it's a
+convergence onto the shape `content[0].text`, the converter, and every existing test already
+use, but it is still a change and he reasoned from the opposite premise.
+
+**Smallest correct fix beat the cleanest fix.** The tempting option was deleting
+`IReadOnlyList<T>` + the converter to make `LimitedResults<T>` a plain POCO — drift-free by
+construction, −45 lines. Rejected: the list ergonomics are an explicitly-tested feature and the
+brief forbade DTO refactoring. Shipped 8 lines instead: a schema-only mirror record +
+`OutputSchemaType` on six attributes. **When a fix relies on a hand-maintained mirror of another
+type, the mirror needs its own drift guard** — added `LimitedResultsSchemaContractTests` pinning
+the record to the converter's actual `Write` output in both directions, since nothing in the
+compiler ties them.
+
+**Write the failing test against the broken tree first, and keep the receipts.** T2 pre-fix:
+9 failed / 36 passed, naming all six tools individually plus the version-split case
+(`("2025-06-18")` red, `("2026-07-28")` green — the divergence caught directly). Post-fix 45/45.
+Saved to `.squad/evidence/`. Without that ordering I'd have had a green test and no proof it
+could ever go red — which is exactly how Lambert's CLR-shape T2 green-lit the six broken tools:
+it asserted the return type is non-scalar, which is *true* of `LimitedResults<T>`. The SDK never
+looks at the CLR type.
+
+**Mutation-test the guard, then report its real limit.** My first T3 behavioral test only
+asserted `IsSuccessStatusCode` — it passed under `SessionMode = Stateful`, i.e. proved nothing.
+Strengthened it to assert absence of the `Mcp-Session-Id` response header (the actual stateless
+signature) and both tests then went red under `Stateful`. But deleting the production line
+outright is *undetectable*, because SDK 2.2.0's own default is also `Stateless`. I documented
+that in the test's doc comment rather than claim a stronger red→green than the code supports.
+Overclaiming coverage is worse than a documented gap.
+
+**"Explain the delta" means to the byte.** Lambert's G4 said 2.2.0 "generates a more compact
+schema representation." False twice over: the 14 unaffected structured tools are byte-identical
+across versions, and his own −1,281 was two independent effects merged into one wrong story. I
+found the missing −897 by byte-diffing raw serialized `ProtocolTool` JSON between a
+`git worktree add --detach` of the 1.4.0 commit and this tree: 23 of 25 tools each lost exactly
+39 bytes = `,"execution":{"taskSupport":"optional"}`, which 1.4.0 emitted on every
+`Task`-returning tool and 2.2.0 omits. The two exempt tools are the only two *synchronous* ones.
+Final: 30,366 → 32,806 (+2,440) = +3,337 (six real schemas) − 897 (dropped `execution`), zero
+residual. **When a byte-count delta doesn't decompose cleanly, diff the raw serialized objects
+per item — don't reach for a plausible narrative.**
+
+**Environment:** `DOTNET_ROLL_FORWARD=Major` is mandatory for every `dotnet test` here (only
+`Microsoft.NETCore.App 11.0.0-preview.6.26351.102` installed, test host targets `net10.0`);
+without it the run aborts with a runtime-not-found error that looks like a test failure.
+`-l "console;verbosity=detailed"` needed to see `ITestOutputHelper` output.
+
+**Validation:** targeted 68/68; build 0 warnings / 0 errors; full suite 1,556 total, 1,554
+passed, 2 pre-existing skips, 0 failed; no `MCP9xxx`. Not committed.
+
+## 2026-08-20: Minimal `{"type":"object"}` outputSchema for the six `LimitedResults<T>` tools
+
+Larry directed a revision of the same PR: my B1 fix bought envelope stability by declaring a
+full `LimitedResultsSchema<T>` property mirror, and that cost **+3,745 B** of `tools/list` fixed
+context across six tools. Replaced all six with one shared, deliberately empty marker —
+`public sealed record MinimalObjectSchema;` in `HelixTool.Mcp.Tools` — declared the same
+documented way (`OutputSchemaType = typeof(MinimalObjectSchema)`).
+
+**The SDK only asks one question, so only answer that one.** `ShouldWrapValueForLegacyWire`
+tests whether the schema's `type` is `object` (or `["object","null"]`). It does not read
+`properties`, `required`, or anything else. Every byte beyond `{"type":"object"}` is therefore
+paid on every session by every client and buys *nothing* from the SDK — it only buys
+documentation, in the one place documentation is most expensive and least enforceable. A
+hand-written property mirror of a hand-written converter has no compiler tie either way, so the
+"contract" it advertised was maintained by convention only. Deleting it removed both the rent and
+the drift surface; the payload shape stays documented in the tool description and in the returned
+JSON, which are authoritative.
+
+**Probe the exporter, don't reason about it.** I stood up a throwaway tool host declaring
+`OutputSchemaType` against seven candidate types and printed the generated schema for each:
+
+| Marker type | Generated schema | Usable |
+|---|---|---|
+| empty `record` / empty `class` | `{"type":"object"}` (17 B) | ✅ |
+| `JsonObject`, `Dictionary<string,JsonElement>`, `Dictionary<string,object>` | `{"type":"object"}` (17 B) | ✅ |
+| `typeof(object)` | `true` (4 B) | ❌ non-object ⇒ legacy wrap |
+| `typeof(JsonElement)` | `true` (4 B) | ❌ same |
+
+**The intuitive choice is the wrong one.** `typeof(object)` is what you reach for when you want
+"just an object", and it produces the exact schema that reintroduces the bug — 4 bytes that split
+the wire contract by protocol version. An empty user-defined type is 13 bytes more expensive and
+correct. Cheapest ≠ smallest schema; cheapest is *smallest schema that is still object-typed*.
+
+`McpServerToolCreateOptions.OutputSchema` accepts an explicit `JsonElement` and would give exact
+byte control, but it is not reachable from the attribute — using it means abandoning
+`WithTools<T>()` attribute registration for hand-built `McpServerTool.Create(...)` calls for six
+tools. Rejected: much larger production change for a 0-byte gain. Post-registration schema
+mutation rejected outright per the brief.
+
+**The empty type's emptiness is load-bearing, so pin it.** Any member added to
+`MinimalObjectSchema` silently inflates all six tools. `LimitedResultsOutputSchemaTests` asserts
+(a) exactly six tools are discovered, (b) all six declare `typeof(MinimalObjectSchema)`, (c) each
+advertises byte-exact `{"type":"object"}`, (d) the marker has no serializable members. The
+version-parameterized wire theory in `StructuredContentReturnTypeTests` now loops all six rather
+than sampling `azdo_builds`, since one shared type means a drift in any one is a shared-contract
+drift.
+
+**Measured wire, both versions, literal output** (throwaway probe over real Streamable-HTTP,
+deleted after):
+
+```
+WIRE[2026-07-28] outputSchema={"type":"object"}  structuredContent={"results":[…],"truncated":false}  hasResultWrapper=False
+WIRE[2025-06-18] outputSchema={"type":"object"}  structuredContent={"results":[…],"truncated":false}  hasResultWrapper=False
+```
+
+Identical at both — which is the point: `BuildLegacyWireProtocolTool` rewrites only non-object
+schemas, so schema pass-through *is* the observable proof that no payload wrap happened.
+
+**Byte ledger** (25 tools, `ProtocolTool` + `McpJsonUtilities.DefaultOptions`, UTF-8):
+
+| State | `tools/list` | six schemas | per tool |
+|---|---|---|---|
+| main (SDK 1.4.0, 6eb3905) | 30,366 | 408 | 68 (`{"type":"object","properties":{"result":true},"required":["result"]}`) |
+| pre-revision PR (mirror) | 32,806 | 3,745 | 1319/422/653/476/454/421 |
+| revised PR (marker) | **29,163** | **102** | **17** |
+
+Revised is **−1,203 B (−3.96%, ≈−301 tokens) below main** — the first time this PR is net-cheaper
+than the baseline it replaces — and −3,643 B (−11.10%, ≈−911 tokens) below my own prior revision.
+
+**main was already wrapping.** Worth recording because it reframes the "breaking change" question:
+main's six schemas are `{"type":"object","properties":{"result":true},"required":["result"]}`,
+i.e. SDK 1.4.0 wrapped eagerly at creation time and shipped `{"result": …}` `structuredContent` to
+*every* client. So this PR does change the payload for existing clients — from uniformly wrapped
+to uniformly natural — it just changes it once, consistently, instead of splitting it by version.
+That is a real migration note, not a no-op, and it should be stated plainly rather than implied by
+a byte table.
+
+**Validation:** build 0 warnings / 0 errors (Debug + Release); targeted 81/81; full suite
+1,568 passed / 2 pre-existing skips / 0 failed, identical with `HLX_API_KEY` unset and set; no
+`MCP9xxx`. `DOTNET_ROLL_FORWARD=Major` still mandatory on every `dotnet test`. Not committed.

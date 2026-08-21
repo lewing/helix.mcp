@@ -176,3 +176,146 @@ Prevents future regressions from wrong-type or required parameters slipping thro
 **TEAM LESSON (cross-agent):** Skill was extracted mid-session and captured the INTENDED design. Subsequent discovery-based implementation (Lambert) replaced the referenced method with superior pattern, leaving skill pointing at code that never existed. Consider deferring skill extraction until after review completion to capture actual shipped behavior.
 
 ---
+
+## 2026-08-20 — T1–T4 test gates + G4 for MCP C# SDK 1.4.0 → 2.2.0 migration
+
+Implemented Dallas's mandatory test gates for Ripley's SDK bump (`Directory.Packages.props`
+1.4.0→2.2.0, `Program.cs` `SessionMode = Stateless`). Full report:
+`.squad/decisions/inbox/lambert-csharp-mcp-sdk-tests.md`. Result: T1/T2/T4 pass clean; T3
+passes but with a documented production-seam gap (escalated, not resolved unilaterally).
+Targeted 26/26 pass; full suite 1528 total/1526 passed/2 skipped (pre-existing)/0 failed/0
+new skips. Zero production files touched.
+
+### Reusable technique: TCS-gating a substituted async dependency to prove a race-prone assertion
+When asserting "at least one notification arrived *during* an in-flight async call" (T1's
+core claim), don't just await the whole call and then check the notification list — that
+proves the notification arrived *eventually*, not that it survived the transport while the
+request was still open. Gate the one substituted dependency
+(`IHelixApiClient.ListWorkItemFilesAsync` here) behind a
+`TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously)`, await a
+"first notification received" signal *before* completing the TCS, then assert and only
+afterward let the call finish. This is the difference between "the notification eventually
+showed up" and "the notification genuinely crossed the wire while the request was still
+in flight" — the latter is what T1 actually requires.
+
+### Reusable technique: `TestServer` + real `McpClient`/`HttpClientTransport` for MCP protocol tests
+SDK 2.2.0's `HttpClientTransport(HttpClientTransportOptions, HttpClient, ILoggerFactory?,
+bool ownsHttpClient)` constructor accepts *any* `HttpClient`, including
+`Microsoft.AspNetCore.TestHost.TestServer.CreateClient()` (via `host.GetTestServer()` — note:
+`IHost` itself has no `.GetTestClient()`; you must call `.GetTestServer().CreateClient()`).
+This gets you a real MCP client speaking real Streamable-HTTP JSON-RPC/SSE against a real
+`AddMcpServer().WithHttpTransport(...)` registration, entirely in-process — no sockets, no
+Kestrel, no upstream SDK's heavier `KestrelInMemoryTest`/`KestrelInMemoryConnection` fixture
+needed. Gotchas found by trial: `app.UseRouting(); app.UseEndpoints(e => e.MapMcp());` (not
+bare `app.MapMcp()`, which is a `WebApplication`-only extension) — and this requires
+`services.AddRouting()` explicitly in `ConfigureServices` when using `HostBuilder()
+.ConfigureWebHost(...)` rather than `WebApplication.CreateBuilder()` (which adds routing
+implicitly). `McpClient.CallToolAsync(...)` returns `ValueTask<CallToolResult>`; store it in
+a variable and consume with `.AsTask().WaitAsync(timeout)` exactly once — don't await a
+`ValueTask` twice.
+
+### Reusable technique: non-destructive pre-bump baseline via `git worktree add --detach`
+To measure a "before" value (G4's tools/list byte count) without touching the working tree
+or doing anything destructive: first check `git diff HEAD` for the file(s) in question — if
+the only uncommitted change *is* the bump itself, HEAD already **is** the pre-bump baseline,
+no separate branch lookup needed. Then, from the *main* repo directory (`git worktree list`
+to find it), run `git worktree add --detach <scratch-path> <baseline-commit>`, build there,
+run the existing measurement harness against both trees, and `git worktree remove
+<scratch-path>` when done. Zero risk to the working tree's state.
+
+### Finding: the SDK's own `SessionMode`/`Stateless` default already flipped once in this exact migration
+Verified by direct instantiation (not just XML-doc prose) against each package version in a
+throwaway console app *outside* the repo tree (CPM in `Directory.Packages.props` rejects
+explicit `<PackageReference Version="...">` inside the repo tree — NU1008 — so scratch
+verification projects for a specific package version must live outside it):
+`new HttpServerTransportOptions().Stateless` (bool, 1.4.0) == `false` (stateful by default);
+`new HttpServerTransportOptions().SessionMode` (enum, 2.2.0) == `Stateless` by default. This
+means Ripley's explicit `SessionMode = Stateless` pin isn't merely restating today's default
+— it protects against a *third* flip on some future SDK bump, which is the correct framing
+for why T3 pins intent rather than "just checking the default holds."
+
+### Known limitation carried forward: T3 cannot exercise the literal `Program.cs`
+`src/HelixTool.Mcp/Program.cs` (top-level statements, no `partial class Program` marker, no
+`InternalsVisibleTo`, unconditional blocking `app.Run()`) cannot be driven via
+`WebApplicationFactory<Program>` or reflection. T3 reconstructs the identical one-line
+registration in test code and proves the *mechanism*, but a future edit to Program.cs's
+`SessionMode` line would not be caught by this test. Escalated the standard, behavior-neutral
+`public partial class Program;` seam to Dallas rather than adding it myself (out of scope
+for a Tester per my boundaries) — see the decision doc for the ask.
+
+---
+
+## 2026-08-20 — F1/F3 final-review gates (dallas-csharp-mcp-sdk-final-review.md)
+
+### F1: hermetic real-host tests without forcing/clearing ambient state
+The rejected artifact (`HttpTransportSessionModeTests.cs`) failed only when the ambient
+`HLX_API_KEY` was set, because it sent no `X-Api-Key` header while the real host's
+`app.UseApiKeyAuthIfConfigured()` (read once, at pipeline-build time) had installed
+`ApiKeyMiddleware`. The correct fix is **not** to clear or force the env var (that would stop
+testing one of the two worlds) — it's to have the test read the *same* ambient variable the
+middleware reads, at the same time, and mirror its exact non-empty check when deciding whether
+to attach the header. This makes the test agree with whatever the real host actually did,
+in both worlds, instead of asserting on one specific ambient state.
+
+### Reusable technique: shared non-parallel xUnit collection for ambient-env-var tests
+Any test class that mutates or reads a *process* environment variable (not scoped per-instance)
+races with xUnit's default cross-class parallelism. This repo's established fix
+(`AzdoTokenEnv`, `FileSearchConfig` collections) is a `[CollectionDefinition("Name",
+DisableParallelization = true)]` marker + `[Collection("Name")]` on every participating class.
+Added `HlxApiKeyEnvCollection.cs` defining `HlxApiKeyEnv` and joined all three classes that
+touch `HLX_API_KEY` (`ApiKeyMiddlewareTests`, `HttpTransportSessionModeTests`, the new
+`ApiKeyScopedRequestIsolationTests`) to it. Generalizable: **any future test touching a
+process-wide ambient value (env var, `CultureInfo.CurrentCulture`, static mutable config, etc.)
+should join or create a `DisableParallelization` collection**, not just save/restore in
+ctor/Dispose — save/restore alone is necessary but not sufficient once other classes can run
+concurrently.
+
+### Reusable technique: prove per-request DI isolation with a deterministic recording `WebApplicationFactory`
+For F3/G7 (proving `HttpContextHelixTokenAccessor` → `IHelixApiClientFactory.Create` →
+`CacheOptions.ComputeTokenHash` → `ICacheStoreFactory.GetOrCreate` are all resolved fresh
+per-request, with zero cross-request leakage), the technique that worked without touching
+production code:
+1. Subclass `WebApplicationFactory<Program>`, set the ambient `HLX_API_KEY` to a **fixed test
+   constant** in the constructor (before the host is ever lazily built) and restore the
+   original value in `Dispose(bool)` — this makes the fixture's auth-enabled behavior
+   independent of whatever the *real* ambient key is, so the class doesn't depend on how it's
+   invoked (works identically whether the outer suite run has `HLX_API_KEY` set or not).
+2. Override `ConfigureWebHost` → `ConfigureServices` and replace only the two seams Program.cs
+   itself already exposes as request-scoped extension points (`IHelixApiClientFactory`,
+   `ICacheStoreFactory`) via `services.RemoveAll<T>()` + `services.AddSingleton<T>(recordingInstance)`
+   (`Microsoft.Extensions.DependencyInjection.Extensions`). Both replacements are themselves
+   singletons so their recorded call history persists across every request the shared factory
+   instance serves — exactly what's needed to assert "request 2 recorded exactly its own token,
+   not request 1's."
+3. Give each recording fake a `ConcurrentQueue<T>` (thread-safe, preserves call order) and
+   expose it as `IReadOnlyList<T>` for assertions; back `IHelixApiClientFactory.Create` with an
+   NSubstitute-configured fake `IHelixApiClient` (only `GetJobDetailsAsync`/`ListWorkItemsAsync`
+   need stubbing — an empty work-item list short-circuits `HelixService.GetJobStatusAsync`
+   before it needs `GetWorkItemDetailsAsync`), and back `ICacheStoreFactory.GetOrCreate` with a
+   fully in-memory no-op `ICacheStore` (avoids any real SQLite/disk I/O in a "smoke" test).
+4. Use two separate `HttpClient`s from `_factory.CreateClient()` (same underlying host/DI
+   container, real per-request scoping) each with a distinct `Authorization: Bearer` value,
+   drive each through a real `McpClient`/`HttpClientTransport` `tools/call` (not raw JSON-RPC,
+   not `StatelessMcpTestHost`'s singleton-host reconstruction) sequentially, then assert the
+   recorded token/hash sequences equal `[tokenA, tokenB]` / `[hash(tokenA), hash(tokenB)]` and
+   that the pair is mutually distinct.
+5. **Keep the auth-gating facts (401/401/200) tool-free.** `HelixMcpTools`/the recording
+   factories are only DI-resolved when a `tools/call` actually dispatches to a tool — never
+   during `initialize`. Sending only raw `initialize` requests in the gating facts (mirroring
+   F1's pattern) keeps the isolation fact's recorded-call count deterministic (exactly 2) even
+   though four `[Fact]`s share one fixture/host instance, without needing to reason about xUnit
+   fact execution order.
+
+This pattern (fixed-value deterministic auth + `RemoveAll<T>`/`AddSingleton<T>(recordingFake)`
+via `ConfigureWebHost`) is generalizable to any future "prove request N's production DI resolves
+independently of request N-1" gate against a real `WebApplicationFactory<Program>` host, without
+ever needing to change production architecture to add a test seam.
+
+### Environment quirk (not a code issue): SDK/runtime mismatch requires `DOTNET_ROLL_FORWARD=LatestMajor`
+This sandbox has only the .NET 11 preview runtime installed while the solution targets
+`net10.0`; `dotnet test`/`dotnet run` fail with "You must install or update .NET to run this
+application" unless `DOTNET_ROLL_FORWARD=LatestMajor` is set in the environment for the test
+invocation. Not a repo bug — just a note for future agents running tests in this exact worktree
+image, so they don't mistake it for a build regression.
+
+---

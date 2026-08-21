@@ -32,13 +32,14 @@
     <PackageVersion Include="ConsoleAppFramework" Version="5.7.13" />
 
     <!-- MCP SDK (kept in lockstep) -->
-    <PackageVersion Include="ModelContextProtocol" Version="1.4.0" />
-    <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="1.4.0" />
+    <PackageVersion Include="ModelContextProtocol" Version="2.2.0" />
+    <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
 
     <!-- Source generators (netstandard2.0 project) -->
     <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.12.0" />
 
     <!-- Test stack -->
+    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.*-*" />
     <PackageVersion Include="Microsoft.AspNetCore.TestHost" Version="10.*-*" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.*" />
     <PackageVersion Include="NSubstitute" Version="5.*" />

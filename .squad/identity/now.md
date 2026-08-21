@@ -1,11 +1,12 @@
 ---
-updated_at: 2026-05-21T13:28:00Z
-focus_area: Idle — v0.7.2 shipped. Ready for next direction.
+updated_at: 2026-08-20T18:24:39Z
+focus_area: MCP context optimization approved — PR #123 awaiting body update per Dallas review.
 active_issues: []
 ---
 
 # What We're Focused On
 
-v0.7.2 shipped — Lambert tested, Dallas reviewed, Ripley released. Added ExitCode + ConsoleOutputUri to IWorkItemSummary; optimized GetJobStatusAsync (95% API call reduction on jobs with mostly-passing items). 15 new tests (1195 total). No schema breaks. Published to nuget.org.
+**APPROVED:** Minimal `{"type":"object"}` output schema for six capped `LimitedResults<T>` AzDO tools. Revised PR (29,163 bytes, −1,203 vs main, ≈−301 tokens) is net cheaper than baseline while fixing envelope split across all protocol versions. Dallas independent Opus 5 review: approved, with mandatory PR #123 body update per §6 (Summary bullet, entire Compatibility note, two Validation lines).
 
-**Deferred follow-ups:** Console URI streaming optimization, Roslyn 5.x bump, xunit v3 migration.
+**Next:** Update PR #123 description with exact Dallas-supplied replacement text. Minor findings (MIN-1 through MIN-3) recorded as follow-ups, not merge blockers.
+

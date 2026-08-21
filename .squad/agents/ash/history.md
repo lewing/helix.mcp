@@ -52,3 +52,33 @@ See `.squad/agents/ash/history-archive.md` for detailed 2026-02-13 through 2026-
 - **tools/list payload:** 28,941 bytes (28.26 KB). inputSchema 11,068 B (~11.0 KB), outputSchema 8,882 B (~8.7 KB), 20/25 tools structured.
 - **Issue #74 conditional NO:** Payload cached per-session, <1% session budget. Defer trimming unless triggers fire.
 - **Lever 1 availability:** Flatten 10 low-context tools + keep 3 chaining-junctions (azdo_timeline, azdo_helix_jobs, azdo_build_analysis) = ~5,450 bytes (18% savings) vs. blanket 28%.
+
+---
+
+## Learnings (2026-08-20)
+
+### MCP C# SDK Major Version Upgrade (v1.4.0 → v2.2.0)
+
+**Key Findings:**
+1. **Protocol Shift is Real** — The 2026-07-28 MCP spec eliminated stateful sessions entirely. v1.4.0 uses `Mcp-Session-Id` + `initialize` handshake; v2.2.0 is stateless-first (no session, no handshake).
+2. **Hybrid Mode is Upgrade Path** — v2.2.0 supports `HttpServerSessionMode` for backward compat. v2.1+ unlocked this; allows serving both v1 clients and v2 clients on same endpoint.
+3. **Breaking Timeline:** v2.0 (July 2026) introduced breaking changes; v2.2.0 (August 2026) stabilized hybrid serving + header fixes. 8-month gap since v1.4.0.
+4. **Target Framework Bump** — v2.2.0 requires .NET 8.0+ (v1.4.0 was net7.0+). Will affect projects targeting older frameworks.
+5. **No Codemod Needed (C#)** — Breaking changes docs are comprehensive; C# SDK migration is mechanical (no auto-rewrite like TypeScript). Package reorganization is the main friction point.
+
+**Investigation Pattern:**
+- Searched NuGet package metadata + GitHub releases instead of relying on blog summaries.
+- Confirmed dates, frameworks, and features via three independent sources (NuGet, GitHub, .NET Blog).
+- Isolated protocol-level vs. SDK-level breaking changes (different risk profiles).
+
+**Cross-Check Verification:**
+- v2.0 (July 2026) aligned with 2026-07-28 spec release.
+- v2.2.0 (August 2026) added hybrid serving mid-cycle (earlier than full stateless adoption).
+- Both AspNetCore and Core packages released in lockstep, same version numbers.
+
+**Recommendation for HelixTool:**
+- Upgrade to v2.2.0 is viable via hybrid mode (no client coordination required).
+- Defer full stateless refactor to phase-2 unless load-balancer ops demand it.
+- Validation scope: session/state usage audit + protocol compliance tests.
+
+**Decision Artifact:** Filed `.squad/decisions/inbox/ash-csharp-mcp-sdk-update-2026-08-20.md` with impact matrix, options (incremental vs. full stateless), and recommended validation steps.

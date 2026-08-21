@@ -25,6 +25,56 @@ Use this only for tiny results where schema carries little value and you must ke
    - `StructuredContent = JsonSerializer.SerializeToElement(value, McpJsonUtilities.DefaultOptions)`
 4. This keeps the tool-call JSON payload/structured content intact while shrinking `tools/list`.
 
+## Pattern 2b: minimal object outputSchema via an empty marker type (SDK 2.x)
+
+Use when a tool **must** keep `UseStructuredContent = true` — because SDK 2.x picks the
+`structuredContent` envelope from the schema's objectness — but the detailed schema is not worth
+its fixed-context rent.
+
+**The rule that makes this safe:** `AIFunctionMcpServerTool.ShouldWrapValueForLegacyWire` asks only
+whether the schema's `type` is `object` (or `["object","null"]`). It never reads `properties` or
+`required`, and the C# SDK does no runtime validation of `structuredContent` against `outputSchema`.
+So `{"type":"object"}` is functionally equivalent to a full property mirror, at ~17 B instead of
+hundreds.
+
+1. Add one shared, **empty** marker type:
+   ```csharp
+   public sealed record MinimalObjectSchema;   // generated schema: {"type":"object"}
+   ```
+2. Point every affected tool at it:
+   ```csharp
+   [McpServerTool(..., UseStructuredContent = true, OutputSchemaType = typeof(MinimalObjectSchema))]
+   ```
+3. Pin the marker's emptiness in a test — any member added to it silently inflates *every* consumer.
+
+**Pick the marker by probing, not by intuition.** Stand up a throwaway tool declaring
+`OutputSchemaType` against each candidate and print `ProtocolTool.OutputSchema`:
+
+| Marker type | Generated schema | Usable |
+|---|---|---|
+| empty `record` / empty `class` | `{"type":"object"}` (17 B) | ✅ preferred — the name carries the rationale |
+| `JsonObject`, `Dictionary<string,JsonElement>`, `Dictionary<string,object>` | `{"type":"object"}` (17 B) | ✅ byte-identical |
+| `typeof(object)` | `true` (4 B) | ❌ **trap** — not object-typed, reintroduces the `{"result": …}` version split |
+| `typeof(JsonElement)` | `true` (4 B) | ❌ same |
+
+The obvious choice (`typeof(object)`) is the broken one. Cheapest correct answer is *the smallest
+schema that is still object-typed*, not the smallest schema.
+
+`McpServerToolCreateOptions.OutputSchema` takes an explicit `JsonElement` for exact byte control,
+but it is not reachable from `[McpServerTool]` — using it means dropping `WithTools<T>()` attribute
+registration in favor of hand-built `McpServerTool.Create(...)`. For a 0-byte gain over the marker,
+not worth it.
+
+**Verify with schema pass-through, not just a payload assertion.** `BuildLegacyWireProtocolTool`
+rewrites only non-object schemas. So if a down-level client (e.g. `2025-06-18`) is advertised the
+*same bytes* as a SEP-2106 client, no rewrite ran — which is the same condition that keeps
+`structuredContent` unwrapped. Assert both: schema equality across versions, and
+`structuredContent` equal to `content[0].text` with no `result` property.
+
+Measured on this repo (six `LimitedResults<T>` tools, 2026-08-20, SDK 2.2.0): property mirror
+3,745 B → minimal marker 102 B, i.e. **−3,643 B / ≈−911 tokens** off `tools/list` with byte-identical
+runtime payloads at every protocol version.
+
 ## Pattern 3: candidate triage
 - Already-primitive string tools with `UseStructuredContent=false` are already optimal; they emit no `outputSchema`.
 - Small DTOs are better candidates than broad result objects.
@@ -111,6 +161,23 @@ var listPayloadBytes = Encoding.UTF8.GetByteCount(listPayload);
 - 20/25 tools have outputSchema (UseStructuredContent=true)
 - Fattest: azdo_timeline (2,099), azdo_search_log (2,027), azdo_search_timeline (1,929)
 - outputSchema top: azdo_timeline (1,123), helix_status (1,001), azdo_build (929)
+
+### Baseline refresh (2026-08-20, SDK 1.4.0 → 2.2.0 upgrade branch, 25 tools)
+
+| State | tools/list bytes | six `LimitedResults<T>` schemas | all-tools outputSchema |
+|---|---|---|---|
+| main, SDK 1.4.0 (`6eb3905`) | 30,366 | 408 (68 each) | 8,961 |
+| upgrade branch + property mirror | 32,806 | 3,745 | 12,298 |
+| upgrade branch + minimal marker (Pattern 2b) | **29,163** | **102** (17 each) | **8,655** |
+
+Two SDK-version caveats when comparing across the 1.4.0 → 2.2.0 boundary:
+
+- SDK 1.4.0 wrapped **eagerly at creation time**, so its `ProtocolTool.OutputSchema` already held
+  `{"type":"object","properties":{"result":true},"required":["result"]}` (68 B) — the wrapped form.
+  SDK 2.x stores the *natural* schema and wraps at wire-emission time. The harness is therefore
+  measuring different things on either side; say which side is pre- and which is post-wrapping.
+- SDK 1.4.0 emitted `,"execution":{"taskSupport":"optional"}` (39 B) on every `Task`-returning tool;
+  2.2.0 omits it. That alone is −897 B across 23 of 25 tools here, unrelated to any schema change.
 
 ## Genericity / Reuse Assessment
 

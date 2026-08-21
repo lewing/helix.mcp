@@ -87,6 +87,22 @@
 
 ---
 
+## Final Review F2: Scratch Path Cleanup (Dallas Review 2026-08-20)
+
+**Finding:** Third-party source copy (`upstream-StatelessServerTests.cs`, 642 lines, zero provenance) and test-run logs (`.squad/evidence/`) were about to be committed into the PR, violating compliance/licensing policy and creating scratch clutter.
+
+**Action:** 
+- Deleted `.squad/artifacts/` and `.squad/evidence/` directories entirely
+- Rewrote two dangling XML-doc references in test classes to cite upstream MCP C# SDK v2.2.0 directly via stable GitHub blob URLs
+- Corrected XML-doc misnomer in AzdoMcpTools.cs line 468: "six **paginated** AzDO tools" → "six **capped/truncating** AzDO tools"
+- Added `.squad/artifacts/` and `.squad/evidence/` to `.gitignore` alongside existing scratch patterns, preserving durable `.squad/skills/` and histories
+
+**Key Learning:** When citing upstream library sources in XML docs, prefer stable GitHub URLs (blob/tag/path) over local file copies. This avoids vendoring third-party code without provenance and keeps test documentation pointing to authoritative sources.
+
+**Result:** No dangling references, git status clean of scratch paths, .gitignore prevents recurrence.
+
+---
+
 ## Prior Work Archive
 
 See `.squad/agents/kane/history-archive.md` for detailed work on:

@@ -4,6 +4,7 @@ using HelixTool.Core.Helix;
 using HelixTool.Core.AzDO;
 using HelixTool.Mcp;
 using HelixTool.Mcp.Tools;
+using ModelContextProtocol.AspNetCore;
 using ModelContextProtocol.Server;
 using System.Reflection;
 using System.Text.Json;
@@ -107,7 +108,15 @@ builder.Services
         // Stage A's UnmappedMemberHandling.Disallow (below) remains as defense-in-depth.
         options.AddUnknownParameterFilter(typeof(HelixMcpTools).Assembly);
     })
-    .WithHttpTransport()
+    .WithHttpTransport(options =>
+    {
+        // Explicit, not inherited: SDK 2.x flipped this default (stateful in 1.4.0).
+        // Our DI is per-request scoped and we issue no server-to-client requests, so
+        // sessions buy us nothing. Escape hatch if a down-level client ever needs one:
+        // HttpServerSessionMode.StatefulForInitializeClients (not `Stateless = false`,
+        // which selects Stateful and refuses current clients with -32022).
+        options.SessionMode = HttpServerSessionMode.Stateless;
+    })
     .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly, new JsonSerializerOptions
     {
         // Reject unknown parameters at binding time so callers get a structured error
@@ -124,3 +133,10 @@ var app = builder.Build();
 app.UseApiKeyAuthIfConfigured();
 app.MapMcp();
 app.Run();
+
+// Test seam (ASP.NET Core minimal-API convention): top-level statements compile to an
+// internal `Program` class, which WebApplicationFactory<TEntryPoint> cannot reference from
+// another assembly. This partial declaration only widens that generated class's accessibility
+// — it adds no members and changes no behavior — so integration tests can boot this exact
+// host and assert against its real service registrations (see HttpTransportSessionModeTests).
+public partial class Program;
