@@ -316,3 +316,276 @@ public class SqliteCacheStoreTests : IDisposable
         artifact!.Dispose();
     }
 }
+
+// =========================================================================
+// Eval mode integration tests for SqliteCacheStore.
+// Seeding uses a normal (non-eval) writer against a parent dir so the DB
+// lands at  parentDir/public/cache.db = snapshotDir/cache.db.
+// The eval store opens snapshotDir directly (EvalMode bypasses the /public suffix).
+// =========================================================================
+
+public class SqliteCacheStoreEvalModeTests : IDisposable
+{
+    // _parentDir:   normal-mode CacheRoot  → effective root = _parentDir/public
+    // _snapshotDir: eval-mode  CacheRoot   → effective root = _snapshotDir  (no suffix)
+    // Both resolve to the same physical cache.db.
+    private readonly string _parentDir;
+    private readonly string _snapshotDir; // = _parentDir/public
+
+    public SqliteCacheStoreEvalModeTests()
+    {
+        _parentDir = Path.Combine(Path.GetTempPath(), $"hlx-eval-{Guid.NewGuid():N}");
+        _snapshotDir = Path.Combine(_parentDir, "public");
+        Directory.CreateDirectory(_snapshotDir);
+    }
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_parentDir, recursive: true); } catch { /* best-effort */ }
+    }
+
+    // Writer: normal mode, CacheRoot = _parentDir → DB at _parentDir/public/cache.db = _snapshotDir/cache.db
+    private SqliteCacheStore CreateWriterStore()
+        => new(new CacheOptions { CacheRoot = _parentDir, EvalMode = false });
+
+    // Eval store: EvalMode, CacheRoot = _snapshotDir → DB at _snapshotDir/cache.db (same path)
+    private SqliteCacheStore OpenEvalStore()
+        => new(new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true });
+
+    private string DbPath => Path.Combine(_snapshotDir, "cache.db");
+
+    // =========================================================================
+    // TTL bypass
+    // =========================================================================
+
+    [Fact]
+    public async Task EvalMode_Metadata_ExpiredEntry_ReturnsValue()
+    {
+        using var writer = CreateWriterStore();
+        const string key = "job:abc123:details";
+        const string json = "{\"Name\":\"expired-job\"}";
+        // Delay to let the fire-and-forget background eviction complete on the empty DB
+        // before we write a TimeSpan.Zero-TTL row (otherwise eviction races the write).
+        await Task.Delay(30);
+        await writer.SetMetadataAsync(key, json, TimeSpan.Zero); // expires immediately
+        writer.Dispose();
+
+        using var evalStore = OpenEvalStore();
+        var result = await evalStore.GetMetadataAsync(key);
+
+        Assert.Equal(json, result);
+    }
+
+    [Fact]
+    public async Task NormalMode_Metadata_ExpiredEntry_ReturnsNull()
+    {
+        // Regression: normal mode must still honour TTL.
+        using var store = CreateWriterStore();
+        await store.SetMetadataAsync("job:abc123:details", "{}", TimeSpan.Zero);
+
+        Assert.Null(await store.GetMetadataAsync("job:abc123:details"));
+    }
+
+    [Fact]
+    public async Task EvalMode_JobState_ExpiredEntry_ReturnsValue()
+    {
+        using var writer = CreateWriterStore();
+        const string jobId = "d1f9a7c3-2b4e-4f8a-9c0d-e5f6a7b8c9d0";
+        await Task.Delay(30); // wait for background eviction on empty DB
+        await writer.SetJobCompletedAsync(jobId, completed: true, TimeSpan.Zero);
+        writer.Dispose();
+
+        using var evalStore = OpenEvalStore();
+        var result = await evalStore.IsJobCompletedAsync(jobId);
+
+        Assert.True(result);
+    }
+
+    [Fact]
+    public async Task NormalMode_JobState_ExpiredEntry_ReturnsNull()
+    {
+        using var store = CreateWriterStore();
+        const string jobId = "d1f9a7c3-2b4e-4f8a-9c0d-e5f6a7b8c9d0";
+        await store.SetJobCompletedAsync(jobId, completed: false, TimeSpan.Zero);
+
+        Assert.Null(await store.IsJobCompletedAsync(jobId));
+    }
+
+    // =========================================================================
+    // EvictExpiredAsync is a no-op in eval mode
+    // =========================================================================
+
+    [Fact]
+    public async Task EvalMode_EvictExpired_IsNoOp_ExpiredEntriesRemain()
+    {
+        using var writer = CreateWriterStore();
+        const string key = "job:old123:details";
+        const string jobId = "old-job-id";
+        await Task.Delay(30); // wait for background eviction on empty DB before writing zero-TTL rows
+        await writer.SetMetadataAsync(key, "{\"stale\":true}", TimeSpan.Zero);
+        await writer.SetJobCompletedAsync(jobId, true, TimeSpan.Zero);
+        writer.Dispose();
+
+        using var evalStore = OpenEvalStore();
+        await evalStore.EvictExpiredAsync();
+
+        // Both entries must survive the no-op eviction.
+        Assert.NotNull(await evalStore.GetMetadataAsync(key));
+        Assert.True(await evalStore.IsJobCompletedAsync(jobId));
+    }
+
+    [Fact]
+    public async Task NormalMode_EvictExpired_RemovesExpiredRows()
+    {
+        // Regression: normal store still evicts expired rows.
+        using var store = CreateWriterStore();
+        await store.SetMetadataAsync("job:abc:details", "{}", TimeSpan.Zero);
+        await store.EvictExpiredAsync();
+
+        Assert.Null(await store.GetMetadataAsync("job:abc:details"));
+    }
+
+    // =========================================================================
+    // Eval mode writes are no-ops (snapshot is read-only)
+    // =========================================================================
+
+    [Fact]
+    public async Task EvalMode_SetMetadata_IsNoOp_DoesNotPersist()
+    {
+        // Seed a valid entry first.
+        using var writer = CreateWriterStore();
+        const string key = "job:abc123:details";
+        await writer.SetMetadataAsync(key, "{\"original\":true}", TimeSpan.FromHours(4));
+        writer.Dispose();
+
+        // In eval mode, SetMetadataAsync must not overwrite.
+        using var evalStore = OpenEvalStore();
+        await evalStore.SetMetadataAsync(key, "{\"tampered\":true}", TimeSpan.FromHours(4));
+        var result = await evalStore.GetMetadataAsync(key);
+
+        Assert.Contains("original", result!);
+        Assert.DoesNotContain("tampered", result!);
+    }
+
+    [Fact]
+    public async Task EvalMode_SetJobCompleted_IsNoOp_DoesNotPersist()
+    {
+        using var writer = CreateWriterStore();
+        const string jobId = "job-abc-123";
+        await writer.SetJobCompletedAsync(jobId, completed: true, TimeSpan.FromHours(4));
+        writer.Dispose();
+
+        using var evalStore = OpenEvalStore();
+        await evalStore.SetJobCompletedAsync(jobId, completed: false, TimeSpan.FromHours(4));
+        var result = await evalStore.IsJobCompletedAsync(jobId);
+
+        // Original (true) must win — the write was discarded.
+        Assert.True(result);
+    }
+
+    // =========================================================================
+    // Artifact read does NOT update last_accessed in eval mode
+    // =========================================================================
+
+    [Fact]
+    public async Task EvalMode_ArtifactRead_DoesNotMutateLastAccessed()
+    {
+        // Seed an artifact via writer.
+        using var writer = CreateWriterStore();
+        const string key = "job:abc123:wi:test-wi:console";
+        await writer.SetArtifactAsync(key, new MemoryStream(System.Text.Encoding.UTF8.GetBytes("log")));
+        writer.Dispose();
+
+        // Force a known old timestamp directly in the DB.
+        const string oldTimestamp = "2020-01-01T00:00:00.0000000+00:00";
+        await using (var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={DbPath}"))
+        {
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "UPDATE cache_artifacts SET last_accessed = @ts WHERE cache_key = @key;";
+            cmd.Parameters.AddWithValue("@ts", oldTimestamp);
+            cmd.Parameters.AddWithValue("@key", key);
+            cmd.ExecuteNonQuery();
+        }
+
+        // Read via eval store.
+        using var evalStore = OpenEvalStore();
+        using var stream = await evalStore.GetArtifactAsync(key);
+        Assert.NotNull(stream);
+        stream!.Dispose();
+        evalStore.Dispose();
+
+        // Verify last_accessed was NOT updated.
+        string? lastAccessed;
+        await using (var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={DbPath}"))
+        {
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT last_accessed FROM cache_artifacts WHERE cache_key = @key;";
+            cmd.Parameters.AddWithValue("@key", key);
+            lastAccessed = cmd.ExecuteScalar() as string;
+        }
+
+        Assert.Equal(oldTimestamp, lastAccessed);
+    }
+
+    // =========================================================================
+    // Schema mismatch: eval mode throws instead of destructive migration
+    // =========================================================================
+
+    [Fact]
+    public void EvalMode_WrongSchemaVersion_ThrowsInvalidOperationException()
+    {
+        // Create a DB with wrong user_version=99.
+        using (var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={DbPath}"))
+        {
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "PRAGMA user_version=99;";
+            cmd.ExecuteNonQuery();
+        }
+
+        var opts = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true };
+        var ex = Assert.Throws<InvalidOperationException>(() => new SqliteCacheStore(opts));
+        Assert.Contains("schema", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task NormalMode_WrongSchemaVersion_MigratesDestructively_NoException()
+    {
+        // Normal mode drops and recreates — must not throw.
+        using (var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={DbPath}"))
+        {
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "PRAGMA user_version=99;";
+            cmd.ExecuteNonQuery();
+        }
+
+        using var store = CreateWriterStore();
+        // Must be usable after silent migration.
+        await store.SetMetadataAsync("job:k:details", "{}", TimeSpan.FromHours(1));
+        Assert.NotNull(await store.GetMetadataAsync("job:k:details"));
+    }
+
+    // =========================================================================
+    // WAL/SHM cleanup on open in eval mode
+    // =========================================================================
+
+    [Fact]
+    public async Task EvalMode_AfterWriterClose_DataReadableInEvalMode()
+    {
+        // Seed a valid DB via writer (establishes WAL mode; WAL/SHM files may or may not
+        // remain after the writer disposes, depending on SQLite checkpoint behaviour).
+        using (var writer = CreateWriterStore())
+        {
+            await writer.SetMetadataAsync("job:x:details", "{}", TimeSpan.FromHours(4));
+        }
+
+        // Open in eval mode: must not throw and must expose the committed data.
+        // SQLite Mode=ReadOnly follows any valid WAL frames without checkpointing or deleting them.
+        using var evalStore = OpenEvalStore();
+
+        Assert.NotNull(await evalStore.GetMetadataAsync("job:x:details"));
+    }
+}

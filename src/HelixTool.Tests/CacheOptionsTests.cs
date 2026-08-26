@@ -192,4 +192,63 @@ public class CacheOptionsTests
         Assert.Equal(1L * 1024 * 1024 * 1024, original.MaxSizeBytes);
         Assert.Equal(500L * 1024 * 1024, modified.MaxSizeBytes);
     }
+
+    // =========================================================================
+    // Eval mode: EvalMode property + GetEffectiveCacheRoot bypass
+    // =========================================================================
+
+    [Fact]
+    public void EvalMode_DefaultIsFalse()
+    {
+        var opts = new CacheOptions();
+
+        Assert.False(opts.EvalMode);
+    }
+
+    [Fact]
+    public void GetEffectiveCacheRoot_EvalMode_ReturnsExactCacheRoot_NoSubdirectory()
+    {
+        // When EvalMode is true and CacheRoot is set, GetEffectiveCacheRoot() must return
+        // CacheRoot as-is — no "/public" or "/cache-{hash}" suffix appended.
+        var snapshotDir = "/some/snapshot/dir";
+        var opts = new CacheOptions { CacheRoot = snapshotDir, EvalMode = true };
+
+        var result = opts.GetEffectiveCacheRoot();
+
+        Assert.Equal(snapshotDir, result);
+    }
+
+    [Fact]
+    public void GetEffectiveCacheRoot_EvalMode_AbsolutePath_ReturnedAsIs()
+    {
+        var absolutePath = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "hlx-snap-test"));
+        var opts = new CacheOptions { CacheRoot = absolutePath, EvalMode = true };
+
+        var result = opts.GetEffectiveCacheRoot();
+
+        Assert.Equal(absolutePath, result);
+    }
+
+    [Fact]
+    public void GetEffectiveCacheRoot_EvalMode_WithCacheRootHash_StillReturnsExactCacheRoot()
+    {
+        // Even if CacheRootHash is present, EvalMode bypasses all suffixing.
+        var snapshotDir = "/snap/dir";
+        var opts = new CacheOptions { CacheRoot = snapshotDir, CacheRootHash = "abc123", EvalMode = true };
+
+        var result = opts.GetEffectiveCacheRoot();
+
+        Assert.Equal(snapshotDir, result);
+    }
+
+    [Fact]
+    public void GetEffectiveCacheRoot_NormalMode_WithCacheRoot_AppendsPublic()
+    {
+        // Regression: non-eval mode still appends "/public".
+        var opts = new CacheOptions { CacheRoot = "/some/cache", EvalMode = false };
+
+        var result = opts.GetEffectiveCacheRoot();
+
+        Assert.Equal(Path.Combine("/some/cache", "public"), result);
+    }
 }

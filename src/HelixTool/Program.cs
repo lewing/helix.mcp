@@ -39,6 +39,32 @@ services.AddSingleton<ICredentialStore, GitCredentialStore>();
 services.AddSingleton<ChainedHelixTokenAccessor>();
 services.AddSingleton<IHelixTokenAccessor>(sp => sp.GetRequiredService<ChainedHelixTokenAccessor>());
 services.AddSingleton<IHelixApiClientFactory, HelixApiClientFactory>();
+
+var evalSnapshotDir = Environment.GetEnvironmentVariable("HLX_EVAL_SNAPSHOT");
+if (!string.IsNullOrEmpty(evalSnapshotDir))
+{
+    var resolvedSnapshot = Path.GetFullPath(evalSnapshotDir);
+    var evalOptions = new CacheOptions
+    {
+        CacheRoot = resolvedSnapshot,
+        EvalMode = true,
+        CacheRootHash = null,
+        AuthTokenHash = null,
+    };
+    services.AddSingleton<CacheOptions>(_ => evalOptions);
+    services.AddSingleton<ICacheStore>(sp => new SqliteCacheStore(sp.GetRequiredService<CacheOptions>()));
+    services.AddSingleton<IHelixApiClient>(sp =>
+        new CachingHelixApiClient(new OfflineHelixApiClient(), sp.GetRequiredService<ICacheStore>(), evalOptions));
+    services.AddSingleton<HelixService>(sp =>
+        new HelixService(sp.GetRequiredService<IHelixApiClient>(), new HttpClient(new EvalModeBlockingHandler())));
+    services.AddSingleton(sp => new Lazy<HelixService>(() => sp.GetRequiredService<HelixService>()));
+    services.AddSingleton<IAzdoApiClient>(sp =>
+        new CachingAzdoApiClient(new OfflineAzdoApiClient(), sp.GetRequiredService<ICacheStore>(), evalOptions));
+    services.AddSingleton<AzdoService>(sp =>
+        new AzdoService(sp.GetRequiredService<IAzdoApiClient>(), sp.GetRequiredService<IHelixApiClient>()));
+}
+else
+{
 services.AddSingleton<CacheOptions>(_ =>
 {
     // Don't resolve Helix auth eagerly — let it be lazy so MCP/AzDO commands
@@ -86,6 +112,7 @@ services.AddSingleton<AzdoService>(sp =>
     new AzdoService(
         sp.GetRequiredService<IAzdoApiClient>(),
         sp.GetRequiredService<IHelixApiClient>()));
+}
 
 ConsoleApp.ServiceProvider = services.BuildServiceProvider();
 
@@ -881,6 +908,31 @@ Available as `failureCategory` in JSON and MCP output.
         builder.Services.AddSingleton<IHelixTokenAccessor>(_ =>
             new EnvironmentHelixTokenAccessor(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
         builder.Services.AddSingleton<IHelixApiClientFactory, HelixApiClientFactory>();
+
+        var mcpEvalSnapshotDir = Environment.GetEnvironmentVariable("HLX_EVAL_SNAPSHOT");
+        if (!string.IsNullOrEmpty(mcpEvalSnapshotDir))
+        {
+            var resolvedSnapshot = Path.GetFullPath(mcpEvalSnapshotDir);
+            var evalOptions = new CacheOptions
+            {
+                CacheRoot = resolvedSnapshot,
+                EvalMode = true,
+                CacheRootHash = null,
+                AuthTokenHash = null,
+            };
+            builder.Services.AddSingleton<CacheOptions>(_ => evalOptions);
+            builder.Services.AddSingleton<ICacheStore>(sp => new SqliteCacheStore(sp.GetRequiredService<CacheOptions>()));
+            builder.Services.AddSingleton<IHelixApiClient>(sp =>
+                new CachingHelixApiClient(new OfflineHelixApiClient(), sp.GetRequiredService<ICacheStore>(), evalOptions));
+            builder.Services.AddSingleton<HelixService>(sp =>
+                new HelixService(sp.GetRequiredService<IHelixApiClient>(), new HttpClient(new EvalModeBlockingHandler())));
+            builder.Services.AddSingleton<IAzdoApiClient>(sp =>
+                new CachingAzdoApiClient(new OfflineAzdoApiClient(), sp.GetRequiredService<ICacheStore>(), evalOptions));
+            builder.Services.AddSingleton<AzdoService>(sp =>
+                new AzdoService(sp.GetRequiredService<IAzdoApiClient>(), sp.GetRequiredService<IHelixApiClient>()));
+        }
+        else
+        {
         builder.Services.AddSingleton<CacheOptions>(_ =>
         {
             var opts = new CacheOptions { AuthTokenHash = null };
@@ -924,6 +976,7 @@ Available as `failureCategory` in JSON and MCP output.
             new AzdoService(
                 sp.GetRequiredService<IAzdoApiClient>(),
                 sp.GetRequiredService<IHelixApiClient>()));
+        }
 
         builder.Services
             .AddMcpServer(options =>
