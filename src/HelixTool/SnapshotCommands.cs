@@ -1,7 +1,7 @@
 using ConsoleAppFramework;
 using HelixTool.Core.Cache;
 
-/// <summary>CLI commands for snapshot export and validation.</summary>
+/// <summary>CLI commands for snapshot export and integrity validation.</summary>
 public class SnapshotCommands
 {
     private readonly CacheOptions _cacheOptions;
@@ -12,11 +12,11 @@ public class SnapshotCommands
     }
 
     /// <summary>
-    /// Export the current cache as a portable eval snapshot.
-    /// The snapshot can be used offline with the HLX_EVAL_SNAPSHOT environment variable.
+    /// Export the current cache as an offline eval snapshot.
+    /// The snapshot preserves cache keys and can be used with the HLX_EVAL_SNAPSHOT environment variable.
     /// </summary>
     /// <param name="destination">
-    /// Destination directory for the snapshot. Must not already exist.
+    /// Destination directory for the snapshot. Must not already exist or resolve within the source cache.
     /// </param>
     [Command("snapshot export")]
     public async Task Export([Argument] string destination, CancellationToken ct = default)
@@ -37,25 +37,19 @@ public class SnapshotCommands
         Console.Error.WriteLine($"Source:      {sourceRoot}");
         Console.Error.WriteLine($"Destination: {destFull}");
 
-        // Document the auth-scoped key limitation (see SnapshotExporter XML doc).
-        // We warn whenever an auth context is active because auth-scoped AzDO keys
-        // won't match in eval mode unless the same context is configured there.
-        if (!string.IsNullOrEmpty(_cacheOptions.AuthTokenHash) ||
-            !string.IsNullOrEmpty(_cacheOptions.CacheRootHash))
-        {
-            Console.Error.WriteLine();
-            Console.Error.WriteLine("Note: auth-scoped key limitation");
-            Console.Error.WriteLine(
-                "      Cache entries recorded under an AzDO auth context use an auth-hash prefix");
-            Console.Error.WriteLine(
-                "      in the cache key. In eval mode (HLX_EVAL_SNAPSHOT), those entries are only");
-            Console.Error.WriteLine(
-                "      accessible if the eval-mode client is configured with the same auth context.");
-            Console.Error.WriteLine(
-                "      Public Helix cache entries are always accessible without auth context.");
-            Console.Error.WriteLine(
-                "      Key normalization (stripping the auth prefix) is intentionally not performed.");
-        }
+        Console.Error.WriteLine();
+        Console.Error.WriteLine("Note: auth-scoped replay limitation");
+        Console.Error.WriteLine("      Auth-scoped AzDO keys are preserved unchanged.");
+        Console.Error.WriteLine(
+            "      Eval mode has an environment-only token accessor, so environment-keyed entries");
+        Console.Error.WriteLine(
+            "      can be replayed with the identical AZDO_TOKEN and effective PAT/Bearer classification.");
+        Console.Error.WriteLine(
+            "      Set AZDO_TOKEN_TYPE to the same value to preserve that classification reliably.");
+        Console.Error.WriteLine(
+            "      AzureCliCredential- or az CLI-derived identity partitions are not currently");
+        Console.Error.WriteLine(
+            "      reproducible in eval mode. Anonymous/public entries work without credentials.");
 
         Console.Error.WriteLine();
 
@@ -70,18 +64,6 @@ public class SnapshotCommands
             Console.Error.WriteLine($"  Destination:    {result.Destination}");
             Console.Error.WriteLine($"  DB size:        {Commands.FormatBytes(result.DbSizeBytes)}");
             Console.Error.WriteLine($"  Artifacts:      {result.ArtifactCount} file(s)");
-
-            if (result.WalBusy)
-            {
-                Console.Error.WriteLine(
-                    $"  WAL checkpoint: {result.WalPagesWritten}/{result.WalPagesTotal} pages written " +
-                    "(incomplete — active reader blocked TRUNCATE; WAL side-files included)");
-            }
-            else
-            {
-                Console.Error.WriteLine(
-                    $"  WAL checkpoint: {result.WalPagesWritten}/{result.WalPagesTotal} pages written (complete)");
-            }
 
             Console.Error.WriteLine();
             Console.Error.WriteLine($"Use with:  HLX_EVAL_SNAPSHOT={result.Destination} hlx <command>");
@@ -102,7 +84,7 @@ public class SnapshotCommands
 
     /// <summary>
     /// Validate a snapshot directory for use with HLX_EVAL_SNAPSHOT.
-    /// Checks directory layout, database schema version, expected tables, and artifact file references.
+    /// Checks layout, database integrity and schema, SQLite sidecar absence, and artifact references and sizes.
     /// </summary>
     /// <param name="snapshotPath">Path to the snapshot directory to validate.</param>
     [Command("snapshot validate")]
