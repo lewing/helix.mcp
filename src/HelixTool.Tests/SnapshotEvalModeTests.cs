@@ -3,6 +3,7 @@
 // ci-evidence scenario reading a build from a copied snapshot.
 // Lambert: do NOT modify production files.
 
+using System.Security.Cryptography;
 using System.Text.Json;
 using HelixTool.Core;
 using HelixTool.Core.AzDO;
@@ -15,6 +16,137 @@ using NSubstitute;
 using Xunit;
 
 namespace HelixTool.Tests;
+
+internal static class SnapshotEvalTestHarness
+{
+    private const int BufferSize = 81920;
+
+    public static async Task CreateStableSnapshotAsync(
+        string liveCacheRoot,
+        string snapshotRoot,
+        Func<SqliteCacheStore, Task> seedAsync)
+    {
+        Directory.CreateDirectory(snapshotRoot);
+
+        using (var writer = new SqliteCacheStore(new CacheOptions { CacheRoot = liveCacheRoot }))
+        {
+            await seedAsync(writer);
+        }
+
+        var liveRoot = Path.Combine(liveCacheRoot, "public");
+        var liveDbPath = Path.Combine(liveRoot, "cache.db");
+        var snapshotDbPath = Path.Combine(snapshotRoot, "cache.db");
+        var sourceConnectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = liveDbPath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false
+        }.ToString();
+        var destinationConnectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = snapshotDbPath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Pooling = false
+        }.ToString();
+
+        using (var source = new SqliteConnection(sourceConnectionString))
+        using (var destination = new SqliteConnection(destinationConnectionString))
+        {
+            source.Open();
+            destination.Open();
+            source.BackupDatabase(destination);
+        }
+
+        var liveArtifacts = Path.Combine(liveRoot, "artifacts");
+        var snapshotArtifacts = Path.Combine(snapshotRoot, "artifacts");
+        if (Directory.Exists(liveArtifacts))
+        {
+            foreach (var sourcePath in Directory.GetFiles(liveArtifacts, "*", SearchOption.AllDirectories)
+                         .OrderBy(path => path, StringComparer.Ordinal))
+            {
+                var relativePath = Path.GetRelativePath(liveArtifacts, sourcePath);
+                var destinationPath = Path.Combine(snapshotArtifacts, relativePath);
+                Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+                await CopySharedAsync(sourcePath, destinationPath);
+            }
+        }
+    }
+
+    public static async Task CopySharedAsync(string sourcePath, string destinationPath)
+    {
+        await using var source = OpenSharedRead(sourcePath);
+        await using var destination = new FileStream(
+            destinationPath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            BufferSize,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await source.CopyToAsync(destination);
+    }
+
+    public static async Task<string> HashSharedAsync(string path)
+    {
+        await using var stream = OpenSharedRead(path);
+        return Convert.ToHexString(await SHA256.HashDataAsync(stream));
+    }
+
+    public static async Task<IReadOnlyDictionary<string, string>> CaptureArtifactHashesAsync(string snapshotRoot)
+    {
+        var artifactsRoot = Path.Combine(snapshotRoot, "artifacts");
+        var result = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        if (!Directory.Exists(artifactsRoot))
+            return result;
+
+        foreach (var path in Directory.GetFiles(artifactsRoot, "*", SearchOption.AllDirectories)
+                     .OrderBy(path => path, StringComparer.Ordinal))
+        {
+            result.Add(
+                Path.GetRelativePath(artifactsRoot, path).Replace(Path.DirectorySeparatorChar, '/'),
+                await HashSharedAsync(path));
+        }
+
+        return result;
+    }
+
+    public static string? ReadMetadata(string dbPath, string cacheKey)
+    {
+        using var connection = OpenUnpooledReadOnly(dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT json_value FROM cache_metadata WHERE cache_key = @key;";
+        command.Parameters.AddWithValue("@key", cacheKey);
+        return command.ExecuteScalar() as string;
+    }
+
+    public static long ReadUserVersion(string dbPath)
+    {
+        using var connection = OpenUnpooledReadOnly(dbPath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA user_version;";
+        return (long)command.ExecuteScalar()!;
+    }
+
+    private static FileStream OpenSharedRead(string path) =>
+        new(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete,
+            BufferSize,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+    private static SqliteConnection OpenUnpooledReadOnly(string dbPath)
+    {
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = dbPath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false
+        }.ToString());
+        connection.Open();
+        return connection;
+    }
+}
 
 // =========================================================================
 // OfflineAzdoApiClient stub contract
@@ -549,37 +681,53 @@ public class EvalModeSnapshotImmutabilityTests : IDisposable
         var walPath = dbPath + "-wal";
         var mainDbOnlyCopyPath = Path.Combine(_snapshotDir, "cache-main-only.db");
 
-        // Phase 1: Write data via a normal-mode store (establishes WAL mode on the DB).
-        var writerOpts = new CacheOptions { CacheRoot = _parentDir, EvalMode = false, AuthTokenHash = null };
-        using (var writer = new SqliteCacheStore(writerOpts))
-        {
-            await writer.SetMetadataAsync("job:wal-test:data", "{\"ok\":true}", TimeSpan.FromHours(1));
-        }
+        await SnapshotEvalTestHarness.CreateStableSnapshotAsync(
+            Path.Combine(_parentDir, "live"),
+            _snapshotDir,
+            writer => writer.SetMetadataAsync(
+                "job:wal-test:data",
+                "{\"ok\":true}",
+                TimeSpan.FromHours(1)));
 
-        // Phase 2: Keep a raw writer connection open with auto-checkpoint disabled so
-        // committed frames are guaranteed to remain in the WAL file.  Eval mode must
-        // read WAL-backed committed data while the writer is still alive.
-        using (var rawConn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}"))
+        var writerConnectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = dbPath,
+            Mode = SqliteOpenMode.ReadWrite,
+            Pooling = false
+        }.ToString();
+        using (var rawConn = new SqliteConnection(writerConnectionString))
         {
             rawConn.Open();
-            using var noChk = rawConn.CreateCommand();
-            noChk.CommandText = "PRAGMA wal_autocheckpoint=0;";
-            noChk.ExecuteNonQuery();
+            using (var configure = rawConn.CreateCommand())
+            {
+                configure.CommandText = """
+                    PRAGMA journal_mode=WAL;
+                    PRAGMA wal_checkpoint(TRUNCATE);
+                    PRAGMA wal_autocheckpoint=0;
+                    """;
+                configure.ExecuteNonQuery();
+            }
 
-            using var ins = rawConn.CreateCommand();
-            ins.CommandText = """
-                INSERT OR REPLACE INTO cache_metadata (cache_key, json_value, created_at, expires_at, job_id)
-                VALUES ('job:wal-test2:data', '{"wal":true}', datetime('now'), datetime('now','+1 hour'), 'wal-gen');
-                """;
-            ins.ExecuteNonQuery();
+            using (var transaction = rawConn.BeginTransaction())
+            using (var insert = rawConn.CreateCommand())
+            {
+                insert.Transaction = transaction;
+                insert.CommandText = """
+                    INSERT OR REPLACE INTO cache_metadata (cache_key, json_value, created_at, expires_at, job_id)
+                    VALUES ('job:wal-test2:data', '{"wal":true}', datetime('now'), datetime('now','+1 hour'), 'wal-gen');
+                    """;
+                insert.ExecuteNonQuery();
+                transaction.Commit();
+            }
 
             // The committed row must genuinely depend on the WAL. A byte-for-byte copy
             // of only the main database has no companion WAL and therefore cannot see it.
-            File.Copy(dbPath, mainDbOnlyCopyPath);
+            await SnapshotEvalTestHarness.CopySharedAsync(dbPath, mainDbOnlyCopyPath);
             var copyConnectionString = new SqliteConnectionStringBuilder
             {
                 DataSource = mainDbOnlyCopyPath,
-                Mode = SqliteOpenMode.ReadOnly
+                Mode = SqliteOpenMode.ReadOnly,
+                Pooling = false
             }.ToString();
             using (var mainDbOnly = new SqliteConnection(copyConnectionString))
             {
@@ -594,9 +742,9 @@ public class EvalModeSnapshotImmutabilityTests : IDisposable
             // deliberately excluded: SQLite may legitimately update shared-memory reader
             // metadata, whereas a read-only connection must not change DB or WAL content.
             Assert.True(File.Exists(walPath), "WAL file must exist with writer open and autocheckpoint=0");
-            var dbBytesBefore = await File.ReadAllBytesAsync(dbPath);
-            var walBytesBefore = await File.ReadAllBytesAsync(walPath);
-            Assert.NotEmpty(walBytesBefore);
+            var dbHashBefore = await SnapshotEvalTestHarness.HashSharedAsync(dbPath);
+            var walHashBefore = await SnapshotEvalTestHarness.HashSharedAsync(walPath);
+            Assert.True(new FileInfo(walPath).Length > 0, "WAL must contain the committed row");
 
             var evalOpts = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true, AuthTokenHash = null };
             using (var eval = new SqliteCacheStore(evalOpts))
@@ -606,17 +754,23 @@ public class EvalModeSnapshotImmutabilityTests : IDisposable
             }
 
             Assert.True(File.Exists(walPath), "WAL file must not be deleted by eval mode");
-            Assert.Equal(dbBytesBefore, await File.ReadAllBytesAsync(dbPath));
-            Assert.Equal(walBytesBefore, await File.ReadAllBytesAsync(walPath));
+            Assert.True(new FileInfo(walPath).Length > 0, "WAL must remain nonempty while writer is open");
+            Assert.Equal(dbHashBefore, await SnapshotEvalTestHarness.HashSharedAsync(dbPath));
+            Assert.Equal(walHashBefore, await SnapshotEvalTestHarness.HashSharedAsync(walPath));
 
             // Prove eval did not invalidate or replace the original writer connection.
-            using var postEvalWrite = rawConn.CreateCommand();
-            postEvalWrite.CommandText = """
-                INSERT OR REPLACE INTO cache_metadata (cache_key, json_value, created_at, expires_at, job_id)
-                VALUES ('job:wal-writer-still-valid:data', '{"ok":true}', datetime('now'), datetime('now','+1 hour'), 'wal-gen');
-                SELECT COUNT(*) FROM cache_metadata WHERE cache_key = 'job:wal-writer-still-valid:data';
-                """;
-            Assert.Equal(1L, (long)postEvalWrite.ExecuteScalar()!);
+            using (var transaction = rawConn.BeginTransaction())
+            using (var postEvalWrite = rawConn.CreateCommand())
+            {
+                postEvalWrite.Transaction = transaction;
+                postEvalWrite.CommandText = """
+                    INSERT OR REPLACE INTO cache_metadata (cache_key, json_value, created_at, expires_at, job_id)
+                    VALUES ('job:wal-writer-still-valid:data', '{"ok":true}', datetime('now'), datetime('now','+1 hour'), 'wal-gen');
+                    SELECT COUNT(*) FROM cache_metadata WHERE cache_key = 'job:wal-writer-still-valid:data';
+                    """;
+                Assert.Equal(1L, (long)postEvalWrite.ExecuteScalar()!);
+                transaction.Commit();
+            }
         }
     }
 
@@ -624,40 +778,52 @@ public class EvalModeSnapshotImmutabilityTests : IDisposable
     [Fact]
     public async Task EvalMode_DbFileBytes_UnchangedAfterReads()
     {
-        // Phase 1: seed snapshot via normal writer.
-        var writerOpts = new CacheOptions { CacheRoot = _parentDir, EvalMode = false, AuthTokenHash = null };
-        using (var writer = new SqliteCacheStore(writerOpts))
-        {
-            await writer.SetMetadataAsync("job:imm-test:info", "{\"val\":42}", TimeSpan.FromHours(4));
-        }
-
+        var artifactBytes = new byte[] { 0x10, 0x20, 0x30, 0x40 };
+        await SnapshotEvalTestHarness.CreateStableSnapshotAsync(
+            Path.Combine(_parentDir, "live"),
+            _snapshotDir,
+            async writer =>
+            {
+                await writer.SetMetadataAsync("job:imm-test:info", "{\"val\":42}", TimeSpan.FromHours(4));
+                await using var artifact = new MemoryStream(artifactBytes);
+                await writer.SetArtifactAsync("job:imm-test:artifact", artifact);
+            });
         var dbPath = Path.Combine(_snapshotDir, "cache.db");
-        var dbBytesBefore = await File.ReadAllBytesAsync(dbPath);
+        var dbHashBefore = await SnapshotEvalTestHarness.HashSharedAsync(dbPath);
+        var artifactsBefore = await SnapshotEvalTestHarness.CaptureArtifactHashesAsync(_snapshotDir);
+        Assert.Equal("{\"val\":42}", SnapshotEvalTestHarness.ReadMetadata(dbPath, "job:imm-test:info"));
 
-        // Phase 2: Open eval mode, perform reads, close.
         var evalOpts = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true, AuthTokenHash = null };
         using (var eval = new SqliteCacheStore(evalOpts))
         {
             var result = await eval.GetMetadataAsync("job:imm-test:info");
             Assert.Equal("{\"val\":42}", result);
+            await using var artifact = await eval.GetArtifactAsync("job:imm-test:artifact");
+            Assert.NotNull(artifact);
+            using var artifactCopy = new MemoryStream();
+            await artifact!.CopyToAsync(artifactCopy);
+            Assert.Equal(artifactBytes, artifactCopy.ToArray());
         }
 
-        var dbBytesAfter = await File.ReadAllBytesAsync(dbPath);
-        Assert.Equal(dbBytesBefore, dbBytesAfter);
+        Assert.Equal(dbHashBefore, await SnapshotEvalTestHarness.HashSharedAsync(dbPath));
+        Assert.Equal("{\"val\":42}", SnapshotEvalTestHarness.ReadMetadata(dbPath, "job:imm-test:info"));
+        var artifactsAfter = await SnapshotEvalTestHarness.CaptureArtifactHashesAsync(_snapshotDir);
+        Assert.Equal(artifactsBefore.ToArray(), artifactsAfter.ToArray());
     }
 
     /// <summary>Eval mode must reject a DB with wrong schema version without running any DDL.</summary>
     [Fact]
-    public void EvalMode_WrongSchemaVersion_ThrowsWithoutMutating()
+    public async Task EvalMode_WrongSchemaVersion_ThrowsWithoutMutating()
     {
         // Build a tiny SQLite DB with user_version=99 (wrong).
         var dbPath = Path.Combine(_snapshotDir, "cache.db");
-        var cs = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+        var cs = new SqliteConnectionStringBuilder
         {
             DataSource = dbPath,
-            Mode = Microsoft.Data.Sqlite.SqliteOpenMode.ReadWriteCreate,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Pooling = false
         }.ToString();
-        using (var conn = new Microsoft.Data.Sqlite.SqliteConnection(cs))
+        using (var conn = new SqliteConnection(cs))
         {
             conn.Open();
             using var cmd = conn.CreateCommand();
@@ -665,15 +831,17 @@ public class EvalModeSnapshotImmutabilityTests : IDisposable
             cmd.ExecuteNonQuery();
         }
 
-        var dbBytesBefore = File.ReadAllBytes(dbPath);
+        var dbHashBefore = await SnapshotEvalTestHarness.HashSharedAsync(dbPath);
+        var modifiedBefore = File.GetLastWriteTimeUtc(dbPath);
+        var schemaBefore = SnapshotEvalTestHarness.ReadUserVersion(dbPath);
         var evalOpts = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true, AuthTokenHash = null };
 
         var ex = Assert.Throws<InvalidOperationException>(() => new SqliteCacheStore(evalOpts));
         Assert.Contains("mismatch", ex.Message, StringComparison.OrdinalIgnoreCase);
 
-        // DB must be byte-identical — no DDL ran.
-        var dbBytesAfter = File.ReadAllBytes(dbPath);
-        Assert.Equal(dbBytesBefore, dbBytesAfter);
+        Assert.Equal(dbHashBefore, await SnapshotEvalTestHarness.HashSharedAsync(dbPath));
+        Assert.Equal(modifiedBefore, File.GetLastWriteTimeUtc(dbPath));
+        Assert.Equal(schemaBefore, SnapshotEvalTestHarness.ReadUserVersion(dbPath));
     }
 }
 
@@ -832,39 +1000,32 @@ public class EvalModeClearRejectionTests : IDisposable
     [Fact]
     public async Task ClearAsync_EvalMode_ThrowsAndPreservesSnapshot()
     {
-        // Seed: write a metadata row and an artifact file.
-        using var writerStore = new SqliteCacheStore(new CacheOptions { CacheRoot = _parentDir });
-        await writerStore.SetMetadataAsync("job:clr-test:info", "{\"v\":1}", TimeSpan.FromHours(4));
-        using var artStream = new MemoryStream(new byte[] { 0xDE, 0xAD, 0xBE, 0xEF });
-        await writerStore.SetArtifactAsync("job:clr-test:artifact", artStream);
-        writerStore.Dispose();
-
-        // Capture DB bytes and artifact directory snapshot before the rejected clear.
+        await SnapshotEvalTestHarness.CreateStableSnapshotAsync(
+            Path.Combine(_parentDir, "live"),
+            _snapshotDir,
+            async writer =>
+            {
+                await writer.SetMetadataAsync("job:clr-test:info", "{\"v\":1}", TimeSpan.FromHours(4));
+                await using var artifact = new MemoryStream(new byte[] { 0xDE, 0xAD, 0xBE, 0xEF });
+                await writer.SetArtifactAsync("job:clr-test:artifact", artifact);
+            });
         var dbPath = Path.Combine(_snapshotDir, "cache.db");
-        var dbBytesBefore = await File.ReadAllBytesAsync(dbPath);
-        var artifactsDir = Path.Combine(_snapshotDir, "artifacts");
-        var filesBefore = Directory.Exists(artifactsDir)
-            ? Directory.GetFiles(artifactsDir, "*", SearchOption.AllDirectories).ToHashSet()
-            : new HashSet<string>();
+        var dbHashBefore = await SnapshotEvalTestHarness.HashSharedAsync(dbPath);
+        var artifactsBefore = await SnapshotEvalTestHarness.CaptureArtifactHashesAsync(_snapshotDir);
 
         var evalOpts = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true };
-        using var evalStore = new SqliteCacheStore(evalOpts);
+        using (var evalStore = new SqliteCacheStore(evalOpts))
+        {
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => evalStore.ClearAsync());
+            Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("read-only", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
 
-        // ClearAsync must throw before touching anything.
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => evalStore.ClearAsync());
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("read-only", ex.Message, StringComparison.OrdinalIgnoreCase);
-
-        // DB bytes must be identical — no SQL DELETE ran.
-        var dbBytesAfter = await File.ReadAllBytesAsync(dbPath);
-        Assert.Equal(dbBytesBefore, dbBytesAfter);
-
-        // Artifact files must be untouched.
-        var filesAfter = Directory.Exists(artifactsDir)
-            ? Directory.GetFiles(artifactsDir, "*", SearchOption.AllDirectories).ToHashSet()
-            : new HashSet<string>();
-        Assert.Equal(filesBefore, filesAfter);
+        Assert.Equal(dbHashBefore, await SnapshotEvalTestHarness.HashSharedAsync(dbPath));
+        Assert.Equal("{\"v\":1}", SnapshotEvalTestHarness.ReadMetadata(dbPath, "job:clr-test:info"));
+        var artifactsAfter = await SnapshotEvalTestHarness.CaptureArtifactHashesAsync(_snapshotDir);
+        Assert.Equal(artifactsBefore.ToArray(), artifactsAfter.ToArray());
     }
 }
 
