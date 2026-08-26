@@ -21,11 +21,13 @@ public sealed class CachingHelixApiClient : IHelixApiClient
     private readonly IHelixApiClient _inner;
     private readonly ICacheStore _cache;
     private readonly bool _enabled;
+    private readonly CacheOptions _options;
 
     public CachingHelixApiClient(IHelixApiClient inner, ICacheStore cache, CacheOptions options)
     {
         _inner = inner;
         _cache = cache;
+        _options = options;
         _enabled = options.MaxSizeBytes > 0;
     }
 
@@ -119,12 +121,23 @@ public sealed class CachingHelixApiClient : IHelixApiClient
     {
         if (!_enabled) return await _inner.GetConsoleLogAsync(workItemName, jobId, ct);
 
+        var cacheKey = $"job:{CacheSecurity.SanitizeCacheKeySegment(jobId)}:wi:{CacheSecurity.SanitizeCacheKeySegment(workItemName)}:console";
+
+        // In eval mode: serve the cached artifact immediately if present; missing completion
+        // state must not invalidate existing primary evidence.
+        if (_options.EvalMode)
+        {
+            var cachedStreamEval = await _cache.GetArtifactAsync(cacheKey, ct);
+            if (cachedStreamEval != null)
+                return cachedStreamEval;
+            return await _inner.GetConsoleLogAsync(workItemName, jobId, ct);
+        }
+
         // Never cache console logs for running jobs (append-only streams)
         var isCompleted = await IsJobCompletedAsync(jobId, ct);
         if (!isCompleted)
             return await _inner.GetConsoleLogAsync(workItemName, jobId, ct);
 
-        var cacheKey = $"job:{CacheSecurity.SanitizeCacheKeySegment(jobId)}:wi:{CacheSecurity.SanitizeCacheKeySegment(workItemName)}:console";
         var cachedStream = await _cache.GetArtifactAsync(cacheKey, ct);
         if (cachedStream != null)
             return cachedStream;

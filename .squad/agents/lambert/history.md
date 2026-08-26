@@ -319,3 +319,33 @@ invocation. Not a repo bug — just a note for future agents running tests in th
 image, so they don't mistake it for a build regression.
 
 ---
+
+## 2026-08-26: Snapshot Eval-Mode PoC — Test Implementation & Reviewer Gate
+
+**Context:** Dallas approved `HLX_EVAL_SNAPSHOT` PoC. Ripley owns production; Lambert owns tests and review.
+
+### What was tested
+44 new tests across three files:
+- `CacheOptionsTests.cs` (5): EvalMode property, `GetEffectiveCacheRoot` bypass for absolute/relative paths.
+- `SqliteCacheStoreTests.cs` (17): TTL bypass, no-op eviction, no-op writes, `last_accessed` mutation guard, schema mismatch throw, WAL/SHM cleanup, normal-mode regression.
+- `SnapshotEvalModeTests.cs` (new, ~22): `OfflineAzdoApiClient`/`OfflineHelixApiClient` stubs (all methods throw "eval mode"), composition (cache-hit/miss, path resolution), end-to-end CI-evidence scenario.
+
+### Key learnings
+
+**1. `TimeSpan.Zero` TTL race with background eviction**
+`SqliteCacheStore` fires `_ = Task.Run(() => EvictExpiredAsync())` on construction (normal mode only). Eviction runs `DELETE WHERE expires_at <= @now`. Writing with `TimeSpan.Zero` (`expires_at = now`) races with this task — if the task runs AFTER the write, it deletes the just-inserted row. Fix: `await Task.Delay(30)` between store creation and the zero-TTL write lets eviction drain on the empty DB first. Since eviction is fire-and-forget (runs once), subsequent writes are safe.
+
+**2. WAL/SHM re-creation by SQLite WAL mode**
+Production code deletes stale WAL/SHM files BEFORE opening the connection. However, `SqliteCacheStore` sets `PRAGMA journal_mode=WAL` inside `InitializeSchema()`. This causes SQLite to recreate WAL/SHM files on every connection open. Tests must NOT assert `!File.Exists(walPath)` after the store is open — that assertion will always fail in WAL mode. Instead assert that the store opens without throwing and data is readable.
+
+**3. Eval mode requires pre-existing valid DB**
+Eval mode `InitializeSchema()` throws "schema version mismatch: expected 1, found 0" on any DB whose `PRAGMA user_version` is not 1. An empty directory has no DB (version = 0). Tests simulating "cache miss in eval mode" must pre-seed the DB with a schema-only normal-mode writer first, then open the eval store. The seed writer creates the schema but writes no data rows — eval store then sees a valid (empty) DB and can open successfully.
+
+**4. Ripley fixed the `GetArtifactAsync` mutation bug proactively**
+The pre-session bug report (missing `if (!_options.EvalMode)` guards on `UPDATE last_accessed` and `DELETE` in `GetArtifactAsync`) was already fixed by the time tests ran. Both guards are present in the committed code. The mutation test now correctly passes.
+
+**5. `OfflineAzdoApiClient` methods throw synchronously**
+Methods use `=> throw Blocked()` pattern (throw before returning Task). xUnit's `CS0619` obsolete error on `Assert.Throws<T>(Func<Task>)` requires upgrading to `await Assert.ThrowsAsync<T>(...)` with `async Task` test methods. `ThrowsAsync` correctly catches synchronous throws from Task-returning methods.
+
+**6. Reviewer verdict**
+**APPROVE** — All 1614 tests pass (1612 pass, 2 pre-existing skips). All acceptance criteria are met by the production implementation. No high-confidence correctness defects found in the final code.

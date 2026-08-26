@@ -37,6 +37,22 @@ builder.Services.AddScoped<IHelixTokenAccessor, HttpContextHelixTokenAccessor>()
 builder.Services.AddSingleton<IHelixApiClientFactory, HelixApiClientFactory>();
 builder.Services.AddSingleton<ICacheStoreFactory, CacheStoreFactory>();
 
+var mcpEvalSnapshotDir = Environment.GetEnvironmentVariable("HLX_EVAL_SNAPSHOT");
+if (!string.IsNullOrEmpty(mcpEvalSnapshotDir))
+{
+    var resolvedSnapshot = Path.GetFullPath(mcpEvalSnapshotDir);
+    var evalOptions = new CacheOptions
+    {
+        CacheRoot = resolvedSnapshot,
+        EvalMode = true,
+        CacheRootHash = null,
+        AuthTokenHash = null,
+    };
+    // In eval mode all scoped services use the fixed eval options and offline stubs.
+    builder.Services.AddEvalModeCore(evalOptions, ServiceLifetime.Scoped);
+}
+else
+{
 // CacheOptions is scoped — computed per-request from token accessor
 builder.Services.AddScoped<CacheOptions>(sp =>
 {
@@ -70,12 +86,6 @@ builder.Services.AddScoped<IHelixApiClient>(sp =>
     return new CachingHelixApiClient(raw, cache, options);
 });
 
-// HelixService is scoped — follows its scoped dependencies
-builder.Services.AddScoped<HelixService>(sp =>
-    new HelixService(
-        sp.GetRequiredService<IHelixApiClient>(),
-        sp.GetRequiredService<IHttpClientFactory>().CreateClient("HelixDownload")));
-
 // AzDO services — singleton token accessor, scoped API client with caching decorator
 builder.Services.AddSingleton<IAzdoTokenAccessor, AzCliAzdoTokenAccessor>();
 builder.Services.AddScoped<AzdoApiClient>(sp =>
@@ -89,11 +99,18 @@ builder.Services.AddScoped<IAzdoApiClient>(sp =>
         sp.GetRequiredService<ICacheStore>(),
         sp.GetRequiredService<CacheOptions>(),
         sp.GetRequiredService<IAzdoTokenAccessor>()));
+// HelixService in normal mode — real HelixDownload HttpClient
+builder.Services.AddScoped<HelixService>(sp =>
+    new HelixService(
+        sp.GetRequiredService<IHelixApiClient>(),
+        sp.GetRequiredService<IHttpClientFactory>().CreateClient("HelixDownload")));
+}
+
 // Inject IHelixApiClient so GetHelixJobsAsync can use the canonical Helix-side Job.ListAsync(source) path (#92)
 builder.Services.AddScoped<AzdoService>(sp =>
-    new AzdoService(
-        sp.GetRequiredService<IAzdoApiClient>(),
-        sp.GetRequiredService<IHelixApiClient>()));
+new AzdoService(
+    sp.GetRequiredService<IAzdoApiClient>(),
+    sp.GetRequiredService<IHelixApiClient>()));
 
 builder.Services
     .AddMcpServer(options =>

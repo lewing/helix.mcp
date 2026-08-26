@@ -47,13 +47,19 @@ public record CacheOptions
             "hlx");
     }
 
+    /// <summary>When true, ignore expires_at on all reads and block network access (eval/snapshot mode).</summary>
+    public bool EvalMode { get; init; }
+
     /// <summary>
     /// Resolve the stable cache root for this cache store instance.
+    /// In eval mode, returns <see cref="CacheRoot"/> directly (snapshot dir is used as-is).
     /// Shared/public: {base}/public
     /// Partitioned:   {base}/cache-{hash}
     /// </summary>
     public string GetEffectiveCacheRoot()
     {
+        if (EvalMode && !string.IsNullOrEmpty(CacheRoot))
+            return CacheRoot;
         var baseRoot = GetBaseCacheRoot();
         if (string.IsNullOrEmpty(CacheRootHash))
             return Path.Combine(baseRoot, "public");

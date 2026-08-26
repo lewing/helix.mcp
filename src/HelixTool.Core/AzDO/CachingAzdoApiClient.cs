@@ -130,12 +130,23 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
         await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
 
+        var key = BuildCacheKey(org, project, $"timeline:{buildId}");
+
+        // In eval mode: serve cached timeline immediately; do not gate on completion state.
+        if (_options.EvalMode)
+        {
+            var cachedEval = await _cache.GetMetadataAsync(key, ct);
+            var deserializedEval = TryDeserialize<AzdoTimeline>(cachedEval);
+            if (deserializedEval is not null)
+                return deserializedEval;
+            return await _inner.GetTimelineAsync(org, project, buildId, ct);
+        }
+
         // Never cache timeline while the build is running — it changes constantly
         var isCompleted = await IsBuildCompletedAsync(org, project, buildId, ct);
         if (!isCompleted)
             return await _inner.GetTimelineAsync(org, project, buildId, ct);
 
-        var key = BuildCacheKey(org, project, $"timeline:{buildId}");
         var cached = await _cache.GetMetadataAsync(key, ct);
         var deserialized = TryDeserialize<AzdoTimeline>(cached);
         if (deserialized is not null)
@@ -166,6 +177,15 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
         if (fullContent is not null)
         {
+            // In eval mode: serve cached primary log content immediately — freshness marker may
+            // have been evicted while primary evidence outlives it.
+            if (_options.EvalMode)
+            {
+                if (startLine is null && endLine is null)
+                    return fullContent;
+                return ExtractRange(fullContent, startLine, endLine);
+            }
+
             // Check freshness — stale means the 15s marker expired
             var isFresh = await _cache.GetMetadataAsync(freshKey, ct) is not null;
 
@@ -333,9 +353,22 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
         await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
 
+        var key = BuildCacheKey(org, project, $"logslist:{buildId}");
+
+        // In eval mode the cached list is primary evidence. Its build-state marker may
+        // have expired or been omitted from the snapshot, so inspect it only on a miss.
+        if (_options.EvalMode)
+        {
+            var cachedEval = await _cache.GetMetadataAsync(key, ct);
+            var deserializedEval = TryDeserialize<List<AzdoBuildLogEntry>>(cachedEval);
+            if (deserializedEval is not null)
+                return deserializedEval;
+
+            return await _inner.GetBuildLogsListAsync(org, project, buildId, ct);
+        }
+
         var isCompleted = await IsBuildCompletedAsync(org, project, buildId, ct);
         var ttl = isCompleted ? CompletedTtl : InProgressTtl;
-        var key = BuildCacheKey(org, project, $"logslist:{buildId}");
         var cached = await _cache.GetMetadataAsync(key, ct);
         var deserialized = TryDeserialize<List<AzdoBuildLogEntry>>(cached);
         if (deserialized is not null)

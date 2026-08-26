@@ -28,11 +28,21 @@ public sealed class SqliteCacheStore : ICacheStore
         _artifactsDir = Path.Combine(root, "artifacts");
         Directory.CreateDirectory(_artifactsDir);
 
-        _connectionString = $"Data Source={dbPath};Cache=Shared";
+        // Eval mode: open read-only so SQLite handles any existing WAL correctly and no
+        // DDL or PRAGMA mutations can reach the snapshot database.  The WAL file (if any)
+        // is intentionally left intact — it may contain committed transactions and SQLite
+        // read-only connections follow the WAL without checkpointing it.
+        _connectionString = options.EvalMode
+            ? $"Data Source={dbPath};Mode=ReadOnly"
+            : $"Data Source={dbPath};Cache=Shared";
 
-        InitializeSchema();
-        // Fire-and-forget eviction on startup
-        _ = Task.Run(() => EvictExpiredAsync());
+        if (options.EvalMode)
+            ValidateEvalSchema();
+        else
+            InitializeSchema();
+        // Fire-and-forget eviction on startup (skipped in eval mode)
+        if (!options.EvalMode)
+            _ = Task.Run(() => EvictExpiredAsync());
     }
 
     private SqliteConnection OpenConnection()
@@ -46,27 +56,54 @@ public sealed class SqliteCacheStore : ICacheStore
         return conn;
     }
 
+    /// <summary>
+    /// Read-only schema validation for eval/snapshot mode.
+    /// Verifies schema version and table presence without executing any DDL or mutating pragmas.
+    /// </summary>
+    private void ValidateEvalSchema()
+    {
+        using var conn = OpenConnection();
+        using var cmd = conn.CreateCommand();
+
+        cmd.CommandText = "PRAGMA user_version;";
+        var version = Convert.ToInt32(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
+        if (version != SchemaVersion)
+            throw new InvalidOperationException(
+                $"Snapshot schema version mismatch: expected {SchemaVersion}, found {version}. " +
+                "The snapshot was created with a different schema version and cannot be used.");
+
+        // Verify all expected tables exist — no DDL, purely read.
+        foreach (var table in new[] { "cache_metadata", "cache_artifacts", "cache_job_state" })
+        {
+            cmd.Parameters.Clear();
+            cmd.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=@t;";
+            cmd.Parameters.AddWithValue("@t", table);
+            var count = Convert.ToInt32(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
+            if (count == 0)
+                throw new InvalidOperationException(
+                    $"Snapshot is malformed: expected table '{table}' not found. " +
+                    "The snapshot may be incomplete or from an unsupported version.");
+        }
+    }
+
+    /// <summary>Normal-mode schema initialization: sets WAL mode, creates tables, stamps version.</summary>
     private void InitializeSchema()
     {
         using var conn = OpenConnection();
         using var cmd = conn.CreateCommand();
 
-        // Check schema version
         cmd.CommandText = "PRAGMA user_version;";
         var version = Convert.ToInt32(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
 
-        if (version != SchemaVersion)
+        if (version != SchemaVersion && version > 0)
         {
             // Destructive migration — cache is regenerable data
-            if (version > 0)
-            {
-                cmd.CommandText = """
-                    DROP TABLE IF EXISTS cache_metadata;
-                    DROP TABLE IF EXISTS cache_artifacts;
-                    DROP TABLE IF EXISTS cache_job_state;
-                    """;
-                cmd.ExecuteNonQuery();
-            }
+            cmd.CommandText = """
+                DROP TABLE IF EXISTS cache_metadata;
+                DROP TABLE IF EXISTS cache_artifacts;
+                DROP TABLE IF EXISTS cache_job_state;
+                """;
+            cmd.ExecuteNonQuery();
         }
 
         cmd.CommandText = "PRAGMA journal_mode=WAL;";
@@ -113,9 +150,17 @@ public sealed class SqliteCacheStore : ICacheStore
         ct.ThrowIfCancellationRequested();
         using var conn = OpenConnection();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT json_value FROM cache_metadata WHERE cache_key = @key AND expires_at > @now;";
-        cmd.Parameters.AddWithValue("@key", cacheKey);
-        cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture));
+        if (_options.EvalMode)
+        {
+            cmd.CommandText = "SELECT json_value FROM cache_metadata WHERE cache_key = @key;";
+            cmd.Parameters.AddWithValue("@key", cacheKey);
+        }
+        else
+        {
+            cmd.CommandText = "SELECT json_value FROM cache_metadata WHERE cache_key = @key AND expires_at > @now;";
+            cmd.Parameters.AddWithValue("@key", cacheKey);
+            cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture));
+        }
 
         var result = cmd.ExecuteScalar();
         return Task.FromResult(result as string);
@@ -124,6 +169,8 @@ public sealed class SqliteCacheStore : ICacheStore
     public Task SetMetadataAsync(string cacheKey, string jsonValue, TimeSpan ttl, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        // Eval mode: snapshot is read-only; discard writes silently.
+        if (_options.EvalMode) return Task.CompletedTask;
         var now = DateTimeOffset.UtcNow;
         // Extract jobId from cache key (format: "job:{jobId}:...")
         var jobId = ExtractJobId(cacheKey);
@@ -159,20 +206,26 @@ public sealed class SqliteCacheStore : ICacheStore
         CacheSecurity.ValidatePathWithinRoot(fullPath, _artifactsDir);
         if (!File.Exists(fullPath))
         {
-            // Stale row — remove it
-            using var del = conn.CreateCommand();
-            del.CommandText = "DELETE FROM cache_artifacts WHERE cache_key = @key;";
-            del.Parameters.AddWithValue("@key", cacheKey);
-            del.ExecuteNonQuery();
+            // Stale row — remove it (skipped in eval mode to keep snapshot immutable)
+            if (!_options.EvalMode)
+            {
+                using var del = conn.CreateCommand();
+                del.CommandText = "DELETE FROM cache_artifacts WHERE cache_key = @key;";
+                del.Parameters.AddWithValue("@key", cacheKey);
+                del.ExecuteNonQuery();
+            }
             return Task.FromResult<Stream?>(null);
         }
 
-        // Update last_accessed
-        using var upd = conn.CreateCommand();
-        upd.CommandText = "UPDATE cache_artifacts SET last_accessed = @now WHERE cache_key = @key;";
-        upd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture));
-        upd.Parameters.AddWithValue("@key", cacheKey);
-        upd.ExecuteNonQuery();
+        // Update last_accessed (skipped in eval mode to keep snapshot immutable)
+        if (!_options.EvalMode)
+        {
+            using var upd = conn.CreateCommand();
+            upd.CommandText = "UPDATE cache_artifacts SET last_accessed = @now WHERE cache_key = @key;";
+            upd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture));
+            upd.Parameters.AddWithValue("@key", cacheKey);
+            upd.ExecuteNonQuery();
+        }
 
         return Task.FromResult<Stream?>(new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete));
     }
@@ -180,6 +233,8 @@ public sealed class SqliteCacheStore : ICacheStore
     public async Task SetArtifactAsync(string cacheKey, Stream content, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        // Eval mode: snapshot is read-only; discard writes silently.
+        if (_options.EvalMode) return;
         var jobId = ExtractJobId(cacheKey);
 
         // Build relative path: {jobId[0:8]}/{rest-of-key-sanitized}
@@ -232,9 +287,17 @@ public sealed class SqliteCacheStore : ICacheStore
         ct.ThrowIfCancellationRequested();
         using var conn = OpenConnection();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT is_completed FROM cache_job_state WHERE job_id = @jobId AND expires_at > @now;";
-        cmd.Parameters.AddWithValue("@jobId", jobId);
-        cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture));
+        if (_options.EvalMode)
+        {
+            cmd.CommandText = "SELECT is_completed FROM cache_job_state WHERE job_id = @jobId;";
+            cmd.Parameters.AddWithValue("@jobId", jobId);
+        }
+        else
+        {
+            cmd.CommandText = "SELECT is_completed FROM cache_job_state WHERE job_id = @jobId AND expires_at > @now;";
+            cmd.Parameters.AddWithValue("@jobId", jobId);
+            cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture));
+        }
 
         var result = cmd.ExecuteScalar();
         if (result == null) return Task.FromResult<bool?>(null);
@@ -244,6 +307,8 @@ public sealed class SqliteCacheStore : ICacheStore
     public Task SetJobCompletedAsync(string jobId, bool completed, TimeSpan ttl, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        // Eval mode: snapshot is read-only; discard writes silently.
+        if (_options.EvalMode) return Task.CompletedTask;
         var now = DateTimeOffset.UtcNow;
 
         using var conn = OpenConnection();
@@ -265,6 +330,12 @@ public sealed class SqliteCacheStore : ICacheStore
     public Task ClearAsync(CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+
+        // Eval mode: snapshot is read-only — reject before touching any artifact or SQL.
+        if (_options.EvalMode)
+            throw new InvalidOperationException(
+                "Cannot clear cache in eval mode: the snapshot is read-only. " +
+                "Clearing would irreversibly destroy snapshot artifacts.");
 
         // Delete artifact files
         try
@@ -350,6 +421,8 @@ public sealed class SqliteCacheStore : ICacheStore
     public Task EvictExpiredAsync(CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        // Eval mode: never mutate the snapshot.
+        if (_options.EvalMode) return Task.CompletedTask;
         var now = DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture);
         var cutoff = (DateTimeOffset.UtcNow - _options.ArtifactMaxAge).ToString(Iso8601Format, CultureInfo.InvariantCulture);
 
