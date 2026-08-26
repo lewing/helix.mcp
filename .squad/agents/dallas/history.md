@@ -482,3 +482,83 @@ consulting `function.ReturnJsonSchema`, so a future `[return: Description]` or `
 cannot inflate these six tools' 17 bytes. Reading two functions past the one under discussion turned
 a maintenance worry into a documented guarantee. Read the caller and the fallback, not just the
 predicate.
+
+---
+
+## 2026-08-26 — Snapshot export successor hardening design
+
+Facilitated the required pre-work design review for the standalone successor to merged PR #125.
+Inspected current `origin/main` and all five unresolved review threads. Approved a surgical
+contract in `.squad/decisions/inbox/dallas-snapshot-hardening-design.md`.
+
+The decisive architecture choices are:
+
+- SQLite online backup (`SqliteConnection.BackupDatabase`) is the database consistency boundary;
+  export never checkpoints or copies the live DB/WAL/SHM file set.
+- Artifact selection comes from the backed-up `cache_artifacts` rows, not recursive live-directory
+  enumeration.
+- The complete temporary snapshot must pass schema, `integrity_check`, no-sidecar, containment,
+  existence, and size checks before same-parent atomic rename.
+- Destination comparison uses physical canonical paths, component-by-component link/junction
+  resolution, Windows case-insensitive boundaries, and non-Windows ordinal boundaries. Resolution
+  ambiguity fails closed before temp creation.
+- The auth warning is unconditional. Identical `AZDO_TOKEN` plus identical effective
+  `AZDO_TOKEN_TYPE` can replay environment-keyed entries through the merged environment-only eval
+  accessor; Azure CLI identities remain unreproducible.
+- Traversal errors invalidate a snapshot but never increment `MissingArtifactFiles`.
+
+Ownership is non-overlapping: Ripley owns Core implementation, Kane owns `SnapshotCommands.cs` and
+the PR narrative, and Lambert owns `SnapshotExportTests.cs`. Cache options, composition roots,
+SQLite store behavior, project files, fixture format, key normalization, record mode, and Vally APIs
+are frozen.
+
+---
+
+## 2026-08-26 — Snapshot export hardening independent review
+
+Issued an overall **REJECT** while accepting Ripley's Core implementation and Kane's CLI wording.
+The blocking defect is confined to Lambert's concurrency test artifact: its checkpoint readiness
+counter advances for any checkpoint result row, including a zero-page attempt that can occur before
+the first writer commit, and its baseline metadata check proves only row count rather than the
+seeded keys and JSON values.
+
+Targeted tests passed 29/29, the stress test passed twelve repeated runs, and the full suite passed
+1,661 with two pre-existing skips. Those green runs do not repair a missing proof invariant.
+Lambert is locked out of the next `SnapshotExportTests.cs` revision. Because every other rostered
+specialist is barred by charter from writing tests, I explicitly requested escalation to a new
+.NET concurrency/filesystem test specialist.
+
+---
+
+## 2026-08-26 — Parker snapshot stress revision re-review
+
+**Verdict:** **REJECT.** Parker fixed both original proof gaps: checkpoint readiness now follows a
+committed write and requires positive checkpoint progress, and every exported snapshot checks the
+three exact baseline keys and JSON values.
+
+Repeated execution exposed a new shutdown race in the same checkpoint loop. Two separate campaigns
+both failed on attempt 24 because SQLite returned a WAL-page count of minus one after no WAL was
+currently present, and the test treated that non-progress response as an assertion failure. The
+targeted snapshot selection passed 40 tests, but the stress test passed only 46 of 48 repeated
+attempts before the two failures stopped their campaigns.
+
+Parker is now locked out of this artifact, Lambert remains locked out, and I requested another new
+independent .NET and SQLite concurrency test specialist. The revision gate remains closed, so the
+pull request is not ready for final suite or CI.
+
+---
+
+## 2026-08-26 — Bishop snapshot stress revision final re-review
+
+**Verdict:** **APPROVE.** Bishop's narrow change handles only the exact no-current-WAL result after
+checkpoint readiness as non-progress. It preserves the committed-write ordering and requires
+positive checkpoint progress before readiness. The same response before readiness, malformed rows,
+and inconsistent values still fail.
+
+The cancellation, finite busy handling, bounded final wait, and background exception propagation
+are unchanged. All 29 tests in `SnapshotExportTests.cs` passed with
+`DOTNET_ROLL_FORWARD=Major`, followed by 48 consecutive passes of the writer/checkpointer stress
+test.
+
+The revision gate is cleared. The complete pull request is ready for final full-suite and Ubuntu
+and Windows CI validation.
