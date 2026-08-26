@@ -118,6 +118,22 @@ internal static class SnapshotEvalTestHarness
         return command.ExecuteScalar() as string;
     }
 
+    public static string? ReadImmutableMetadata(string dbPath, string cacheKey)
+    {
+        var dataSource = new Uri(Path.GetFullPath(dbPath)).AbsoluteUri + "?immutable=1";
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = dataSource,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false
+        }.ToString());
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT json_value FROM cache_metadata WHERE cache_key = @key;";
+        command.Parameters.AddWithValue("@key", cacheKey);
+        return command.ExecuteScalar() as string;
+    }
+
     public static long ReadUserVersion(string dbPath)
     {
         using var connection = OpenUnpooledReadOnly(dbPath);
@@ -677,17 +693,84 @@ public class EvalModeSnapshotImmutabilityTests : IDisposable
     [Fact]
     public async Task EvalMode_WalFilePresentInSnapshot_IsPreserved()
     {
+        const string baselineKey = "job:wal-test:data";
+        const string walOnlyKey = "job:wal-test2:data";
         var dbPath = Path.Combine(_snapshotDir, "cache.db");
         var walPath = dbPath + "-wal";
-        var mainDbOnlyCopyPath = Path.Combine(_snapshotDir, "cache-main-only.db");
+        var baselineDir = Path.Combine(_parentDir, "baseline");
+        var baselineDbPath = Path.Combine(baselineDir, "cache.db");
 
-        await SnapshotEvalTestHarness.CreateStableSnapshotAsync(
-            Path.Combine(_parentDir, "live"),
-            _snapshotDir,
-            writer => writer.SetMetadataAsync(
-                "job:wal-test:data",
-                "{\"ok\":true}",
-                TimeSpan.FromHours(1)));
+        var fixtureConnectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = dbPath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Pooling = false
+        }.ToString();
+        using (var fixture = new SqliteConnection(fixtureConnectionString))
+        {
+            fixture.Open();
+            using (var journalMode = fixture.CreateCommand())
+            {
+                journalMode.CommandText = "PRAGMA journal_mode=WAL;";
+                Assert.Equal("wal", (string)journalMode.ExecuteScalar()!);
+            }
+
+            using (var create = fixture.CreateCommand())
+            {
+                create.CommandText = """
+                    CREATE TABLE cache_metadata (
+                        cache_key   TEXT PRIMARY KEY,
+                        json_value  TEXT NOT NULL,
+                        created_at  TEXT NOT NULL,
+                        expires_at  TEXT NOT NULL,
+                        job_id      TEXT NOT NULL
+                    );
+                    CREATE INDEX idx_metadata_expires ON cache_metadata(expires_at);
+                    CREATE INDEX idx_metadata_job ON cache_metadata(job_id);
+
+                    CREATE TABLE cache_artifacts (
+                        cache_key       TEXT PRIMARY KEY,
+                        file_path       TEXT NOT NULL,
+                        file_size       INTEGER NOT NULL,
+                        created_at      TEXT NOT NULL,
+                        last_accessed   TEXT NOT NULL,
+                        job_id          TEXT NOT NULL
+                    );
+                    CREATE INDEX idx_artifacts_accessed ON cache_artifacts(last_accessed);
+                    CREATE INDEX idx_artifacts_job ON cache_artifacts(job_id);
+
+                    CREATE TABLE cache_job_state (
+                        job_id       TEXT PRIMARY KEY,
+                        is_completed INTEGER NOT NULL,
+                        finished_at  TEXT,
+                        cached_at    TEXT NOT NULL,
+                        expires_at   TEXT NOT NULL
+                    );
+
+                    PRAGMA user_version=1;
+
+                    INSERT INTO cache_metadata (cache_key, json_value, created_at, expires_at, job_id)
+                    VALUES ('job:wal-test:data', '{"ok":true}', datetime('now'), datetime('now','+1 hour'), 'wal-test');
+                    """;
+                create.ExecuteNonQuery();
+            }
+
+            using var checkpoint = fixture.CreateCommand();
+            checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+            using var result = checkpoint.ExecuteReader();
+            Assert.True(result.Read());
+            Assert.Equal(0L, result.GetInt64(0));
+        }
+
+        Directory.CreateDirectory(baselineDir);
+        File.Copy(dbPath, baselineDbPath);
+        var baselineDbHash = await SnapshotEvalTestHarness.HashSharedAsync(baselineDbPath);
+        Assert.False(File.Exists(baselineDbPath + "-wal"));
+        Assert.False(File.Exists(baselineDbPath + "-shm"));
+        Assert.Equal("{\"ok\":true}", SnapshotEvalTestHarness.ReadImmutableMetadata(baselineDbPath, baselineKey));
+        Assert.Null(SnapshotEvalTestHarness.ReadImmutableMetadata(baselineDbPath, walOnlyKey));
+        Assert.False(File.Exists(baselineDbPath + "-wal"));
+        Assert.False(File.Exists(baselineDbPath + "-shm"));
 
         var writerConnectionString = new SqliteConnectionStringBuilder
         {
@@ -700,11 +783,7 @@ public class EvalModeSnapshotImmutabilityTests : IDisposable
             rawConn.Open();
             using (var configure = rawConn.CreateCommand())
             {
-                configure.CommandText = """
-                    PRAGMA journal_mode=WAL;
-                    PRAGMA wal_checkpoint(TRUNCATE);
-                    PRAGMA wal_autocheckpoint=0;
-                    """;
+                configure.CommandText = "PRAGMA wal_autocheckpoint=0;";
                 configure.ExecuteNonQuery();
             }
 
@@ -720,31 +799,19 @@ public class EvalModeSnapshotImmutabilityTests : IDisposable
                 transaction.Commit();
             }
 
-            // The committed row must genuinely depend on the WAL. A byte-for-byte copy
-            // of only the main database has no companion WAL and therefore cannot see it.
-            await SnapshotEvalTestHarness.CopySharedAsync(dbPath, mainDbOnlyCopyPath);
-            var copyConnectionString = new SqliteConnectionStringBuilder
-            {
-                DataSource = mainDbOnlyCopyPath,
-                Mode = SqliteOpenMode.ReadOnly,
-                Pooling = false
-            }.ToString();
-            using (var mainDbOnly = new SqliteConnection(copyConnectionString))
-            {
-                mainDbOnly.Open();
-                using var absent = mainDbOnly.CreateCommand();
-                absent.CommandText =
-                    "SELECT COUNT(*) FROM cache_metadata WHERE cache_key = 'job:wal-test2:data';";
-                Assert.Equal(0L, (long)absent.ExecuteScalar()!);
-            }
+            Assert.Equal(baselineDbHash, await SnapshotEvalTestHarness.HashSharedAsync(dbPath));
+            Assert.True(File.Exists(walPath), "WAL file must exist with writer open and autocheckpoint=0");
+            Assert.True(new FileInfo(walPath).Length > 0, "WAL must contain the committed row");
+            Assert.Null(SnapshotEvalTestHarness.ReadImmutableMetadata(baselineDbPath, walOnlyKey));
+            Assert.Equal(baselineDbHash, await SnapshotEvalTestHarness.HashSharedAsync(baselineDbPath));
+            Assert.False(File.Exists(baselineDbPath + "-wal"));
+            Assert.False(File.Exists(baselineDbPath + "-shm"));
 
             // Capture both persistent files before eval opens the live snapshot. SHM is
             // deliberately excluded: SQLite may legitimately update shared-memory reader
             // metadata, whereas a read-only connection must not change DB or WAL content.
-            Assert.True(File.Exists(walPath), "WAL file must exist with writer open and autocheckpoint=0");
             var dbHashBefore = await SnapshotEvalTestHarness.HashSharedAsync(dbPath);
             var walHashBefore = await SnapshotEvalTestHarness.HashSharedAsync(walPath);
-            Assert.True(new FileInfo(walPath).Length > 0, "WAL must contain the committed row");
 
             var evalOpts = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true, AuthTokenHash = null };
             using (var eval = new SqliteCacheStore(evalOpts))
@@ -766,11 +833,15 @@ public class EvalModeSnapshotImmutabilityTests : IDisposable
                 postEvalWrite.CommandText = """
                     INSERT OR REPLACE INTO cache_metadata (cache_key, json_value, created_at, expires_at, job_id)
                     VALUES ('job:wal-writer-still-valid:data', '{"ok":true}', datetime('now'), datetime('now','+1 hour'), 'wal-gen');
-                    SELECT COUNT(*) FROM cache_metadata WHERE cache_key = 'job:wal-writer-still-valid:data';
                     """;
-                Assert.Equal(1L, (long)postEvalWrite.ExecuteScalar()!);
+                postEvalWrite.ExecuteNonQuery();
                 transaction.Commit();
             }
+
+            using var postEvalRead = rawConn.CreateCommand();
+            postEvalRead.CommandText =
+                "SELECT json_value FROM cache_metadata WHERE cache_key = 'job:wal-writer-still-valid:data';";
+            Assert.Equal("{\"ok\":true}", (string)postEvalRead.ExecuteScalar()!);
         }
     }
 
