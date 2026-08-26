@@ -49,18 +49,7 @@ if (!string.IsNullOrEmpty(mcpEvalSnapshotDir))
         AuthTokenHash = null,
     };
     // In eval mode all scoped services use the fixed eval options and offline stubs.
-    builder.Services.AddScoped<CacheOptions>(_ => evalOptions);
-    builder.Services.AddScoped<ICacheStore>(_ => new SqliteCacheStore(evalOptions));
-    builder.Services.AddScoped<IHelixApiClient>(sp =>
-        new CachingHelixApiClient(new OfflineHelixApiClient(), sp.GetRequiredService<ICacheStore>(), evalOptions));
-    builder.Services.AddScoped<IAzdoApiClient>(sp =>
-        new CachingAzdoApiClient(new OfflineAzdoApiClient(), sp.GetRequiredService<ICacheStore>(), evalOptions));
-    // Block every direct HTTP download — OfflineHelixApiClient prevents SDK calls but
-    // HelixService._httpClient is a separate code path that must also be sealed.
-    builder.Services.AddScoped<HelixService>(sp =>
-        new HelixService(
-            sp.GetRequiredService<IHelixApiClient>(),
-            new HttpClient(new EvalModeBlockingHandler())));
+    builder.Services.AddEvalModeCore(evalOptions, ServiceLifetime.Scoped);
 }
 else
 {

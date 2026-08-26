@@ -331,6 +331,12 @@ public sealed class SqliteCacheStore : ICacheStore
     {
         ct.ThrowIfCancellationRequested();
 
+        // Eval mode: snapshot is read-only — reject before touching any artifact or SQL.
+        if (_options.EvalMode)
+            throw new InvalidOperationException(
+                "Cannot clear cache in eval mode: the snapshot is read-only. " +
+                "Clearing would irreversibly destroy snapshot artifacts.");
+
         // Delete artifact files
         try
         {

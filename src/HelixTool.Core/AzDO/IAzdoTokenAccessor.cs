@@ -180,6 +180,42 @@ public interface IAzdoTokenAccessor
 }
 
 /// <summary>
+/// Eval-mode AzDO authentication accessor. It intentionally considers only the
+/// existing environment credential and never invokes Azure Identity or the az CLI.
+/// </summary>
+internal sealed class EvalModeAzdoTokenAccessor : IAzdoTokenAccessor
+{
+    public Task<AzdoCredential?> GetAccessTokenAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(AzCliAzdoTokenAccessor.TryGetEnvironmentCredential());
+    }
+
+    public Task<AzdoAuthStatus> AuthStatusAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(
+            AzCliAzdoTokenAccessor.TryGetEnvironmentAuthStatus()
+            ?? new AzdoAuthStatus
+            {
+                IsAuthenticated = false,
+                Path = "anonymous",
+                Source = "anonymous",
+                LooksExpired = null,
+                Warnings =
+                [
+                    "No AZDO_TOKEN is set. Eval mode remains anonymous and will only replay public cache keys."
+                ]
+            });
+    }
+
+    public void InvalidateCachedCredential()
+    {
+        // Environment credentials are read on every call and there is no fallback cache.
+    }
+}
+
+/// <summary>
 /// Resolves AzDO credentials via AZDO_TOKEN, AzureCliCredential, or az CLI.
 /// Env-var tokens are checked on every call; fallback credentials are refreshed on a shorter cadence than their full token lifetime.
 /// </summary>
@@ -296,7 +332,11 @@ public sealed class AzCliAzdoTokenAccessor : IAzdoTokenAccessor
         }
     }
 
-    private static AzdoCredential? TryGetEnvCredential() => TryGetEnvResolution()?.Credential;
+    private static AzdoCredential? TryGetEnvCredential() => TryGetEnvironmentCredential();
+
+    internal static AzdoCredential? TryGetEnvironmentCredential() => TryGetEnvResolution()?.Credential;
+
+    internal static AzdoAuthStatus? TryGetEnvironmentAuthStatus() => TryGetEnvResolution()?.Status;
 
     private static CachedResolution? TryGetEnvResolution()
     {

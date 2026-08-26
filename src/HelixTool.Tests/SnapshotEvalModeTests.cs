@@ -8,6 +8,7 @@ using HelixTool.Core;
 using HelixTool.Core.AzDO;
 using HelixTool.Core.Cache;
 using HelixTool.Core.Helix;
+using HelixTool.Mcp.Tools;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
@@ -429,6 +430,94 @@ public class SnapshotCiEvidenceScenarioTests : IDisposable
 }
 
 // =========================================================================
+// Eval-mode AzDO auth: environment-only, network-free cache partition replay.
+// =========================================================================
+
+[Collection("AzdoTokenEnv")]
+public class EvalModeAzdoAuthTests : IDisposable
+{
+    private readonly string? _originalToken = Environment.GetEnvironmentVariable("AZDO_TOKEN");
+    private readonly string? _originalTokenType = Environment.GetEnvironmentVariable("AZDO_TOKEN_TYPE");
+    private readonly string _parentDir;
+    private readonly string _snapshotDir;
+
+    public EvalModeAzdoAuthTests()
+    {
+        Environment.SetEnvironmentVariable("AZDO_TOKEN", null);
+        Environment.SetEnvironmentVariable("AZDO_TOKEN_TYPE", null);
+        _parentDir = Path.Combine(Path.GetTempPath(), $"hlx-eval-auth-{Guid.NewGuid():N}");
+        _snapshotDir = Path.Combine(_parentDir, "public");
+        Directory.CreateDirectory(_snapshotDir);
+    }
+
+    public void Dispose()
+    {
+        Environment.SetEnvironmentVariable("AZDO_TOKEN", _originalToken);
+        Environment.SetEnvironmentVariable("AZDO_TOKEN_TYPE", _originalTokenType);
+        try { Directory.Delete(_parentDir, recursive: true); } catch { }
+    }
+
+    [Fact]
+    public async Task EvalAccessor_EnvironmentPat_ReplaysSameAuthScopedCacheKey()
+    {
+        const string token = "eval-replay-pat";
+        Environment.SetEnvironmentVariable("AZDO_TOKEN", token);
+        Environment.SetEnvironmentVariable("AZDO_TOKEN_TYPE", "pat");
+
+        var identity = AzdoCredential.BuildCacheIdentity("env:AZDO_TOKEN:pat", token);
+        var authHash = CacheOptions.ComputeAuthContextHash(identity);
+        var authKey = $"azdo:{authHash}:org:proj:build:42";
+
+        using (var writer = new SqliteCacheStore(new CacheOptions { CacheRoot = _parentDir }))
+        {
+            await writer.SetMetadataAsync(
+                authKey,
+                JsonSerializer.Serialize(new AzdoBuild { Id = 42, Status = "completed" }),
+                TimeSpan.FromHours(4));
+        }
+
+        var evalOptions = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true };
+        var services = new ServiceCollection();
+        services.AddEvalModeCore(evalOptions);
+        using var provider = services.BuildServiceProvider();
+
+        var build = await provider.GetRequiredService<IAzdoApiClient>()
+            .GetBuildAsync("org", "proj", 42);
+
+        Assert.Equal(42, build?.Id);
+        Assert.Equal(identity, evalOptions.AuthCacheIdentity);
+        Assert.Equal(authHash, evalOptions.AuthTokenHash);
+    }
+
+    [Fact]
+    public async Task EvalAccessor_WithoutToken_DoesNotGuessAuthPartition_AndMissIsExplicit()
+    {
+        using (var writer = new SqliteCacheStore(new CacheOptions { CacheRoot = _parentDir }))
+        {
+            await writer.SetMetadataAsync(
+                "azdo:authonly:org:proj:build:42",
+                JsonSerializer.Serialize(new AzdoBuild { Id = 42, Status = "completed" }),
+                TimeSpan.FromHours(4));
+        }
+
+        var evalOptions = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true };
+        var services = new ServiceCollection();
+        services.AddEvalModeCore(evalOptions);
+        using var provider = services.BuildServiceProvider();
+
+        var status = await provider.GetRequiredService<IAzdoTokenAccessor>().AuthStatusAsync();
+        Assert.False(status.IsAuthenticated);
+        Assert.Null(evalOptions.AuthTokenHash);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => provider.GetRequiredService<IAzdoApiClient>().GetBuildAsync("org", "proj", 42));
+        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("snapshot", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(evalOptions.AuthTokenHash);
+    }
+}
+
+// =========================================================================
 // Bishop integrity tests: DB/WAL byte immutability and HttpClient blocking.
 // =========================================================================
 
@@ -450,14 +539,15 @@ public class EvalModeSnapshotImmutabilityTests : IDisposable
     }
 
     /// <summary>
-    /// Committed data written before snapshot must be accessible via eval mode, and eval mode
-    /// must NOT delete any WAL file that is present in the snapshot directory.
+    /// Committed data written before snapshot must be accessible via eval mode while
+    /// a writer connection remains open (preventing auto-checkpoint so frames stay in WAL).
     /// </summary>
     [Fact]
     public async Task EvalMode_WalFilePresentInSnapshot_IsPreserved()
     {
         var dbPath = Path.Combine(_snapshotDir, "cache.db");
         var walPath = dbPath + "-wal";
+        var mainDbOnlyCopyPath = Path.Combine(_snapshotDir, "cache-main-only.db");
 
         // Phase 1: Write data via a normal-mode store (establishes WAL mode on the DB).
         var writerOpts = new CacheOptions { CacheRoot = _parentDir, EvalMode = false, AuthTokenHash = null };
@@ -466,10 +556,9 @@ public class EvalModeSnapshotImmutabilityTests : IDisposable
             await writer.SetMetadataAsync("job:wal-test:data", "{\"ok\":true}", TimeSpan.FromHours(1));
         }
 
-        // Phase 2: Write additional data via a raw SQLite connection with auto-checkpoint
-        // disabled so committed frames are more likely to remain in the WAL file.
-        // Whether or not SQLite checkpoints on connection close is implementation-defined;
-        // both cases (data in WAL or data in main DB) must be handled correctly by eval mode.
+        // Phase 2: Keep a raw writer connection open with auto-checkpoint disabled so
+        // committed frames are guaranteed to remain in the WAL file.  Eval mode must
+        // read WAL-backed committed data while the writer is still alive.
         using (var rawConn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}"))
         {
             rawConn.Open();
@@ -483,22 +572,52 @@ public class EvalModeSnapshotImmutabilityTests : IDisposable
                 VALUES ('job:wal-test2:data', '{"wal":true}', datetime('now'), datetime('now','+1 hour'), 'wal-gen');
                 """;
             ins.ExecuteNonQuery();
-        }
 
-        // Record WAL state before eval mode opens (WAL may or may not exist).
-        bool walExistedBefore = File.Exists(walPath);
+            // The committed row must genuinely depend on the WAL. A byte-for-byte copy
+            // of only the main database has no companion WAL and therefore cannot see it.
+            File.Copy(dbPath, mainDbOnlyCopyPath);
+            var copyConnectionString = new SqliteConnectionStringBuilder
+            {
+                DataSource = mainDbOnlyCopyPath,
+                Mode = SqliteOpenMode.ReadOnly
+            }.ToString();
+            using (var mainDbOnly = new SqliteConnection(copyConnectionString))
+            {
+                mainDbOnly.Open();
+                using var absent = mainDbOnly.CreateCommand();
+                absent.CommandText =
+                    "SELECT COUNT(*) FROM cache_metadata WHERE cache_key = 'job:wal-test2:data';";
+                Assert.Equal(0L, (long)absent.ExecuteScalar()!);
+            }
 
-        // Phase 3: Open in eval mode — must not throw and must read all committed data.
-        var evalOpts = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true, AuthTokenHash = null };
-        using (var eval = new SqliteCacheStore(evalOpts))
-        {
-            Assert.NotNull(await eval.GetMetadataAsync("job:wal-test:data"));
-            Assert.NotNull(await eval.GetMetadataAsync("job:wal-test2:data"));
-        }
+            // Capture both persistent files before eval opens the live snapshot. SHM is
+            // deliberately excluded: SQLite may legitimately update shared-memory reader
+            // metadata, whereas a read-only connection must not change DB or WAL content.
+            Assert.True(File.Exists(walPath), "WAL file must exist with writer open and autocheckpoint=0");
+            var dbBytesBefore = await File.ReadAllBytesAsync(dbPath);
+            var walBytesBefore = await File.ReadAllBytesAsync(walPath);
+            Assert.NotEmpty(walBytesBefore);
 
-        // Invariant: eval mode must NOT delete a WAL file that was present before it opened.
-        if (walExistedBefore)
+            var evalOpts = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true, AuthTokenHash = null };
+            using (var eval = new SqliteCacheStore(evalOpts))
+            {
+                Assert.NotNull(await eval.GetMetadataAsync("job:wal-test:data"));
+                Assert.NotNull(await eval.GetMetadataAsync("job:wal-test2:data"));
+            }
+
             Assert.True(File.Exists(walPath), "WAL file must not be deleted by eval mode");
+            Assert.Equal(dbBytesBefore, await File.ReadAllBytesAsync(dbPath));
+            Assert.Equal(walBytesBefore, await File.ReadAllBytesAsync(walPath));
+
+            // Prove eval did not invalidate or replace the original writer connection.
+            using var postEvalWrite = rawConn.CreateCommand();
+            postEvalWrite.CommandText = """
+                INSERT OR REPLACE INTO cache_metadata (cache_key, json_value, created_at, expires_at, job_id)
+                VALUES ('job:wal-writer-still-valid:data', '{"ok":true}', datetime('now'), datetime('now','+1 hour'), 'wal-gen');
+                SELECT COUNT(*) FROM cache_metadata WHERE cache_key = 'job:wal-writer-still-valid:data';
+                """;
+            Assert.Equal(1L, (long)postEvalWrite.ExecuteScalar()!);
+        }
     }
 
     /// <summary>DB file bytes must be unchanged after eval-mode reads.</summary>
@@ -558,6 +677,197 @@ public class EvalModeSnapshotImmutabilityTests : IDisposable
     }
 }
 
+// =========================================================================
+// Regression: primary evidence returned independent of freshness markers /
+// completion-state rows in eval mode.
+// =========================================================================
+
+public class EvalModePrimaryEvidenceTests : IDisposable
+{
+    private readonly string _parentDir;
+    private readonly string _snapshotDir;
+
+    public EvalModePrimaryEvidenceTests()
+    {
+        _parentDir = Path.Combine(Path.GetTempPath(), $"hlx-primary-{Guid.NewGuid():N}");
+        _snapshotDir = Path.Combine(_parentDir, "public");
+        Directory.CreateDirectory(_snapshotDir);
+    }
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_parentDir, recursive: true); } catch { }
+    }
+
+    /// <summary>
+    /// Cached log content must be served in eval mode even when the short-lived
+    /// freshness marker (log-fresh) has been evicted from the snapshot.
+    /// </summary>
+    [Fact]
+    public async Task GetBuildLogAsync_EvalMode_ServesCachedContent_WhenFreshMarkerAbsent()
+    {
+        const string org = "dnceng-public";
+        const string project = "public";
+        const int buildId = 1;
+        const int logId = 7;
+
+        // Seed snapshot: write log content WITHOUT the fresh marker (simulates evicted marker).
+        using var writerStore = new SqliteCacheStore(new CacheOptions { CacheRoot = _parentDir });
+        const string logKey = "azdo:dnceng-public:public:log:1:7";
+        const string expectedLog = "log line one\nlog line two\n";
+        await writerStore.SetMetadataAsync(logKey, "\0raw\n" + expectedLog, TimeSpan.FromHours(4));
+        // Deliberately omit the log-fresh key to simulate expiry.
+        writerStore.Dispose();
+
+        var evalOpts = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true };
+        using var evalStore = new SqliteCacheStore(evalOpts);
+        // OfflineAzdoApiClient would throw if reached — used as inner to detect regression.
+        var client = new CachingAzdoApiClient(new OfflineAzdoApiClient(), evalStore, evalOpts);
+
+        var result = await client.GetBuildLogAsync(org, project, buildId, logId);
+
+        Assert.Equal(expectedLog, result);
+    }
+
+    [Fact]
+    public async Task GetBuildLogsListAsync_EvalMode_ServesCachedList_WhenBuildMarkersAbsent()
+    {
+        const string key = "azdo:dnceng-public:public:logslist:17";
+        var expected = new List<AzdoBuildLogEntry>
+        {
+            new() { Id = 4, Type = "Container", Url = "https://example.invalid/log/4" }
+        };
+
+        using var writerStore = new SqliteCacheStore(new CacheOptions { CacheRoot = _parentDir });
+        await writerStore.SetMetadataAsync(
+            key,
+            JsonSerializer.Serialize(expected),
+            TimeSpan.FromHours(4));
+        // Deliberately omit both azdo-build state and cached build metadata markers.
+        writerStore.Dispose();
+
+        var evalOpts = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true };
+        using var evalStore = new SqliteCacheStore(evalOpts);
+        var client = new CachingAzdoApiClient(new OfflineAzdoApiClient(), evalStore, evalOpts);
+
+        var result = await client.GetBuildLogsListAsync("dnceng-public", "public", 17);
+
+        var entry = Assert.Single(result);
+        Assert.Equal(4, entry.Id);
+    }
+
+    [Fact]
+    public async Task GetBuildLogsListAsync_EvalMode_CacheMissFailsExplicitly()
+    {
+        using var writerStore = new SqliteCacheStore(new CacheOptions { CacheRoot = _parentDir });
+        writerStore.Dispose();
+
+        var evalOpts = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true };
+        using var evalStore = new SqliteCacheStore(evalOpts);
+        var client = new CachingAzdoApiClient(new OfflineAzdoApiClient(), evalStore, evalOpts);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => client.GetBuildLogsListAsync("dnceng-public", "public", 17));
+        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("snapshot", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Cached console-log artifact must be served in eval mode even when the job completion
+    /// state row is absent from the snapshot (it may have been evicted before the artifact).
+    /// </summary>
+    [Fact]
+    public async Task GetConsoleLogAsync_EvalMode_ServesArtifact_WhenCompletionStateAbsent()
+    {
+        const string jobId = "eval-job-1";
+        const string workItem = "item-A";
+        const string logContent = "console output line";
+
+        // Seed snapshot: write the console artifact WITHOUT any job state row.
+        using var writerStore = new SqliteCacheStore(new CacheOptions { CacheRoot = _parentDir });
+        var artifactKey = $"job:{jobId}:wi:{workItem}:console";
+        using var logStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(logContent));
+        await writerStore.SetArtifactAsync(artifactKey, logStream);
+        // Deliberately omit SetJobCompletedAsync to simulate absent completion state.
+        writerStore.Dispose();
+
+        var evalOpts = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true };
+        using var evalStore = new SqliteCacheStore(evalOpts);
+        // OfflineHelixApiClient would throw if reached — used as inner to detect regression.
+        var client = new CachingHelixApiClient(new OfflineHelixApiClient(), evalStore, evalOpts);
+
+        using var stream = await client.GetConsoleLogAsync(workItem, jobId);
+        using var reader = new StreamReader(stream);
+        var text = await reader.ReadToEndAsync();
+
+        Assert.Equal(logContent, text);
+    }
+}
+
+// =========================================================================
+// Regression: ClearAsync rejects in eval mode before mutating any state.
+// =========================================================================
+
+public class EvalModeClearRejectionTests : IDisposable
+{
+    private readonly string _parentDir;
+    private readonly string _snapshotDir;
+
+    public EvalModeClearRejectionTests()
+    {
+        _parentDir = Path.Combine(Path.GetTempPath(), $"hlx-clear-{Guid.NewGuid():N}");
+        _snapshotDir = Path.Combine(_parentDir, "public");
+        Directory.CreateDirectory(_snapshotDir);
+    }
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_parentDir, recursive: true); } catch { }
+    }
+
+    /// <summary>
+    /// ClearAsync must throw InvalidOperationException in eval mode without deleting
+    /// any artifact files or modifying the database.
+    /// </summary>
+    [Fact]
+    public async Task ClearAsync_EvalMode_ThrowsAndPreservesSnapshot()
+    {
+        // Seed: write a metadata row and an artifact file.
+        using var writerStore = new SqliteCacheStore(new CacheOptions { CacheRoot = _parentDir });
+        await writerStore.SetMetadataAsync("job:clr-test:info", "{\"v\":1}", TimeSpan.FromHours(4));
+        using var artStream = new MemoryStream(new byte[] { 0xDE, 0xAD, 0xBE, 0xEF });
+        await writerStore.SetArtifactAsync("job:clr-test:artifact", artStream);
+        writerStore.Dispose();
+
+        // Capture DB bytes and artifact directory snapshot before the rejected clear.
+        var dbPath = Path.Combine(_snapshotDir, "cache.db");
+        var dbBytesBefore = await File.ReadAllBytesAsync(dbPath);
+        var artifactsDir = Path.Combine(_snapshotDir, "artifacts");
+        var filesBefore = Directory.Exists(artifactsDir)
+            ? Directory.GetFiles(artifactsDir, "*", SearchOption.AllDirectories).ToHashSet()
+            : new HashSet<string>();
+
+        var evalOpts = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true };
+        using var evalStore = new SqliteCacheStore(evalOpts);
+
+        // ClearAsync must throw before touching anything.
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => evalStore.ClearAsync());
+        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("read-only", ex.Message, StringComparison.OrdinalIgnoreCase);
+
+        // DB bytes must be identical — no SQL DELETE ran.
+        var dbBytesAfter = await File.ReadAllBytesAsync(dbPath);
+        Assert.Equal(dbBytesBefore, dbBytesAfter);
+
+        // Artifact files must be untouched.
+        var filesAfter = Directory.Exists(artifactsDir)
+            ? Directory.GetFiles(artifactsDir, "*", SearchOption.AllDirectories).ToHashSet()
+            : new HashSet<string>();
+        Assert.Equal(filesBefore, filesAfter);
+    }
+}
+
 /// <summary>
 /// Exercises the three DI composition entry points under HLX_EVAL_SNAPSHOT to ensure
 /// every HelixService instance has a blocking HttpClient, never a real one.
@@ -588,20 +898,18 @@ public class EvalModeHelixServiceCompositionTests : IDisposable
         try { Directory.Delete(_parentDir, recursive: true); } catch { /* best-effort */ }
     }
 
-    // ── Entry-point A: CLI top-level DI (simulated) ──────────────────────────
+    // ── Entry-point A: CLI + embedded MCP (singleton lifetime) ──────────────────
 
+    /// <summary>
+    /// Uses the production <see cref="EvalModeServices.AddEvalModeCore"/> helper
+    /// with Singleton lifetime, exactly as the CLI/embedded-MCP Program.cs does.
+    /// </summary>
     [Fact]
     public async Task CliEvalMode_HelixService_HttpClient_IsBlocking()
     {
-        // Directly mirror what Program.cs CLI eval branch does.
         var evalOptions = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true };
         var services = new ServiceCollection();
-        services.AddHttpClient("HelixDownload", HelixToolUserAgent.Apply);
-        services.AddSingleton<ICacheStore>(_ => new SqliteCacheStore(evalOptions));
-        services.AddSingleton<IHelixApiClient>(sp =>
-            new CachingHelixApiClient(new OfflineHelixApiClient(), sp.GetRequiredService<ICacheStore>(), evalOptions));
-        services.AddSingleton<HelixService>(sp =>
-            new HelixService(sp.GetRequiredService<IHelixApiClient>(), new HttpClient(new EvalModeBlockingHandler())));
+        services.AddEvalModeCore(evalOptions);   // production helper, Singleton
 
         using var provider = services.BuildServiceProvider();
         var svc = provider.GetRequiredService<HelixService>();
@@ -611,51 +919,120 @@ public class EvalModeHelixServiceCompositionTests : IDisposable
         Assert.Contains("blocked", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    // ── Entry-point B: Standalone MCP DI (simulated) ─────────────────────────
+    [Fact]
+    public void CliEvalMode_ResolvesProductionAzdoCommand_WithSingletonAccessor()
+    {
+        var evalOptions = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true };
+        var services = new ServiceCollection();
+        services.AddEvalModeCore(evalOptions);
+        services.AddSingleton<AzdoService>(sp =>
+            new AzdoService(sp.GetRequiredService<IAzdoApiClient>(), sp.GetRequiredService<IHelixApiClient>()));
+        services.AddSingleton<global::AzdoCommands>();
 
+        using var provider = services.BuildServiceProvider();
+        var accessor = provider.GetRequiredService<IAzdoTokenAccessor>();
+
+        Assert.NotNull(provider.GetRequiredService<global::AzdoCommands>());
+        Assert.Same(accessor, provider.GetRequiredService<IAzdoTokenAccessor>());
+    }
+
+    // ── Entry-point B: Standalone MCP (scoped lifetime) ─────────────────────────
+
+    /// <summary>
+    /// Uses the production <see cref="EvalModeServices.AddEvalModeCore"/> helper
+    /// with Scoped lifetime, exactly as the standalone MCP Program.cs does.
+    /// </summary>
     [Fact]
     public async Task StandaloneMcpEvalMode_HelixService_HttpClient_IsBlocking()
     {
         var evalOptions = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true };
         var services = new ServiceCollection();
-        services.AddHttpClient("HelixDownload", HelixToolUserAgent.Apply);
-        services.AddSingleton<ICacheStore>(_ => new SqliteCacheStore(evalOptions));
-        services.AddSingleton<IHelixApiClient>(sp =>
-            new CachingHelixApiClient(new OfflineHelixApiClient(), sp.GetRequiredService<ICacheStore>(), evalOptions));
-        // Standalone MCP uses AddScoped — use same blocking handler pattern.
-        services.AddSingleton<HelixService>(sp =>
-            new HelixService(sp.GetRequiredService<IHelixApiClient>(), new HttpClient(new EvalModeBlockingHandler())));
+        services.AddEvalModeCore(evalOptions, ServiceLifetime.Scoped);  // production helper, Scoped
 
         using var provider = services.BuildServiceProvider();
-        var svc = provider.GetRequiredService<HelixService>();
+        using var scope = provider.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<HelixService>();
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
             () => svc.DownloadFromUrlAsync("https://helix.dot.net/api/file.binlog"));
         Assert.Contains("blocked", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    // ── Entry-point C: Embedded MCP DI (the previously-broken path) ──────────
-
     [Fact]
-    public async Task EmbeddedMcpEvalMode_HelixService_HttpClient_IsBlocking()
+    public void StandaloneMcpEvalMode_ResolvesProductionTool_WithScopedAccessor()
     {
-        // Mirrors the fixed registration in HelixTool/Program.cs ~line 927-928.
         var evalOptions = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true };
         var services = new ServiceCollection();
-        services.AddHttpClient("HelixDownload", HelixToolUserAgent.Apply);
-        services.AddSingleton<ICacheStore>(_ => new SqliteCacheStore(evalOptions));
-        services.AddSingleton<IHelixApiClient>(sp =>
-            new CachingHelixApiClient(new OfflineHelixApiClient(), sp.GetRequiredService<ICacheStore>(), evalOptions));
-        // This MUST use EvalModeBlockingHandler — NOT IHttpClientFactory.CreateClient("HelixDownload").
-        services.AddSingleton<HelixService>(sp =>
-            new HelixService(sp.GetRequiredService<IHelixApiClient>(), new HttpClient(new EvalModeBlockingHandler())));
+        services.AddEvalModeCore(evalOptions, ServiceLifetime.Scoped);
+        services.AddScoped<AzdoService>(sp =>
+            new AzdoService(sp.GetRequiredService<IAzdoApiClient>(), sp.GetRequiredService<IHelixApiClient>()));
+        services.AddScoped<AzdoMcpTools>();
 
         using var provider = services.BuildServiceProvider();
-        var svc = provider.GetRequiredService<HelixService>();
+        IAzdoTokenAccessor firstAccessor;
+        using (var firstScope = provider.CreateScope())
+        {
+            firstAccessor = firstScope.ServiceProvider.GetRequiredService<IAzdoTokenAccessor>();
+            Assert.NotNull(firstScope.ServiceProvider.GetRequiredService<AzdoMcpTools>());
+            Assert.Same(
+                firstAccessor,
+                firstScope.ServiceProvider.GetRequiredService<IAzdoTokenAccessor>());
+        }
 
+        using var secondScope = provider.CreateScope();
+        Assert.NotSame(
+            firstAccessor,
+            secondScope.ServiceProvider.GetRequiredService<IAzdoTokenAccessor>());
+    }
+
+    // ── Entry-point C: Embedded MCP (singleton lifetime + AzdoService extra) ───
+
+    /// <summary>
+    /// Mirrors the embedded-MCP Program.cs path: calls the shared
+    /// <see cref="EvalModeServices.AddEvalModeCore"/> helper (Singleton) and then
+    /// registers the embedded-MCP-specific <see cref="AzdoService"/> on top.
+    /// Verifies that AzdoService is resolvable and that HelixService still blocks.
+    /// </summary>
+    [Fact]
+    public async Task EmbeddedMcpEvalMode_AzdoServiceResolvable_And_HelixServiceIsBlocking()
+    {
+        var evalOptions = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true };
+        var services = new ServiceCollection();
+        services.AddEvalModeCore(evalOptions);   // Singleton — same as embedded MCP
+        services.AddSingleton<AzdoService>(sp =>
+            new AzdoService(sp.GetRequiredService<IAzdoApiClient>(), sp.GetRequiredService<IHelixApiClient>()));
+        services.AddSingleton<AzdoMcpTools>();
+
+        using var provider = services.BuildServiceProvider();
+
+        // Embedded-MCP-specific extra: AzdoService must be resolvable.
+        var azdo = provider.GetRequiredService<AzdoService>();
+        Assert.NotNull(azdo);
+        Assert.NotNull(provider.GetRequiredService<AzdoMcpTools>());
+
+        // Core eval guarantee: HelixService still uses the blocking HTTP handler.
+        var svc = provider.GetRequiredService<HelixService>();
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
             () => svc.DownloadFromUrlAsync("https://helix.dot.net/api/file.binlog"));
         Assert.Contains("blocked", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // ── IAzdoApiClient is also offline ────────────────────────────────────────
+
+    /// <summary>Production helper must register an offline (non-network) AzDO client.</summary>
+    [Fact]
+    public async Task EvalModeCore_AzdoApiClient_IsOffline()
+    {
+        var evalOptions = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true };
+        var services = new ServiceCollection();
+        services.AddEvalModeCore(evalOptions);
+
+        using var provider = services.BuildServiceProvider();
+        var client = provider.GetRequiredService<IAzdoApiClient>();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => client.GetBuildAsync("org", "project", 1));
+        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     // ── Negative: verify a factory-resolved client would pass through (non-blocking) ──

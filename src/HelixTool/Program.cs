@@ -51,15 +51,8 @@ if (!string.IsNullOrEmpty(evalSnapshotDir))
         CacheRootHash = null,
         AuthTokenHash = null,
     };
-    services.AddSingleton<CacheOptions>(_ => evalOptions);
-    services.AddSingleton<ICacheStore>(sp => new SqliteCacheStore(sp.GetRequiredService<CacheOptions>()));
-    services.AddSingleton<IHelixApiClient>(sp =>
-        new CachingHelixApiClient(new OfflineHelixApiClient(), sp.GetRequiredService<ICacheStore>(), evalOptions));
-    services.AddSingleton<HelixService>(sp =>
-        new HelixService(sp.GetRequiredService<IHelixApiClient>(), new HttpClient(new EvalModeBlockingHandler())));
+    services.AddEvalModeCore(evalOptions);
     services.AddSingleton(sp => new Lazy<HelixService>(() => sp.GetRequiredService<HelixService>()));
-    services.AddSingleton<IAzdoApiClient>(sp =>
-        new CachingAzdoApiClient(new OfflineAzdoApiClient(), sp.GetRequiredService<ICacheStore>(), evalOptions));
     services.AddSingleton<AzdoService>(sp =>
         new AzdoService(sp.GetRequiredService<IAzdoApiClient>(), sp.GetRequiredService<IHelixApiClient>()));
 }
@@ -920,14 +913,7 @@ Available as `failureCategory` in JSON and MCP output.
                 CacheRootHash = null,
                 AuthTokenHash = null,
             };
-            builder.Services.AddSingleton<CacheOptions>(_ => evalOptions);
-            builder.Services.AddSingleton<ICacheStore>(sp => new SqliteCacheStore(sp.GetRequiredService<CacheOptions>()));
-            builder.Services.AddSingleton<IHelixApiClient>(sp =>
-                new CachingHelixApiClient(new OfflineHelixApiClient(), sp.GetRequiredService<ICacheStore>(), evalOptions));
-            builder.Services.AddSingleton<HelixService>(sp =>
-                new HelixService(sp.GetRequiredService<IHelixApiClient>(), new HttpClient(new EvalModeBlockingHandler())));
-            builder.Services.AddSingleton<IAzdoApiClient>(sp =>
-                new CachingAzdoApiClient(new OfflineAzdoApiClient(), sp.GetRequiredService<ICacheStore>(), evalOptions));
+            builder.Services.AddEvalModeCore(evalOptions);
             builder.Services.AddSingleton<AzdoService>(sp =>
                 new AzdoService(sp.GetRequiredService<IAzdoApiClient>(), sp.GetRequiredService<IHelixApiClient>()));
         }
