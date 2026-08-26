@@ -1,3 +1,62 @@
+## 2026-08-26: Snapshot Eval Mode PoC — Production Implementation
+
+### Learnings
+
+**Eval mode is a read-only lens over an existing cache DB + artifacts dir.** No new file format, no parallel fixture engine — just the existing `SqliteCacheStore` with TTL bypassed and writes silenced. Reusing existing decorators (`CachingAzdoApiClient`, `CachingHelixApiClient`) was the right call: the decorator checks cache first, calls `_inner` on miss. In eval mode `_inner` = `OfflineAzdoApiClient`/`OfflineHelixApiClient` which throw immediately, surfacing fixture gaps cleanly.
+
+**`GetEffectiveCacheRoot()` early-return pattern for eval.** The existing method appends `/public` or `/cache-{hash}`. In eval mode the snapshot dir must be used as-is. Adding `if (EvalMode && CacheRoot != null) return CacheRoot;` as an early return is the minimal, self-documenting fix. Do NOT set `CacheRoot` to a pre-combined path and rely on the normal flow — that would silently break if the logic ever changes.
+
+**`CachingAzdoApiClient` 3-arg constructor avoids `IAzdoTokenAccessor` in eval mode.** The 4-arg overload accepts `IAzdoTokenAccessor? tokenAccessor` which is used to lazily resolve and update `AuthTokenHash`. In eval mode, `AuthTokenHash = null` is fixed and token access is never needed. Use the 3-arg overload (delegates to 4-arg with `null`) — no stub `IAzdoTokenAccessor` required.
+
+**All writes to the snapshot DB must be silenced, not just the public Set* methods.** `GetArtifactAsync` has two incidental DB writes: (1) stale-row delete when the file is missing, and (2) `last_accessed` update on every read. Both must be guarded by `if (!_options.EvalMode)`. A valid snapshot should never have stale rows, but the pattern still matters for correctness.
+
+**WAL/SHM files in the snapshot dir are a partial-copy hazard.** SQLite may write WAL/SHM alongside `cache.db` during normal operation. If a snapshot is copied while WAL is non-empty, the WAL must be checkpointed first (`PRAGMA wal_checkpoint(FULL)`). As defense-in-depth, `SqliteCacheStore` constructor in eval mode deletes any `cache.db-wal` and `cache.db-shm` before opening, so the DB starts from a clean committed state.
+
+**Schema version guard must throw, not migrate, in eval mode.** Normal mode does a destructive DROP+CREATE on mismatch (cache is regenerable). A snapshot fixture is not regenerable — schema mismatch means the snapshot was made with a different version and is incompatible. Throw `InvalidOperationException` instead.
+
+**Two DI sections in CLI Program.cs.** The CLI has two separate service containers: (1) the top-level `services` used by CLI commands, and (2) `builder.Services` inside the `Mcp()` command (which boots a separate ASP.NET Host for stdio MCP). Both must be updated. They share the same env-var read but wire independently because CLI uses singletons and MCP uses a separate Host builder.
+
+**MCP uses scoped lifetimes; CLI uses singletons.** In eval mode both work fine with scoped/singleton because eval options are statically fixed. The `ICacheStore` in MCP eval mode is `new SqliteCacheStore(evalOptions)` directly (not via `ICacheStoreFactory`) — the factory exists for per-auth-context isolation which is irrelevant in eval mode.
+
+**`OfflineHelixApiClient` must `using` the Helix SDK namespace for interface types.** `IJobDetails`, `IWorkItemSummary` etc. are defined in `HelixTool.Core.Helix` (projections), but `OfflineHelixApiClient` must include `using Microsoft.DotNet.Helix.Client.Models;` because `IHelixApiClient`'s file imports it and the return types resolve through that.
+
+**`CachingHelixApiClient.ListJobNamesByBuildAsync` is pass-through, never cached.** In eval mode the offline stub throws on this call. This is correct by design — if a snapshot needs to support Helix job listing by build, it requires manual pre-population. Do not special-case this in the offline stub.
+
+### File Change Summary
+
+| File | Change |
+|------|--------|
+| `src/HelixTool.Core/Cache/CacheOptions.cs` | Added `bool EvalMode { get; init; }`. Modified `GetEffectiveCacheRoot()` with early return when eval mode. |
+| `src/HelixTool.Core/Cache/SqliteCacheStore.cs` | WAL/SHM cleanup on open, schema mismatch throw, TTL bypass in `GetMetadataAsync`/`IsJobCompletedAsync`, write no-ops on all Set* methods and GetArtifactAsync maintenance writes, EvictExpiredAsync skip, startup eviction skip. |
+| `src/HelixTool.Core/AzDO/OfflineAzdoApiClient.cs` *(new)* | `IAzdoApiClient` stub throwing `InvalidOperationException` on every method. |
+| `src/HelixTool.Core/Helix/OfflineHelixApiClient.cs` *(new)* | `IHelixApiClient` stub throwing `InvalidOperationException` on every method. |
+| `src/HelixTool/Program.cs` | Eval mode DI wiring in top-level services block AND inside `Mcp()` command builder. |
+| `src/HelixTool.Mcp/Program.cs` | Eval mode DI wiring in scoped service registrations block. |
+
+### Validation
+
+Build: ✅ 0 warnings, 0 errors (Core, MCP, CLI, Tests all compile)
+Tests: ❌ Runtime unavailable (.NET 10.0 not installed; .NET 11-preview present — pre-existing env issue)
+Lambert owns test coverage; this is tracked in the design doc.
+
+---
+
+## 2026-08-26: hlx / ci-evidence-reader Feasibility Analysis (read-only)
+
+### Learnings
+
+**ci-evidence-reader is a security boundary, not a convenience tool.** Its URL allowlist and output-path boundary exist to protect the gh-aw agentic sandbox from SSRF/exfiltration. hlx does not share this threat model. Do not try to make hlx replace ci-evidence-reader for that use case.
+
+**Helix SDK opacity is a fixture seam blocker.** `HelixApiClient` wraps Microsoft's DotNet.Helix.Client SDK which creates its own `HttpClient`. Injecting a `FakeHttpMessageHandler` via DI only intercepts AzDO and blob download calls — not Helix job/work-item calls. For Helix fixture replay, mock at `IHelixApiClient`, not at `HttpMessageHandler`. This is a known architectural constraint.
+
+**Vitek's seam lives in ci-evidence-reader, not hlx.** The PR description says "creates a clear place to redirect CI evidence inputs." The `--fixture-dir` replay mode should be added to the Python script (~50 lines), entirely in the runtime repo. hlx eval mode is a separate, longer-term effort.
+
+**Gap inventory between ci-evidence-reader and hlx:** (1) hlx lacks `--skip` offset paging on `azdo builds`; (2) hlx `azdo log` truncates at 500 lines by default — needs `--tail-lines 0` for full-log mode; (3) hlx output is normalized/interpreted JSON; ci-evidence-reader returns raw wire JSON — prompts written against raw shape break if switched to hlx; (4) hlx writes to stdout/temp; ci-evidence-reader writes to controlled paths under `/tmp/gh-aw/agent/`.
+
+**Recommendation:** Slices 0–2 (doc mapping + tail-lines 0 + --skip) are standalone small PRs with no eval machinery needed. Slices 3–5 (fixture mode) require Dallas decision on ownership.
+
+---
+
 ## 2026-06-24: AzDO Param Plumbing — Three Bugs Fixed (fix/azdo-param-plumbing)
 
 ### Learnings
@@ -26,8 +85,8 @@
 - `AllowedValues` on MCP tool param + server-side validator + `McpException` on invalid = defense in depth
 - Cache key includes new discriminating params (outcomes, QueryOrder, MinTime, MaxTime) to avoid stale cache hits
 
-**Commits:** `fefd0dc` (builds), `a2615df` (attachments top), `cbb35c5` (outcomes)  
-**Tests:** 1326 passed, 2 skipped (0 failed) — 14 new tests added  
+**Commits:** `fefd0dc` (builds), `a2615df` (attachments top), `cbb35c5` (outcomes)
+**Tests:** 1326 passed, 2 skipped (0 failed) — 14 new tests added
 **Branch:** `fix/azdo-param-plumbing`
 
 ## 2026-06-24: PR #78 Copilot Reviewer Feedback — Whitespace normalization (fix/azdo-param-plumbing)
@@ -38,8 +97,8 @@
 - **Both CLI and MCP entry points must validate:** For tools with both CLI and MCP surfaces, normalize and validate at BOTH entry points using the shared helper (e.g., `AzdoService.NormalizeQueryOrder` / `IsValidQueryOrder`). Don't rely on one path to protect the other — a CLI user calling `--query-order " "` hits AzDO with a bad value if only the MCP path validates.
 - **Cache key normalization:** In `CachingAzdoApiClient`, normalize once at the top of the method and use the normalized value for both the cache key and the inner-client call. Raw caller input (null vs "" vs "   ") must not produce distinct cache entries for semantically-identical requests.
 
-**Commit:** `aa7dbe8` (whitespace normalization — queryOrder CLI, outcomes trim, caching outcomes)  
-**Tests:** 1330 passed, 2 skipped (0 failed) — 4 new tests added  
+**Commit:** `aa7dbe8` (whitespace normalization — queryOrder CLI, outcomes trim, caching outcomes)
+**Tests:** 1330 passed, 2 skipped (0 failed) — 4 new tests added
 **Branch:** `fix/azdo-param-plumbing`
 
 ## 2026-06-24: PR #78 Second Copilot Review — Cache normalization, exit codes, doc coupling (fix/azdo-param-plumbing)
@@ -188,8 +247,8 @@ Route 4 of 5 review comments on helix_find_files workItem parameter change.
 3. **CHANGELOG correction:** Removed false claim about helix_status/helix_batch_status param surface
 4. **SKILL.md update:** Replaced stale [Theory]/[InlineData] reference with shipped discovery-based [Fact]
 
-**Commits:** 6d95624  
-**Test outcome:** 1500/0 failed / 2 skipped  
+**Commits:** 6d95624
+**Test outcome:** 1500/0 failed / 2 skipped
 **Branch:** lewing-fix-find-files-workitem-param
 
 ### Lesson: Skill Extraction Timing
@@ -204,8 +263,8 @@ Conducted complete audit of ModelContextProtocol SDK usage across the helix.mcp 
 
 ### Key Findings
 
-**Migration Complexity:** MEDIUM  
-**Estimated Implementation:** 0.5–1 day (Ripley) + 0.5 day (Lambert for test validation)  
+**Migration Complexity:** MEDIUM
+**Estimated Implementation:** 0.5–1 day (Ripley) + 0.5 day (Lambert for test validation)
 
 **Breaking Changes in v2.0.0 (10 major):**
 1. **HTTP transport now stateless by default** — `HttpServerTransportOptions.Stateless` defaults to `true` (was `false`). No unsolicited server-to-client requests. Repo architecture already stateless; this is PREFERRED. No code changes needed.
@@ -256,7 +315,7 @@ Conducted complete audit of ModelContextProtocol SDK usage across the helix.mcp 
 
 ### Artifacts
 
-**Decision document:** `.squad/decisions/inbox/ripley-csharp-mcp-sdk-update.md`  
+**Decision document:** `.squad/decisions/inbox/ripley-csharp-mcp-sdk-update.md`
 **Migration stages:**
 1. Update `Directory.Packages.props` (1–2 hours)
 2. Compile + test (2–3 hours)
@@ -436,3 +495,18 @@ a byte table.
 **Validation:** build 0 warnings / 0 errors (Debug + Release); targeted 81/81; full suite
 1,568 passed / 2 pre-existing skips / 0 failed, identical with `HLX_API_KEY` unset and set; no
 `MCP9xxx`. `DOTNET_ROLL_FORWARD=Major` still mandatory on every `dotnet test`. Not committed.
+
+---
+
+## 2026-08-26 — Snapshot eval mode analysis
+
+Validated Larry's hypothesis against actual code. Key findings durable across future work:
+
+- `cache_artifacts.file_path` is stored **relative** to `_artifactsDir` — the DB+artifacts dir is self-contained and portable.
+- All `cache_metadata` reads check `expires_at > @now`. At 4h TTL for completed builds, a snapshot older than 4h causes 100% metadata misses → network fallthrough. This is the **primary blocker** for naive snapshot replay.
+- The `log-fresh:{buildId}:{logId}` key has 15s TTL — always expired in snapshots → delta-refresh logic fires on every `GetBuildLogAsync` → hits network.
+- `ListJobNamesByBuildAsync` is deliberately not cached (uncacheable by design per code comment).
+- Auth-partitioned AzDO cache keys (`azdo:{authHash}:{org}:{project}:...`) are portable for public/anonymous snapshots (no hash prefix). Auth'd snapshots need matching identity or key rewrite.
+- WAL checkpoint required before snapshot copy (`PRAGMA wal_checkpoint(FULL)`).
+- Minimum code change: `EvalMode` flag on `CacheOptions`, TTL bypass in `GetMetadataAsync`/`IsJobCompletedAsync`, `OfflineAzdoApiClient`/`OfflineHelixApiClient` stubs, `ExportSnapshotAsync` on `SqliteCacheStore`, env var activation (`HLX_EVAL_SNAPSHOT`). No schema changes, no new file formats.
+- Decision proposal written to `.squad/decisions/inbox/ripley-snapshot-eval.md`.
