@@ -112,6 +112,7 @@ ConsoleApp.ServiceProvider = services.BuildServiceProvider();
 var app = ConsoleApp.Create();
 app.Add<Commands>();
 app.Add<AzdoCommands>();
+app.Add<SnapshotCommands>();
 // When no command is specified: default to MCP server mode if stdin is redirected
 // (e.g. piped or launched by an MCP host), otherwise show help text for interactive use.
 app.Run(args.Length == 0 ? (Console.IsInputRedirected ? ["mcp"] : ["--help"]) : args);
