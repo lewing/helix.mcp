@@ -49,13 +49,13 @@ Merged snapshot export hardening design review and implementation gate decision 
 
 ## Files Modified
 
-- `.squad/decisions.md`: merged both inbox files; deduplication applied to decision metadata
+- `.squad/decisions/decisions.md`: merged both inbox files; deduplication applied to decision metadata
 - `.squad/identity/now.md`: updated focus area to snapshot export hardening approval state
 - `.squad/orchestration-log/2026-08-26T1716-scribe-snapshot-hardening-batch.md`: this entry (appended)
 
 ## Commit
 
-- Staged `.squad/` files only (decisions.md, identity/now.md, orchestration-log entry)
+- Staged `.squad/` files only (decisions/decisions.md, identity/now.md, orchestration-log entry)
 - Message: "docs: snapshot export hardening gate cleared; Bishop's stress-test revision approved"
 - Trailer: Co-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>
 

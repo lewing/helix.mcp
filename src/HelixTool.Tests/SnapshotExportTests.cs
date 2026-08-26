@@ -326,11 +326,58 @@ file static class SnapshotTestHelper
             $"Windows junction creation failed with exit code {process.ExitCode}: {output} {error}");
     }
 
+    public static async Task CreateFileAliasAsync(string alias, string target)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(alias)!);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.CreateSymbolicLink(alias, target);
+            return;
+        }
+
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            },
+        };
+        process.StartInfo.ArgumentList.Add("/c");
+        process.StartInfo.ArgumentList.Add("mklink");
+        process.StartInfo.ArgumentList.Add(alias);
+        process.StartInfo.ArgumentList.Add(target);
+
+        Assert.True(process.Start(), "Failed to start cmd.exe for symbolic-link creation.");
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        var output = await process.StandardOutput.ReadToEndAsync();
+        var error = await process.StandardError.ReadToEndAsync();
+        Assert.True(
+            process.ExitCode == 0,
+            $"Windows symbolic-link creation failed with exit code {process.ExitCode}: " +
+            $"{output} {error}");
+    }
+
     public static void DeleteDirectoryAlias(string alias)
     {
         try
         {
             new DirectoryInfo(alias).Delete();
+        }
+        catch
+        {
+            // Cleanup is best effort; the containing workspace cleanup is the final fallback.
+        }
+    }
+
+    public static void DeleteFileAlias(string alias)
+    {
+        try
+        {
+            new FileInfo(alias).Delete();
         }
         catch
         {
@@ -649,7 +696,6 @@ public class SnapshotExporterTests : IDisposable
             await SnapshotTestHelper.ExportAndAssertAtomicPublicationAsync(
                 aliasedSource,
                 destination);
-            SnapshotTestHelper.AssertFinalLayout(destination);
             SnapshotTestHelper.AssertFinalLayout(destination);
         }
         finally
@@ -1003,6 +1049,81 @@ public class SnapshotValidatorTests : IDisposable
     }
 
     [Fact]
+    public async Task Validate_DatabaseAliasOutsideSnapshot_IsRejectedAtSnapshotBoundary()
+    {
+        var workspace = Workspace("external-database");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 0,
+            useWal: false);
+        var externalDirectory = Path.Combine(workspace, "external-database");
+        Directory.CreateDirectory(externalDirectory);
+        var externalDatabase = Path.Combine(externalDirectory, "cache.db");
+        File.Move(source.DatabasePath, externalDatabase);
+        await SnapshotTestHelper.CreateFileAliasAsync(source.DatabasePath, externalDatabase);
+
+        try
+        {
+            var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+            AssertPhysicalSnapshotBoundaryError(result, "database");
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteFileAlias(source.DatabasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Validate_ArtifactsAliasOutsideSnapshot_IsRejectedAtSnapshotBoundary()
+    {
+        var workspace = Workspace("external-artifacts");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 1,
+            useWal: false);
+        var artifactsPath = Path.Combine(source.Root, "artifacts");
+        var externalArtifacts = Path.Combine(workspace, "external-artifacts");
+        Directory.Move(artifactsPath, externalArtifacts);
+        await SnapshotTestHelper.CreateDirectoryAliasAsync(artifactsPath, externalArtifacts);
+
+        try
+        {
+            var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+            AssertPhysicalSnapshotBoundaryError(result, "artifacts");
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteDirectoryAlias(artifactsPath);
+        }
+    }
+
+    [Fact]
+    public async Task Validate_ArtifactsAliasToSnapshotRoot_IsRejectedAtSnapshotBoundary()
+    {
+        var workspace = Workspace("root-artifacts");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 0,
+            useWal: false);
+        var artifactsPath = Path.Combine(source.Root, "artifacts");
+        Directory.Delete(artifactsPath);
+        await SnapshotTestHelper.CreateDirectoryAliasAsync(artifactsPath, source.Root);
+
+        try
+        {
+            var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+            AssertPhysicalSnapshotBoundaryError(result, "artifacts");
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteDirectoryAlias(artifactsPath);
+        }
+    }
+
+    [Fact]
     public async Task Validate_TraversalOnly_IsInvalidWithoutIncrementingMissingCount()
     {
         var workspace = Workspace("traversal");
@@ -1113,6 +1234,16 @@ public class SnapshotValidatorTests : IDisposable
         Assert.Contains(
             result.Warnings,
             warning => warning.Contains("artifacts", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static void AssertPhysicalSnapshotBoundaryError(
+        SnapshotValidationResult result,
+        string pathKind)
+    {
+        Assert.False(result.IsValid);
+        var error = Assert.Single(result.Errors);
+        Assert.Contains(pathKind, error, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("physical snapshot", error, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsTraversalError(string error)

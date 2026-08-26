@@ -562,3 +562,42 @@ test.
 
 The revision gate is cleared. The complete pull request is ready for final full-suite and Ubuntu
 and Windows CI validation.
+
+---
+
+## 2026-08-26 — PR #127 review-thread triage
+
+**Verdict:** **REJECT.** The unresolved database-link finding and the related artifact-directory
+finding are both valid blockers. `SnapshotValidator` resolves `cache.db` and `artifacts/` but never
+requires either resolved path to remain a strict child of the resolved snapshot root. It can
+therefore validate an external database, an external artifact tree, or an `artifacts/` alias back
+to the snapshot root.
+
+The duplicate layout assertion is valid but minor. The orchestration log also records the wrong
+decisions-file path in two places; that is not a runtime blocker, but the log is rejected as an
+inaccurate record. The 28 focused exporter/validator tests pass, confirming that current coverage
+does not exercise these aliases.
+
+Ripley is locked out of the rejected validator revision. Lambert and Parker remain ineligible for
+the test artifact, and Bishop owns the current rejected version, so a new independent test owner
+is required. I requested a new .NET filesystem-security implementer and a separate cross-platform
+filesystem test specialist. Scribe is locked out of the rejected log revision; Kane may make the
+two factual path corrections. Detailed acceptance criteria are in
+`.squad/decisions/inbox/dallas-pr127-review-triage.md`.
+
+---
+
+## 2026-08-26 — PR #127 boundary revision recheck
+
+**Verdict:** **APPROVE.** Brett's validator now rejects a resolved database or existing artifacts
+directory unless it is a strict physical child of the snapshot root, at the required points before
+sidecar/database or row/file inspection. The comparison is separator-aware, ignores case only on
+Windows, rejects equality, and preserves the missing-artifacts warning.
+
+Burke's three focused regressions exercise an external database alias, a populated external
+artifacts alias, and an artifacts alias to the snapshot root on every platform, with Windows
+junctions for directories, safe alias cleanup, and focused boundary assertions. The duplicate
+layout assertion is gone. Kane corrected both decisions-file references.
+
+All 43 focused snapshot tests passed with `DOTNET_ROLL_FORWARD=Major`. The review gate is cleared,
+and PR #127 is ready for the full suite and Ubuntu/Windows CI.

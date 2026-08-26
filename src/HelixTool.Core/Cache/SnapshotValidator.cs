@@ -57,6 +57,12 @@ public static class SnapshotValidator
         {
             dbPath =
                 SnapshotExporter.CanonicalizeExistingPath(lexicalDbPath, requireDirectory: false);
+            if (!IsStrictDescendant(dbPath, snapshotPath))
+            {
+                errors.Add(
+                    $"Snapshot database must resolve beneath the physical snapshot directory: {dbPath}");
+                return Task.FromResult(Fail(errors, warnings));
+            }
         }
         catch (InvalidOperationException ex)
         {
@@ -79,6 +85,13 @@ public static class SnapshotValidator
                 physicalArtifactsPath = SnapshotExporter.CanonicalizeExistingPath(
                     artifactsPath,
                     requireDirectory: true);
+                if (!IsStrictDescendant(physicalArtifactsPath, snapshotPath))
+                {
+                    errors.Add(
+                        "The artifacts/ directory must resolve beneath the physical snapshot " +
+                        $"directory: {physicalArtifactsPath}");
+                    return Task.FromResult(Fail(errors, warnings));
+                }
             }
             catch (InvalidOperationException ex)
             {
@@ -360,6 +373,19 @@ public static class SnapshotValidator
     private static StringComparison PathComparison => OperatingSystem.IsWindows()
         ? StringComparison.OrdinalIgnoreCase
         : StringComparison.Ordinal;
+
+    private static bool IsStrictDescendant(string candidate, string root)
+    {
+        var normalizedCandidate = Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidate));
+        var normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        if (string.Equals(normalizedCandidate, normalizedRoot, PathComparison))
+            return false;
+
+        var rootPrefix = Path.EndsInDirectorySeparator(normalizedRoot)
+            ? normalizedRoot
+            : normalizedRoot + Path.DirectorySeparatorChar;
+        return normalizedCandidate.StartsWith(rootPrefix, PathComparison);
+    }
 
     private static SqliteConnection OpenReadOnlyConnection(string dbPath)
     {
