@@ -2380,3 +2380,113 @@ No production files were modified.
 
 ---
 
+# PR #127 Review Cycle: Validator & Test Boundary Revision — APPROVED
+
+**Date:** 2026-08-26  
+**Reviewer:** Dallas (Lead Architect)  
+**Initial Verdict:** REJECT (2026-08-26)  
+**Final Verdict:** ✅ **APPROVE** (2026-08-26)  
+**Gate Status:** Cleared — Ready for full suite and Ubuntu/Windows CI validation
+
+---
+
+## Executive Summary
+
+PR #127 snapshot validator and test revisions address three boundary-check defects in snapshot validation. Initial review found validator did not verify that external aliases (cache.db, artifacts/) remained within snapshot root, and orchestration log documented incorrect file path. Dallas rejected all three artifacts. Subsequent revisions by Brett (validator), Burke (tests), and Kane (log correction) implemented required physical containment checks. Dallas approved all revisions; 43 focused tests passed with DOTNET_ROLL_FORWARD=Major.
+
+---
+
+## Initial Findings (REJECTED)
+
+### Finding 1: External cache.db Alias
+
+**Issue:** After resolving `cache.db` symlink/junction, validator opened the resolved file without verifying it remained inside snapshot root. External alias could validate external database.
+
+**Acceptance Criteria:** Immediately after resolving `cache.db`, require strict descendant check against physical snapshot root before sidecar checks or database access. Use separator-aware boundaries, case-insensitive only on Windows, reject equality or escape.
+
+**Resolution:** Brett's validator revision implements check: resolved path must be strict child of resolved snapshot root before database open.
+
+---
+
+### Finding 2: External or Root-Pointing artifacts/ Alias
+
+**Issue:** Validator accepted resolved artifacts directory as trust root even when outside snapshot or pointing to snapshot root itself. Could validate external files or files outside artifacts subtree.
+
+**Acceptance Criteria:** Immediately after resolving existing artifacts directory, require strict descendant check against physical snapshot root before reading artifact rows. Preserve missing-directory warning. Reject equality, escape, or resolution failure.
+
+**Resolution:** Brett's validator revision implements check: resolved existing directory must be strict child of resolved snapshot root before artifact inspection.
+
+---
+
+### Finding 3: Repeated Layout Assertion
+
+**Issue:** Two consecutive identical `AssertFinalLayout(destination)` calls in source-root-alias test.
+
+**Resolution:** Burke's revision keeps exactly one layout assertion. Test revision includes new boundary regression tests.
+
+---
+
+### Finding 4: Orchestration Log Path Error
+
+**Issue:** Log documented path as `.squad/decisions/decisions.md` instead of correct `.squad/decisions.md`. Both occurrences in file and commit descriptions incorrect.
+
+**Resolution:** Kane corrected both references to `.squad/decisions.md`.
+
+---
+
+## Revision Agents & Lockouts
+
+- **Ripley** (SnapshotValidator, rejected): Locked out; new .NET filesystem-security specialist needed
+- **Lambert, Parker, Bishop** (tests, Bishop's revision rejected): Lambert, Parker locked out; no involvement in Burke's revision
+- **Scribe** (log, rejected): Locked out; Kane (eligible documentation owner) corrected path
+
+---
+
+## Approval Verification
+
+**Reviewer:** Dallas (2026-08-26)
+
+### Brett's Validator Revision: APPROVED
+
+- Resolved `cache.db` must be strict child of resolved snapshot root before sidecar/database checks
+- Resolved existing `artifacts/` must be strict child before reading artifact rows
+- Comparison separator-aware, case-insensitive on Windows, ordinal elsewhere
+- Both checks reject equality, escape, or resolution failure
+
+### Burke's Test Revision: APPROVED
+
+- Regression test: external cache.db alias + symlink/junction setup (Unix/Windows)
+- Regression test: populated external artifacts/ alias + junction to snapshot root
+- Both tests run without platform skips, unlink safely, require physical-boundary error
+- Source-root-alias test contains exactly one final-layout assertion
+
+### Kane's Log Correction: APPROVED
+
+- Both `.squad/decisions/decisions.md` references corrected to `.squad/decisions.md`
+
+### Test Results
+
+- 43 focused snapshot tests passed with `DOTNET_ROLL_FORWARD=Major`
+- Independent review gate cleared; full suite and CI validation ready
+
+---
+
+## Acceptance Criteria Verification
+
+| Criterion | Status | Evidence |
+|-----------|--------|----------|
+| Resolved cache.db strict-child check before sidecar/DB access | ✅ | Brett's validator revision |
+| Resolved artifacts/ strict-child check before row/artifact inspection | ✅ | Brett's validator revision |
+| Boundary regression coverage (external DB, external artifacts/, root pointer) | ✅ | Burke's test revision (all run, no skips) |
+| Single layout assertion in source-root-alias test | ✅ | Burke's revision |
+| Correct orchestration log paths | ✅ | Kane's correction |
+| 43 focused tests pass with DOTNET_ROLL_FORWARD=Major | ✅ | Test run results |
+
+---
+
+## Next Steps
+
+- Full test suite validation
+- Ubuntu and Windows CI validation
+- Code review and merge
+
