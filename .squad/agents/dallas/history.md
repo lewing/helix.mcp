@@ -482,3 +482,227 @@ consulting `function.ReturnJsonSchema`, so a future `[return: Description]` or `
 cannot inflate these six tools' 17 bytes. Reading two functions past the one under discussion turned
 a maintenance worry into a documented guarantee. Read the caller and the fallback, not just the
 predicate.
+
+---
+
+## 2026-08-26 — Snapshot export successor hardening design
+
+Facilitated the required pre-work design review for the standalone successor to merged PR #125.
+Inspected current `origin/main` and all five unresolved review threads. Approved a surgical
+contract in `.squad/decisions/inbox/dallas-snapshot-hardening-design.md`.
+
+The decisive architecture choices are:
+
+- SQLite online backup (`SqliteConnection.BackupDatabase`) is the database consistency boundary;
+  export never checkpoints or copies the live DB/WAL/SHM file set.
+- Artifact selection comes from the backed-up `cache_artifacts` rows, not recursive live-directory
+  enumeration.
+- The complete temporary snapshot must pass schema, `integrity_check`, no-sidecar, containment,
+  existence, and size checks before same-parent atomic rename.
+- Destination comparison uses physical canonical paths, component-by-component link/junction
+  resolution, Windows case-insensitive boundaries, and non-Windows ordinal boundaries. Resolution
+  ambiguity fails closed before temp creation.
+- The auth warning is unconditional. Identical `AZDO_TOKEN` plus identical effective
+  `AZDO_TOKEN_TYPE` can replay environment-keyed entries through the merged environment-only eval
+  accessor; Azure CLI identities remain unreproducible.
+- Traversal errors invalidate a snapshot but never increment `MissingArtifactFiles`.
+
+Ownership is non-overlapping: Ripley owns Core implementation, Kane owns `SnapshotCommands.cs` and
+the PR narrative, and Lambert owns `SnapshotExportTests.cs`. Cache options, composition roots,
+SQLite store behavior, project files, fixture format, key normalization, record mode, and Vally APIs
+are frozen.
+
+---
+
+## 2026-08-26 — Snapshot export hardening independent review
+
+Issued an overall **REJECT** while accepting Ripley's Core implementation and Kane's CLI wording.
+The blocking defect is confined to Lambert's concurrency test artifact: its checkpoint readiness
+counter advances for any checkpoint result row, including a zero-page attempt that can occur before
+the first writer commit, and its baseline metadata check proves only row count rather than the
+seeded keys and JSON values.
+
+Targeted tests passed 29/29, the stress test passed twelve repeated runs, and the full suite passed
+1,661 with two pre-existing skips. Those green runs do not repair a missing proof invariant.
+Lambert is locked out of the next `SnapshotExportTests.cs` revision. Because every other rostered
+specialist is barred by charter from writing tests, I explicitly requested escalation to a new
+.NET concurrency/filesystem test specialist.
+
+---
+
+## 2026-08-26 — Parker snapshot stress revision re-review
+
+**Verdict:** **REJECT.** Parker fixed both original proof gaps: checkpoint readiness now follows a
+committed write and requires positive checkpoint progress, and every exported snapshot checks the
+three exact baseline keys and JSON values.
+
+Repeated execution exposed a new shutdown race in the same checkpoint loop. Two separate campaigns
+both failed on attempt 24 because SQLite returned a WAL-page count of minus one after no WAL was
+currently present, and the test treated that non-progress response as an assertion failure. The
+targeted snapshot selection passed 40 tests, but the stress test passed only 46 of 48 repeated
+attempts before the two failures stopped their campaigns.
+
+Parker is now locked out of this artifact, Lambert remains locked out, and I requested another new
+independent .NET and SQLite concurrency test specialist. The revision gate remains closed, so the
+pull request is not ready for final suite or CI.
+
+---
+
+## 2026-08-26 — Bishop snapshot stress revision final re-review
+
+**Verdict:** **APPROVE.** Bishop's narrow change handles only the exact no-current-WAL result after
+checkpoint readiness as non-progress. It preserves the committed-write ordering and requires
+positive checkpoint progress before readiness. The same response before readiness, malformed rows,
+and inconsistent values still fail.
+
+The cancellation, finite busy handling, bounded final wait, and background exception propagation
+are unchanged. All 29 tests in `SnapshotExportTests.cs` passed with
+`DOTNET_ROLL_FORWARD=Major`, followed by 48 consecutive passes of the writer/checkpointer stress
+test.
+
+The revision gate is cleared. The complete pull request is ready for final full-suite and Ubuntu
+and Windows CI validation.
+
+---
+
+## 2026-08-26 — PR #127 review-thread triage
+
+**Verdict:** **REJECT.** The unresolved database-link finding and the related artifact-directory
+finding are both valid blockers. `SnapshotValidator` resolves `cache.db` and `artifacts/` but never
+requires either resolved path to remain a strict child of the resolved snapshot root. It can
+therefore validate an external database, an external artifact tree, or an `artifacts/` alias back
+to the snapshot root.
+
+The duplicate layout assertion is valid but minor. The orchestration log also records the wrong
+decisions-file path in two places; that is not a runtime blocker, but the log is rejected as an
+inaccurate record. The 28 focused exporter/validator tests pass, confirming that current coverage
+does not exercise these aliases.
+
+Ripley is locked out of the rejected validator revision. Lambert and Parker remain ineligible for
+the test artifact, and Bishop owns the current rejected version, so a new independent test owner
+is required. I requested a new .NET filesystem-security implementer and a separate cross-platform
+filesystem test specialist. Scribe is locked out of the rejected log revision; Kane may make the
+two factual path corrections. Detailed acceptance criteria are in
+`.squad/decisions/inbox/dallas-pr127-review-triage.md`.
+
+---
+
+## 2026-08-26 — PR #127 boundary revision recheck
+
+**Verdict:** **APPROVE.** Brett's validator now rejects a resolved database or existing artifacts
+directory unless it is a strict physical child of the snapshot root, at the required points before
+sidecar/database or row/file inspection. The comparison is separator-aware, ignores case only on
+Windows, rejects equality, and preserves the missing-artifacts warning.
+
+Burke's three focused regressions exercise an external database alias, a populated external
+artifacts alias, and an artifacts alias to the snapshot root on every platform, with Windows
+junctions for directories, safe alias cleanup, and focused boundary assertions. The duplicate
+layout assertion is gone. Kane corrected both decisions-file references.
+
+All 43 focused snapshot tests passed with `DOTNET_ROLL_FORWARD=Major`. The review gate is cleared,
+and PR #127 is ready for the full suite and Ubuntu/Windows CI.
+
+---
+
+## 2026-08-26 — PR #127 second-review triage
+
+**Verdict:** **REJECT.** The fresh macOS containment finding is valid and blocking. Exporter
+boundaries use ordinal comparison outside Windows, but this worktree's macOS volume resolves
+case-only spellings to the same directory. A new child below a case-only source spelling can
+therefore bypass containment. The current case-only test returns without assertions on macOS and
+passes vacuously.
+
+The suppressed test findings are also valid. The hardening rewrite removed exporter rejection
+coverage for missing source, database, destination parent, schema versions, and required tables,
+and removed validator coverage for missing layout, wrong schema, and missing tables. The new
+integrity check has no corrupt-database regression. The current-focus record is stale: the
+1,661-test local suite and refreshed Ubuntu, Windows, and Squad checks completed successfully at
+`dcc755a5`, although this rejection now requires them to run again after revision.
+
+Ripley is locked out of the exporter revision. Lambert, Parker, Bishop, and Burke are locked out of
+the next `SnapshotExportTests.cs` revision, which must have one newly recruited independent .NET
+filesystem and SQLite test owner. Kane may correct the current-focus record; Scribe is locked out.
+The exact revision and acceptance gates are recorded in
+`.squad/decisions/inbox/dallas-pr127-second-review-triage.md`.
+
+---
+
+## 2026-08-26 — PR #127 second-review recheck
+
+**Verdict:** **APPROVE.** Frost applied the required conservative macOS/Windows ignore-case
+boundary rule while preserving ordinal Linux/other behavior, separator boundaries, pre-creation
+containment, and the destination-parent recheck. Hudson restored every named exporter and validator
+negative case, replaced the vacuous macOS test with an actual-filesystem branch, and added
+deterministic non-throwing corruption coverage. Ten repeated corruption runs passed. No global
+SQLite pool clear or unrelated weakening appeared.
+
+Kane's focus record accurately captures the prior completed gates, the reopened review, the named
+revisions, and the required reruns. All 43 focused `SnapshotExportTests` cases passed with
+`DOTNET_ROLL_FORWARD=Major`, with no skips or failures. The revision gate is cleared; PR #127 is
+ready for the full local suite and fresh Ubuntu/Windows CI.
+
+---
+
+## 2026-08-26 — PR #127 Ubuntu CI triage
+
+**Verdict:** **REJECT** Hudson's current test revision; Frost's production revision remains
+accepted. Ubuntu's case-sensitive success path preserved the source `cache.db` and artifact bytes
+exactly but SQLite's read-only WAL opens materialized `cache.db-shm` and an empty `cache.db-wal`.
+Those SQLite-managed sidecars may legitimately appear or disappear and are not source corruption.
+
+The independent replacement must compare exact persistent source payload bytes and logical database
+state while excluding only the two root SQLite sidecars on the success path. It must not weaken the
+full-tree source checks on pre-database-open rejection paths or their shared helper. No production
+change is warranted. Hudson is locked out from revision and advice; prior test-owner lockouts remain,
+so the Coordinator must recruit a new independent .NET/SQLite filesystem test owner. Windows was
+canceled during restore and must run again with the full suite and Ubuntu after Dallas re-review.
+
+---
+
+## 2026-08-26 — PR #127 Ubuntu CI recheck
+
+**Verdict:** **APPROVE.** Vasquez's local success-path helper excludes only root regular-file
+fingerprints for SQLite's WAL/SHM lifecycle while retaining exact database, artifact, other-file,
+directory, and link comparison. Integrity, schema/user versions, the complete schema, and every
+fixture table column are compared before and after export.
+
+The case-insensitive rejection branch and shared strict helper are unchanged, and both platform
+branches remain substantive. With `DOTNET_ROLL_FORWARD=Major`, the case-only test passed its build
+run plus 10 repeated no-build runs, and all 54 focused snapshot tests passed with no skips. Frost's
+production exporter remains accepted and frozen; the local gate is cleared for the full suite and
+fresh Ubuntu/Windows CI.
+
+---
+
+## 2026-08-26 — PR #127 WAL readiness CI triage
+
+**Verdict:** **REJECT** the stress helper at `9a7fd86`; Frost's production exporter remains accepted
+and frozen. Ubuntu exposed the startup form of the WAL lifecycle race Bishop handled only after
+readiness: a committed-write signal does not guarantee that a separately and lazily opened
+checkpointer connection immediately has a current WAL, so exact `(-1,-1)` is legitimate
+non-progress before readiness too.
+
+The replacement must establish and hold an explicit WAL writer/anchor, assert WAL mode on both
+worker connections, sequence worker initialization before a known committed write, and retry exact
+`(-1,-1)` under a bounded timeout without completing readiness. Readiness still requires a
+post-commit, non-busy PASSIVE result with positive WAL and checkpointed page counts.
+
+Hicks is assigned as the new independent .NET/SQLite concurrency test specialist. Lambert, Parker,
+Bishop, Burke, Hudson, and Vasquez are locked out from both revision and advice. Exact gates are in
+`.squad/decisions/inbox/dallas-pr127-wal-readiness-ci-triage.md`; fresh Ubuntu and Windows CI remain
+mandatory.
+
+---
+
+## 2026-08-26 — PR #127 WAL readiness CI recheck
+
+**Verdict:** **APPROVE** Hicks's test-only WAL-readiness revision for the full-suite and fresh-CI
+gate. The unpooled anchor now spans initialization through cancellation and worker join; WAL mode,
+autocheckpointing, the zero-page baseline, four ordering gates, and checkpointer attachment are
+explicit. The strict state machine treats exact `(-1,-1)` as retryable non-progress before and after
+readiness, rejects invalid rows, and permits readiness only for positive post-commit progress.
+
+All 53 tests in `SnapshotExportTests.cs` passed, followed by 100 isolated repetitions of the real
+writer/checkpointer stress test, with zero failures or skips under `DOTNET_ROLL_FORWARD=Major`.
+Existing export invariants are unchanged and no production file changed. Frost's exporter remains
+accepted and frozen; the local gate is cleared for the full suite and fresh Ubuntu/Windows CI.

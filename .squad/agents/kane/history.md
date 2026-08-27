@@ -70,6 +70,12 @@
 
 ## Learnings
 
+### 2026-08-26: Snapshot Export Auth Replay Wording
+- Snapshot export warnings cannot depend on `AuthTokenHash` or `CacheRootHash`: the export command starts in a fresh process before AzDO credential resolution, so both may be null.
+- Auth-scoped keys remain unchanged. Eval mode can reproduce environment-keyed partitions with the identical `AZDO_TOKEN` and effective PAT/Bearer classification; matching `AZDO_TOKEN_TYPE` is the reliable classification control.
+- Eval's environment-only accessor does not reproduce `AzureCliCredential` or `az` CLI identity partitions. Anonymous/public entries remain usable without credentials.
+- User-facing export output should report only the published snapshot destination, artifact count, and database size; online backup makes WAL checkpoint/page and sidecar-copy status claims obsolete.
+
 ### 2026-07-20: hlx CLI Skill Discoverability Assessment
 **Question:** Do we have something like maestro's `helix-cli` SKILL.md? Is it good? How do people find it when MCP isn't running?
 

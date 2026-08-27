@@ -42,3 +42,12 @@
 - Merged 1 inbox decision into `decisions.md`, folding the PR #28 auth-source/cache-isolation/auth-status note into the consolidated 2026-03-13 AzDO auth decision and removing overlapping duplicate decision blocks
 - Propagated the merged auth decision to Ash, Dallas, Kane, and Lambert histories
 - Summarized Ripley history after the size check
+
+### 2026-08-26: Snapshot export hardening batch merge
+- Logged `2026-08-26T1716-scribe-snapshot-hardening-batch` orchestration entry
+- Merged 2 inbox decisions into `decisions.md`: Dallas design approval and multi-agent review gate (Ripley/Kane accepted, Lambert/Parker rejected/locked, Bishop approved)
+- Removed merged inbox files: `dallas-snapshot-hardening-design.md`, `dallas-snapshot-hardening-review.md`
+- Updated `identity/now.md` focus area to snapshot export hardening completion state
+- Checked agent history sizes: Dallas 564, Ripley 512, Lambert 351, Kane 118 — no summarization/archive action needed
+- Noted escalation requirement: recruit independent .NET concurrency/filesystem test specialist for future revisions
+

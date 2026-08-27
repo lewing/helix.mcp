@@ -2380,3 +2380,292 @@ No production files were modified.
 
 ---
 
+# PR #127 Review Cycle: Validator & Test Boundary Revision — APPROVED
+
+**Date:** 2026-08-26  
+**Reviewer:** Dallas (Lead Architect)  
+**Initial Verdict:** REJECT (2026-08-26)  
+**Final Verdict:** ✅ **APPROVE** (2026-08-26)  
+**Gate Status:** Cleared — Ready for full suite and Ubuntu/Windows CI validation
+
+---
+
+## Executive Summary
+
+PR #127 snapshot validator and test revisions address three boundary-check defects in snapshot validation. Initial review found validator did not verify that external aliases (cache.db, artifacts/) remained within snapshot root, and orchestration log documented incorrect file path. Dallas rejected all three artifacts. Subsequent revisions by Brett (validator), Burke (tests), and Kane (log correction) implemented required physical containment checks. Dallas approved all revisions; 43 focused tests passed with DOTNET_ROLL_FORWARD=Major.
+
+---
+
+## Initial Findings (REJECTED)
+
+### Finding 1: External cache.db Alias
+
+**Issue:** After resolving `cache.db` symlink/junction, validator opened the resolved file without verifying it remained inside snapshot root. External alias could validate external database.
+
+**Acceptance Criteria:** Immediately after resolving `cache.db`, require strict descendant check against physical snapshot root before sidecar checks or database access. Use separator-aware boundaries, case-insensitive only on Windows, reject equality or escape.
+
+**Resolution:** Brett's validator revision implements check: resolved path must be strict child of resolved snapshot root before database open.
+
+---
+
+### Finding 2: External or Root-Pointing artifacts/ Alias
+
+**Issue:** Validator accepted resolved artifacts directory as trust root even when outside snapshot or pointing to snapshot root itself. Could validate external files or files outside artifacts subtree.
+
+**Acceptance Criteria:** Immediately after resolving existing artifacts directory, require strict descendant check against physical snapshot root before reading artifact rows. Preserve missing-directory warning. Reject equality, escape, or resolution failure.
+
+**Resolution:** Brett's validator revision implements check: resolved existing directory must be strict child of resolved snapshot root before artifact inspection.
+
+---
+
+### Finding 3: Repeated Layout Assertion
+
+**Issue:** Two consecutive identical `AssertFinalLayout(destination)` calls in source-root-alias test.
+
+**Resolution:** Burke's revision keeps exactly one layout assertion. Test revision includes new boundary regression tests.
+
+---
+
+### Finding 4: Orchestration Log Path Error
+
+**Issue:** Log documented path as `.squad/decisions/decisions.md` instead of correct `.squad/decisions.md`. Both occurrences in file and commit descriptions incorrect.
+
+**Resolution:** Kane corrected both references to `.squad/decisions.md`.
+
+---
+
+## Revision Agents & Lockouts
+
+- **Ripley** (SnapshotValidator, rejected): Locked out; new .NET filesystem-security specialist needed
+- **Lambert, Parker, Bishop** (tests, Bishop's revision rejected): Lambert, Parker locked out; no involvement in Burke's revision
+- **Scribe** (log, rejected): Locked out; Kane (eligible documentation owner) corrected path
+
+---
+
+## Approval Verification
+
+**Reviewer:** Dallas (2026-08-26)
+
+### Brett's Validator Revision: APPROVED
+
+- Resolved `cache.db` must be strict child of resolved snapshot root before sidecar/database checks
+- Resolved existing `artifacts/` must be strict child before reading artifact rows
+- Comparison separator-aware, case-insensitive on Windows, ordinal elsewhere
+- Both checks reject equality, escape, or resolution failure
+
+### Burke's Test Revision: APPROVED
+
+- Regression test: external cache.db alias + symlink/junction setup (Unix/Windows)
+- Regression test: populated external artifacts/ alias + junction to snapshot root
+- Both tests run without platform skips, unlink safely, require physical-boundary error
+- Source-root-alias test contains exactly one final-layout assertion
+
+### Kane's Log Correction: APPROVED
+
+- Both `.squad/decisions/decisions.md` references corrected to `.squad/decisions.md`
+
+### Test Results
+
+- 43 focused snapshot tests passed with `DOTNET_ROLL_FORWARD=Major`
+- Independent review gate cleared; full suite and CI validation ready
+
+---
+
+## Acceptance Criteria Verification
+
+| Criterion | Status | Evidence |
+|-----------|--------|----------|
+| Resolved cache.db strict-child check before sidecar/DB access | ✅ | Brett's validator revision |
+| Resolved artifacts/ strict-child check before row/artifact inspection | ✅ | Brett's validator revision |
+| Boundary regression coverage (external DB, external artifacts/, root pointer) | ✅ | Burke's test revision (all run, no skips) |
+| Single layout assertion in source-root-alias test | ✅ | Burke's revision |
+| Correct orchestration log paths | ✅ | Kane's correction |
+| 43 focused tests pass with DOTNET_ROLL_FORWARD=Major | ✅ | Test run results |
+
+---
+
+## Next Steps
+
+- Full test suite validation
+- Ubuntu and Windows CI validation
+- Code review and merge
+
+
+---
+
+## PR #127: Ubuntu CI SQLite Sidecar Lifecycle (Triage)
+
+**By:** Dallas (Lead)  
+**Date:** 2026-08-26T19:09:53-05:00  
+**Verdict:** REJECT — Hudson's test revision brittle; Frost's production revision accepted.
+
+### Finding
+
+Not a product defect. On Linux, case-only spelling is distinct directory; export correctly takes success path. Ubuntu failure shows identical persistent source payloads: artifact hashes and 28,672-byte `cache.db` hash unchanged. Only additions: SQLite-owned `cache.db-shm` and zero-length `cache.db-wal`.
+
+`SnapshotExporter` validates/backs up WAL-mode source via unpooled read-only SQLite connections. SQLite may create, remove, or retain WAL/SHM sidecars as part of connection lifecycle. Exporter issues no source write/checkpoint and must not delete SQLite-managed sidecars. Treating their lifecycle as corruption on successful online backup is incorrect.
+
+### Acceptance Criteria
+
+1. Replace case-sensitive success-path whole-tree equality (line 758) with focused source invariants:
+   - Compare persistent source tree excluding root-level `cache.db-wal` and `cache.db-shm`
+   - Retain byte equality for `cache.db` and all artifacts/non-sidecar files plus persistent directory/link topology
+   - Compare exact logical database state before/after (schema/user version, all fixture rows), integrity `ok`
+2. Permit only two SQLite sidecars to appear/disappear/change on success path
+3. Do not weaken `FingerprintTree`, `AssertRejectedWithoutPublicationAsync`, or aliasing rejection branch
+4. No production change; `SnapshotExporter.cs` frozen unless separately demonstrated defect
+5. Re-run focused snapshot tests, full suite, fresh Ubuntu/Windows CI
+
+### Ownership
+
+Hudson locked out from revising/advising; existing lockouts (Lambert, Parker, Bishop, Burke) remain. Coordinator must recruit independent .NET/SQLite filesystem test owner for `SnapshotExportTests.cs`. Frost sole production owner, no change needed. PR gate closed pending Dallas re-review and fresh green CI.
+
+---
+
+## Linux Case-Only Snapshot Source Integrity (Vasquez Revision)
+
+**By:** Vasquez  
+**Date:** 2026-08-26  
+**Scope:** `Export_CaseOnlyDestination_UsesPlatformBoundaryComparison`
+
+On case-sensitive filesystem, successful export may change lifecycle of SQLite root-level `cache.db-wal` and `cache.db-shm` without mutating persistent source data. Success-path source fingerprint excludes only regular-file fingerprints for these two exact root-level paths. Nested names, directories, links, `cache.db`, artifacts, and all other source entries retain byte/topology checking.
+
+Test also compares integrity-check results, schema/user versions, complete `sqlite_schema`, and every row/column in three fixture tables before/after export. Case-insensitive rejection branch retains unfiltered whole-tree and publication-residue checks.
+
+**Validation:** With `DOTNET_ROLL_FORWARD=Major`: case-only test passed once after compilation + 10 repeated no-build runs; 54 focused snapshot tests passed; test project compiled for `linux-x64` with zero warnings/errors.
+
+---
+
+## PR #127: Ubuntu CI SQLite Sidecar Lifecycle (Recheck)
+
+**By:** Dallas (Lead)  
+**Date:** 2026-08-26T19:17:26-05:00  
+**Verdict:** APPROVE
+
+Vasquez's revision confined to case-sensitive success branch. Local fingerprint removes only regular-file records for root `cache.db-wal` and `cache.db-shm`; nested names, directories, links, `cache.db`, artifacts, all entries retain exact topology/length/SHA-256 comparison. Test compares integrity, schema/user versions, complete schema, every fixture row column before/after export.
+
+Case-insensitive branch uses unfiltered rejection helper before any database open, preserving strict source/destination/publication-residue checks. Both filesystem branches execute substantive assertions; test non-vacuous on all platforms.
+
+With `DOTNET_ROLL_FORWARD=Major`: case-only test passed build run + 10 consecutive `--no-build` runs; all 54 focused snapshot tests passed, no skips. Frost's production exporter remains accepted/frozen. Local revision gate cleared for full suite and fresh Ubuntu/Windows CI.
+
+### Approval Summary
+- ✅ Vasquez's test revision: case-sensitive success-path source fingerprint correctly excludes only SQLite sidecars
+- ✅ All focused snapshot tests passing (54/54)
+- ✅ Frost's production exporter remains accepted and frozen
+- ✅ Gate cleared for full suite and fresh CI validation
+# PR #127 WAL Readiness CI Triage
+
+**By:** Dallas (Lead)  
+**Date:** 2026-08-26T19:28:01-05:00  
+**Head:** `9a7fd86`  
+**Verdict:** **REJECT the stress-test helper revision.** Frost's production exporter remains
+accepted and frozen.
+
+## Actual Race
+
+Ubuntu failed in `RunCheckpointerAsync` on `walPages == -1`; Windows was canceled by fail-fast.
+Vasquez's latest revision did not touch this helper.
+The immediately preceding `f615329` Ubuntu/Windows run passed, while `9a7fd86` changed only the
+Squad status record, so the pass-to-fail transition occurred with byte-identical stress code.
+
+The test treats a committed-write signal as proof that a separately opened checkpointer connection
+must immediately report a current WAL. That implication is invalid:
+
+- `CreateSource` closes every setup connection, so SQLite may finish/checkpoint and remove the
+  current WAL/SHM generation while the database remains configured for WAL.
+- The writer signals only after `Commit()`, which proves the transaction committed but does not
+  prove that the later checkpointer connection has attached to a current WAL generation.
+- The checkpointer opens only after that signal and executes only connection-local
+  `PRAGMA busy_timeout` before its first checkpoint. WAL attachment/journal mode is not explicitly
+  established or asserted on that connection.
+- SQLite initializes checkpoint counts to `-1`; the exact pair `(-1, -1)` is a legitimate
+  no-checkpoint/no-current-WAL result, and checkpoint-lock contention may report it with `busy == 1`.
+  It is not checkpoint progress.
+
+Bishop's branch retries the exact no-current-WAL row only after `checkpointerReady` is already
+complete. The same transient before readiness therefore throws instead of polling. Lambert's
+original vacuity concern remains solved only if `-1` is non-progress, never readiness.
+
+## Assigned Revision Owner
+
+**Hicks** — new independent .NET/SQLite concurrency test specialist.
+
+Lambert, Parker, Bishop, Burke, Hudson, and Vasquez are locked out of this revision **and its
+advice**. Hicks must derive the revision from this decision and the code/API contract, not from
+those authors. No production file may change.
+
+## Required Deterministic Design
+
+1. Use an unpooled writer/anchor connection. Explicitly obtain and assert `journal_mode=wal`, set
+   `wal_autocheckpoint=0`, and keep that connection alive from worker initialization through worker
+   cancellation and join.
+2. Establish a clean checkpoint baseline before the known write (for example, a successful
+   `TRUNCATE` checkpoint while the anchor is live), so later positive counts cannot be stale setup
+   progress.
+3. Use separate asynchronous gates for writer/anchor initialization, checkpointer initialization,
+   first committed write, and first genuine checkpoint progress. The checkpointer must open and
+   force a real database read/assert WAL mode while the anchor is live; the writer must signal the
+   committed-write gate only after `transaction.Commit()`.
+4. The checkpointer must wait for the committed-write gate before polling
+   `PRAGMA wal_checkpoint(PASSIVE)`.
+5. Classify checkpoint rows strictly:
+   - `busy` must be `0` or `1`.
+   - Exact `walPages == -1 && checkpointedPages == -1` is retryable non-progress both before and
+     after readiness, under the existing bounded timeout. It must not increment a counter or
+     complete readiness.
+   - Mixed negative values, values below `-1`, or `checkpointedPages > walPages` fail.
+   - Readiness requires one post-commit result with `busy == 0`, `walPages > 0`, and
+     `checkpointedPages > 0`.
+6. Export must not begin until both the committed-write and checkpoint-progress gates complete.
+   Retain the existing counter assertions, active-task assertions, four exports, integrity,
+   transactional head/count, exact baseline key/value, artifact, validator, no-sidecar, and cleanup
+   checks.
+7. Use synchronization gates, not sleeps, for ordering. Polling/backoff is allowed only inside the
+   finite readiness deadline. On shutdown, cancel and join both workers while the anchor is still
+   open, then dispose it. Continue propagating every non-cancellation worker exception.
+
+## Acceptance Gates
+
+- A deterministic test of the checkpoint-row state machine proves
+  `(-1,-1) -> positive` does not become ready on the first sample and does on the positive sample;
+  persistent `(-1,-1)` times out; mixed negatives fail.
+- All `SnapshotExportTests` pass.
+- The real stress test passes 100 consecutive repetitions, with no skipped run.
+- Full suite passes with only the two pre-existing skips.
+- Fresh Ubuntu and Windows GitHub Actions jobs both pass at the revision head.
+- Diff is confined to `src/HelixTool.Tests/SnapshotExportTests.cs` plus Squad records. Frost's
+  production exporter remains unchanged.
+
+# PR #127 WAL Readiness CI Recheck
+
+**By:** Dallas (Lead)  
+**Date:** 2026-08-26T19:46:20-05:00  
+**Base head:** `9a7fd86` plus Hicks's working-tree test revision  
+**Verdict:** **APPROVE** the WAL-readiness test revision for full-suite and fresh CI validation.
+Frost's production exporter remains accepted and frozen.
+
+## Gate Verification
+
+- The unpooled writer/anchor establishes and asserts WAL mode, disables autocheckpointing, records a
+  successful zero-page `TRUNCATE` baseline, and remains live until both canceled workers join.
+- Distinct writer-init, checkpointer-init, committed-write, and checkpoint-progress gates establish
+  ordering without sleeps. The checkpointer asserts WAL mode and performs a real baseline read before
+  the writer commits; exports wait for both commit and genuine checkpoint progress.
+- Checkpoint rows are classified strictly. Exact `(-1,-1)` is non-progress before and after
+  readiness; mixed/below-`-1` negatives, invalid busy values, and over-checkpoint rows fail.
+  Readiness requires a post-commit, non-busy result with both page counts positive.
+- Ordering uses no sleeps, and the readiness phase has a finite deadline. Non-cancellation worker
+  failures propagate, while shutdown cancels and joins both workers before disposing the anchor.
+- The four exports and all prior task, counter, integrity, transactional consistency, baseline,
+  artifact, validator, no-sidecar, atomic-publication, and cleanup assertions remain intact.
+- The implementation diff is test/Squad-only; no production file changed.
+
+## Validation
+
+- All 53 tests declared in `SnapshotExportTests.cs` passed with zero skips under
+  `DOTNET_ROLL_FORWARD=Major`.
+- The real WAL writer/checkpointer stress test passed 100 consecutive isolated repetitions with zero
+  failures or skips under `DOTNET_ROLL_FORWARD=Major`.
+
+The local revision gate is cleared. The full suite (allowing only the two pre-existing skips) and
+fresh Ubuntu and Windows GitHub Actions jobs remain mandatory before final approval.

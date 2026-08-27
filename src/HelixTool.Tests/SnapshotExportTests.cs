@@ -1,631 +1,3740 @@
-// Tests for snapshot export (SnapshotExporter) and snapshot validation (SnapshotValidator).
-// Uses real SQLite databases in temp directories — no mocks for the file/SQLite layer.
-
+using System.Diagnostics;
 using System.Globalization;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using HelixTool.Core.Cache;
 using Microsoft.Data.Sqlite;
+using Microsoft.Win32.SafeHandles;
 using Xunit;
+using Xunit.Sdk;
 
 namespace HelixTool.Tests;
 
-// =============================================================================
-// Shared helper
-// =============================================================================
+file sealed record ArtifactFixture(string CacheKey, string RelativePath, byte[] Content);
+
+file sealed record SourceFixture(
+    string Root,
+    string DatabasePath,
+    IReadOnlyList<ArtifactFixture> Artifacts);
+
+internal readonly record struct CheckpointRow(int Busy, int WalPages, int CheckpointedPages);
+
+internal sealed class CheckpointReadinessStateMachine
+{
+    private readonly TimeSpan _readinessTimeout;
+    private readonly Func<TimeSpan> _elapsed;
+
+    public CheckpointReadinessStateMachine(
+        TimeSpan readinessTimeout,
+        Func<TimeSpan>? elapsed = null)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(readinessTimeout, TimeSpan.Zero);
+        _readinessTimeout = readinessTimeout;
+        if (elapsed is not null)
+        {
+            _elapsed = elapsed;
+            return;
+        }
+
+        var startedAt = Stopwatch.GetTimestamp();
+        _elapsed = () => Stopwatch.GetElapsedTime(startedAt);
+    }
+
+    public bool IsReady { get; private set; }
+
+    public bool Observe(CheckpointRow row)
+    {
+        if (row.Busy is < 0 or > 1)
+            throw InvalidRow(row, "busy must be 0 or 1");
+
+        var noCurrentWal = row.WalPages == -1 && row.CheckpointedPages == -1;
+        if (!noCurrentWal)
+        {
+            if (row.WalPages < 0 || row.CheckpointedPages < 0)
+                throw InvalidRow(row, "negative page counts must be exactly (-1, -1)");
+            if (row.CheckpointedPages > row.WalPages)
+                throw InvalidRow(row, "checkpointed pages cannot exceed WAL pages");
+        }
+
+        if (!IsReady && _elapsed() >= _readinessTimeout)
+        {
+            throw new TimeoutException(
+                $"No positive WAL checkpoint progress within {_readinessTimeout}.");
+        }
+
+        if (noCurrentWal)
+            return false;
+
+        var madeProgress =
+            row.Busy == 0 && row.WalPages > 0 && row.CheckpointedPages > 0;
+        if (madeProgress)
+            IsReady = true;
+        return madeProgress;
+    }
+
+    private static InvalidOperationException InvalidRow(CheckpointRow row, string reason) =>
+        new(
+            $"Invalid WAL checkpoint row ({row.Busy}, {row.WalPages}, " +
+            $"{row.CheckpointedPages}): {reason}.");
+}
+
+internal sealed class CaseSensitiveFileSystemFactAttribute : FactAttribute
+{
+    private static readonly bool SupportsDistinctCaseOnlyDirectories =
+        DetectDistinctCaseOnlyDirectories();
+
+    public CaseSensitiveFileSystemFactAttribute()
+    {
+        if (!SupportsDistinctCaseOnlyDirectories)
+        {
+            Skip =
+                "The test output filesystem aliases case-only directory spellings; " +
+                "this test requires distinct case-only siblings.";
+        }
+    }
+
+    private static bool DetectDistinctCaseOnlyDirectories()
+    {
+        var probeRoot = Path.Combine(
+            AppContext.BaseDirectory,
+            "snapshot-test-data",
+            $".case-sensitivity-probe-{Guid.NewGuid():N}");
+        var lower = Path.Combine(probeRoot, "case");
+        var upper = Path.Combine(probeRoot, "CASE");
+        try
+        {
+            Directory.CreateDirectory(lower);
+            return !Directory.Exists(upper);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(probeRoot, recursive: true);
+            }
+            catch
+            {
+                // Best effort only.
+            }
+        }
+    }
+}
 
 file static class SnapshotTestHelper
 {
-    /// <summary>
-    /// Create a populated SqliteCacheStore in a fresh temp directory.
-    /// Returns:
-    ///   EffectiveRoot — the path passed to ExportAsync (opts.GetEffectiveCacheRoot(), which
-    ///                   includes a "/public" suffix when CacheRootHash is null).
-    ///   BaseRoot      — the raw temp dir; add this to _tempDirs for cleanup.
-    ///   Store         — the store instance.
-    /// </summary>
-    public static (string EffectiveRoot, string BaseRoot, SqliteCacheStore Store) CreatePopulatedStore()
+    private const string CreatedAt = "2026-08-26T00:00:00.0000000+00:00";
+    private const string ExpiresAt = "2099-08-26T00:00:00.0000000+00:00";
+
+    public static string CreateWorkspace(string tag)
     {
-        var baseRoot = Path.Combine(Path.GetTempPath(), $"hlx-snap-src-{Guid.NewGuid():N}");
-        var opts = new CacheOptions { CacheRoot = baseRoot };
-        var effectiveRoot = opts.GetEffectiveCacheRoot(); // e.g. baseRoot/public
-        var store = new SqliteCacheStore(opts);
-        return (effectiveRoot, baseRoot, store);
+        var workspace = Path.Combine(
+            AppContext.BaseDirectory,
+            "snapshot-test-data",
+            $"{tag}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workspace);
+        return workspace;
     }
 
-    /// <summary>
-    /// Seed minimal data into <paramref name="store"/> so that the DB has rows and WAL is active.
-    /// </summary>
-    public static async Task SeedAsync(SqliteCacheStore store, int metadataRows = 3, int artifactRows = 2)
+    public static SourceFixture CreateSource(
+        string workspace,
+        int metadataRows = 3,
+        int artifactRows = 2,
+        bool useWal = true,
+        string? sourceRoot = null)
     {
-        for (var i = 0; i < metadataRows; i++)
+        sourceRoot ??= Path.Combine(workspace, "cache");
+        Directory.CreateDirectory(sourceRoot);
+        var artifactsRoot = Path.Combine(sourceRoot, "artifacts");
+        Directory.CreateDirectory(artifactsRoot);
+        var databasePath = Path.Combine(sourceRoot, "cache.db");
+
+        using (var connection = OpenConnection(databasePath, SqliteOpenMode.ReadWriteCreate))
         {
-            var key = $"job:seed{i:D4}:details";
-            await store.SetMetadataAsync(key, $"{{\"i\":{i}}}", TimeSpan.FromHours(24));
+            ExecuteNonQuery(connection, useWal
+                ? "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;"
+                : "PRAGMA journal_mode=DELETE;");
+            ExecuteNonQuery(connection, """
+                CREATE TABLE cache_metadata (
+                    cache_key TEXT PRIMARY KEY,
+                    json_value TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    job_id TEXT NOT NULL
+                );
+                CREATE TABLE cache_artifacts (
+                    cache_key TEXT PRIMARY KEY,
+                    file_path TEXT NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    last_accessed TEXT NOT NULL,
+                    job_id TEXT NOT NULL
+                );
+                CREATE TABLE cache_job_state (
+                    job_id TEXT PRIMARY KEY,
+                    is_completed INTEGER NOT NULL,
+                    finished_at TEXT,
+                    cached_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
+                );
+                PRAGMA user_version=1;
+                """);
+
+            for (var i = 0; i < metadataRows; i++)
+            {
+                InsertMetadata(
+                    connection,
+                    $"baseline:metadata:{i:D4}",
+                    $"{{\"baseline\":{i}}}",
+                    "baseline");
+            }
+
+            using var stateCommand = connection.CreateCommand();
+            stateCommand.CommandText = """
+                INSERT INTO cache_job_state
+                    (job_id, is_completed, finished_at, cached_at, expires_at)
+                VALUES ('baseline-job', 1, @created, @created, @expires);
+                """;
+            stateCommand.Parameters.AddWithValue("@created", CreatedAt);
+            stateCommand.Parameters.AddWithValue("@expires", ExpiresAt);
+            stateCommand.ExecuteNonQuery();
         }
 
+        var artifacts = new List<ArtifactFixture>();
         for (var i = 0; i < artifactRows; i++)
         {
-            var key = $"job:seed{i:D4}:artifact";
-            var bytes = new byte[] { 0xDE, 0xAD, (byte)i };
-            using var ms = new MemoryStream(bytes);
-            await store.SetArtifactAsync(key, ms);
+            var relativePath = Path.Combine($"seed-{i:D4}", $"artifact-{i:D4}.bin");
+            var content = new byte[] { 0x48, 0x4c, 0x58, (byte)i };
+            var fullPath = Path.Combine(artifactsRoot, relativePath);
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+            File.WriteAllBytes(fullPath, content);
+
+            var artifact = new ArtifactFixture(
+                $"baseline:artifact:{i:D4}",
+                relativePath,
+                content);
+            artifacts.Add(artifact);
+            InsertArtifactReference(
+                databasePath,
+                artifact.CacheKey,
+                artifact.RelativePath,
+                artifact.Content.Length);
+        }
+
+        return new SourceFixture(sourceRoot, databasePath, artifacts);
+    }
+
+    public static SqliteConnection OpenConnection(
+        string databasePath,
+        SqliteOpenMode mode = SqliteOpenMode.ReadWrite)
+    {
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = mode,
+            Pooling = false,
+        }.ToString());
+        connection.Open();
+        return connection;
+    }
+
+    public static void ExecuteNonQuery(SqliteConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.ExecuteNonQuery();
+    }
+
+    public static void InsertMetadata(
+        SqliteConnection connection,
+        string cacheKey,
+        string jsonValue,
+        string jobId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO cache_metadata
+                (cache_key, json_value, created_at, expires_at, job_id)
+            VALUES (@key, @value, @created, @expires, @jobId);
+            """;
+        command.Parameters.AddWithValue("@key", cacheKey);
+        command.Parameters.AddWithValue("@value", jsonValue);
+        command.Parameters.AddWithValue("@created", CreatedAt);
+        command.Parameters.AddWithValue("@expires", ExpiresAt);
+        command.Parameters.AddWithValue("@jobId", jobId);
+        command.ExecuteNonQuery();
+    }
+
+    public static void InsertArtifactReference(
+        string databasePath,
+        string cacheKey,
+        string relativePath,
+        long fileSize)
+    {
+        using var connection = OpenConnection(databasePath);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO cache_artifacts
+                (cache_key, file_path, file_size, created_at, last_accessed, job_id)
+            VALUES (@key, @path, @size, @created, @created, 'baseline');
+            """;
+        command.Parameters.AddWithValue("@key", cacheKey);
+        command.Parameters.AddWithValue("@path", relativePath);
+        command.Parameters.AddWithValue("@size", fileSize);
+        command.Parameters.AddWithValue("@created", CreatedAt);
+        command.ExecuteNonQuery();
+    }
+
+    public static void UpdateArtifactSize(string databasePath, string cacheKey, long size)
+    {
+        using var connection = OpenConnection(databasePath);
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE cache_artifacts SET file_size=@size WHERE cache_key=@key;";
+        command.Parameters.AddWithValue("@size", size);
+        command.Parameters.AddWithValue("@key", cacheKey);
+        Assert.Equal(1, command.ExecuteNonQuery());
+    }
+
+    public static string[] FingerprintTree(string root)
+    {
+        if (!Directory.Exists(root))
+            return [];
+
+        var entries = new List<string>();
+        FingerprintDirectory(root, root, entries);
+        return entries.Order(StringComparer.Ordinal).ToArray();
+    }
+
+    private static void FingerprintDirectory(string root, string directory, List<string> entries)
+    {
+        foreach (var path in Directory.EnumerateFileSystemEntries(directory)
+                     .Order(StringComparer.Ordinal))
+        {
+            var relative = Path.GetRelativePath(root, path);
+            var attributes = File.GetAttributes(path);
+            if ((attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                var info = (attributes & FileAttributes.Directory) != 0
+                    ? (FileSystemInfo)new DirectoryInfo(path)
+                    : new FileInfo(path);
+                entries.Add($"L:{relative}:{info.LinkTarget}");
+                continue;
+            }
+
+            if ((attributes & FileAttributes.Directory) != 0)
+            {
+                entries.Add($"D:{relative}");
+                FingerprintDirectory(root, path, entries);
+                continue;
+            }
+
+            var hash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
+            entries.Add($"F:{relative}:{new FileInfo(path).Length}:{hash}");
         }
     }
 
-    public static string NewTempDir(string tag = "dst")
-        => Path.Combine(Path.GetTempPath(), $"hlx-snap-{tag}-{Guid.NewGuid():N}");
+    public static string[] ParentEntries(string parent)
+    {
+        if (!Directory.Exists(parent))
+            return [];
+
+        return Directory.EnumerateFileSystemEntries(parent)
+            .Select(Path.GetFileName)
+            .Order(StringComparer.Ordinal)
+            .ToArray()!;
+    }
+
+    public static void CreateDistinctCaseOnlySibling(
+        string existingDirectory,
+        string caseOnlySibling)
+    {
+        Assert.True(Directory.Exists(existingDirectory));
+        Assert.NotEqual(existingDirectory, caseOnlySibling);
+        Assert.Equal(existingDirectory, caseOnlySibling, ignoreCase: true);
+
+        if (Directory.Exists(caseOnlySibling))
+        {
+            throw new XunitException(
+                "The current filesystem does not support distinct case-only sibling " +
+                $"directories ('{existingDirectory}' and '{caseOnlySibling}').");
+        }
+
+        Directory.CreateDirectory(caseOnlySibling);
+        var markerName = $".case-sibling-probe-{Guid.NewGuid():N}";
+        var siblingMarker = Path.Combine(caseOnlySibling, markerName);
+        var existingMarker = Path.Combine(existingDirectory, markerName);
+        File.WriteAllText(siblingMarker, "case-sensitive");
+        try
+        {
+            if (File.Exists(existingMarker))
+            {
+                throw new XunitException(
+                    "The current filesystem aliases case-only directory spellings; " +
+                    "a distinct case-only sibling topology cannot be created.");
+            }
+        }
+        finally
+        {
+            File.Delete(siblingMarker);
+        }
+    }
+
+    public static async Task<InvalidOperationException> AssertRejectedWithoutPublicationAsync(
+        SourceFixture source,
+        string destination,
+        CancellationToken cancellationToken = default,
+        bool assertSourceUnchanged = true)
+    {
+        var fullDestination = Path.GetFullPath(destination);
+        var parent = Path.GetDirectoryName(fullDestination)!;
+        var sourceBefore = FingerprintTree(source.Root);
+        var parentBefore = ParentEntries(parent);
+        var destinationExisted = Directory.Exists(fullDestination) || File.Exists(fullDestination);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => SnapshotExporter.ExportAsync(
+                source.Root,
+                destination,
+                ct: cancellationToken));
+
+        Assert.Equal(destinationExisted, Directory.Exists(fullDestination) || File.Exists(fullDestination));
+        if (assertSourceUnchanged)
+            Assert.Equal(sourceBefore, FingerprintTree(source.Root));
+        Assert.Equal(parentBefore, ParentEntries(parent));
+        return exception;
+    }
+
+    public static async Task<ExportResult> ExportAndAssertAtomicPublicationAsync(
+        SourceFixture source,
+        string destination,
+        Action<string>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        var fullDestination = Path.GetFullPath(destination);
+        var parent = Path.GetDirectoryName(fullDestination)!;
+        var before = ParentEntries(parent);
+
+        var result = await SnapshotExporter.ExportAsync(
+            source.Root,
+            destination,
+            progress,
+            cancellationToken);
+
+        var expected = before
+            .Append(Path.GetFileName(fullDestination))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal(expected, ParentEntries(parent));
+        return result;
+    }
+
+    public static void AssertFinalLayout(string destination)
+    {
+        var entries = Directory.EnumerateFileSystemEntries(destination)
+            .Select(Path.GetFileName)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal(new[] { "artifacts", "cache.db" }, entries);
+        Assert.False(File.Exists(Path.Combine(destination, "cache.db-wal")));
+        Assert.False(File.Exists(Path.Combine(destination, "cache.db-shm")));
+    }
+
+    public static async Task CreateDirectoryAliasAsync(string alias, string target)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(alias)!);
+        if (!OperatingSystem.IsWindows())
+        {
+            Directory.CreateSymbolicLink(alias, target);
+            return;
+        }
+
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            },
+        };
+        process.StartInfo.ArgumentList.Add("/c");
+        process.StartInfo.ArgumentList.Add("mklink");
+        process.StartInfo.ArgumentList.Add("/J");
+        process.StartInfo.ArgumentList.Add(alias);
+        process.StartInfo.ArgumentList.Add(target);
+
+        Assert.True(process.Start(), "Failed to start cmd.exe for junction creation.");
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        var output = await process.StandardOutput.ReadToEndAsync();
+        var error = await process.StandardError.ReadToEndAsync();
+        Assert.True(
+            process.ExitCode == 0,
+            $"Windows junction creation failed with exit code {process.ExitCode}: {output} {error}");
+    }
+
+    public static async Task CreateFileAliasAsync(string alias, string target)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(alias)!);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.CreateSymbolicLink(alias, target);
+            return;
+        }
+
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            },
+        };
+        process.StartInfo.ArgumentList.Add("/c");
+        process.StartInfo.ArgumentList.Add("mklink");
+        process.StartInfo.ArgumentList.Add(alias);
+        process.StartInfo.ArgumentList.Add(target);
+
+        Assert.True(process.Start(), "Failed to start cmd.exe for symbolic-link creation.");
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        var output = await process.StandardOutput.ReadToEndAsync();
+        var error = await process.StandardError.ReadToEndAsync();
+        Assert.True(
+            process.ExitCode == 0,
+            $"Windows symbolic-link creation failed with exit code {process.ExitCode}: " +
+            $"{output} {error}");
+    }
+
+    public static void DeleteDirectoryAlias(string alias)
+    {
+        try
+        {
+            new DirectoryInfo(alias).Delete();
+        }
+        catch
+        {
+            // Cleanup is best effort; the containing workspace cleanup is the final fallback.
+        }
+    }
+
+    public static void DeleteFileAlias(string alias)
+    {
+        try
+        {
+            new FileInfo(alias).Delete();
+        }
+        catch
+        {
+            // Cleanup is best effort; the containing workspace cleanup is the final fallback.
+        }
+    }
+
+    public static bool TryProbeHardLinkSupport(
+        string workspace,
+        out string runtimeProof)
+    {
+        var probeDirectory = Path.Combine(
+            workspace,
+            $".hard-link-runtime-probe-{Guid.NewGuid():N}");
+        var existingPath = Path.Combine(probeDirectory, "existing");
+        var linkPath = Path.Combine(probeDirectory, "link");
+        Directory.CreateDirectory(probeDirectory);
+        File.WriteAllBytes(existingPath, [0x48, 0x4c, 0x58]);
+        try
+        {
+            if (!TryCreateHardLink(existingPath, linkPath, out var nativeError))
+            {
+                runtimeProof =
+                    $"same-directory native hard-link creation failed with {nativeError}; " +
+                    $"OS: {RuntimeInformation.OSDescription}; architecture: " +
+                    RuntimeInformation.ProcessArchitecture;
+                return false;
+            }
+
+            File.WriteAllBytes(existingPath, [0x53, 0x4e, 0x41, 0x50]);
+            if (!File.ReadAllBytes(existingPath).SequenceEqual(File.ReadAllBytes(linkPath)))
+            {
+                runtimeProof =
+                    "the native link call succeeded, but a write through the original name " +
+                    "was not visible through the linked name";
+                return false;
+            }
+
+            runtimeProof =
+                $"same-directory native hard-link creation succeeded on '{probeDirectory}'";
+            return true;
+        }
+        finally
+        {
+            File.Delete(linkPath);
+            File.Delete(existingPath);
+            Directory.Delete(probeDirectory);
+        }
+    }
+
+    public static bool TryProbeNormalizationTopology(
+        out bool aliases,
+        out string runtimeProof)
+    {
+        aliases = false;
+        var probeRoot = Path.Combine(
+            AppContext.BaseDirectory,
+            "snapshot-test-data",
+            $".normalization-runtime-probe-{Guid.NewGuid():N}");
+        const string nfcLeaf = "caf\u00e9";
+        var nfdLeaf = nfcLeaf.Normalize(NormalizationForm.FormD);
+        var nfcPath = Path.Combine(probeRoot, nfcLeaf);
+        var nfdPath = Path.Combine(probeRoot, nfdLeaf);
+        try
+        {
+            Directory.CreateDirectory(nfcPath);
+            const string nfcMarker = "nfc-marker";
+            File.WriteAllText(Path.Combine(nfcPath, nfcMarker), "nfc");
+            if (File.Exists(Path.Combine(nfdPath, nfcMarker)))
+            {
+                aliases = true;
+                runtimeProof =
+                    "an NFD path read a marker created through the NFC spelling";
+                return true;
+            }
+
+            if (Directory.Exists(nfdPath))
+            {
+                runtimeProof =
+                    "both spellings reported an existing directory, but the identity marker " +
+                    "did not establish whether they alias";
+                return false;
+            }
+
+            Directory.CreateDirectory(nfdPath);
+            const string nfdMarker = "nfd-marker";
+            File.WriteAllText(Path.Combine(nfdPath, nfdMarker), "nfd");
+            if (File.Exists(Path.Combine(nfcPath, nfdMarker)))
+            {
+                runtimeProof =
+                    "the NFD marker unexpectedly became visible through the NFC spelling";
+                return false;
+            }
+
+            runtimeProof =
+                "separate NFC and NFD directories were created and isolated with identity markers";
+            return true;
+        }
+        catch (Exception ex) when (
+            ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            runtimeProof =
+                $"the normalization topology probe could not complete: {ex.GetType().Name}: " +
+                ex.Message;
+            return false;
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(probeRoot, recursive: true);
+            }
+            catch
+            {
+                // Best effort only.
+            }
+        }
+    }
+
+    public static void ReplaceWithHardLink(string path, string externalPath)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(externalPath)!);
+        File.Copy(path, externalPath);
+        Assert.Equal(File.ReadAllBytes(path), File.ReadAllBytes(externalPath));
+        File.Delete(path);
+        Assert.True(
+            TryCreateHardLink(externalPath, path, out var nativeError),
+            $"Hard-link creation failed after a successful runtime probe: {nativeError}");
+        Assert.Equal(File.ReadAllBytes(externalPath), File.ReadAllBytes(path));
+    }
+
+    public static bool TryGetWindowsShortPath(
+        string longPath,
+        out string shortPath,
+        out string runtimeProof)
+    {
+        shortPath = string.Empty;
+        if (!OperatingSystem.IsWindows())
+        {
+            runtimeProof =
+                $"the runtime OS is {RuntimeInformation.OSDescription}, not Windows";
+            return false;
+        }
+
+        var buffer = new StringBuilder(32768);
+        Marshal.SetLastPInvokeError(0);
+        var length = GetShortPathName(longPath, buffer, (uint)buffer.Capacity);
+        var nativeError = Marshal.GetLastPInvokeError();
+        if (length == 0)
+        {
+            runtimeProof =
+                $"GetShortPathNameW returned 0 (native error {nativeError})";
+            return false;
+        }
+
+        if (length >= (uint)buffer.Capacity)
+        {
+            runtimeProof =
+                $"GetShortPathNameW required {length + 1} characters, exceeding the probe buffer";
+            return false;
+        }
+
+        shortPath = Path.GetFullPath(buffer.ToString());
+        if (string.Equals(
+                Path.GetFullPath(longPath),
+                shortPath,
+                StringComparison.OrdinalIgnoreCase) ||
+            !shortPath.Split(
+                    [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                    StringSplitOptions.RemoveEmptyEntries)
+                .Any(component => component.Contains('~')))
+        {
+            runtimeProof =
+                "GetShortPathNameW succeeded but returned no lexically distinct tilde alias; " +
+                "8.3 name creation is disabled or unavailable on this volume";
+            shortPath = string.Empty;
+            return false;
+        }
+
+        if (!Directory.Exists(shortPath))
+        {
+            runtimeProof =
+                $"GetShortPathNameW returned '{shortPath}', but it does not resolve to a directory";
+            shortPath = string.Empty;
+            return false;
+        }
+
+        runtimeProof = $"GetShortPathNameW returned the live alias '{shortPath}'";
+        return true;
+    }
+
+    private static bool TryCreateHardLink(
+        string existingPath,
+        string linkPath,
+        out string nativeError)
+    {
+        Marshal.SetLastPInvokeError(0);
+        var success = OperatingSystem.IsWindows()
+            ? CreateHardLinkWindows(linkPath, existingPath, IntPtr.Zero)
+            : CreateHardLinkUnix(existingPath, linkPath) == 0;
+        var error = Marshal.GetLastPInvokeError();
+        nativeError = success
+            ? string.Empty
+            : $"{error} ({new System.ComponentModel.Win32Exception(error).Message})";
+        return success;
+    }
+
+    [DllImport(
+        "kernel32.dll",
+        EntryPoint = "CreateHardLinkW",
+        CharSet = CharSet.Unicode,
+        SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateHardLinkWindows(
+        string fileName,
+        string existingFileName,
+        IntPtr securityAttributes);
+
+    [DllImport(
+        "kernel32.dll",
+        EntryPoint = "GetShortPathNameW",
+        CharSet = CharSet.Unicode,
+        SetLastError = true)]
+    private static extern uint GetShortPathName(
+        string longPath,
+        StringBuilder shortPath,
+        uint shortPathLength);
+
+    [DllImport("libc", EntryPoint = "link", SetLastError = true)]
+    private static extern int CreateHardLinkUnix(string existingPath, string linkPath);
 }
 
-// =============================================================================
-// SnapshotExporter — export behavior
-// =============================================================================
+internal sealed class NormalizingFileSystemFactAttribute : FactAttribute
+{
+    public NormalizingFileSystemFactAttribute()
+    {
+        if (!SnapshotTestHelper.TryProbeNormalizationTopology(
+                out var aliases,
+                out var runtimeProof) ||
+            !aliases)
+        {
+            Skip =
+                "This test requires NFC and NFD path spellings to alias. Runtime proof: " +
+                runtimeProof;
+        }
+    }
+}
+
+internal sealed class NormalizationSensitiveFileSystemFactAttribute : FactAttribute
+{
+    public NormalizationSensitiveFileSystemFactAttribute()
+    {
+        if (!SnapshotTestHelper.TryProbeNormalizationTopology(
+                out var aliases,
+                out var runtimeProof) ||
+            aliases)
+        {
+            Skip =
+                "This test requires distinct NFC and NFD directories. Runtime proof: " +
+                runtimeProof;
+        }
+    }
+}
+
+internal sealed class WindowsShortNameFactAttribute : FactAttribute
+{
+    public WindowsShortNameFactAttribute()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Skip =
+                "Windows 8.3 aliases are unavailable because the runtime OS is " +
+                RuntimeInformation.OSDescription + ".";
+            return;
+        }
+
+        var probeRoot = Path.Combine(
+            AppContext.BaseDirectory,
+            "snapshot-test-data",
+            $".windows-short-name-runtime-probe-{Guid.NewGuid():N}");
+        var longDirectory = Path.Combine(
+            probeRoot,
+            "directory-component-requiring-an-eight-dot-three-alias");
+        try
+        {
+            Directory.CreateDirectory(longDirectory);
+            if (!SnapshotTestHelper.TryGetWindowsShortPath(
+                    longDirectory,
+                    out _,
+                    out var runtimeProof))
+            {
+                Skip =
+                    "Windows 8.3 aliases are unavailable on the test filesystem. " +
+                    "Runtime proof: " + runtimeProof + ".";
+            }
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(probeRoot, recursive: true);
+            }
+            catch
+            {
+                // Best effort only.
+            }
+        }
+    }
+}
+
+internal sealed class HardLinkFileSystemFactAttribute : FactAttribute
+{
+    public HardLinkFileSystemFactAttribute()
+    {
+        SetSkipWhenUnsupported();
+    }
+
+    private void SetSkipWhenUnsupported()
+    {
+        var probeRoot = Path.Combine(
+            AppContext.BaseDirectory,
+            "snapshot-test-data");
+        Directory.CreateDirectory(probeRoot);
+        if (!SnapshotTestHelper.TryProbeHardLinkSupport(probeRoot, out var runtimeProof))
+        {
+            Skip =
+                "This test requires same-filesystem hard-link support. Runtime proof: " +
+                runtimeProof + ".";
+        }
+    }
+}
+
+internal sealed class HardLinkFileSystemTheoryAttribute : TheoryAttribute
+{
+    public HardLinkFileSystemTheoryAttribute()
+    {
+        var probeRoot = Path.Combine(
+            AppContext.BaseDirectory,
+            "snapshot-test-data");
+        Directory.CreateDirectory(probeRoot);
+        if (!SnapshotTestHelper.TryProbeHardLinkSupport(probeRoot, out var runtimeProof))
+        {
+            Skip =
+                "This test requires same-filesystem hard-link support. Runtime proof: " +
+                runtimeProof + ".";
+        }
+    }
+}
+
+file sealed class QueuedSynchronizationContext : SynchronizationContext
+{
+    private readonly Queue<(SendOrPostCallback Callback, object? State)> _callbacks = [];
+
+    public int PendingCount
+    {
+        get
+        {
+            lock (_callbacks)
+                return _callbacks.Count;
+        }
+    }
+
+    public override void Post(SendOrPostCallback d, object? state)
+    {
+        lock (_callbacks)
+            _callbacks.Enqueue((d, state));
+    }
+
+    public void Drain()
+    {
+        while (true)
+        {
+            (SendOrPostCallback Callback, object? State) work;
+            lock (_callbacks)
+            {
+                if (!_callbacks.TryDequeue(out work))
+                    return;
+            }
+
+            work.Callback(work.State);
+        }
+    }
+}
 
 public class SnapshotExporterTests : IDisposable
 {
-    private readonly List<string> _tempDirs = new();
+    private const int LinuxX64OpenDirectory = 0x10000;
+    private const int LinuxX64OpenNoFollow = 0x20000;
+    private const int LinuxArm64OpenDirectory = 0x4000;
+    private const int LinuxArm64OpenNoFollow = 0x8000;
+    private const int LinuxOpenCloseOnExec = 0x80000;
 
-    private string TempDir(string tag = "t")
+    private readonly List<string> _workspaces = [];
+
+    private string Workspace(string tag)
     {
-        var d = SnapshotTestHelper.NewTempDir(tag);
-        _tempDirs.Add(d);
-        return d;
+        var workspace = SnapshotTestHelper.CreateWorkspace(tag);
+        _workspaces.Add(workspace);
+        return workspace;
     }
 
     public void Dispose()
     {
-        foreach (var d in _tempDirs)
+        foreach (var workspace in _workspaces)
         {
-            try { Directory.Delete(d, recursive: true); } catch { /* best effort */ }
+            try
+            {
+                Directory.Delete(workspace, recursive: true);
+            }
+            catch
+            {
+                // Best effort only.
+            }
         }
     }
 
-    // ── Happy path ────────────────────────────────────────────────────────────
-
-    [Fact]
-    public async Task Export_CreatesDestinationWithDbAndArtifacts()
+    [Theory]
+    [InlineData(
+        Architecture.X64,
+        LinuxX64OpenDirectory | LinuxX64OpenNoFollow | LinuxOpenCloseOnExec)]
+    [InlineData(
+        Architecture.Arm64,
+        LinuxArm64OpenDirectory | LinuxArm64OpenNoFollow | LinuxOpenCloseOnExec)]
+    public void LinuxDirectoryOpenFlags_MatchArchitectureAbi(
+        Architecture architecture,
+        int expectedFlags)
     {
-        var (root, baseRoot, store) = SnapshotTestHelper.CreatePopulatedStore();
-        _tempDirs.Add(baseRoot);
-        using (store)
+        var selector = typeof(SnapshotDestinationDirectory).GetMethod(
+            "GetLinuxOpenDirectoryFlags",
+            BindingFlags.Static | BindingFlags.NonPublic,
+            binder: null,
+            [typeof(Architecture)],
+            modifiers: null);
+
+        Assert.NotNull(selector);
+        Assert.Equal(
+            expectedFlags,
+            Assert.IsType<int>(selector.Invoke(null, [architecture])));
+    }
+
+    [HardLinkFileSystemFact]
+    public void UnixHardLinkClassification_UsesPortableProductionPath()
+    {
+        const BindingFlags nativeFlags = BindingFlags.Static | BindingFlags.NonPublic;
+        var owner = typeof(SnapshotDestinationDirectory);
+
+        if (!OperatingSystem.IsWindows())
         {
-            await SnapshotTestHelper.SeedAsync(store);
+            var workspace = Workspace("unix-hard-link-classification");
+            var file = Path.Combine(workspace, "artifact.bin");
+            File.WriteAllBytes(file, [0x48, 0x4c, 0x58]);
+
+            using (var singleLink = File.OpenHandle(file))
+            {
+                SnapshotDestinationDirectory.EnsureExactlyOneHardLink(singleLink, file);
+            }
+
+            SnapshotTestHelper.ReplaceWithHardLink(
+                file,
+                Path.Combine(workspace, "external-artifact.bin"));
+            using var multipleLinks = File.OpenHandle(file);
+            var exception = Assert.Throws<InvalidOperationException>(
+                () => SnapshotDestinationDirectory.EnsureExactlyOneHardLink(multipleLinks, file));
+            Assert.Contains("exactly one hard link", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("(found 2)", exception.Message, StringComparison.Ordinal);
         }
 
-        var dest = TempDir("dest");
-        var result = await SnapshotExporter.ExportAsync(root, dest);
-
-        Assert.True(Directory.Exists(dest), "Destination directory should exist");
-        Assert.True(File.Exists(Path.Combine(dest, "cache.db")), "cache.db should exist");
-        Assert.True(Directory.Exists(Path.Combine(dest, "artifacts")), "artifacts/ should exist");
-        Assert.Equal(dest, result.Destination);
-        Assert.Equal(2, result.ArtifactCount);
-        Assert.True(result.DbSizeBytes > 0, "DB should be non-empty");
+        Assert.DoesNotContain(
+            owner.GetMethods(nativeFlags),
+            method =>
+            {
+                var import = method.GetCustomAttribute<DllImportAttribute>();
+                return import is not null &&
+                    string.Equals(import.Value, "System.Native", StringComparison.Ordinal) &&
+                    string.Equals(
+                        import.EntryPoint,
+                        "SystemNative_FStat",
+                        StringComparison.Ordinal);
+            });
     }
 
     [Fact]
-    public async Task Export_SnapshotIsReadableByEvalMode()
+    public void LinuxStatxInterop_DoesNotDependOnGlibcWrapper()
     {
-        var (root, baseRoot, store) = SnapshotTestHelper.CreatePopulatedStore();
-        _tempDirs.Add(baseRoot);
-        const string key = "job:evaltest:details";
-        const string json = "{\"EvalMode\":true}";
-        using (store)
+        const BindingFlags nativeFlags = BindingFlags.Static | BindingFlags.NonPublic;
+        var owner = typeof(SnapshotDestinationDirectory);
+        var imports = owner.GetMethods(nativeFlags)
+            .Select(method => (Method: method, Import: method.GetCustomAttribute<DllImportAttribute>()))
+            .Where(candidate => candidate.Import is not null)
+            .Select(candidate => (candidate.Method, Import: candidate.Import!))
+            .ToArray();
+
+        static string EntryPoint((MethodInfo Method, DllImportAttribute Import) candidate) =>
+            string.IsNullOrEmpty(candidate.Import.EntryPoint)
+                ? candidate.Method.Name
+                : candidate.Import.EntryPoint;
+
+        Assert.DoesNotContain(
+            imports,
+            candidate => string.Equals(
+                EntryPoint(candidate),
+                "statx",
+                StringComparison.Ordinal));
+
+        var syscall = imports.SingleOrDefault(
+            candidate => string.Equals(
+                EntryPoint(candidate),
+                "syscall",
+                StringComparison.Ordinal));
+        if (syscall.Method is null)
+            return;
+
+        Assert.Equal("libc", syscall.Import.Value);
+        Assert.Equal(typeof(nint), syscall.Method.ReturnType);
+        Assert.Equal(typeof(nint), Assert.Single(syscall.Method.GetParameters(), parameter =>
+            parameter.Position == 0).ParameterType);
+
+        var selector = owner.GetMethod(
+            "GetLinuxStatxSyscallNumber",
+            nativeFlags,
+            binder: null,
+            [typeof(Architecture)],
+            modifiers: null);
+        Assert.NotNull(selector);
+
+        (Architecture Architecture, long Number)[] expected =
+        [
+            (Architecture.X64, 332),
+            (Architecture.X86, 383),
+            (Architecture.Arm, 397),
+            (Architecture.Armv6, 397),
+            (Architecture.Arm64, 291),
+            (Architecture.Ppc64le, 383),
+            (Architecture.S390x, 379),
+            (Architecture.LoongArch64, 291),
+            (Architecture.RiscV64, 291),
+        ];
+        foreach (var (architecture, number) in expected)
         {
-            await store.SetMetadataAsync(key, json, TimeSpan.FromHours(1));
+            var selected = selector.Invoke(null, [architecture]);
+            Assert.NotNull(selected);
+            Assert.Equal(
+                number,
+                selected is nint native
+                    ? native.ToInt64()
+                    : Convert.ToInt64(selected, CultureInfo.InvariantCulture));
         }
-
-        var dest = TempDir("eval");
-        await SnapshotExporter.ExportAsync(root, dest);
-
-        // Open the snapshot in eval mode and verify the data is present
-        var evalOpts = new CacheOptions { CacheRoot = dest, EvalMode = true };
-        using var evalStore = new SqliteCacheStore(evalOpts);
-        var value = await evalStore.GetMetadataAsync(key);
-        Assert.Equal(json, value);
     }
 
     [Fact]
-    public async Task Export_ArtifactReferencesAreRelative_PortableAcrossMachines()
+    public void WindowsFileIdInformation_MatchesNativeAbiAndKeepsLinkCountSeparate()
     {
-        var (root, baseRoot, store) = SnapshotTestHelper.CreatePopulatedStore();
-        _tempDirs.Add(baseRoot);
-        using (store)
-        {
-            await SnapshotTestHelper.SeedAsync(store, metadataRows: 1, artifactRows: 1);
-        }
+        const BindingFlags nativeFlags = BindingFlags.Static | BindingFlags.NonPublic;
+        const BindingFlags fieldFlags =
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        var owner = typeof(SnapshotDestinationDirectory);
+        var informationClass = owner.GetNestedType(
+            "FileInfoByHandleClass",
+            BindingFlags.NonPublic);
+        var fileIdInfo = owner.GetNestedType("FileIdInformation", BindingFlags.NonPublic);
+        var fileId = owner.GetNestedType("FileId128", BindingFlags.NonPublic);
+        Assert.NotNull(informationClass);
+        Assert.NotNull(fileIdInfo);
+        Assert.NotNull(fileId);
 
-        var dest = TempDir("portable");
-        await SnapshotExporter.ExportAsync(root, dest);
+        Assert.True(informationClass.IsEnum);
+        Assert.Equal(
+            0x12,
+            Convert.ToInt32(
+                Enum.Parse(informationClass, "FileIdInfo"),
+                CultureInfo.InvariantCulture));
+        var volume = fileIdInfo.GetField("VolumeSerialNumber", fieldFlags);
+        var identifier = fileIdInfo.GetField("FileId", fieldFlags);
+        var identifierLow = fileId.GetField("IdentifierLow", fieldFlags);
+        var identifierHigh = fileId.GetField("IdentifierHigh", fieldFlags);
+        Assert.NotNull(volume);
+        Assert.NotNull(identifier);
+        Assert.NotNull(identifierLow);
+        Assert.NotNull(identifierHigh);
+        Assert.Equal(typeof(ulong), volume.FieldType);
+        Assert.Equal(fileId, identifier.FieldType);
+        Assert.Equal(0, Marshal.OffsetOf(fileIdInfo, volume.Name).ToInt32());
+        Assert.Equal(8, Marshal.OffsetOf(fileIdInfo, identifier.Name).ToInt32());
+        Assert.Equal(0, Marshal.OffsetOf(fileId, identifierLow.Name).ToInt32());
+        Assert.Equal(8, Marshal.OffsetOf(fileId, identifierHigh.Name).ToInt32());
+        Assert.Equal(16, Marshal.SizeOf(fileId));
+        Assert.Equal(24, Marshal.SizeOf(fileIdInfo));
+        Assert.Equal(24, Marshal.SizeOf<SnapshotDirectoryIdentity>());
+        Assert.Null(fileIdInfo.GetField("NumberOfLinks", fieldFlags));
 
-        // Read the artifact file_path rows from the snapshot DB — they should be relative
-        var dbPath = Path.Combine(dest, "cache.db");
-        var connString = $"Data Source={dbPath};Mode=ReadOnly";
-        using var conn = new SqliteConnection(connString);
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT file_path FROM cache_artifacts;";
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
-        {
-            var filePath = reader.GetString(0);
-            Assert.False(Path.IsPathRooted(filePath),
-                $"Artifact path should be relative, but was: {filePath}");
-        }
+        var getFileId = owner.GetMethod(
+            "GetFileIdInformationByHandle",
+            nativeFlags);
+        Assert.NotNull(getFileId);
+        var parameters = getFileId.GetParameters();
+        Assert.Equal(4, parameters.Length);
+        Assert.Equal(typeof(SafeFileHandle), parameters[0].ParameterType);
+        Assert.Equal(informationClass, parameters[1].ParameterType);
+        Assert.Equal(fileIdInfo.MakeByRefType(), parameters[2].ParameterType);
+        Assert.Equal(typeof(uint), parameters[3].ParameterType);
+        Assert.Equal(typeof(bool), getFileId.ReturnType);
+        var import = getFileId.GetCustomAttribute<DllImportAttribute>();
+        Assert.NotNull(import);
+        Assert.Equal("GetFileInformationByHandleEx", import.EntryPoint);
+        Assert.True(import.SetLastError);
+        Assert.Equal(
+            UnmanagedType.Bool,
+            Assert.IsType<MarshalAsAttribute>(
+                getFileId.ReturnParameter.GetCustomAttribute<MarshalAsAttribute>()).Value);
+
+        var basicInfo = owner.GetNestedType(
+            "ByHandleFileInformation",
+            BindingFlags.NonPublic);
+        Assert.NotNull(basicInfo);
+        var numberOfLinks = basicInfo.GetField("NumberOfLinks", fieldFlags);
+        Assert.NotNull(numberOfLinks);
+        Assert.Equal(typeof(uint), numberOfLinks.FieldType);
     }
 
     [Fact]
-    public async Task Export_EmptyArtifacts_StillCreatesArtifactsDir()
+    public void WindowsDirectoryIdentity_IsStableAcrossHandlesAndAliases()
     {
-        var (root, baseRoot, store) = SnapshotTestHelper.CreatePopulatedStore();
-        _tempDirs.Add(baseRoot);
-        using (store)
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        AssertWindowsDirectoryIdentity(Workspace("windows-directory-identity"));
+        ExerciseWritableReFsVolumeIfAvailable();
+    }
+
+    [Fact]
+    public async Task Export_PortableSnapshotPublishesAtomicallyWithExpectedContent()
+    {
+        const string finalizationMessage = "Finalizing snapshot (atomic rename)...";
+        var workspace = Workspace("atomic-publication");
+        var source = SnapshotTestHelper.CreateSource(workspace);
+        var destinationParent = Path.Combine(workspace, "publish");
+        Directory.CreateDirectory(destinationParent);
+        var destination = Path.Combine(destinationParent, "snapshot");
+        string? temporaryPath = null;
+        var finalizationReports = 0;
+        Action<string> progress = message =>
         {
-            await SnapshotTestHelper.SeedAsync(store, metadataRows: 1, artifactRows: 0);
+            if (!string.Equals(message, finalizationMessage, StringComparison.Ordinal))
+                return;
+
+            Assert.Equal(1, Interlocked.Increment(ref finalizationReports));
+            var temporaryLeaf = Assert.Single(
+                SnapshotTestHelper.ParentEntries(destinationParent),
+                entry => entry.StartsWith("snapshot.tmp.", StringComparison.Ordinal));
+            temporaryPath = Path.Combine(destinationParent, temporaryLeaf);
+        };
+
+        var result = await SnapshotTestHelper.ExportAndAssertAtomicPublicationAsync(
+            source,
+            destination,
+            progress);
+
+        Assert.Equal(1, finalizationReports);
+        Assert.NotNull(temporaryPath);
+        Assert.False(SnapshotExporter.PathEntryExists(temporaryPath));
+        Assert.True(Directory.Exists(destination));
+
+        SnapshotTestHelper.AssertFinalLayout(destination);
+        Assert.Equal(Path.GetFullPath(destination), result.Destination);
+        Assert.Equal(source.Artifacts.Count, result.ArtifactCount);
+        Assert.Equal(
+            new FileInfo(Path.Combine(destination, "cache.db")).Length,
+            result.DbSizeBytes);
+        foreach (var artifact in source.Artifacts)
+        {
+            Assert.Equal(
+                artifact.Content,
+                File.ReadAllBytes(Path.Combine(
+                    destination,
+                    "artifacts",
+                    artifact.RelativePath)));
         }
 
-        var dest = TempDir("empty-artifacts");
-        var result = await SnapshotExporter.ExportAsync(root, dest);
+        var validation = await SnapshotValidator.ValidateAsync(destination);
+        Assert.True(validation.IsValid, string.Join(Environment.NewLine, validation.Errors));
+    }
+
+    [Fact]
+    public async Task Export_EmptyArtifacts_StillCreatesArtifactsDirectory()
+    {
+        var workspace = Workspace("empty-artifacts");
+        var source = SnapshotTestHelper.CreateSource(workspace, artifactRows: 0);
+        var destination = Path.Combine(workspace, "snapshot");
+
+        var result = await SnapshotTestHelper.ExportAndAssertAtomicPublicationAsync(
+            source,
+            destination);
 
         Assert.Equal(0, result.ArtifactCount);
-        Assert.True(Directory.Exists(Path.Combine(dest, "artifacts")));
+        SnapshotTestHelper.AssertFinalLayout(destination);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(destination, "artifacts")));
     }
 
-    // ── WAL checkpoint ────────────────────────────────────────────────────────
+    [Fact]
+    public async Task Export_CopiesDistinctReferencedArtifacts_AndOmitsOrphans()
+    {
+        var workspace = Workspace("artifact-correspondence");
+        var source = SnapshotTestHelper.CreateSource(workspace, artifactRows: 1);
+        var artifact = Assert.Single(source.Artifacts);
+        SnapshotTestHelper.InsertArtifactReference(
+            source.DatabasePath,
+            "duplicate-reference",
+            artifact.RelativePath,
+            artifact.Content.Length);
+
+        var orphanPath = Path.Combine(source.Root, "artifacts", "orphan", "unreferenced.bin");
+        Directory.CreateDirectory(Path.GetDirectoryName(orphanPath)!);
+        File.WriteAllBytes(orphanPath, [0x01, 0x02, 0x03]);
+
+        var destination = Path.Combine(workspace, "snapshot");
+        var result = await SnapshotTestHelper.ExportAndAssertAtomicPublicationAsync(
+            source,
+            destination);
+
+        Assert.Equal(1, result.ArtifactCount);
+        var copiedFiles = Directory.GetFiles(
+            Path.Combine(destination, "artifacts"),
+            "*",
+            SearchOption.AllDirectories);
+        var copied = Assert.Single(copiedFiles);
+        Assert.Equal(artifact.RelativePath, Path.GetRelativePath(
+            Path.Combine(destination, "artifacts"),
+            copied));
+        Assert.Equal(artifact.Content, File.ReadAllBytes(copied));
+        Assert.False(File.Exists(Path.Combine(destination, "artifacts", "orphan", "unreferenced.bin")));
+    }
 
     [Fact]
-    public async Task Export_WalCheckpoint_IsExplicitlyReported()
+    public async Task Export_MissingSourceRoot_IsRejectedWithoutPublicationResidue()
     {
-        var (root, baseRoot, store) = SnapshotTestHelper.CreatePopulatedStore();
-        _tempDirs.Add(baseRoot);
-        using (store)
+        var workspace = Workspace("missing-source");
+        var sourceRoot = Path.Combine(workspace, "missing-cache");
+        var source = new SourceFixture(
+            sourceRoot,
+            Path.Combine(sourceRoot, "cache.db"),
+            []);
+        var destination = Path.Combine(workspace, "snapshot");
+
+        var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+            source,
+            destination);
+
+        Assert.Contains(
+            "source cache root does not exist",
+            exception.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(sourceRoot));
+    }
+
+    [Fact]
+    public async Task Export_MissingSourceDatabase_IsRejectedWithoutPublicationResidue()
+    {
+        var workspace = Workspace("missing-database");
+        var sourceRoot = Path.Combine(workspace, "cache");
+        Directory.CreateDirectory(sourceRoot);
+        File.WriteAllText(Path.Combine(sourceRoot, "sentinel.txt"), "unchanged");
+        var source = new SourceFixture(
+            sourceRoot,
+            Path.Combine(sourceRoot, "cache.db"),
+            []);
+        var destination = Path.Combine(workspace, "snapshot");
+
+        var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+            source,
+            destination);
+
+        Assert.Contains(
+            "source cache database not found",
+            exception.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Export_MissingDestinationParent_IsRejectedWithoutCreatingParentOrResidue()
+    {
+        var workspace = Workspace("missing-destination-parent");
+        var source = SnapshotTestHelper.CreateSource(workspace, useWal: false);
+        var missingParent = Path.Combine(workspace, "missing-parent");
+        var destination = Path.Combine(missingParent, "snapshot");
+
+        var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+            source,
+            destination);
+
+        Assert.Contains(
+            "destination parent directory does not exist",
+            exception.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(missingParent));
+        Assert.False(File.Exists(missingParent));
+    }
+
+    [Fact]
+    public async Task Export_SchemaVersionZero_IsRejectedWithoutPublicationResidue()
+    {
+        var workspace = Workspace("schema-version-zero");
+        var source = SnapshotTestHelper.CreateSource(workspace, useWal: false);
+        using (var connection = SnapshotTestHelper.OpenConnection(source.DatabasePath))
+            SnapshotTestHelper.ExecuteNonQuery(connection, "PRAGMA user_version=0;");
+        var destination = Path.Combine(workspace, "snapshot");
+
+        var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+            source,
+            destination);
+
+        Assert.Contains("schema version 0", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Export_UnsupportedSchemaVersion_IsRejectedWithoutPublicationResidue()
+    {
+        var workspace = Workspace("unsupported-schema-version");
+        var source = SnapshotTestHelper.CreateSource(workspace, useWal: false);
+        using (var connection = SnapshotTestHelper.OpenConnection(source.DatabasePath))
+            SnapshotTestHelper.ExecuteNonQuery(connection, "PRAGMA user_version=42;");
+        var destination = Path.Combine(workspace, "snapshot");
+
+        var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+            source,
+            destination);
+
+        Assert.Contains("schema version 42", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("expected 1", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Export_MissingRequiredTable_IsRejectedWithoutPublicationResidue()
+    {
+        var workspace = Workspace("missing-required-table");
+        var source = SnapshotTestHelper.CreateSource(workspace, useWal: false);
+        using (var connection = SnapshotTestHelper.OpenConnection(source.DatabasePath))
+            SnapshotTestHelper.ExecuteNonQuery(connection, "DROP TABLE cache_job_state;");
+        var destination = Path.Combine(workspace, "snapshot");
+
+        var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+            source,
+            destination);
+
+        Assert.Contains("missing expected table", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cache_job_state", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Export_MissingReferencedArtifact_FailsWithoutPublicationResidue()
+    {
+        var workspace = Workspace("missing-artifact");
+        var source = SnapshotTestHelper.CreateSource(workspace, artifactRows: 1);
+        var artifact = Assert.Single(source.Artifacts);
+        File.Delete(Path.Combine(source.Root, "artifacts", artifact.RelativePath));
+        var destination = Path.Combine(workspace, "snapshot");
+
+        var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+            source,
+            destination,
+            assertSourceUnchanged: false);
+
+        Assert.Contains("artifact", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [CaseSensitiveFileSystemFact]
+    public async Task Export_ArtifactLinkIntoCaseOnlySibling_IsRejectedWithoutPublicationResidue()
+    {
+        var workspace = Workspace("case-artifact-link");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 1,
+            useWal: false);
+        var artifact = Assert.Single(source.Artifacts);
+        var artifactsRoot = Path.Combine(source.Root, "artifacts");
+        var caseOnlySibling = Path.Combine(source.Root, "ARTIFACTS");
+        SnapshotTestHelper.CreateDistinctCaseOnlySibling(
+            artifactsRoot,
+            caseOnlySibling);
+
+        var externalArtifact = Path.Combine(caseOnlySibling, artifact.RelativePath);
+        Directory.CreateDirectory(Path.GetDirectoryName(externalArtifact)!);
+        File.WriteAllBytes(externalArtifact, artifact.Content);
+
+        var referencedArtifact = Path.Combine(artifactsRoot, artifact.RelativePath);
+        File.Delete(referencedArtifact);
+        await SnapshotTestHelper.CreateFileAliasAsync(referencedArtifact, externalArtifact);
+        try
         {
-            await SnapshotTestHelper.SeedAsync(store);
+            var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+                source,
+                Path.Combine(workspace, "snapshot"));
+
+            Assert.Contains("artifact", exception.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("escape", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteFileAlias(referencedArtifact);
+        }
+    }
+
+    [Fact]
+    public async Task Export_PersistedArtifactSizeMismatch_FailsWithoutPublicationResidue()
+    {
+        var workspace = Workspace("artifact-size");
+        var source = SnapshotTestHelper.CreateSource(workspace, artifactRows: 1);
+        var artifact = Assert.Single(source.Artifacts);
+        SnapshotTestHelper.UpdateArtifactSize(
+            source.DatabasePath,
+            artifact.CacheKey,
+            artifact.Content.Length + 1);
+        var destination = Path.Combine(workspace, "snapshot");
+
+        var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+            source,
+            destination,
+            assertSourceUnchanged: false);
+
+        Assert.Contains("size", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Export_ExistingDestinationAndSentinel_AreUntouched()
+    {
+        var workspace = Workspace("existing");
+        var source = SnapshotTestHelper.CreateSource(workspace);
+        var destination = Path.Combine(workspace, "snapshot");
+        Directory.CreateDirectory(destination);
+        var sentinel = Path.Combine(destination, "sentinel.txt");
+        File.WriteAllText(sentinel, "do-not-overwrite");
+        var destinationBefore = SnapshotTestHelper.FingerprintTree(destination);
+
+        var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+            source,
+            destination);
+
+        Assert.Contains("already exists", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(destinationBefore, SnapshotTestHelper.FingerprintTree(destination));
+    }
+
+    [Fact]
+    public async Task Export_PreCanceled_FailsWithoutResidueOrSourceMutation()
+    {
+        var workspace = Workspace("canceled");
+        var source = SnapshotTestHelper.CreateSource(workspace);
+        var destination = Path.Combine(workspace, "snapshot");
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var sourceBefore = SnapshotTestHelper.FingerprintTree(source.Root);
+        var parentBefore = SnapshotTestHelper.ParentEntries(workspace);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => SnapshotExporter.ExportAsync(source.Root, destination, ct: cancellation.Token));
+
+        Assert.False(Directory.Exists(destination));
+        Assert.Equal(sourceBefore, SnapshotTestHelper.FingerprintTree(source.Root));
+        Assert.Equal(parentBefore, SnapshotTestHelper.ParentEntries(workspace));
+    }
+
+    [Theory]
+    [InlineData("source")]
+    [InlineData("artifacts")]
+    [InlineData("source-child")]
+    [InlineData("artifacts-child")]
+    [InlineData("relative-source")]
+    [InlineData("relative-artifacts-child")]
+    public async Task Export_ContainmentMatrix_RejectsLexicalAliasesBeforePublication(string scenario)
+    {
+        var workspace = Workspace($"boundary-{scenario}");
+        var source = SnapshotTestHelper.CreateSource(workspace);
+        var destination = scenario switch
+        {
+            "source" => source.Root,
+            "artifacts" => Path.Combine(source.Root, "artifacts"),
+            "source-child" => Path.Combine(source.Root, "snapshot"),
+            "artifacts-child" => Path.Combine(source.Root, "artifacts", "snapshot"),
+            "relative-source" => Path.Combine(
+                Path.GetRelativePath(Directory.GetCurrentDirectory(), source.Root),
+                ".",
+                "unused",
+                ".."),
+            "relative-artifacts-child" => Path.Combine(
+                Path.GetRelativePath(Directory.GetCurrentDirectory(), source.Root),
+                ".",
+                "artifacts",
+                "..",
+                "artifacts",
+                "snapshot"),
+            _ => throw new ArgumentOutOfRangeException(nameof(scenario)),
+        };
+
+        var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+            source,
+            destination);
+
+        if (scenario is "source" or "artifacts")
+            Assert.DoesNotContain("already exists", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void IsEqualOrDescendant_FilesystemRoot_IsEqualToItself()
+    {
+        var filesystemRoot = Path.GetPathRoot(Path.GetFullPath(AppContext.BaseDirectory))
+            ?? throw new InvalidOperationException("The test base directory has no filesystem root.");
+
+        Assert.True(SnapshotExporter.IsEqualOrDescendant(filesystemRoot, filesystemRoot));
+    }
+
+    [Fact]
+    public void IsEqualOrDescendant_FilesystemRoot_ContainsPathBeneathRoot()
+    {
+        var filesystemRoot = Path.GetPathRoot(Path.GetFullPath(AppContext.BaseDirectory))
+            ?? throw new InvalidOperationException("The test base directory has no filesystem root.");
+        var descendant = Path.Combine(
+            filesystemRoot,
+            "snapshot-export-root-regression",
+            "descendant");
+
+        Assert.True(SnapshotExporter.IsEqualOrDescendant(descendant, filesystemRoot));
+    }
+
+    [Fact]
+    public void IsEqualOrDescendant_CaseOnlySibling_DoesNotProveContainmentOutsideWindows()
+    {
+        var root = Path.Combine(AppContext.BaseDirectory, "artifacts");
+        var caseOnlySiblingChild =
+            Path.Combine(AppContext.BaseDirectory, "ARTIFACTS", "artifact.bin");
+
+        Assert.Equal(
+            OperatingSystem.IsWindows(),
+            SnapshotExporter.IsEqualOrDescendant(caseOnlySiblingChild, root));
+    }
+
+    [Fact]
+    public void CouldBeEqualOrDescendant_CaseOnlySibling_IsConservativeOnMacOSAndWindows()
+    {
+        var root = Path.Combine(AppContext.BaseDirectory, "artifacts");
+        var caseOnlySiblingChild =
+            Path.Combine(AppContext.BaseDirectory, "ARTIFACTS", "artifact.bin");
+
+        Assert.Equal(
+            OperatingSystem.IsWindows() || OperatingSystem.IsMacOS(),
+            SnapshotExporter.CouldBeEqualOrDescendant(caseOnlySiblingChild, root));
+    }
+
+    [Fact]
+    public async Task Export_SiblingPrefixDestination_Succeeds()
+    {
+        var workspace = Workspace("sibling-prefix");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            sourceRoot: Path.Combine(workspace, "cache"));
+        var destination = Path.Combine(workspace, "cache-copy");
+
+        await SnapshotTestHelper.ExportAndAssertAtomicPublicationAsync(source, destination);
+
+        SnapshotTestHelper.AssertFinalLayout(destination);
+    }
+
+    [Fact]
+    public async Task Export_CaseOnlyDestination_UsesConservativeMacOSAndWindowsBoundary()
+    {
+        var workspace = Workspace("case-boundary");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            sourceRoot: Path.Combine(workspace, "cache"));
+        var caseOnlySourceSpelling = Path.Combine(workspace, "CACHE");
+        var destination = Path.Combine(caseOnlySourceSpelling, "snapshot");
+        var aliasesSource = Directory.Exists(caseOnlySourceSpelling);
+        var usesConservativeBoundary =
+            OperatingSystem.IsWindows() || OperatingSystem.IsMacOS();
+
+        if (!aliasesSource)
+        {
+            SnapshotTestHelper.CreateDistinctCaseOnlySibling(
+                source.Root,
+                caseOnlySourceSpelling);
         }
 
-        var dest = TempDir("wal");
-        var result = await SnapshotExporter.ExportAsync(root, dest);
-
-        // WalPagesTotal/Written are non-negative integers; the checkpoint ran
-        Assert.True(result.WalPagesWritten >= 0);
-        Assert.True(result.WalPagesTotal >= 0);
-    }
-
-    [Fact]
-    public void CheckpointWal_ReturnsNonNegativePages()
-    {
-        // Create a real DB with WAL mode to confirm the pragma executes cleanly
-        var root = SnapshotTestHelper.NewTempDir("wal-direct");
-        _tempDirs.Add(root);
-        var opts = new CacheOptions { CacheRoot = root };
-        var effectiveRoot = opts.GetEffectiveCacheRoot();
-        using var store = new SqliteCacheStore(opts);
-        store.Dispose();
-
-        var dbPath = Path.Combine(effectiveRoot, "cache.db");
-        var (busy, total, written) = SnapshotExporter.CheckpointWal(dbPath);
-
-        Assert.True(written >= 0);
-        Assert.True(total >= 0);
-        _ = busy; // busy may be true or false — no assertion, just must not throw
-    }
-
-    [Fact]
-    public async Task Export_DestinationDbContainsAllSeedData()
-    {
-        var (root, baseRoot, store) = SnapshotTestHelper.CreatePopulatedStore();
-        _tempDirs.Add(baseRoot);
-        using (store)
+        if (aliasesSource || usesConservativeBoundary)
         {
-            for (var i = 0; i < 5; i++)
-                await store.SetMetadataAsync($"job:data{i}:meta", $"{{\"n\":{i}}}", TimeSpan.FromHours(1));
+            var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+                source,
+                destination);
+            Assert.Contains("source", exception.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("already exists", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        else
+        {
+            var databaseBefore = ReadLogicalDatabaseState(source.DatabasePath);
+            var sourceBefore = FingerprintPersistentSourceTree(source.Root);
+            Directory.CreateDirectory(caseOnlySourceSpelling);
+            Assert.True(Directory.Exists(source.Root));
+            Assert.True(Directory.Exists(caseOnlySourceSpelling));
+
+            await SnapshotTestHelper.ExportAndAssertAtomicPublicationAsync(source, destination);
+
+            SnapshotTestHelper.AssertFinalLayout(destination);
+            Assert.Equal(sourceBefore, FingerprintPersistentSourceTree(source.Root));
+            Assert.Equal(databaseBefore, ReadLogicalDatabaseState(source.DatabasePath));
         }
 
-        var dest = TempDir("data-verify");
-        await SnapshotExporter.ExportAsync(root, dest);
-
-        // Count rows in the exported DB
-        var dbPath = Path.Combine(dest, "cache.db");
-        using var conn = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT COUNT(*) FROM cache_metadata;";
-        var count = Convert.ToInt32(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
-
-        Assert.Equal(5, count);
-    }
-
-    // ── Atomic copy — temp dir cleanup ────────────────────────────────────────
-
-    [Fact]
-    public async Task Export_OnSuccess_NoTempDirectoryRemains()
-    {
-        var (root, baseRoot, store) = SnapshotTestHelper.CreatePopulatedStore();
-        _tempDirs.Add(baseRoot);
-        using (store)
+        static string[] FingerprintPersistentSourceTree(string root)
         {
-            await SnapshotTestHelper.SeedAsync(store);
+            return SnapshotTestHelper.FingerprintTree(root)
+                .Where(entry =>
+                    !entry.StartsWith("F:cache.db-wal:", StringComparison.Ordinal)
+                    && !entry.StartsWith("F:cache.db-shm:", StringComparison.Ordinal))
+                .ToArray();
         }
 
-        var dest = TempDir("atomic");
-        var destParent = Path.GetDirectoryName(dest)!;
-
-        await SnapshotExporter.ExportAsync(root, dest);
-
-        // No .tmp.* sibling should remain
-        var tempSiblings = Directory.GetDirectories(destParent, $"{Path.GetFileName(dest)}.tmp.*");
-        Assert.Empty(tempSiblings);
-    }
-
-    // ── Validation / rejection cases ──────────────────────────────────────────
-
-    [Fact]
-    public async Task Export_Throws_WhenSourceRootDoesNotExist()
-    {
-        var dest = TempDir("no-src-dest");
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => SnapshotExporter.ExportAsync("/nonexistent/path/hlx-test-cache", dest));
-        Assert.Contains("does not exist", ex.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public async Task Export_Throws_WhenSourceHasNoCacheDb()
-    {
-        var root = TempDir("no-db-src");
-        Directory.CreateDirectory(root);
-        var dest = TempDir("no-db-dest");
-
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => SnapshotExporter.ExportAsync(root, dest));
-        Assert.Contains("cache.db", ex.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public async Task Export_Throws_WhenDestinationAlreadyExists()
-    {
-        var (root, baseRoot, store) = SnapshotTestHelper.CreatePopulatedStore();
-        _tempDirs.Add(baseRoot);
-        using (store)
+        static string[] ReadLogicalDatabaseState(string databasePath)
         {
-            await SnapshotTestHelper.SeedAsync(store);
+            using var connection = SnapshotTestHelper.OpenConnection(
+                databasePath,
+                SqliteOpenMode.ReadOnly);
+            AssertIntegrityCheck(connection);
+
+            var state = new List<string>
+            {
+                $"schema-version:{ReadInt32(connection, "PRAGMA schema_version;")}",
+                $"user-version:{ReadInt32(connection, "PRAGMA user_version;")}",
+            };
+            AddRows(
+                connection,
+                state,
+                "schema",
+                "SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name, tbl_name;");
+            AddRows(
+                connection,
+                state,
+                "metadata",
+                """
+                SELECT cache_key, json_value, created_at, expires_at, job_id
+                FROM cache_metadata
+                ORDER BY cache_key;
+                """);
+            AddRows(
+                connection,
+                state,
+                "artifacts",
+                """
+                SELECT cache_key, file_path, file_size, created_at, last_accessed, job_id
+                FROM cache_artifacts
+                ORDER BY cache_key;
+                """);
+            AddRows(
+                connection,
+                state,
+                "job-state",
+                """
+                SELECT job_id, is_completed, finished_at, cached_at, expires_at
+                FROM cache_job_state
+                ORDER BY job_id;
+                """);
+            return state.ToArray();
         }
 
-        var dest = TempDir("existing-dest");
-        Directory.CreateDirectory(dest); // pre-create destination
+        static void AddRows(
+            SqliteConnection connection,
+            List<string> state,
+            string section,
+            string sql)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var values = Enumerable.Range(0, reader.FieldCount)
+                    .Select(index => reader.IsDBNull(index)
+                        ? "null"
+                        : $"{reader.GetFieldType(index).Name}:"
+                          + Convert.ToHexString(System.Text.Encoding.UTF8.GetBytes(
+                              Convert.ToString(reader.GetValue(index), CultureInfo.InvariantCulture)!)));
+                state.Add($"{section}:{string.Join(",", values)}");
+            }
+        }
+    }
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => SnapshotExporter.ExportAsync(root, dest));
-        Assert.Contains("already exists", ex.Message, StringComparison.OrdinalIgnoreCase);
+    [NormalizingFileSystemFact]
+    public async Task Export_NfcNfdAliasToSource_IsRejectedOnNormalizingFileSystem()
+    {
+        const string nfcLeaf = "caf\u00e9-cache";
+        var nfdLeaf = nfcLeaf.Normalize(NormalizationForm.FormD);
+        Assert.NotEqual(nfcLeaf, nfdLeaf);
+
+        var workspace = Workspace("normalization-alias");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 1,
+            useWal: false,
+            sourceRoot: Path.Combine(workspace, nfcLeaf));
+        var alternateSourceSpelling = Path.Combine(workspace, nfdLeaf);
+        var markerName = $".normalization-alias-proof-{Guid.NewGuid():N}";
+        File.WriteAllText(Path.Combine(source.Root, markerName), "same-directory");
+        Assert.True(
+            File.Exists(Path.Combine(alternateSourceSpelling, markerName)),
+            "Both normalization spellings exist, but a marker did not prove that they alias.");
+
+        var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+            source,
+            Path.Combine(alternateSourceSpelling, "snapshot"));
+
+        Assert.Contains("source", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(Path.Combine(source.Root, "snapshot")));
+    }
+
+    [NormalizationSensitiveFileSystemFact]
+    public async Task Export_DistinctNfcNfdDestination_SucceedsOnNormalizationSensitiveFileSystem()
+    {
+        const string nfcLeaf = "caf\u00e9-cache";
+        var nfdLeaf = nfcLeaf.Normalize(NormalizationForm.FormD);
+        Assert.NotEqual(nfcLeaf, nfdLeaf);
+
+        var workspace = Workspace("normalization-distinct");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 1,
+            useWal: false,
+            sourceRoot: Path.Combine(workspace, nfcLeaf));
+        var distinctParent = Path.Combine(workspace, nfdLeaf);
+        Directory.CreateDirectory(distinctParent);
+        var markerName = $".normalization-distinct-proof-{Guid.NewGuid():N}";
+        File.WriteAllText(Path.Combine(distinctParent, markerName), "distinct-directory");
+        Assert.False(File.Exists(Path.Combine(source.Root, markerName)));
+
+        var destination = Path.Combine(distinctParent, "snapshot");
+        await SnapshotTestHelper.ExportAndAssertAtomicPublicationAsync(source, destination);
+
+        SnapshotTestHelper.AssertFinalLayout(destination);
+        Assert.Equal(
+            "distinct-directory",
+            File.ReadAllText(Path.Combine(distinctParent, markerName)));
+    }
+
+    [WindowsShortNameFact]
+    public async Task Export_WindowsShortNameAliasToSource_IsRejectedWhenAvailable()
+    {
+        var workspace = Workspace("windows-short-name");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 1,
+            useWal: false,
+            sourceRoot: Path.Combine(
+                workspace,
+                "source-cache-directory-requiring-a-short-name"));
+        Assert.True(
+            SnapshotTestHelper.TryGetWindowsShortPath(
+                source.Root,
+                out var shortSourceRoot,
+                out var runtimeProof),
+            runtimeProof);
+
+        var markerName = $".short-name-alias-proof-{Guid.NewGuid():N}";
+        File.WriteAllText(Path.Combine(source.Root, markerName), "same-directory");
+        Assert.True(
+            File.Exists(Path.Combine(shortSourceRoot, markerName)),
+            $"The reported short path did not alias the source. {runtimeProof}");
+
+        var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+            source,
+            Path.Combine(shortSourceRoot, "snapshot"));
+
+        Assert.Contains("source", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(Path.Combine(source.Root, "snapshot")));
     }
 
     [Fact]
-    public async Task Export_Throws_WhenDestinationParentDoesNotExist()
+    public async Task Export_DestinationParentAliasIntoSource_IsRejectedPhysically()
     {
-        var (root, baseRoot, store) = SnapshotTestHelper.CreatePopulatedStore();
-        _tempDirs.Add(baseRoot);
-        using (store)
+        var workspace = Workspace("destination-alias");
+        var source = SnapshotTestHelper.CreateSource(workspace);
+        var alias = Path.Combine(workspace, "source-alias");
+        await SnapshotTestHelper.CreateDirectoryAliasAsync(alias, source.Root);
+        try
         {
-            await SnapshotTestHelper.SeedAsync(store);
+            await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+                source,
+                Path.Combine(alias, "snapshot"));
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteDirectoryAlias(alias);
+        }
+    }
+
+    [Fact]
+    public async Task Export_DestinationParentIsAnchoredBeforeFirstProgressCallback()
+    {
+        const string firstProgressMessage = "Validating source cache schema...";
+        var workspace = Workspace("early-parent-replacement");
+        var source = SnapshotTestHelper.CreateSource(workspace, useWal: false);
+        var sourceBefore = SnapshotTestHelper.FingerprintTree(source.Root);
+        var destinationParent = Path.Combine(workspace, "publish");
+        var movedParent = Path.Combine(workspace, "publish-original");
+        var replacementMarker = Path.Combine(destinationParent, "replacement.txt");
+        Directory.CreateDirectory(destinationParent);
+        File.WriteAllText(Path.Combine(destinationParent, "original.txt"), "original");
+        var originalParentBefore = SnapshotTestHelper.FingerprintTree(destinationParent);
+        var destination = Path.Combine(destinationParent, "snapshot");
+        var movedDestination = Path.Combine(movedParent, "snapshot");
+        var callbackReached = false;
+        var parentReplaced = false;
+        Action<string> progress = message =>
+        {
+            if (!string.Equals(message, firstProgressMessage, StringComparison.Ordinal))
+                return;
+
+            Assert.False(callbackReached);
+            callbackReached = true;
+            Directory.Move(destinationParent, movedParent);
+            Directory.CreateDirectory(destinationParent);
+            File.WriteAllText(replacementMarker, "replacement");
+            parentReplaced = true;
+        };
+
+        var exception = await Record.ExceptionAsync(
+            () => SnapshotExporter.ExportAsync(source.Root, destination, progress));
+
+        Assert.True(callbackReached);
+        Assert.Equal(sourceBefore, SnapshotTestHelper.FingerprintTree(source.Root));
+        Assert.False(SnapshotExporter.PathEntryExists(destination));
+        Assert.False(SnapshotExporter.PathEntryExists(movedDestination));
+        Assert.True(parentReplaced);
+        var invalidOperation = Assert.IsType<InvalidOperationException>(exception);
+        Assert.Contains(
+            "destination parent changed",
+            invalidOperation.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(
+            originalParentBefore,
+            SnapshotTestHelper.FingerprintTree(movedParent));
+        Assert.True(Directory.Exists(destinationParent));
+        Assert.Equal("replacement", File.ReadAllText(replacementMarker));
+        Assert.Equal(
+            new[] { Path.GetFileName(replacementMarker) },
+            SnapshotTestHelper.ParentEntries(destinationParent));
+    }
+
+    [Theory]
+    [InlineData("alter-database")]
+    [InlineData("alter-artifact")]
+    [InlineData("remove-artifact")]
+    [InlineData("add-wal")]
+    [InlineData("add-shm")]
+    [InlineData("add-journal")]
+    public async Task Export_FinalProgressMutation_IsRejectedWithoutPublication(string mutation)
+    {
+        const string finalizationMessage = "Finalizing snapshot (atomic rename)...";
+        var workspace = Workspace($"final-mutation-{mutation}");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 1,
+            useWal: false);
+        var sourceBefore = SnapshotTestHelper.FingerprintTree(source.Root);
+        var destinationParent = Path.Combine(workspace, "publish");
+        Directory.CreateDirectory(destinationParent);
+        var destination = Path.Combine(destinationParent, "snapshot");
+
+        var finalizationReports = 0;
+        Action<string> progress = message =>
+        {
+            if (!string.Equals(message, finalizationMessage, StringComparison.Ordinal))
+                return;
+
+            Assert.Equal(1, Interlocked.Increment(ref finalizationReports));
+            var tempLeaf = Assert.Single(
+                SnapshotTestHelper.ParentEntries(destinationParent),
+                entry => entry.StartsWith("snapshot.tmp.", StringComparison.Ordinal));
+            var temporaryPath = Path.Combine(destinationParent, tempLeaf);
+            var databasePath = Path.Combine(temporaryPath, "cache.db");
+            var artifactPath = Path.Combine(
+                temporaryPath,
+                "artifacts",
+                source.Artifacts[0].RelativePath);
+            switch (mutation)
+            {
+                case "alter-database":
+                    var databaseContent = File.ReadAllBytes(databasePath);
+                    databaseContent[^1] ^= 0xff;
+                    File.WriteAllBytes(databasePath, databaseContent);
+                    break;
+                case "alter-artifact":
+                    var content = File.ReadAllBytes(artifactPath);
+                    content[0] ^= 0xff;
+                    File.WriteAllBytes(artifactPath, content);
+                    break;
+                case "remove-artifact":
+                    File.Delete(artifactPath);
+                    break;
+                case "add-wal":
+                    File.WriteAllText(databasePath + "-wal", "unexpected");
+                    break;
+                case "add-shm":
+                    File.WriteAllText(databasePath + "-shm", "unexpected");
+                    break;
+                case "add-journal":
+                    File.WriteAllText(databasePath + "-journal", "unexpected");
+                    break;
+                default:
+                    throw new XunitException($"Unknown final mutation '{mutation}'.");
+            }
+        };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => SnapshotExporter.ExportAsync(source.Root, destination, progress));
+
+        Assert.Equal(1, finalizationReports);
+        Assert.Equal(sourceBefore, SnapshotTestHelper.FingerprintTree(source.Root));
+        Assert.False(SnapshotExporter.PathEntryExists(destination));
+        Assert.Empty(SnapshotTestHelper.ParentEntries(destinationParent));
+    }
+
+    [Fact]
+    public async Task Export_SynchronousCallbackCannotBeQueuedPastFinalValidation()
+    {
+        const string finalizationMessage = "Finalizing snapshot (atomic rename)...";
+        var callbackParameter = typeof(SnapshotExporter)
+            .GetMethod(
+                nameof(SnapshotExporter.ExportAsync),
+                BindingFlags.Public | BindingFlags.Static,
+                binder: null,
+                [
+                    typeof(string),
+                    typeof(string),
+                    typeof(Action<string>),
+                    typeof(CancellationToken),
+                ],
+                modifiers: null)?
+            .GetParameters()[2];
+        Assert.NotNull(callbackParameter);
+        Assert.Equal(typeof(Action<string>), callbackParameter.ParameterType);
+
+        var queuedContext = new QueuedSynchronizationContext();
+        var progressProbeRan = false;
+        Progress<string> queuedProgress;
+        var priorContext = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(queuedContext);
+        try
+        {
+            queuedProgress = new Progress<string>(_ => progressProbeRan = true);
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(priorContext);
         }
 
-        var dest = Path.Combine(Path.GetTempPath(), $"hlx-snap-nonexistent-{Guid.NewGuid():N}", "snapshot");
+        ((IProgress<string>)queuedProgress).Report("queued probe");
+        Assert.False(progressProbeRan);
+        Assert.Equal(1, queuedContext.PendingCount);
+        queuedContext.Drain();
+        Assert.True(progressProbeRan);
+        Assert.Equal(0, queuedContext.PendingCount);
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => SnapshotExporter.ExportAsync(root, dest));
-        Assert.Contains("parent directory", ex.Message, StringComparison.OrdinalIgnoreCase);
-    }
+        var workspace = Workspace("synchronous-final-callback");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 1,
+            useWal: false);
+        var sourceBefore = SnapshotTestHelper.FingerprintTree(source.Root);
+        var destinationParent = Path.Combine(workspace, "publish");
+        Directory.CreateDirectory(destinationParent);
+        var destination = Path.Combine(destinationParent, "snapshot");
+        string? temporaryPath = null;
+        var finalizationReports = 0;
 
-    [Fact]
-    public async Task Export_Throws_WhenSourceSchemaVersionIsZero()
-    {
-        // Create an empty (uninitialized) DB — schema version 0
-        var root = TempDir("schema0-src");
-        Directory.CreateDirectory(root);
-        var dbPath = Path.Combine(root, "cache.db");
-        using var conn = new SqliteConnection($"Data Source={dbPath}");
-        conn.Open();
-        conn.Close();
-        SqliteConnection.ClearAllPools();
-
-        var dest = TempDir("schema0-dest");
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => SnapshotExporter.ExportAsync(root, dest));
-        Assert.Contains("schema version 0", ex.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public async Task Export_Throws_WhenSourceSchemaMismatch()
-    {
-        var root = TempDir("bad-schema-src");
-        Directory.CreateDirectory(root);
-        var dbPath = Path.Combine(root, "cache.db");
-
-        // Stamp a bad schema version
-        using var conn = new SqliteConnection($"Data Source={dbPath}");
-        conn.Open();
-        using (var cmd = conn.CreateCommand())
+        Action<string> callback = message =>
         {
-            cmd.CommandText = "PRAGMA user_version=99;";
-            cmd.ExecuteNonQuery();
-        }
-        conn.Close();
-        SqliteConnection.ClearAllPools();
+            if (!string.Equals(message, finalizationMessage, StringComparison.Ordinal))
+                return;
 
-        var dest = TempDir("bad-schema-dest");
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => SnapshotExporter.ExportAsync(root, dest));
-        Assert.Contains("99", ex.Message);
+            Assert.Equal(1, Interlocked.Increment(ref finalizationReports));
+            Assert.False(
+                Directory.Exists(destination),
+                "The final callback ran after the snapshot had already been published.");
+            var temporaryLeaf = Assert.Single(
+                SnapshotTestHelper.ParentEntries(destinationParent),
+                entry => entry.StartsWith("snapshot.tmp.", StringComparison.Ordinal));
+            temporaryPath = Path.Combine(destinationParent, temporaryLeaf);
+            var artifactPath = Path.Combine(
+                temporaryPath,
+                "artifacts",
+                source.Artifacts[0].RelativePath);
+            var content = File.ReadAllBytes(artifactPath);
+            content[0] ^= 0xff;
+            File.WriteAllBytes(artifactPath, content);
+        };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => SnapshotExporter.ExportAsync(source.Root, destination, callback));
+
+        Assert.Equal(1, finalizationReports);
+        Assert.Equal(0, queuedContext.PendingCount);
+        Assert.NotNull(temporaryPath);
+        Assert.False(SnapshotExporter.PathEntryExists(temporaryPath));
+        Assert.False(SnapshotExporter.PathEntryExists(destination));
+        Assert.Equal(sourceBefore, SnapshotTestHelper.FingerprintTree(source.Root));
+        Assert.Empty(SnapshotTestHelper.ParentEntries(destinationParent));
     }
 
-    // ── ValidateSourceSchema helper ───────────────────────────────────────────
-
-    [Fact]
-    public void ValidateSourceSchema_PassesForValidDb()
+    [HardLinkFileSystemTheory]
+    [InlineData("database")]
+    [InlineData("artifact")]
+    public async Task Export_FinalCallbackHardLinkSubstitution_IsRejectedWithoutPublication(
+        string entryKind)
     {
-        var root = SnapshotTestHelper.NewTempDir("vss-valid");
-        _tempDirs.Add(root);
-        var opts = new CacheOptions { CacheRoot = root };
-        var effectiveRoot = opts.GetEffectiveCacheRoot();
-        using var store = new SqliteCacheStore(opts);
-        store.Dispose();
-
-        var dbPath = Path.Combine(effectiveRoot, "cache.db");
-        // Should not throw
-        SnapshotExporter.ValidateSourceSchema(dbPath);
-    }
-
-    [Fact]
-    public void ValidateSourceSchema_Throws_ForMissingTable()
-    {
-        var root = SnapshotTestHelper.NewTempDir("vss-missing-table");
-        _tempDirs.Add(root);
-        var dbPath = Path.Combine(root, "cache.db");
-        Directory.CreateDirectory(root);
-
-        using var conn = new SqliteConnection($"Data Source={dbPath}");
-        conn.Open();
-        using (var cmd = conn.CreateCommand())
+        const string finalizationMessage = "Finalizing snapshot (atomic rename)...";
+        var workspace = Workspace($"final-hard-link-{entryKind}");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 1,
+            useWal: false);
+        var sourceBefore = SnapshotTestHelper.FingerprintTree(source.Root);
+        var destinationParent = Path.Combine(workspace, "publish");
+        Directory.CreateDirectory(destinationParent);
+        var destination = Path.Combine(destinationParent, "snapshot");
+        var externalPath = Path.Combine(workspace, $"external-{entryKind}");
+        string? temporaryPath = null;
+        var finalizationReports = 0;
+        Action<string> progress = message =>
         {
-            cmd.CommandText = $"PRAGMA user_version={SnapshotExporter.SchemaVersion};";
-            cmd.ExecuteNonQuery();
-            // Intentionally omit creating any tables
-        }
-        conn.Close();
-        SqliteConnection.ClearAllPools();
+            if (!string.Equals(message, finalizationMessage, StringComparison.Ordinal))
+                return;
 
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => SnapshotExporter.ValidateSourceSchema(dbPath));
-        Assert.Contains("cache_metadata", ex.Message);
+            Assert.Equal(1, Interlocked.Increment(ref finalizationReports));
+            var temporaryLeaf = Assert.Single(
+                SnapshotTestHelper.ParentEntries(destinationParent),
+                entry => entry.StartsWith("snapshot.tmp.", StringComparison.Ordinal));
+            temporaryPath = Path.Combine(destinationParent, temporaryLeaf);
+            var stagedPath = entryKind switch
+            {
+                "database" => Path.Combine(temporaryPath, "cache.db"),
+                "artifact" => Path.Combine(
+                    temporaryPath,
+                    "artifacts",
+                    source.Artifacts[0].RelativePath),
+                _ => throw new XunitException($"Unknown staged entry kind '{entryKind}'."),
+            };
+            SnapshotTestHelper.ReplaceWithHardLink(stagedPath, externalPath);
+        };
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => SnapshotExporter.ExportAsync(source.Root, destination, progress));
+
+        Assert.Equal(1, finalizationReports);
+        Assert.NotNull(temporaryPath);
+        Assert.False(SnapshotExporter.PathEntryExists(temporaryPath));
+        Assert.Contains("link", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(sourceBefore, SnapshotTestHelper.FingerprintTree(source.Root));
+        Assert.False(SnapshotExporter.PathEntryExists(destination));
+        Assert.Empty(SnapshotTestHelper.ParentEntries(destinationParent));
+        Assert.True(File.Exists(externalPath));
+    }
+
+    private static void AssertWindowsDirectoryIdentity(string root)
+    {
+        var directory = Path.Combine(
+            root,
+            "directory-component-requiring-an-eight-dot-three-alias");
+        var distinctDirectory = Path.Combine(root, "distinct-directory");
+        Directory.CreateDirectory(directory);
+        Directory.CreateDirectory(distinctDirectory);
+
+        var expected =
+            SnapshotDestinationDirectory.GetDirectoryIdentityNoFollow(directory);
+        Assert.Equal(
+            expected,
+            SnapshotDestinationDirectory.GetDirectoryIdentityNoFollow(directory));
+        Assert.NotEqual(
+            expected,
+            SnapshotDestinationDirectory.GetDirectoryIdentityNoFollow(distinctDirectory));
+
+        if (SnapshotTestHelper.TryGetWindowsShortPath(
+                directory,
+                out var shortPath,
+                out _))
+        {
+            Assert.Equal(
+                expected,
+                SnapshotDestinationDirectory.GetDirectoryIdentityNoFollow(shortPath));
+        }
+    }
+
+    private static void ExerciseWritableReFsVolumeIfAvailable()
+    {
+        foreach (var drive in DriveInfo.GetDrives())
+        {
+            string? workspace = null;
+            try
+            {
+                if (!drive.IsReady ||
+                    !string.Equals(drive.DriveFormat, "ReFS", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                workspace = Path.Combine(
+                    drive.RootDirectory.FullName,
+                    $".helix-file-id-info-{Guid.NewGuid():N}");
+                Directory.CreateDirectory(workspace);
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException or
+                    System.Security.SecurityException)
+            {
+                continue;
+            }
+
+            try
+            {
+                AssertWindowsDirectoryIdentity(workspace);
+            }
+            finally
+            {
+                Directory.Delete(workspace, recursive: true);
+            }
+
+            return;
+        }
+    }
+
+    [Fact]
+    public async Task Export_ConcurrentDestinationCreation_IsNeverOverwritten()
+    {
+        const string finalizationMessage = "Finalizing snapshot (atomic rename)...";
+        const string sentinelContent = "concurrent destination";
+        var workspace = Workspace("concurrent-destination");
+        var source = SnapshotTestHelper.CreateSource(workspace, useWal: false);
+        var sourceBefore = SnapshotTestHelper.FingerprintTree(source.Root);
+        var destinationParent = Path.Combine(workspace, "publish");
+        Directory.CreateDirectory(destinationParent);
+        var destination = Path.Combine(destinationParent, "snapshot");
+        string? temporaryPath = null;
+        var finalizationReports = 0;
+        Action<string> progress = message =>
+        {
+            if (!string.Equals(message, finalizationMessage, StringComparison.Ordinal))
+                return;
+
+            Assert.Equal(1, Interlocked.Increment(ref finalizationReports));
+            var temporaryLeaf = Assert.Single(
+                SnapshotTestHelper.ParentEntries(destinationParent),
+                entry => entry.StartsWith("snapshot.tmp.", StringComparison.Ordinal));
+            temporaryPath = Path.Combine(destinationParent, temporaryLeaf);
+            Directory.CreateDirectory(destination);
+            File.WriteAllText(Path.Combine(destination, "sentinel.txt"), sentinelContent);
+        };
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => SnapshotExporter.ExportAsync(source.Root, destination, progress));
+
+        Assert.Equal(1, finalizationReports);
+        Assert.NotNull(temporaryPath);
+        Assert.False(SnapshotExporter.PathEntryExists(temporaryPath));
+        Assert.Contains(
+            "already exists",
+            exception.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(sourceBefore, SnapshotTestHelper.FingerprintTree(source.Root));
+        Assert.True(Directory.Exists(destination));
+        Assert.Equal(
+            sentinelContent,
+            File.ReadAllText(Path.Combine(destination, "sentinel.txt")));
+        Assert.Equal(
+            new[] { "sentinel.txt" },
+            SnapshotTestHelper.ParentEntries(destination));
+        Assert.Equal(
+            new[] { "snapshot" },
+            SnapshotTestHelper.ParentEntries(destinationParent));
+    }
+
+    [CaseSensitiveFileSystemFact]
+    public async Task Export_CaseOnlyDestinationParentRetarget_IsRejectedAndCleansTemporarySnapshot()
+    {
+        var workspace = Workspace("case-parent-retarget");
+        var source = SnapshotTestHelper.CreateSource(workspace, useWal: false);
+        var originalParent = Path.Combine(workspace, "publish");
+        var retargetedParent = Path.Combine(workspace, "PUBLISH");
+        Directory.CreateDirectory(originalParent);
+        SnapshotTestHelper.CreateDistinctCaseOnlySibling(
+            originalParent,
+            retargetedParent);
+
+        var alias = Path.Combine(workspace, "destination-parent");
+        await SnapshotTestHelper.CreateDirectoryAliasAsync(alias, originalParent);
+        try
+        {
+            await AssertDestinationParentRetargetRejectedAsync(
+                source.Root,
+                alias,
+                originalParent,
+                retargetedParent);
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteDirectoryAlias(alias);
+        }
+    }
+
+    [Fact]
+    public async Task Export_DistinctDestinationParentRetarget_IsRejectedOnEveryPlatform()
+    {
+        var workspace = Workspace("distinct-parent-retarget");
+        var source = SnapshotTestHelper.CreateSource(workspace, useWal: false);
+        var originalParent = Path.Combine(workspace, "publish-a");
+        var retargetedParent = Path.Combine(workspace, "publish-b");
+        Directory.CreateDirectory(originalParent);
+        Directory.CreateDirectory(retargetedParent);
+
+        var alias = Path.Combine(workspace, "destination-parent");
+        await SnapshotTestHelper.CreateDirectoryAliasAsync(alias, originalParent);
+        try
+        {
+            await AssertDestinationParentRetargetRejectedAsync(
+                source.Root,
+                alias,
+                originalParent,
+                retargetedParent);
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteDirectoryAlias(alias);
+        }
+    }
+
+    [Fact]
+    public async Task Export_DestinationBelowPhysicalLinkedArtifactsRoot_IsRejected()
+    {
+        var workspace = Workspace("linked-artifacts");
+        var source = SnapshotTestHelper.CreateSource(workspace, artifactRows: 0);
+        var artifactsLink = Path.Combine(source.Root, "artifacts");
+        Directory.Delete(artifactsLink);
+        var physicalArtifacts = Path.Combine(workspace, "physical-artifacts");
+        Directory.CreateDirectory(physicalArtifacts);
+        await SnapshotTestHelper.CreateDirectoryAliasAsync(artifactsLink, physicalArtifacts);
+        try
+        {
+            await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+                source,
+                Path.Combine(physicalArtifacts, "snapshot"));
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteDirectoryAlias(artifactsLink);
+        }
+    }
+
+    [Fact]
+    public async Task Export_SourceRootAlias_IsCanonicalizedAndSucceeds()
+    {
+        var workspace = Workspace("source-alias-success");
+        var source = SnapshotTestHelper.CreateSource(workspace);
+        var sourceAlias = Path.Combine(workspace, "source-alias");
+        await SnapshotTestHelper.CreateDirectoryAliasAsync(sourceAlias, source.Root);
+        var destination = Path.Combine(workspace, "snapshot");
+        try
+        {
+            var aliasedSource = source with
+            {
+                Root = sourceAlias,
+                DatabasePath = Path.Combine(sourceAlias, "cache.db"),
+            };
+            await SnapshotTestHelper.ExportAndAssertAtomicPublicationAsync(
+                aliasedSource,
+                destination);
+            SnapshotTestHelper.AssertFinalLayout(destination);
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteDirectoryAlias(sourceAlias);
+        }
+    }
+
+    [Fact]
+    public async Task Export_DanglingDestinationParentAlias_FailsClosedWithoutResidue()
+    {
+        var workspace = Workspace("dangling-alias");
+        var source = SnapshotTestHelper.CreateSource(workspace);
+        var alias = Path.Combine(workspace, "dangling");
+        await SnapshotTestHelper.CreateDirectoryAliasAsync(
+            alias,
+            Path.Combine(workspace, "missing-target"));
+        var sourceBefore = SnapshotTestHelper.FingerprintTree(source.Root);
+        var parentBefore = SnapshotTestHelper.ParentEntries(workspace);
+        try
+        {
+            await Assert.ThrowsAnyAsync<Exception>(
+                () => SnapshotExporter.ExportAsync(source.Root, Path.Combine(alias, "snapshot")));
+
+            Assert.Equal(sourceBefore, SnapshotTestHelper.FingerprintTree(source.Root));
+            Assert.Equal(parentBefore, SnapshotTestHelper.ParentEntries(workspace));
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteDirectoryAlias(alias);
+        }
+    }
+
+    [Fact]
+    public async Task Export_CyclicDestinationParentAlias_FailsClosedWithoutResidue()
+    {
+        var workspace = Workspace("cyclic-alias");
+        var source = SnapshotTestHelper.CreateSource(workspace);
+        var first = Path.Combine(workspace, "cycle-a");
+        var second = Path.Combine(workspace, "cycle-b");
+        await SnapshotTestHelper.CreateDirectoryAliasAsync(first, second);
+        await SnapshotTestHelper.CreateDirectoryAliasAsync(second, first);
+        var sourceBefore = SnapshotTestHelper.FingerprintTree(source.Root);
+        var parentBefore = SnapshotTestHelper.ParentEntries(workspace);
+        try
+        {
+            await Assert.ThrowsAnyAsync<Exception>(
+                () => SnapshotExporter.ExportAsync(source.Root, Path.Combine(first, "snapshot")));
+
+            Assert.Equal(sourceBefore, SnapshotTestHelper.FingerprintTree(source.Root));
+            Assert.Equal(parentBefore, SnapshotTestHelper.ParentEntries(workspace));
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteDirectoryAlias(first);
+            SnapshotTestHelper.DeleteDirectoryAlias(second);
+        }
+    }
+
+    private static async Task AssertDestinationParentRetargetRejectedAsync(
+        string sourceRoot,
+        string destinationParentAlias,
+        string originalParent,
+        string retargetedParent)
+    {
+        var destination = Path.Combine(destinationParentAlias, "snapshot");
+        var originalDestination = Path.Combine(originalParent, "snapshot");
+        var retargetedDestination = Path.Combine(retargetedParent, "snapshot");
+        var sourceBefore = SnapshotTestHelper.FingerprintTree(sourceRoot);
+        var originalParentBefore = SnapshotTestHelper.ParentEntries(originalParent);
+        var retargetedParentBefore = SnapshotTestHelper.ParentEntries(retargetedParent);
+        var reachedValidation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var resumeExport = new ManualResetEventSlim(initialState: false);
+        var validationReports = 0;
+        Action<string> progress = message =>
+        {
+            if (!string.Equals(
+                    message,
+                    "Validating temporary snapshot...",
+                    StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (Interlocked.Increment(ref validationReports) != 1)
+                return;
+
+            reachedValidation.TrySetResult();
+            if (!resumeExport.Wait(TimeSpan.FromSeconds(15)))
+                throw new TimeoutException("The destination-parent retarget hook was not released.");
+        };
+
+        var exportTask = Task.Run(
+            () => SnapshotExporter.ExportAsync(sourceRoot, destination, progress));
+        try
+        {
+            var completed = await Task.WhenAny(reachedValidation.Task, exportTask)
+                .WaitAsync(TimeSpan.FromSeconds(15));
+            if (completed == exportTask)
+            {
+                var earlyFailure = await Record.ExceptionAsync(async () => await exportTask);
+                throw new XunitException(
+                    earlyFailure == null
+                        ? "Export completed before the deterministic retarget hook was reached."
+                        : "Export failed before the deterministic retarget hook was reached: " +
+                          earlyFailure.Message);
+            }
+
+            SnapshotTestHelper.DeleteDirectoryAlias(destinationParentAlias);
+            Assert.False(Directory.Exists(destinationParentAlias));
+            Assert.False(File.Exists(destinationParentAlias));
+            await SnapshotTestHelper.CreateDirectoryAliasAsync(
+                destinationParentAlias,
+                retargetedParent);
+        }
+        finally
+        {
+            resumeExport.Set();
+        }
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await exportTask);
+
+        Assert.Contains(
+            "destination parent changed",
+            exception.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(sourceBefore, SnapshotTestHelper.FingerprintTree(sourceRoot));
+        Assert.Equal(originalParentBefore, SnapshotTestHelper.ParentEntries(originalParent));
+        Assert.Equal(retargetedParentBefore, SnapshotTestHelper.ParentEntries(retargetedParent));
+        Assert.False(Directory.Exists(originalDestination));
+        Assert.False(Directory.Exists(retargetedDestination));
+    }
+
+    [Fact]
+    public void CheckpointReadiness_NoWalThenPositive_TransitionsOnlyOnPositiveProgress()
+    {
+        var state = new CheckpointReadinessStateMachine(TimeSpan.FromMinutes(1));
+
+        Assert.False(state.Observe(new CheckpointRow(0, -1, -1)));
+        Assert.False(state.IsReady);
+
+        Assert.True(state.Observe(new CheckpointRow(0, 4, 4)));
+        Assert.True(state.IsReady);
+
+        Assert.False(state.Observe(new CheckpointRow(1, -1, -1)));
+        Assert.True(state.IsReady);
+    }
+
+    [Fact]
+    public void CheckpointReadiness_PersistentNoWal_TimesOutDeterministically()
+    {
+        var timeout = TimeSpan.FromSeconds(10);
+        var elapsed = TimeSpan.Zero;
+        var state = new CheckpointReadinessStateMachine(timeout, () => elapsed);
+
+        Assert.False(state.Observe(new CheckpointRow(0, -1, -1)));
+        elapsed = timeout - TimeSpan.FromTicks(1);
+        Assert.False(state.Observe(new CheckpointRow(1, -1, -1)));
+        elapsed = timeout;
+
+        Assert.Throws<TimeoutException>(
+            () => state.Observe(new CheckpointRow(0, -1, -1)));
+    }
+
+    [Theory]
+    [InlineData(-1, 0, 0)]
+    [InlineData(2, 0, 0)]
+    [InlineData(0, -1, 0)]
+    [InlineData(0, 0, -1)]
+    [InlineData(0, -2, -2)]
+    [InlineData(0, -2, 0)]
+    [InlineData(0, 0, -2)]
+    [InlineData(0, 1, 2)]
+    public void CheckpointReadiness_InvalidRowsFail(
+        int busy,
+        int walPages,
+        int checkpointedPages)
+    {
+        var state = new CheckpointReadinessStateMachine(TimeSpan.FromMinutes(1));
+
+        Assert.Throws<InvalidOperationException>(
+            () => state.Observe(new CheckpointRow(busy, walPages, checkpointedPages)));
+    }
+
+    [Fact]
+    public async Task Export_ActiveWalWriterAndPassiveCheckpointer_ProducesConsistentSnapshots()
+    {
+        var workspace = Workspace("online-backup");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            metadataRows: 3,
+            artifactRows: 2);
+        using var stop = new CancellationTokenSource();
+        var writerInitialized = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var checkpointerInitialized = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var committedWrite = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var checkpointProgress = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var writeCount = 0;
+        var checkpointCount = 0;
+        var anchor = SnapshotTestHelper.OpenConnection(source.DatabasePath);
+
+        var writer = Task.Run(
+            () => RunWriterAsync(
+                anchor,
+                checkpointerInitialized.Task,
+                writerInitialized,
+                committedWrite,
+                () => Interlocked.Increment(ref writeCount),
+                stop.Token));
+        var checkpointer = Task.Run(
+            () => RunCheckpointerAsync(
+                source.DatabasePath,
+                writerInitialized.Task,
+                committedWrite.Task,
+                checkpointerInitialized,
+                checkpointProgress,
+                () => Interlocked.Increment(ref checkpointCount),
+                stop.Token));
+
+        try
+        {
+            await Task.WhenAll(writerInitialized.Task, checkpointerInitialized.Task)
+                .WaitAsync(TimeSpan.FromSeconds(10));
+            await Task.WhenAll(committedWrite.Task, checkpointProgress.Task)
+                .WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.True(Volatile.Read(ref writeCount) >= 1);
+            Assert.True(Volatile.Read(ref checkpointCount) >= 1);
+
+            var previousHead = 0;
+            for (var snapshotNumber = 0; snapshotNumber < 4; snapshotNumber++)
+            {
+                Assert.False(writer.IsCompleted, "Writer stopped before export.");
+                Assert.False(checkpointer.IsCompleted, "Checkpointer stopped before export.");
+                var destination = Path.Combine(workspace, $"snapshot-{snapshotNumber}");
+
+                await Task.Run(
+                        () => SnapshotExporter.ExportAsync(source.Root, destination))
+                    .WaitAsync(TimeSpan.FromSeconds(30));
+
+                SnapshotTestHelper.AssertFinalLayout(destination);
+                using var snapshot = SnapshotTestHelper.OpenConnection(
+                    Path.Combine(destination, "cache.db"),
+                    SqliteOpenMode.ReadOnly);
+                AssertIntegrityCheck(snapshot);
+
+                var head = ReadInt32(
+                    snapshot,
+                    "SELECT json_value FROM cache_metadata WHERE cache_key='snapshot-stress:head';");
+                var committedRows = ReadInt32(
+                    snapshot,
+                    "SELECT COUNT(*) FROM cache_metadata WHERE cache_key LIKE 'snapshot-stress:row:%';");
+                Assert.Equal(head, committedRows);
+                Assert.True(head >= previousHead);
+                previousHead = head;
+
+                Assert.Equal(
+                    new[]
+                    {
+                        ("baseline:metadata:0000", """{"baseline":0}"""),
+                        ("baseline:metadata:0001", """{"baseline":1}"""),
+                        ("baseline:metadata:0002", """{"baseline":2}"""),
+                    },
+                    ReadMetadata(
+                        snapshot,
+                        "SELECT cache_key, json_value FROM cache_metadata "
+                        + "WHERE job_id='baseline' ORDER BY cache_key;"));
+                Assert.Equal(
+                    1,
+                    ReadInt32(
+                        snapshot,
+                        "SELECT COUNT(*) FROM cache_job_state WHERE job_id='baseline-job' AND is_completed=1;"));
+                Assert.Equal(
+                    source.Artifacts.Count,
+                    ReadInt32(snapshot, "SELECT COUNT(*) FROM cache_artifacts;"));
+
+                foreach (var artifact in source.Artifacts)
+                {
+                    Assert.Equal(
+                        artifact.Content,
+                        File.ReadAllBytes(Path.Combine(
+                            destination,
+                            "artifacts",
+                            artifact.RelativePath)));
+                }
+
+                var validation = await SnapshotValidator.ValidateAsync(destination);
+                Assert.True(validation.IsValid, string.Join(Environment.NewLine, validation.Errors));
+                Assert.Equal(0, validation.MissingArtifactFiles);
+            }
+        }
+        finally
+        {
+            stop.Cancel();
+            try
+            {
+                await Task.WhenAll(writer, checkpointer);
+            }
+            finally
+            {
+                anchor.Dispose();
+            }
+        }
+    }
+
+    private static async Task RunWriterAsync(
+        SqliteConnection connection,
+        Task checkpointerInitialized,
+        TaskCompletionSource initialized,
+        TaskCompletionSource committedWrite,
+        Action committed,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            AssertWalMode(connection, setWalMode: true);
+            Assert.Equal(0, ReadInt32(connection, "PRAGMA wal_autocheckpoint=0;"));
+            Assert.Equal(
+                new CheckpointRow(0, 0, 0),
+                ReadCheckpointRow(connection, truncate: true));
+            initialized.TrySetResult();
+            await checkpointerInitialized.WaitAsync(cancellationToken);
+
+            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(2));
+            var sequence = 0;
+
+            do
+            {
+                sequence++;
+                using var transaction = connection.BeginTransaction();
+                using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = """
+                    INSERT INTO cache_metadata
+                        (cache_key, json_value, created_at, expires_at, job_id)
+                    VALUES (@rowKey, @sequence, @now, @expires, 'snapshot-stress');
+                    INSERT INTO cache_metadata
+                        (cache_key, json_value, created_at, expires_at, job_id)
+                    VALUES ('snapshot-stress:head', @sequence, @now, @expires, 'snapshot-stress')
+                    ON CONFLICT(cache_key) DO UPDATE SET json_value=excluded.json_value;
+                    """;
+                command.Parameters.AddWithValue("@rowKey", $"snapshot-stress:row:{sequence:D10}");
+                command.Parameters.AddWithValue(
+                    "@sequence",
+                    sequence.ToString(CultureInfo.InvariantCulture));
+                command.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToString("O"));
+                command.Parameters.AddWithValue("@expires", DateTimeOffset.UtcNow.AddDays(1).ToString("O"));
+                command.ExecuteNonQuery();
+                transaction.Commit();
+                committed();
+                committedWrite.TrySetResult();
+            }
+            while (await timer.WaitForNextTickAsync(cancellationToken));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            initialized.TrySetCanceled(cancellationToken);
+            committedWrite.TrySetCanceled(cancellationToken);
+            // Expected bounded shutdown.
+        }
+        catch (Exception exception)
+        {
+            initialized.TrySetException(exception);
+            committedWrite.TrySetException(exception);
+            throw;
+        }
+    }
+
+    private static async Task RunCheckpointerAsync(
+        string databasePath,
+        Task writerInitialized,
+        Task committedWrite,
+        TaskCompletionSource initialized,
+        TaskCompletionSource checkpointProgress,
+        Action checkpointed,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await writerInitialized.WaitAsync(cancellationToken);
+            using var connection = SnapshotTestHelper.OpenConnection(databasePath);
+            Assert.Equal(0, ReadInt32(connection, "PRAGMA wal_autocheckpoint=0;"));
+            SnapshotTestHelper.ExecuteNonQuery(connection, "PRAGMA busy_timeout=2000;");
+            AssertWalMode(connection, setWalMode: false);
+            Assert.Equal(3, ReadInt32(connection, "SELECT COUNT(*) FROM cache_metadata;"));
+            initialized.TrySetResult();
+
+            await committedWrite.WaitAsync(cancellationToken);
+            var readiness = new CheckpointReadinessStateMachine(TimeSpan.FromSeconds(10));
+            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(2));
+
+            do
+            {
+                if (readiness.Observe(ReadCheckpointRow(connection, truncate: false)))
+                {
+                    checkpointed();
+                    checkpointProgress.TrySetResult();
+                }
+            }
+            while (await timer.WaitForNextTickAsync(cancellationToken));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            initialized.TrySetCanceled(cancellationToken);
+            checkpointProgress.TrySetCanceled(cancellationToken);
+            // Expected bounded shutdown.
+        }
+        catch (Exception exception)
+        {
+            initialized.TrySetException(exception);
+            checkpointProgress.TrySetException(exception);
+            throw;
+        }
+    }
+
+    private static void AssertWalMode(SqliteConnection connection, bool setWalMode)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = setWalMode ? "PRAGMA journal_mode=WAL;" : "PRAGMA journal_mode;";
+        var journalMode = Convert.ToString(
+            command.ExecuteScalar(),
+            CultureInfo.InvariantCulture);
+        Assert.True(
+            string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase),
+            $"Expected SQLite journal mode 'wal', found '{journalMode ?? "<null>"}'.");
+    }
+
+    private static CheckpointRow ReadCheckpointRow(
+        SqliteConnection connection,
+        bool truncate)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = truncate
+            ? "PRAGMA wal_checkpoint(TRUNCATE);"
+            : "PRAGMA wal_checkpoint(PASSIVE);";
+        using var reader = command.ExecuteReader();
+        Assert.True(reader.Read());
+        var row = new CheckpointRow(
+            reader.GetInt32(0),
+            reader.GetInt32(1),
+            reader.GetInt32(2));
+        Assert.False(reader.Read());
+        return row;
+    }
+
+    private static void AssertIntegrityCheck(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA integrity_check;";
+        using var reader = command.ExecuteReader();
+        var rows = new List<string>();
+        while (reader.Read())
+            rows.Add(reader.GetString(0));
+        Assert.Equal(new[] { "ok" }, rows);
+    }
+
+    private static int ReadInt32(SqliteConnection connection, string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
+    private static (string CacheKey, string JsonValue)[] ReadMetadata(
+        SqliteConnection connection,
+        string sql)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        using var reader = command.ExecuteReader();
+        var rows = new List<(string CacheKey, string JsonValue)>();
+        while (reader.Read())
+            rows.Add((reader.GetString(0), reader.GetString(1)));
+        return rows.ToArray();
     }
 }
 
-// =============================================================================
-// SnapshotValidator — validation behavior
-// =============================================================================
-
 public class SnapshotValidatorTests : IDisposable
 {
-    private readonly List<string> _tempDirs = new();
+    private readonly List<string> _workspaces = [];
 
-    private string TempDir(string tag = "t")
+    private string Workspace(string tag)
     {
-        var d = SnapshotTestHelper.NewTempDir($"val-{tag}");
-        _tempDirs.Add(d);
-        return d;
+        var workspace = SnapshotTestHelper.CreateWorkspace($"validator-{tag}");
+        _workspaces.Add(workspace);
+        return workspace;
     }
 
     public void Dispose()
     {
-        foreach (var d in _tempDirs)
+        foreach (var workspace in _workspaces)
         {
-            try { Directory.Delete(d, recursive: true); } catch { /* best effort */ }
+            try
+            {
+                Directory.Delete(workspace, recursive: true);
+            }
+            catch
+            {
+                // Best effort only.
+            }
         }
     }
 
-    // ── Valid snapshots ───────────────────────────────────────────────────────
-
     [Fact]
-    public async Task Validate_ValidSnapshot_ReturnsIsValid()
+    public async Task Validate_ValidSnapshot_ReportsCountsAndNoMissingFiles()
     {
-        var (root, baseRoot, store) = SnapshotTestHelper.CreatePopulatedStore();
-        _tempDirs.Add(baseRoot);
-        using (store)
-        {
-            await SnapshotTestHelper.SeedAsync(store);
-        }
+        var workspace = Workspace("valid");
+        var snapshot = SnapshotTestHelper.CreateSource(
+            workspace,
+            metadataRows: 4,
+            artifactRows: 3,
+            useWal: false).Root;
 
-        var dest = TempDir("ok");
-        await SnapshotExporter.ExportAsync(root, dest);
+        var result = await SnapshotValidator.ValidateAsync(snapshot);
 
-        var result = await SnapshotValidator.ValidateAsync(dest);
-
-        Assert.True(result.IsValid);
+        Assert.True(result.IsValid, string.Join(Environment.NewLine, result.Errors));
         Assert.Empty(result.Errors);
-        Assert.True(result.MetadataEntries > 0);
-        Assert.True(result.ArtifactEntries > 0);
-        Assert.Equal(0, result.MissingArtifactFiles);
-    }
-
-    [Fact]
-    public async Task Validate_EmptyCache_ReturnsIsValid()
-    {
-        // A cache with no data is valid — schema is initialized but tables are empty
-        var (root, baseRoot, store) = SnapshotTestHelper.CreatePopulatedStore();
-        _tempDirs.Add(baseRoot);
-        store.Dispose();
-
-        var dest = TempDir("empty");
-        await SnapshotExporter.ExportAsync(root, dest);
-
-        var result = await SnapshotValidator.ValidateAsync(dest);
-        Assert.True(result.IsValid);
-        Assert.Equal(0, result.MetadataEntries);
-        Assert.Equal(0, result.ArtifactEntries);
-    }
-
-    [Fact]
-    public async Task Validate_ReportsMetadataAndArtifactCounts()
-    {
-        var (root, baseRoot, store) = SnapshotTestHelper.CreatePopulatedStore();
-        _tempDirs.Add(baseRoot);
-        using (store)
-        {
-            await SnapshotTestHelper.SeedAsync(store, metadataRows: 4, artifactRows: 3);
-        }
-
-        var dest = TempDir("counts");
-        await SnapshotExporter.ExportAsync(root, dest);
-
-        var result = await SnapshotValidator.ValidateAsync(dest);
-
-        Assert.True(result.IsValid);
         Assert.Equal(4, result.MetadataEntries);
         Assert.Equal(3, result.ArtifactEntries);
-    }
-
-    // ── Layout errors ─────────────────────────────────────────────────────────
-
-    [Fact]
-    public async Task Validate_MissingDirectory_ReturnsInvalid()
-    {
-        var result = await SnapshotValidator.ValidateAsync("/nonexistent/path/hlx-snap-test");
-
-        Assert.False(result.IsValid);
-        Assert.Contains(result.Errors, e => e.Contains("does not exist", StringComparison.OrdinalIgnoreCase));
-    }
-
-    [Fact]
-    public async Task Validate_MissingCacheDb_ReturnsInvalid()
-    {
-        var snap = TempDir("no-db");
-        Directory.CreateDirectory(snap);
-
-        var result = await SnapshotValidator.ValidateAsync(snap);
-
-        Assert.False(result.IsValid);
-        Assert.Contains(result.Errors, e => e.Contains("cache.db", StringComparison.OrdinalIgnoreCase));
-    }
-
-    [Fact]
-    public async Task Validate_MissingArtifactsDir_ReturnsWarningNotError()
-    {
-        var (root, baseRoot, store) = SnapshotTestHelper.CreatePopulatedStore();
-        _tempDirs.Add(baseRoot);
-        store.Dispose();
-
-        var dest = TempDir("no-artdir");
-        await SnapshotExporter.ExportAsync(root, dest);
-
-        // Remove the artifacts/ directory from the snapshot
-        var artDir = Path.Combine(dest, "artifacts");
-        if (Directory.Exists(artDir)) Directory.Delete(artDir, recursive: true);
-
-        var result = await SnapshotValidator.ValidateAsync(dest);
-
-        // With no artifact rows in the DB, missing artifacts/ is only a warning
-        Assert.True(result.IsValid, "No artifact rows → missing artifacts/ should be a warning only");
-        Assert.Contains(result.Warnings, w => w.Contains("artifacts", StringComparison.OrdinalIgnoreCase));
-    }
-
-    // ── Schema errors ─────────────────────────────────────────────────────────
-
-    [Fact]
-    public async Task Validate_WrongSchemaVersion_ReturnsInvalid()
-    {
-        var snap = TempDir("bad-version");
-        Directory.CreateDirectory(snap);
-        var dbPath = Path.Combine(snap, "cache.db");
-
-        using var conn = new SqliteConnection($"Data Source={dbPath}");
-        conn.Open();
-        using (var cmd = conn.CreateCommand())
-        {
-            cmd.CommandText = "PRAGMA user_version=42;";
-            cmd.ExecuteNonQuery();
-        }
-        conn.Close();
-        SqliteConnection.ClearAllPools();
-
-        var result = await SnapshotValidator.ValidateAsync(snap);
-
-        Assert.False(result.IsValid);
-        Assert.Contains(result.Errors, e => e.Contains("42", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task Validate_MissingTable_ReturnsInvalid()
-    {
-        var snap = TempDir("missing-table");
-        Directory.CreateDirectory(snap);
-        Directory.CreateDirectory(Path.Combine(snap, "artifacts"));
-        var dbPath = Path.Combine(snap, "cache.db");
-
-        using var conn = new SqliteConnection($"Data Source={dbPath}");
-        conn.Open();
-        using (var cmd = conn.CreateCommand())
-        {
-            // Stamp correct version but only create two of the three tables
-            cmd.CommandText = "PRAGMA user_version=1;";
-            cmd.ExecuteNonQuery();
-            cmd.CommandText = """
-                CREATE TABLE cache_metadata (cache_key TEXT PRIMARY KEY, json_value TEXT NOT NULL,
-                    created_at TEXT NOT NULL, expires_at TEXT NOT NULL, job_id TEXT NOT NULL);
-                CREATE TABLE cache_artifacts (cache_key TEXT PRIMARY KEY, file_path TEXT NOT NULL,
-                    file_size INTEGER NOT NULL, created_at TEXT NOT NULL, last_accessed TEXT NOT NULL, job_id TEXT NOT NULL);
-                """;
-            cmd.ExecuteNonQuery();
-            // Intentionally omit cache_job_state
-        }
-        conn.Close();
-        SqliteConnection.ClearAllPools();
-
-        var result = await SnapshotValidator.ValidateAsync(snap);
-
-        Assert.False(result.IsValid);
-        Assert.Contains(result.Errors, e => e.Contains("cache_job_state", StringComparison.OrdinalIgnoreCase));
-    }
-
-    // ── Broken artifact references ────────────────────────────────────────────
-
-    [Fact]
-    public async Task Validate_MissingArtifactFile_ReturnsInvalid()
-    {
-        var (root, baseRoot, store) = SnapshotTestHelper.CreatePopulatedStore();
-        _tempDirs.Add(baseRoot);
-        using (store)
-        {
-            await SnapshotTestHelper.SeedAsync(store, metadataRows: 1, artifactRows: 1);
-        }
-
-        var dest = TempDir("del-artifact");
-        await SnapshotExporter.ExportAsync(root, dest);
-
-        // Delete one artifact file from the snapshot
-        var snapArtifacts = Path.Combine(dest, "artifacts");
-        var firstArtifact = Directory.GetFiles(snapArtifacts, "*", SearchOption.AllDirectories).First();
-        File.Delete(firstArtifact);
-
-        var result = await SnapshotValidator.ValidateAsync(dest);
-
-        Assert.False(result.IsValid);
-        Assert.True(result.MissingArtifactFiles > 0);
-        Assert.Contains(result.Errors, e => e.Contains("Missing artifact file", StringComparison.OrdinalIgnoreCase));
-    }
-
-    [Fact]
-    public async Task Validate_AllArtifactFilesPresent_NoBrokenRefs()
-    {
-        var (root, baseRoot, store) = SnapshotTestHelper.CreatePopulatedStore();
-        _tempDirs.Add(baseRoot);
-        using (store)
-        {
-            await SnapshotTestHelper.SeedAsync(store, metadataRows: 2, artifactRows: 5);
-        }
-
-        var dest = TempDir("full-refs");
-        await SnapshotExporter.ExportAsync(root, dest);
-
-        var result = await SnapshotValidator.ValidateAsync(dest);
-
-        Assert.True(result.IsValid);
         Assert.Equal(0, result.MissingArtifactFiles);
+    }
+
+    [Fact]
+    public async Task Validate_MissingSnapshotDirectory_IsInvalidWithFocusedDiagnostic()
+    {
+        var workspace = Workspace("missing-directory");
+        var snapshot = Path.Combine(workspace, "missing-snapshot");
+
+        var result = await SnapshotValidator.ValidateAsync(snapshot);
+
+        Assert.False(result.IsValid);
+        var error = Assert.Single(result.Errors);
+        Assert.Contains("directory does not exist", error, StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(snapshot));
+    }
+
+    [Fact]
+    public async Task Validate_MissingDatabase_IsInvalidWithFocusedDiagnostic()
+    {
+        var workspace = Workspace("missing-database");
+        var snapshot = Path.Combine(workspace, "snapshot");
+        Directory.CreateDirectory(snapshot);
+
+        var result = await SnapshotValidator.ValidateAsync(snapshot);
+
+        Assert.False(result.IsValid);
+        var error = Assert.Single(result.Errors);
+        Assert.Contains("missing required database file", error, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cache.db", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Validate_WrongSchemaVersion_IsInvalidWithFocusedDiagnostic()
+    {
+        var workspace = Workspace("wrong-schema");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 0,
+            useWal: false);
+        using (var connection = SnapshotTestHelper.OpenConnection(source.DatabasePath))
+            SnapshotTestHelper.ExecuteNonQuery(connection, "PRAGMA user_version=42;");
+
+        var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(
+            result.Errors,
+            error => error.Contains("schema version mismatch", StringComparison.OrdinalIgnoreCase)
+                && error.Contains("expected 1", StringComparison.OrdinalIgnoreCase)
+                && error.Contains("found 42", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Validate_MissingRequiredTable_IsInvalidWithFocusedDiagnostic()
+    {
+        var workspace = Workspace("missing-required-table");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 0,
+            useWal: false);
+        using (var connection = SnapshotTestHelper.OpenConnection(source.DatabasePath))
+            SnapshotTestHelper.ExecuteNonQuery(connection, "DROP TABLE cache_job_state;");
+
+        var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(
+            result.Errors,
+            error => error.Contains("missing required table", StringComparison.OrdinalIgnoreCase)
+                && error.Contains("cache_job_state", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Validate_CorruptDatabase_IsInvalidWithoutThrowingAndReportsIntegrityFailure()
+    {
+        var workspace = Workspace("corrupt-database");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 0,
+            useWal: false);
+        using (var connection = SnapshotTestHelper.OpenConnection(source.DatabasePath))
+        {
+            SnapshotTestHelper.ExecuteNonQuery(connection, """
+                PRAGMA writable_schema=ON;
+                UPDATE sqlite_schema
+                SET rootpage = (
+                    SELECT rootpage
+                    FROM sqlite_schema
+                    WHERE type='table' AND name='cache_metadata'
+                )
+                WHERE type='table' AND name='cache_job_state';
+                PRAGMA writable_schema=OFF;
+                """);
+        }
+
+        var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(
+            result.Errors,
+            error => error.Contains("integrity", StringComparison.OrdinalIgnoreCase)
+                || error.Contains("corrupt", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Validate_DatabaseAliasOutsideSnapshot_IsRejectedAtSnapshotBoundary()
+    {
+        var workspace = Workspace("external-database");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 0,
+            useWal: false);
+        var externalDirectory = Path.Combine(workspace, "external-database");
+        Directory.CreateDirectory(externalDirectory);
+        var externalDatabase = Path.Combine(externalDirectory, "cache.db");
+        File.Move(source.DatabasePath, externalDatabase);
+        await SnapshotTestHelper.CreateFileAliasAsync(source.DatabasePath, externalDatabase);
+
+        try
+        {
+            var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+            AssertPhysicalSnapshotBoundaryError(result, "database");
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteFileAlias(source.DatabasePath);
+        }
+    }
+
+    [HardLinkFileSystemFact]
+    public async Task Validate_HardLinkedDatabase_IsRejectedAndNotCountedMissing()
+    {
+        var workspace = Workspace("hard-linked-database");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 1,
+            useWal: false);
+        SnapshotTestHelper.ReplaceWithHardLink(
+            source.DatabasePath,
+            Path.Combine(workspace, "external-cache.db"));
+
+        var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+        Assert.False(result.IsValid);
+        Assert.Equal(0, result.MissingArtifactFiles);
+        Assert.Contains(
+            result.Errors,
+            error => error.Contains("database", StringComparison.OrdinalIgnoreCase)
+                && error.Contains("link", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Validate_ArtifactsAliasOutsideSnapshot_IsRejectedAtSnapshotBoundary()
+    {
+        var workspace = Workspace("external-artifacts");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 1,
+            useWal: false);
+        var artifactsPath = Path.Combine(source.Root, "artifacts");
+        var externalArtifacts = Path.Combine(workspace, "external-artifacts");
+        Directory.Move(artifactsPath, externalArtifacts);
+        await SnapshotTestHelper.CreateDirectoryAliasAsync(artifactsPath, externalArtifacts);
+
+        try
+        {
+            var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+            AssertPhysicalSnapshotBoundaryError(result, "artifacts");
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteDirectoryAlias(artifactsPath);
+        }
+    }
+
+    [HardLinkFileSystemFact]
+    public async Task Validate_HardLinkedArtifact_IsRejectedWhileMissingAccountingRemainsExact()
+    {
+        var workspace = Workspace("hard-linked-artifact");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 1,
+            useWal: false);
+        var artifact = Assert.Single(source.Artifacts);
+        SnapshotTestHelper.InsertArtifactReference(
+            source.DatabasePath,
+            "missing-alongside-hard-link",
+            Path.Combine("missing", "artifact.bin"),
+            1);
+        SnapshotTestHelper.ReplaceWithHardLink(
+            Path.Combine(source.Root, "artifacts", artifact.RelativePath),
+            Path.Combine(workspace, "external-artifact.bin"));
+
+        var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+        Assert.False(result.IsValid);
+        Assert.Equal(2, result.ArtifactEntries);
+        Assert.Equal(1, result.MissingArtifactFiles);
+        Assert.Contains(
+            result.Errors,
+            error => error.Contains("artifact", StringComparison.OrdinalIgnoreCase)
+                && error.Contains("link", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(result.Errors, IsMissingError);
+    }
+
+    [Fact]
+    public async Task Validate_ArtifactsAliasToSnapshotRoot_IsRejectedAtSnapshotBoundary()
+    {
+        var workspace = Workspace("root-artifacts");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 0,
+            useWal: false);
+        var artifactsPath = Path.Combine(source.Root, "artifacts");
+        Directory.Delete(artifactsPath);
+        await SnapshotTestHelper.CreateDirectoryAliasAsync(artifactsPath, source.Root);
+
+        try
+        {
+            var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+            AssertPhysicalSnapshotBoundaryError(result, "artifacts");
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteDirectoryAlias(artifactsPath);
+        }
+    }
+
+    [CaseSensitiveFileSystemFact]
+    public async Task Validate_ArtifactLinkIntoCaseOnlySibling_IsUnsafeAndNotMissing()
+    {
+        var workspace = Workspace("case-artifact-link");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 1,
+            useWal: false);
+        var artifact = Assert.Single(source.Artifacts);
+        var artifactsRoot = Path.Combine(source.Root, "artifacts");
+        var caseOnlySibling = Path.Combine(source.Root, "ARTIFACTS");
+        SnapshotTestHelper.CreateDistinctCaseOnlySibling(
+            artifactsRoot,
+            caseOnlySibling);
+
+        var externalArtifact = Path.Combine(caseOnlySibling, artifact.RelativePath);
+        Directory.CreateDirectory(Path.GetDirectoryName(externalArtifact)!);
+        File.WriteAllBytes(externalArtifact, artifact.Content);
+
+        var referencedArtifact = Path.Combine(artifactsRoot, artifact.RelativePath);
+        File.Delete(referencedArtifact);
+        await SnapshotTestHelper.CreateFileAliasAsync(referencedArtifact, externalArtifact);
+        try
+        {
+            var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+            Assert.False(result.IsValid);
+            Assert.Equal(0, result.MissingArtifactFiles);
+            Assert.Contains(result.Errors, IsUnsafeArtifactPathError);
+            Assert.DoesNotContain(result.Errors, IsMissingError);
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteFileAlias(referencedArtifact);
+        }
+    }
+
+    [CaseSensitiveFileSystemFact]
+    public async Task Validate_MissingArtifactBelowCaseOnlyExternalParent_IsUnsafeAndNotMissing()
+    {
+        var workspace = Workspace("case-missing-parent");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            metadataRows: 0,
+            artifactRows: 0,
+            useWal: false);
+        var artifactsRoot = Path.Combine(source.Root, "artifacts");
+        var caseOnlySibling = Path.Combine(source.Root, "ARTIFACTS");
+        SnapshotTestHelper.CreateDistinctCaseOnlySibling(
+            artifactsRoot,
+            caseOnlySibling);
+
+        var externalParentAlias = Path.Combine(artifactsRoot, "external-parent");
+        await SnapshotTestHelper.CreateDirectoryAliasAsync(
+            externalParentAlias,
+            caseOnlySibling);
+        SnapshotTestHelper.InsertArtifactReference(
+            source.DatabasePath,
+            "case-only-external-parent",
+            Path.Combine("external-parent", "missing.bin"),
+            1);
+        try
+        {
+            var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+            Assert.False(result.IsValid);
+            Assert.Equal(1, result.ArtifactEntries);
+            Assert.Equal(0, result.MissingArtifactFiles);
+            Assert.Contains(result.Errors, IsUnsafeArtifactPathError);
+            Assert.DoesNotContain(result.Errors, IsMissingError);
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteDirectoryAlias(externalParentAlias);
+        }
+    }
+
+    [Fact]
+    public async Task Validate_TraversalOnly_IsInvalidWithoutIncrementingMissingCount()
+    {
+        var workspace = Workspace("traversal");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            metadataRows: 0,
+            artifactRows: 0,
+            useWal: false);
+        SnapshotTestHelper.InsertArtifactReference(
+            source.DatabasePath,
+            "traversal",
+            Path.Combine("..", "outside.bin"),
+            1);
+
+        var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+        Assert.False(result.IsValid);
+        Assert.Equal(0, result.MissingArtifactFiles);
+        Assert.Contains(result.Errors, IsTraversalError);
+        Assert.DoesNotContain(result.Errors, IsMissingError);
+    }
+
+    [Fact]
+    public async Task Validate_TraversalAndOneMissingInRoot_CountsOnlyMissingFile()
+    {
+        var workspace = Workspace("mixed");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            metadataRows: 0,
+            artifactRows: 0,
+            useWal: false);
+        SnapshotTestHelper.InsertArtifactReference(
+            source.DatabasePath,
+            "traversal",
+            Path.Combine("..", "outside.bin"),
+            1);
+        SnapshotTestHelper.InsertArtifactReference(
+            source.DatabasePath,
+            "missing",
+            Path.Combine("missing", "inside.bin"),
+            1);
+
+        var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+        Assert.False(result.IsValid);
+        Assert.Equal(1, result.MissingArtifactFiles);
+        Assert.Contains(result.Errors, IsTraversalError);
+        Assert.Contains(result.Errors, IsMissingError);
+    }
+
+    [Fact]
+    public async Task Validate_ArtifactSizeMismatch_IsInvalidButNotMissing()
+    {
+        var workspace = Workspace("size");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 1,
+            useWal: false);
+        var artifact = Assert.Single(source.Artifacts);
+        SnapshotTestHelper.UpdateArtifactSize(
+            source.DatabasePath,
+            artifact.CacheKey,
+            artifact.Content.Length + 5);
+
+        var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+        Assert.False(result.IsValid);
+        Assert.Equal(0, result.MissingArtifactFiles);
+        Assert.Contains(
+            result.Errors,
+            error => error.Contains("size", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Theory]
+    [InlineData("-wal")]
+    [InlineData("-shm")]
+    [InlineData("-journal")]
+    public async Task Validate_SqliteSidecar_IsInvalid(string suffix)
+    {
+        var workspace = Workspace($"sidecar{suffix}");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 0,
+            useWal: false);
+        File.WriteAllBytes(source.DatabasePath + suffix, [0x01]);
+
+        var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(
+            result.Errors,
+            error => error.Contains($"cache.db{suffix}", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Validate_MissingArtifactDirectoryWithNoRows_RemainsWarningOnly()
+    {
+        var workspace = Workspace("no-artifacts-directory");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            metadataRows: 0,
+            artifactRows: 0,
+            useWal: false);
+        Directory.Delete(Path.Combine(source.Root, "artifacts"));
+
+        var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+        Assert.True(result.IsValid, string.Join(Environment.NewLine, result.Errors));
+        Assert.Contains(
+            result.Warnings,
+            warning => warning.Contains("artifacts", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static void AssertPhysicalSnapshotBoundaryError(
+        SnapshotValidationResult result,
+        string pathKind)
+    {
+        Assert.False(result.IsValid);
+        var error = Assert.Single(result.Errors);
+        Assert.Contains(pathKind, error, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("physical snapshot", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsTraversalError(string error)
+        => error.Contains("travers", StringComparison.OrdinalIgnoreCase)
+           || error.Contains("escape", StringComparison.OrdinalIgnoreCase)
+           || error.Contains("unsafe", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsUnsafeArtifactPathError(string error)
+        => IsTraversalError(error)
+           || error.Contains("outside", StringComparison.OrdinalIgnoreCase)
+           || error.Contains("cannot be resolved safely", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsMissingError(string error)
+        => error.Contains("missing artifact", StringComparison.OrdinalIgnoreCase);
+
+    // ------------------------------------------------------------------------------------
+    // FIFO regression harness.
+    //
+    // SnapshotValidator hashes cache.db and every artifact through
+    // SnapshotExporter.HashFileRequiringExactlyOneLink, which opens the path with a plain
+    // FileStream. On Unix, open(2) against a FIFO that has no writer blocks inside the kernel
+    // until a writer appears. That block is an uninterruptible native call: CancellationToken,
+    // Task cancellation and Thread.Interrupt all fail to release it. A corrupt or hostile
+    // snapshot can therefore hang validation forever.
+    //
+    // Reproducing that hang safely is the whole difficulty. Everything below exists so the
+    // *test* terminates on a bounded schedule even when the *product* does not, and so the
+    // fixture is never torn down while a thread is still parked inside it.
+    // ------------------------------------------------------------------------------------
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int mkfifo(string pathname, uint mode);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int open(string pathname, int flags);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int close(int fd);
+
+    /// <summary>Permission bits handed to mkfifo: 0600, owner read/write.</summary>
+    private const uint FifoMode = 384;
+
+    /// <summary>O_RDWR. 0x2 is uniform across every POSIX platform this suite runs on.</summary>
+    private const int OpenReadWrite = 0x2;
+
+    /// <summary>
+    /// How long validation may take before we declare it hung. This fixture holds one metadata
+    /// row and at most one artifact, so a correct validator finishes in single-digit
+    /// milliseconds; the budget leaves roughly three orders of magnitude of headroom for a
+    /// loaded CI machine while staying strictly bounded.
+    /// </summary>
+    private static readonly TimeSpan HangThreshold = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// How long the blocked worker may take to drain once the FIFO has been joined. After
+    /// open(2) returns, the remaining work is a failed stat/seek and a return, so this budget
+    /// only has to absorb scheduling latency.
+    /// </summary>
+    private static readonly TimeSpan DrainThreshold = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// O_NONBLOCK is not portable as a literal. BSD-derived kernels (macOS, FreeBSD) define it
+    /// as 0x0004, while Linux's asm-generic fcntl.h defines it as 0o4000 (0x800) on the x86-64
+    /// and arm64 targets this suite runs on. Hard-coding either value alone silently requests an
+    /// unrelated flag on the other platform, so it is selected per platform.
+    /// </summary>
+    private static int OpenNonBlock =>
+        RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ||
+        RuntimeInformation.IsOSPlatform(OSPlatform.FreeBSD)
+            ? 0x0004
+            : 0x800;
+
+    private static void CreateFifo(string path)
+    {
+        if (mkfifo(path, FifoMode) != 0)
+            Assert.Fail($"mkfifo(\"{path}\", 0600) failed: errno {Marshal.GetLastWin32Error()}.");
+    }
+
+    /// <summary>
+    /// Releases a reader blocked in open(2) on <paramref name="path"/> by joining the FIFO as a
+    /// peer.
+    ///
+    /// O_RDWR is deliberate: on a FIFO it registers the descriptor as both reader and writer, so
+    /// the call cannot itself block waiting for a peer, which would merely relocate the deadlock
+    /// into the cleanup path. O_NONBLOCK then guarantees an immediate return in every case.
+    ///
+    /// Returns true only when the raw open actually succeeded, because a successful open is the
+    /// only evidence that the blocked reader was released. Callers must never assume success: a
+    /// silently swallowed failure here turns a bounded test into an unbounded wait.
+    /// </summary>
+    private static bool TryUnblockFifo(string path, out string diagnostic)
+    {
+        var fd = open(path, OpenReadWrite | OpenNonBlock);
+        if (fd < 0)
+        {
+            diagnostic =
+                $"open(\"{path}\", O_RDWR|O_NONBLOCK) failed: errno {Marshal.GetLastWin32Error()}.";
+            return false;
+        }
+
+        // The reader was released the instant open() returned; close only reclaims the
+        // descriptor and cannot undo the unblock, so a close failure is reported but not fatal.
+        diagnostic = close(fd) < 0
+            ? $"close({fd}) failed: errno {Marshal.GetLastWin32Error()}."
+            : string.Empty;
+        return true;
+    }
+
+    /// <summary>
+    /// Runs the validator on a dedicated background thread.
+    ///
+    /// A dedicated thread rather than Task.Run is load-bearing. The blocking open(2) cannot be
+    /// cancelled, so whichever thread enters it may be lost for the life of the process. On the
+    /// thread pool that permanently removes a worker from a pool shared with every other test
+    /// and with the runner itself. IsBackground = true is equally load-bearing: the CLR does not
+    /// wait on background threads at shutdown, so even a permanently stranded worker cannot stop
+    /// the xUnit host from exiting normally. Together these are what let this harness fail safely
+    /// without ever reaching for Environment.Exit or Environment.FailFast.
+    /// </summary>
+    private static Task<SnapshotValidationResult> StartValidatorWorker(
+        string snapshotRoot,
+        string probeName)
+    {
+        var completion = new TaskCompletionSource<SnapshotValidationResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                completion.TrySetResult(
+                    SnapshotValidator.ValidateAsync(snapshotRoot).GetAwaiter().GetResult());
+            }
+            catch (Exception ex)
+            {
+                completion.TrySetException(ex);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = probeName,
+        };
+
+        thread.Start();
+        return completion.Task;
+    }
+
+    /// <summary>
+    /// Waits for <paramref name="task"/> for at most <paramref name="budget"/>. Returns whether
+    /// the task reached a terminal state; faulting counts as terminating, which is the property
+    /// under test. Uses WaitAsync so no timer outlives the wait.
+    /// </summary>
+    private static async Task<bool> CompletedWithinAsync(Task task, TimeSpan budget)
+    {
+        try
+        {
+            await task.WaitAsync(budget).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            return false;
+        }
+        catch
+        {
+            // The worker terminated by throwing. The caller re-observes the task for detail.
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Drives validation of a snapshot whose <paramref name="fifoPath"/> has been replaced by a
+    /// FIFO, and guarantees termination on a bounded schedule regardless of product behaviour.
+    /// Owns <paramref name="workspace"/> cleanup, which is skipped whenever a worker is still
+    /// touching it.
+    /// </summary>
+    private static async Task RunFifoRegressionAsync(
+        string workspace,
+        string snapshotRoot,
+        string fifoPath,
+        string probeName,
+        Action<SnapshotValidationResult> assertResult)
+    {
+        var workerStranded = false;
+
+        try
+        {
+            var worker = StartValidatorWorker(snapshotRoot, probeName);
+
+            if (!await CompletedWithinAsync(worker, HangThreshold))
+            {
+                // Validation is blocked in open(2). Join the FIFO to release it, then bound the
+                // second wait as well: an unbounded await here is exactly what would strand the
+                // runner, and the unblock itself can fail.
+                var unblocked = TryUnblockFifo(fifoPath, out var unblockDiagnostic);
+                var drained = unblocked && await CompletedWithinAsync(worker, DrainThreshold);
+                workerStranded = !drained;
+
+                Assert.Fail(DescribeHang(fifoPath, unblocked, unblockDiagnostic, drained));
+            }
+
+            assertResult(await worker);
+        }
+        finally
+        {
+            // A stranded worker is still parked inside open(2) on a path in this workspace.
+            // Deleting the tree would pull it out from under a live thread, so the directory is
+            // deliberately leaked instead. It sits under the gitignored test output folder and
+            // is reclaimed by the next clean build.
+            if (!workerStranded)
+            {
+                try
+                {
+                    Directory.Delete(workspace, recursive: true);
+                }
+                catch
+                {
+                    // Best effort only, matching the class-level cleanup contract.
+                }
+            }
+        }
+    }
+
+    private static string DescribeHang(
+        string fifoPath,
+        bool unblocked,
+        string unblockDiagnostic,
+        bool drained)
+    {
+        var report = new StringBuilder();
+        report.Append(CultureInfo.InvariantCulture,
+            $"SnapshotValidator.ValidateAsync did not return within {HangThreshold.TotalSeconds:0}s ");
+        report.Append(CultureInfo.InvariantCulture,
+            $"after '{fifoPath}' was replaced by a FIFO. Validation must refuse a path that is ");
+        report.Append("not a regular file instead of blocking in open(2).");
+
+        report.Append(unblocked
+            ? " The FIFO was joined to release the blocked open."
+            : " The FIFO could NOT be joined, so the blocked open was never released.");
+
+        if (unblockDiagnostic.Length != 0)
+            report.Append(CultureInfo.InvariantCulture, $" {unblockDiagnostic}");
+
+        if (!drained)
+        {
+            report.Append(
+                " The worker never drained, so its background thread is stranded (it cannot block " +
+                "host shutdown) and the temporary workspace was intentionally left on disk rather " +
+                "than deleted underneath it.");
+        }
+
+        return report.ToString();
+    }
+
+    /// <summary>
+    /// Accepts the diagnostics a validator can legitimately raise for a path that is not a
+    /// regular file, without over-fitting to one exact sentence.
+    /// </summary>
+    private static bool IsIrregularFileDiagnostic(string error)
+        => error.Contains("regular file", StringComparison.OrdinalIgnoreCase)
+           || error.Contains("hard link", StringComparison.OrdinalIgnoreCase)
+           || error.Contains("cannot be inspected safely", StringComparison.OrdinalIgnoreCase);
+
+    [Fact]
+    public async Task ValidateAsync_DatabaseReplacedByFifo_ReturnsInvalidPromptly()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return;
+
+        var workspace = SnapshotTestHelper.CreateWorkspace("validator-fifo-db");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            metadataRows: 1,
+            artifactRows: 0,
+            useWal: false);
+
+        File.Delete(source.DatabasePath);
+        CreateFifo(source.DatabasePath);
+
+        await RunFifoRegressionAsync(
+            workspace,
+            source.Root,
+            source.DatabasePath,
+            "fifo-db-validator",
+            result =>
+            {
+                Assert.False(result.IsValid);
+                Assert.Contains(
+                    result.Errors,
+                    e => e.Contains("cache.db", StringComparison.Ordinal));
+                Assert.Contains(result.Errors, IsIrregularFileDiagnostic);
+            });
+    }
+
+    [Fact]
+    public async Task ValidateAsync_ArtifactReplacedByFifo_ReturnsInvalidPromptly()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return;
+
+        var workspace = SnapshotTestHelper.CreateWorkspace("validator-fifo-artifact");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            metadataRows: 1,
+            artifactRows: 1,
+            useWal: false);
+
+        var artifact = Assert.Single(source.Artifacts);
+        var artifactPath = Path.Combine(source.Root, "artifacts", artifact.RelativePath);
+
+        File.Delete(artifactPath);
+        CreateFifo(artifactPath);
+
+        await RunFifoRegressionAsync(
+            workspace,
+            source.Root,
+            artifactPath,
+            "fifo-artifact-validator",
+            result =>
+            {
+                Assert.False(result.IsValid);
+                Assert.Contains(
+                    result.Errors,
+                    e => e.Contains(artifact.RelativePath, StringComparison.Ordinal));
+                Assert.Contains(result.Errors, IsIrregularFileDiagnostic);
+            });
+    }
+
+    /// <summary>
+    /// Control: the same fixture shape with ordinary regular files must stay valid, so a failure
+    /// in either FIFO test above is attributable to the FIFO and not to the fixture.
+    /// </summary>
+    [Fact]
+    public async Task ValidateAsync_RegularValidSnapshot_RemainsValidControl()
+    {
+        var workspace = Workspace("regular-valid");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            metadataRows: 1,
+            artifactRows: 1,
+            useWal: false);
+
+        var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+        Assert.True(result.IsValid, string.Join(Environment.NewLine, result.Errors));
+        Assert.Empty(result.Errors);
+    }
+}
+
+[CollectionDefinition("SnapshotProcessGlobals", DisableParallelization = true)]
+public sealed class SnapshotProcessGlobalsCollection;
+
+[Collection("SnapshotProcessGlobals")]
+public class SnapshotCommandOutputTests : IDisposable
+{
+    private readonly string _workspace = SnapshotTestHelper.CreateWorkspace("command-output");
+
+    public void Dispose()
+    {
+        try
+        {
+            Directory.Delete(_workspace, recursive: true);
+        }
+        catch
+        {
+            // Best effort only.
+        }
+    }
+
+    [Fact]
+    public async Task Export_HelpStatesTrustedDestinationParentPrecondition()
+    {
+        var testAssemblyDirectory =
+            new DirectoryInfo(Path.GetDirectoryName(typeof(SnapshotCommandOutputTests).Assembly.Location)!);
+        var testProjectDirectory = testAssemblyDirectory;
+        while (testProjectDirectory != null &&
+               !string.Equals(
+                   testProjectDirectory.Name,
+                   "HelixTool.Tests",
+                   StringComparison.Ordinal))
+        {
+            testProjectDirectory = testProjectDirectory.Parent;
+        }
+
+        Assert.NotNull(testProjectDirectory);
+        Assert.NotNull(testProjectDirectory.Parent);
+        var relativeOutputDirectory = Path.GetRelativePath(
+            testProjectDirectory.FullName,
+            testAssemblyDirectory.FullName);
+        var toolAssembly = Path.Combine(
+            testProjectDirectory.Parent.FullName,
+            "HelixTool",
+            relativeOutputDirectory,
+            "HelixTool.dll");
+        Assert.True(File.Exists(toolAssembly), $"CLI assembly not found: {toolAssembly}");
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add(toolAssembly);
+        startInfo.ArgumentList.Add("snapshot");
+        startInfo.ArgumentList.Add("export");
+        startInfo.ArgumentList.Add("--help");
+
+        using var process = new Process { StartInfo = startInfo };
+        Assert.True(process.Start(), "Failed to start the snapshot export help command.");
+        var standardOutput = process.StandardOutput.ReadToEndAsync();
+        var standardError = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+        var output = (await standardOutput) + (await standardError);
+
+        Assert.True(
+            process.ExitCode == 0,
+            $"Snapshot export help exited with {process.ExitCode}:{Environment.NewLine}{output}");
+        Assert.Contains(
+            "parent must be a trusted namespace",
+            output,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "same-principal process",
+            output,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Export_NullRuntimeHashes_StillExplainsEnvironmentReplayAndAzureCliLimitation()
+    {
+        var cacheRoot = Path.Combine(_workspace, "cache-home");
+        var effectiveRoot = Path.Combine(cacheRoot, "public");
+        SnapshotTestHelper.CreateSource(
+            _workspace,
+            metadataRows: 1,
+            artifactRows: 0,
+            sourceRoot: effectiveRoot);
+        var destination = Path.Combine(_workspace, "snapshot");
+        var options = new CacheOptions
+        {
+            CacheRoot = cacheRoot,
+            AuthTokenHash = null,
+            CacheRootHash = null,
+        };
+        var command = new SnapshotCommands(options);
+        var originalError = Console.Error;
+        var originalExitCode = Environment.ExitCode;
+        var originalContext = SynchronizationContext.Current;
+        using var captured = new StringWriter(CultureInfo.InvariantCulture);
+
+        try
+        {
+            Console.SetError(captured);
+            Environment.ExitCode = 0;
+            SynchronizationContext.SetSynchronizationContext(new InlineSynchronizationContext());
+
+            await command.Export(destination);
+
+            Assert.Equal(0, Environment.ExitCode);
+            var output = captured.ToString();
+            Assert.Contains("AZDO_TOKEN", output, StringComparison.Ordinal);
+            Assert.Contains("AZDO_TOKEN_TYPE", output, StringComparison.Ordinal);
+            Assert.Contains("environment", output, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("replay", output, StringComparison.OrdinalIgnoreCase);
+            Assert.True(
+                output.Contains("Azure CLI", StringComparison.OrdinalIgnoreCase)
+                || output.Contains("AzureCliCredential", StringComparison.OrdinalIgnoreCase)
+                || output.Contains("az CLI", StringComparison.OrdinalIgnoreCase),
+                $"Expected Azure CLI limitation in output:{Environment.NewLine}{output}");
+            Assert.DoesNotContain("checkpoint", output, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("side-files included", output, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("Copying cache.db-wal", output, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("Copying cache.db-shm", output, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(originalContext);
+            Console.SetError(originalError);
+            Environment.ExitCode = originalExitCode;
+        }
+    }
+
+    private sealed class InlineSynchronizationContext : SynchronizationContext
+    {
+        public override void Post(SendOrPostCallback callback, object? state)
+            => callback(state);
     }
 }
