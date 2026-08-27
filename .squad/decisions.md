@@ -2490,3 +2490,66 @@ PR #127 snapshot validator and test revisions address three boundary-check defec
 - Ubuntu and Windows CI validation
 - Code review and merge
 
+
+---
+
+## PR #127: Ubuntu CI SQLite Sidecar Lifecycle (Triage)
+
+**By:** Dallas (Lead)  
+**Date:** 2026-08-26T19:09:53-05:00  
+**Verdict:** REJECT — Hudson's test revision brittle; Frost's production revision accepted.
+
+### Finding
+
+Not a product defect. On Linux, case-only spelling is distinct directory; export correctly takes success path. Ubuntu failure shows identical persistent source payloads: artifact hashes and 28,672-byte `cache.db` hash unchanged. Only additions: SQLite-owned `cache.db-shm` and zero-length `cache.db-wal`.
+
+`SnapshotExporter` validates/backs up WAL-mode source via unpooled read-only SQLite connections. SQLite may create, remove, or retain WAL/SHM sidecars as part of connection lifecycle. Exporter issues no source write/checkpoint and must not delete SQLite-managed sidecars. Treating their lifecycle as corruption on successful online backup is incorrect.
+
+### Acceptance Criteria
+
+1. Replace case-sensitive success-path whole-tree equality (line 758) with focused source invariants:
+   - Compare persistent source tree excluding root-level `cache.db-wal` and `cache.db-shm`
+   - Retain byte equality for `cache.db` and all artifacts/non-sidecar files plus persistent directory/link topology
+   - Compare exact logical database state before/after (schema/user version, all fixture rows), integrity `ok`
+2. Permit only two SQLite sidecars to appear/disappear/change on success path
+3. Do not weaken `FingerprintTree`, `AssertRejectedWithoutPublicationAsync`, or aliasing rejection branch
+4. No production change; `SnapshotExporter.cs` frozen unless separately demonstrated defect
+5. Re-run focused snapshot tests, full suite, fresh Ubuntu/Windows CI
+
+### Ownership
+
+Hudson locked out from revising/advising; existing lockouts (Lambert, Parker, Bishop, Burke) remain. Coordinator must recruit independent .NET/SQLite filesystem test owner for `SnapshotExportTests.cs`. Frost sole production owner, no change needed. PR gate closed pending Dallas re-review and fresh green CI.
+
+---
+
+## Linux Case-Only Snapshot Source Integrity (Vasquez Revision)
+
+**By:** Vasquez  
+**Date:** 2026-08-26  
+**Scope:** `Export_CaseOnlyDestination_UsesPlatformBoundaryComparison`
+
+On case-sensitive filesystem, successful export may change lifecycle of SQLite root-level `cache.db-wal` and `cache.db-shm` without mutating persistent source data. Success-path source fingerprint excludes only regular-file fingerprints for these two exact root-level paths. Nested names, directories, links, `cache.db`, artifacts, and all other source entries retain byte/topology checking.
+
+Test also compares integrity-check results, schema/user versions, complete `sqlite_schema`, and every row/column in three fixture tables before/after export. Case-insensitive rejection branch retains unfiltered whole-tree and publication-residue checks.
+
+**Validation:** With `DOTNET_ROLL_FORWARD=Major`: case-only test passed once after compilation + 10 repeated no-build runs; 54 focused snapshot tests passed; test project compiled for `linux-x64` with zero warnings/errors.
+
+---
+
+## PR #127: Ubuntu CI SQLite Sidecar Lifecycle (Recheck)
+
+**By:** Dallas (Lead)  
+**Date:** 2026-08-26T19:17:26-05:00  
+**Verdict:** APPROVE
+
+Vasquez's revision confined to case-sensitive success branch. Local fingerprint removes only regular-file records for root `cache.db-wal` and `cache.db-shm`; nested names, directories, links, `cache.db`, artifacts, all entries retain exact topology/length/SHA-256 comparison. Test compares integrity, schema/user versions, complete schema, every fixture row column before/after export.
+
+Case-insensitive branch uses unfiltered rejection helper before any database open, preserving strict source/destination/publication-residue checks. Both filesystem branches execute substantive assertions; test non-vacuous on all platforms.
+
+With `DOTNET_ROLL_FORWARD=Major`: case-only test passed build run + 10 consecutive `--no-build` runs; all 54 focused snapshot tests passed, no skips. Frost's production exporter remains accepted/frozen. Local revision gate cleared for full suite and fresh Ubuntu/Windows CI.
+
+### Approval Summary
+- ✅ Vasquez's test revision: case-sensitive success-path source fingerprint correctly excludes only SQLite sidecars
+- ✅ All focused snapshot tests passing (54/54)
+- ✅ Frost's production exporter remains accepted and frozen
+- ✅ Gate cleared for full suite and fresh CI validation

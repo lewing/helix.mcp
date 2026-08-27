@@ -1,16 +1,18 @@
 ---
-updated_at: 2026-08-26T18:57:36-05:00
-focus_area: PR #127 re-review reopened — macOS containment and regression coverage revisions required.
-active_issues:
-  - macOS case-sensitive spelling can bypass source-tree containment on a case-insensitive volume
-  - exporter and validator negative-path coverage must be restored
-  - deterministic database-corruption coverage is missing
+updated_at: 2026-08-26T19:20:14-05:00
+focus_area: PR #127 approved pending fresh CI validation
+status: approved
+gate_status: local revision gate cleared
 ---
 
 # What We're Focused On
 
-PR #127 is **not currently approved**. The previous revised head completed its gates successfully: 1,661 local tests passed with two pre-existing skips and no failures, and the refreshed Ubuntu, Windows, and Squad CI checks passed.
+PR #127 is **approved pending fresh CI validation**. Vasquez's revision to `Export_CaseOnlyDestination_UsesPlatformBoundaryComparison` passed all gates:
+- Case-sensitive success-path source fingerprint correctly excludes only SQLite sidecars (`cache.db-wal`, `cache.db-shm`)
+- All 54 focused snapshot tests passed with `DOTNET_ROLL_FORWARD=Major`
+- Case-insensitive rejection branch preserves strict source/destination/publication-residue checks
+- Frost's production exporter remains accepted and frozen
 
-A fresh Copilot re-review reopened the gate. Frost must correct macOS case containment without weakening separator-aware checks or case-sensitive filesystem behavior. Hudson must restore the removed exporter and validator rejection scenarios, add deterministic corruption coverage, and ensure the case-only containment test runs meaningfully on macOS.
+**Gate Status:** Local revision gate cleared for full suite and fresh Ubuntu/Windows CI validation.
 
-**Next:** Frost and Hudson complete their revisions, then Dallas reviews and approves the resulting artifacts. Only after that approval may the fresh full suite and fresh Ubuntu and Windows CI runs establish the final gate.
+**Next:** Full test suite, fresh Ubuntu CI, fresh Windows CI — then merge conditional on all-green results.
