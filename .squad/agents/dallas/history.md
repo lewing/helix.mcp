@@ -640,3 +640,34 @@ Kane's focus record accurately captures the prior completed gates, the reopened 
 revisions, and the required reruns. All 43 focused `SnapshotExportTests` cases passed with
 `DOTNET_ROLL_FORWARD=Major`, with no skips or failures. The revision gate is cleared; PR #127 is
 ready for the full local suite and fresh Ubuntu/Windows CI.
+
+---
+
+## 2026-08-26 — PR #127 Ubuntu CI triage
+
+**Verdict:** **REJECT** Hudson's current test revision; Frost's production revision remains
+accepted. Ubuntu's case-sensitive success path preserved the source `cache.db` and artifact bytes
+exactly but SQLite's read-only WAL opens materialized `cache.db-shm` and an empty `cache.db-wal`.
+Those SQLite-managed sidecars may legitimately appear or disappear and are not source corruption.
+
+The independent replacement must compare exact persistent source payload bytes and logical database
+state while excluding only the two root SQLite sidecars on the success path. It must not weaken the
+full-tree source checks on pre-database-open rejection paths or their shared helper. No production
+change is warranted. Hudson is locked out from revision and advice; prior test-owner lockouts remain,
+so the Coordinator must recruit a new independent .NET/SQLite filesystem test owner. Windows was
+canceled during restore and must run again with the full suite and Ubuntu after Dallas re-review.
+
+---
+
+## 2026-08-26 — PR #127 Ubuntu CI recheck
+
+**Verdict:** **APPROVE.** Vasquez's local success-path helper excludes only root regular-file
+fingerprints for SQLite's WAL/SHM lifecycle while retaining exact database, artifact, other-file,
+directory, and link comparison. Integrity, schema/user versions, the complete schema, and every
+fixture table column are compared before and after export.
+
+The case-insensitive rejection branch and shared strict helper are unchanged, and both platform
+branches remain substantive. With `DOTNET_ROLL_FORWARD=Major`, the case-only test passed its build
+run plus 10 repeated no-build runs, and all 54 focused snapshot tests passed with no skips. Frost's
+production exporter remains accepted and frozen; the local gate is cleared for the full suite and
+fresh Ubuntu/Windows CI.

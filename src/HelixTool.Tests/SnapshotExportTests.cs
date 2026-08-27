@@ -747,7 +747,8 @@ public class SnapshotExporterTests : IDisposable
         }
         else
         {
-            var sourceBefore = SnapshotTestHelper.FingerprintTree(source.Root);
+            var databaseBefore = ReadLogicalDatabaseState(source.DatabasePath);
+            var sourceBefore = FingerprintPersistentSourceTree(source.Root);
             Directory.CreateDirectory(caseOnlySourceSpelling);
             Assert.True(Directory.Exists(source.Root));
             Assert.True(Directory.Exists(caseOnlySourceSpelling));
@@ -755,7 +756,85 @@ public class SnapshotExporterTests : IDisposable
             await SnapshotTestHelper.ExportAndAssertAtomicPublicationAsync(source, destination);
 
             SnapshotTestHelper.AssertFinalLayout(destination);
-            Assert.Equal(sourceBefore, SnapshotTestHelper.FingerprintTree(source.Root));
+            Assert.Equal(sourceBefore, FingerprintPersistentSourceTree(source.Root));
+            Assert.Equal(databaseBefore, ReadLogicalDatabaseState(source.DatabasePath));
+        }
+
+        static string[] FingerprintPersistentSourceTree(string root)
+        {
+            return SnapshotTestHelper.FingerprintTree(root)
+                .Where(entry =>
+                    !entry.StartsWith("F:cache.db-wal:", StringComparison.Ordinal)
+                    && !entry.StartsWith("F:cache.db-shm:", StringComparison.Ordinal))
+                .ToArray();
+        }
+
+        static string[] ReadLogicalDatabaseState(string databasePath)
+        {
+            using var connection = SnapshotTestHelper.OpenConnection(
+                databasePath,
+                SqliteOpenMode.ReadOnly);
+            AssertIntegrityCheck(connection);
+
+            var state = new List<string>
+            {
+                $"schema-version:{ReadInt32(connection, "PRAGMA schema_version;")}",
+                $"user-version:{ReadInt32(connection, "PRAGMA user_version;")}",
+            };
+            AddRows(
+                connection,
+                state,
+                "schema",
+                "SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name, tbl_name;");
+            AddRows(
+                connection,
+                state,
+                "metadata",
+                """
+                SELECT cache_key, json_value, created_at, expires_at, job_id
+                FROM cache_metadata
+                ORDER BY cache_key;
+                """);
+            AddRows(
+                connection,
+                state,
+                "artifacts",
+                """
+                SELECT cache_key, file_path, file_size, created_at, last_accessed, job_id
+                FROM cache_artifacts
+                ORDER BY cache_key;
+                """);
+            AddRows(
+                connection,
+                state,
+                "job-state",
+                """
+                SELECT job_id, is_completed, finished_at, cached_at, expires_at
+                FROM cache_job_state
+                ORDER BY job_id;
+                """);
+            return state.ToArray();
+        }
+
+        static void AddRows(
+            SqliteConnection connection,
+            List<string> state,
+            string section,
+            string sql)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                var values = Enumerable.Range(0, reader.FieldCount)
+                    .Select(index => reader.IsDBNull(index)
+                        ? "null"
+                        : $"{reader.GetFieldType(index).Name}:"
+                          + Convert.ToHexString(System.Text.Encoding.UTF8.GetBytes(
+                              Convert.ToString(reader.GetValue(index), CultureInfo.InvariantCulture)!)));
+                state.Add($"{section}:{string.Join(",", values)}");
+            }
         }
     }
 
