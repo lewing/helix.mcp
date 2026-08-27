@@ -129,6 +129,23 @@ public class AzdoEvidenceSurfaceTests
         Assert.NotEmpty(plan.Entries);
     }
 
+    [Fact]
+    public async Task GetEvidencePlanAsync_NoneSelectsUnsetResultAndExcludesLiteralNone()
+    {
+        SetupNoneResultPlan();
+
+        var plan = await _svc.GetEvidencePlanAsync(
+            "1570501",
+            DefaultOptions() with { ArtifactPattern = "*", ArtifactJobPrefix = null, JobResults = ["NONE"] });
+
+        var entry = Assert.Single(plan.Entries);
+        Assert.Equal("job-unset", entry.JobId);
+        Assert.Null(entry.JobResult);
+        Assert.Equal("mapped", entry.Status);
+        Assert.Equal(701, Assert.Single(entry.Candidates).ArtifactId);
+        Assert.True(plan.Complete);
+    }
+
     // ════════════════════════════════════════════════════════════════════════
     // E4 — MCP returns complete:false without throwing for incomplete plan
     // ════════════════════════════════════════════════════════════════════════
@@ -383,6 +400,84 @@ public class AzdoEvidenceSurfaceTests
 
         Assert.Equal(["failed", "canceled"], plan.JobResultsFilter);
         Assert.Equal(["job-failed", "job-canceled"], plan.Entries.Select(entry => entry.JobId));
+    }
+
+    [Fact]
+    public async Task McpTool_AzdoEvidencePlan_NoneSelectsUnsetResultAndExcludesLiteralNone()
+    {
+        SetupNoneResultPlan();
+
+        var plan = await _tools.EvidencePlan(
+            "1570501",
+            artifactPattern: "*",
+            artifactJobPrefix: null,
+            stripAttemptPrefix: true,
+            match: "auto",
+            jobResults: "NoNe");
+
+        Assert.Equal(["NoNe"], plan.JobResultsFilter);
+        var entry = Assert.Single(plan.Entries);
+        Assert.Equal("job-unset", entry.JobId);
+        Assert.Null(entry.JobResult);
+        Assert.Equal("mapped", entry.Status);
+        Assert.Equal(701, Assert.Single(entry.Candidates).ArtifactId);
+        Assert.True(plan.Complete);
+    }
+
+    [Fact]
+    public async Task CliEvidencePlan_NoneSelectsUnsetResultAndExcludesLiteralNone()
+    {
+        const int buildId = 1570510;
+        var cacheRoot = Path.Combine(AppContext.BaseDirectory, $"evidence-cli-none-{Guid.NewGuid():N}");
+        var snapshotRoot = Path.Combine(cacheRoot, "public");
+
+        try
+        {
+            await SeedEvidenceSnapshotAsync(
+                cacheRoot,
+                buildId,
+                new AzdoBuild { Id = buildId, BuildNumber = "none-result-cli", Status = "completed" },
+                new AzdoTimeline
+                {
+                    Records =
+                    [
+                        new() { Id = "job-unset", Type = "Job", Result = null, Name = "Unset Result", Order = 1 },
+                        new() { Id = "job-literal-none", Type = "Job", Result = "none", Name = "Literal None", Order = 2 },
+                        new() { Id = "job-failed", Type = "Job", Result = "failed", Name = "Failed", Order = 3 }
+                    ]
+                },
+                [
+                    new() { Id = 801, Name = "Unset Result", Source = "job-unset" },
+                    new() { Id = 802, Name = "Literal None", Source = "job-literal-none" },
+                    new() { Id = 803, Name = "Failed", Source = "job-failed" }
+                ]);
+
+            var result = await RunCliAsync(
+                snapshotRoot,
+                "azdo", "evidence", "plan", buildId.ToString(CultureInfo.InvariantCulture),
+                "--job-results", "NoNe",
+                "--json");
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.True(string.IsNullOrWhiteSpace(result.Stderr), result.Stderr);
+
+            using var json = JsonDocument.Parse(result.Stdout);
+            var root = json.RootElement;
+            Assert.True(root.GetProperty("complete").GetBoolean());
+            Assert.Equal(
+                ["NoNe"],
+                root.GetProperty("jobResultsFilter").EnumerateArray().Select(value => value.GetString()));
+
+            var entry = Assert.Single(root.GetProperty("entries").EnumerateArray());
+            Assert.Equal("job-unset", entry.GetProperty("jobId").GetString());
+            Assert.False(entry.TryGetProperty("jobResult", out _));
+            Assert.Equal("mapped", entry.GetProperty("status").GetString());
+            Assert.Equal(801, entry.GetProperty("candidates")[0].GetProperty("artifactId").GetInt32());
+        }
+        finally
+        {
+            CleanupSnapshot(cacheRoot);
+        }
     }
 
     [Fact]
@@ -682,7 +777,7 @@ public class AzdoEvidenceSurfaceTests
     [Fact]
     public async Task CliEvidencePlan_IncompletePlan_HumanOutput_ExitsTwoWithUsablePlanOnStdout()
     {
-        // The default (non---json) CLI path must also emit a usable plan on stdout with exit 2.
+        // The default (non-JSON) CLI path must also emit a usable plan on stdout with exit 2.
         const int buildId = 1570503;
         const string missingJobId = "job-missing";
 
@@ -1720,6 +1815,29 @@ public class AzdoEvidenceSurfaceTests
             });
         _mockApi.GetBuildArtifactsAsync(org, project, buildId, Arg.Any<CancellationToken>())
             .Returns(new List<AzdoBuildArtifact>());
+    }
+
+    private void SetupNoneResultPlan()
+    {
+        _mockApi.GetBuildAsync("dnceng-public", "public", 1570501, Arg.Any<CancellationToken>())
+            .Returns(new AzdoBuild { Id = 1570501, Status = "completed" });
+        _mockApi.GetTimelineAsync("dnceng-public", "public", 1570501, Arg.Any<CancellationToken>())
+            .Returns(new AzdoTimeline
+            {
+                Records =
+                [
+                    new() { Id = "job-unset", Type = "Job", Result = null, Name = "Unset Result", Order = 1 },
+                    new() { Id = "job-literal-none", Type = "Job", Result = "none", Name = "Literal None", Order = 2 },
+                    new() { Id = "job-failed", Type = "Job", Result = "failed", Name = "Failed", Order = 3 }
+                ]
+            });
+        _mockApi.GetBuildArtifactsAsync("dnceng-public", "public", 1570501, Arg.Any<CancellationToken>())
+            .Returns(
+            [
+                new() { Id = 701, Name = "Unset Result", Source = "job-unset" },
+                new() { Id = 702, Name = "Literal None", Source = "job-literal-none" },
+                new() { Id = 703, Name = "Failed", Source = "job-failed" }
+            ]);
     }
 
     private static MethodInfo? GetMcpToolMethod(string toolName)

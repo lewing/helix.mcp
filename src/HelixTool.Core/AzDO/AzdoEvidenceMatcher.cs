@@ -338,7 +338,9 @@ public static class AzdoEvidenceMatcher
 
     /// <summary>
     /// Sort and filter job records: only <c>type == "Job"</c> records with a result in
-    /// <paramref name="jobResults"/> are included. Total deterministic order:
+    /// <paramref name="jobResults"/> are included. The <c>none</c> filter selects a null
+    /// (unset) API result; <c>"none"</c> is not a literal AzDO timeline task result.
+    /// Total deterministic order:
     /// <c>(Order ?? int.MaxValue, Name ordinal, Attempt desc, Id ordinal)</c>.
     /// </summary>
     public static IReadOnlyList<AzdoTimelineRecord> SelectAndSortJobs(
@@ -346,11 +348,14 @@ public static class AzdoEvidenceMatcher
         IReadOnlyCollection<string> jobResults)
     {
         var resultSet = new HashSet<string>(jobResults, StringComparer.OrdinalIgnoreCase);
+        var includeUnsetResult = resultSet.Contains("none");
         return records
             .Where(r =>
                 string.Equals(r.Type, "Job", StringComparison.OrdinalIgnoreCase) &&
-                r.Result is not null &&
-                resultSet.Contains(r.Result))
+                (r.Result is null
+                    ? includeUnsetResult
+                    : !string.Equals(r.Result, "none", StringComparison.OrdinalIgnoreCase) &&
+                      resultSet.Contains(r.Result)))
             .OrderBy(r => r.Order ?? int.MaxValue)
             .ThenBy(r => r.Name ?? "", StringComparer.Ordinal)
             .ThenByDescending(r => r.Attempt ?? 0)

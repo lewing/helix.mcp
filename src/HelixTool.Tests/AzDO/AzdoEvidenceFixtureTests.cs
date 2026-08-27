@@ -357,7 +357,14 @@ public class AzdoEvidenceFixtureTests
               "definition": { "id": 42, "name": "runtime" },
               "sourceBranch": "refs/heads/main",
               "sourceVersion": "89abcdef0123456789abcdef0123456789abcdef",
+              "queueTime": "2026-08-27T16:00:00Z",
+              "startTime": "2026-08-27T16:05:00Z",
               "finishTime": "2026-08-27T17:00:00Z",
+              "url": "https://dev.azure.com/FORBIDDEN-RAW-URL",
+              "tags": ["FORBIDDEN-TAG"],
+              "reason": "FORBIDDEN-REASON",
+              "project": { "name": "FORBIDDEN-RAW-PROJECT" },
+              "repository": { "id": "FORBIDDEN-REPO-ID", "name": "FORBIDDEN-REPO", "type": "GitHub" },
               "requestedFor": { "displayName": "FORBIDDEN-SENDER\r\n\u001b[31m" },
               "triggerInfo": {
                 "ci.message": "FORBIDDEN-CI\r\n\u0007\u001b[31m",
@@ -414,14 +421,18 @@ public class AzdoEvidenceFixtureTests
         Assert.Equal(
             approvedProperties.Order(StringComparer.Ordinal),
             build.EnumerateObject().Select(property => property.Name).Order(StringComparer.Ordinal));
+        Assert.Equal(rawBuild.Id, plan.BuildId);
+        Assert.Equal(rawBuild.Id, plan.Build!.BuildId);
         Assert.Equal(prSourceSha, build.GetProperty("prSourceSha").GetString());
-        Assert.Equal(JsonSerializer.Serialize(expectedProvenance), JsonSerializer.Serialize(plan.Build));
+        Assert.Equal(expectedProvenance, plan.Build);
 
         foreach (var forbidden in new[]
                  {
                      "FORBIDDEN-SENDER", "FORBIDDEN-CI", "FORBIDDEN-TITLE", "FORBIDDEN-PR-SENDER",
                      "FORBIDDEN-AVATAR", "requestedFor", "triggerInfo", "ci.message", "pr.title",
-                     "pr.sender.name", "pr.sender.avatarUrl"
+                     "pr.sender.name", "pr.sender.avatarUrl", "FORBIDDEN-RAW-URL", "FORBIDDEN-TAG",
+                     "FORBIDDEN-RAW-PROJECT", "FORBIDDEN-REPO-ID", "FORBIDDEN-REPO",
+                     "FORBIDDEN-REASON", "queueTime", "startTime", "repository"
                  })
         {
             Assert.DoesNotContain(forbidden, json, StringComparison.OrdinalIgnoreCase);

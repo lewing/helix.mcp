@@ -987,18 +987,58 @@ public class AzdoEvidenceMatcherTests
     }
 
     [Fact]
-    public void BuildPlan_NullResultRecord_NotSelected()
+    public void BuildPlan_NoneResult_SelectsNullButNotLiteralNone()
     {
-        // Records with result == null (still running) must never be selected (D3).
         var jobs = new List<AzdoTimelineRecord>
         {
-            new() { Id = "job-running", Type = "Job", Result = null, Name = "In Progress", Order = 1 }
+            new() { Id = "job-unset", Type = "Job", Result = null, Name = "Unset Result", Order = 1 },
+            new() { Id = "job-literal-none", Type = "Job", Result = "none", Name = "Literal None", Order = 2 },
+            new() { Id = "job-failed", Type = "Job", Result = "failed", Name = "Failed", Order = 3 }
         };
-        var opts = new AzdoEvidencePlanOptions { JobResults = ["failed", "canceled"], Match = "auto" };
+        var artifacts = new List<AzdoBuildArtifact>
+        {
+            new() { Id = 1, Name = "Unset Result", Source = "job-unset" },
+            new() { Id = 2, Name = "Literal None", Source = "job-literal-none" },
+            new() { Id = 3, Name = "Failed", Source = "job-failed" }
+        };
+        var opts = new AzdoEvidencePlanOptions { JobResults = ["NoNe"], Match = "auto" };
 
-        var plan = AzdoEvidenceMatcher.BuildPlan(jobs, [], opts);
+        var plan = AzdoEvidenceMatcher.BuildPlan(jobs, artifacts, opts);
 
-        Assert.Empty(plan.Entries);
+        var entry = Assert.Single(plan.Entries);
+        Assert.Equal("job-unset", entry.JobId);
+        Assert.Null(entry.JobResult);
+        Assert.Equal("mapped", entry.Status);
+        Assert.Equal("source-id", entry.MatchedBy);
+        Assert.Equal(1, Assert.Single(entry.Candidates).ArtifactId);
+        Assert.Equal(1, plan.Total);
+        Assert.True(plan.Complete);
+    }
+
+    [Fact]
+    public void BuildPlan_DefaultResults_ExcludeUnsetAndLiteralNone_AndMatchCaseInsensitively()
+    {
+        var jobs = new List<AzdoTimelineRecord>
+        {
+            new() { Id = "job-unset", Type = "Job", Result = null, Name = "Unset Result", Order = 1 },
+            new() { Id = "job-literal-none", Type = "Job", Result = "none", Name = "Literal None", Order = 2 },
+            new() { Id = "job-failed", Type = "Job", Result = "FAILED", Name = "Failed", Order = 3 },
+            new() { Id = "job-canceled", Type = "Job", Result = "CaNcElEd", Name = "Canceled", Order = 4 },
+            new() { Id = "job-succeeded", Type = "Job", Result = "succeeded", Name = "Succeeded", Order = 5 }
+        };
+        var artifacts = new List<AzdoBuildArtifact>
+        {
+            new() { Id = 3, Name = "Failed", Source = "job-failed" },
+            new() { Id = 4, Name = "Canceled", Source = "job-canceled" }
+        };
+        var opts = new AzdoEvidencePlanOptions { Match = "auto" };
+
+        var plan = AzdoEvidenceMatcher.BuildPlan(jobs, artifacts, opts);
+
+        Assert.Equal(["job-failed", "job-canceled"], plan.Entries.Select(entry => entry.JobId));
+        Assert.All(plan.Entries, entry => Assert.Equal("mapped", entry.Status));
+        Assert.Equal(2, plan.Total);
+        Assert.True(plan.Complete);
     }
 
     [Fact]

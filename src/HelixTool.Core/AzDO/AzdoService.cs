@@ -998,7 +998,7 @@ public class AzdoService
             Jobs: jobs);
     }
 
-    // Valid job-result values for AzDO timeline Job records
+    // Valid filters for AzDO timeline Job records; "none" selects an unset (null) result.
     private static readonly HashSet<string> s_validJobResults = new(StringComparer.OrdinalIgnoreCase)
     {
         "failed", "canceled", "abandoned", "skipped", "succeededWithIssues", "succeeded", "none"
@@ -1064,30 +1064,7 @@ public class AzdoService
         var planResult = AzdoEvidenceMatcher.BuildPlan(
             timeline.Records, filteredArtifacts, options);
 
-        // Build provenance
-        var ti = build.TriggerInfo;
-        var webUrl = $"https://dev.azure.com/{Uri.EscapeDataString(org)}/{Uri.EscapeDataString(project)}/_build/results?buildId={buildId}";
-        var provenance = new AzdoBuildProvenance
-        {
-            BuildId = build.Id,
-            BuildNumber = build.BuildNumber,
-            DefinitionName = build.Definition?.Name,
-            DefinitionId = build.Definition?.Id,
-            Status = build.Status,
-            Result = build.Result,
-            SourceBranch = build.SourceBranch,
-            SourceVersion = build.SourceVersion,
-            FinishTime = build.FinishTime,
-            WebUrl = webUrl,
-            Org = org,
-            Project = project,
-            PrNumber = ti?.PrNumber,
-            PrSourceSha = ti?.PrSourceSha,
-            PrSourceBranch = ti?.PrSourceBranch,
-            PrIsFork = AzdoTriggerInfo.TryParseAzdoBool(ti?.PrIsFork),
-            PrDraft = AzdoTriggerInfo.TryParseAzdoBool(ti?.PrDraft),
-            PrProviderId = ti?.PrProviderId
-        };
+        var provenance = AzdoBuildProvenance.FromBuild(build, org, project);
 
         var buildIncomplete = !string.Equals(build.Status, "completed", StringComparison.OrdinalIgnoreCase);
         var allWarnings = new List<string>(planResult.Warnings.Count + 1);
