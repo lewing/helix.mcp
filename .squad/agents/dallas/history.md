@@ -601,3 +601,42 @@ layout assertion is gone. Kane corrected both decisions-file references.
 
 All 43 focused snapshot tests passed with `DOTNET_ROLL_FORWARD=Major`. The review gate is cleared,
 and PR #127 is ready for the full suite and Ubuntu/Windows CI.
+
+---
+
+## 2026-08-26 — PR #127 second-review triage
+
+**Verdict:** **REJECT.** The fresh macOS containment finding is valid and blocking. Exporter
+boundaries use ordinal comparison outside Windows, but this worktree's macOS volume resolves
+case-only spellings to the same directory. A new child below a case-only source spelling can
+therefore bypass containment. The current case-only test returns without assertions on macOS and
+passes vacuously.
+
+The suppressed test findings are also valid. The hardening rewrite removed exporter rejection
+coverage for missing source, database, destination parent, schema versions, and required tables,
+and removed validator coverage for missing layout, wrong schema, and missing tables. The new
+integrity check has no corrupt-database regression. The current-focus record is stale: the
+1,661-test local suite and refreshed Ubuntu, Windows, and Squad checks completed successfully at
+`dcc755a5`, although this rejection now requires them to run again after revision.
+
+Ripley is locked out of the exporter revision. Lambert, Parker, Bishop, and Burke are locked out of
+the next `SnapshotExportTests.cs` revision, which must have one newly recruited independent .NET
+filesystem and SQLite test owner. Kane may correct the current-focus record; Scribe is locked out.
+The exact revision and acceptance gates are recorded in
+`.squad/decisions/inbox/dallas-pr127-second-review-triage.md`.
+
+---
+
+## 2026-08-26 — PR #127 second-review recheck
+
+**Verdict:** **APPROVE.** Frost applied the required conservative macOS/Windows ignore-case
+boundary rule while preserving ordinal Linux/other behavior, separator boundaries, pre-creation
+containment, and the destination-parent recheck. Hudson restored every named exporter and validator
+negative case, replaced the vacuous macOS test with an actual-filesystem branch, and added
+deterministic non-throwing corruption coverage. Ten repeated corruption runs passed. No global
+SQLite pool clear or unrelated weakening appeared.
+
+Kane's focus record accurately captures the prior completed gates, the reopened review, the named
+revisions, and the required reruns. All 43 focused `SnapshotExportTests` cases passed with
+`DOTNET_ROLL_FORWARD=Major`, with no skips or failures. The revision gate is cleared; PR #127 is
+ready for the full local suite and fresh Ubuntu/Windows CI.

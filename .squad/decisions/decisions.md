@@ -1,11 +1,63 @@
 # Decisions
 
-**Last updated:** 2026-08-26T17:16:50Z
-**Merge cycle:** 2026-08-26T17:16:50Z (Scribe snapshot-hardening batch merge)
+**Last updated:** 2026-08-26T19:04:54Z
+**Merge cycle:** 2026-08-26T19:04:54Z (Scribe PR #127 second-review cycle merge)
 
 ---
 
 ## Active Decisions
+
+### 2026-08-26T19:04:54-05:00: PR #127 Snapshot Export Hardening — Second Review & Approval Gate
+
+**By:** Dallas (Lead)  
+**Status:** APPROVED — Independent revision gate cleared
+
+#### Triage (Second Review): REJECTED at 2026-08-26T12:00-05:00
+
+All four findings are production or test-gate blockers:
+
+1. **Production boundary blocker:** macOS case-insensitive filesystem allows case-only spelling aliasing; `SnapshotExporter` incorrectly treats `cache` and `CACHE` as unrelated on the default case-insensitive volume. This breaks containment when source is at `cache` and destination below `CACHE`.
+
+2. **Exporter regression coverage blocker:** Hardening rewrite removed rejection scenarios for missing source root, missing `cache.db`, missing destination parent, schema zero, unsupported schema, and missing table. Existing artifact and alias tests do not cover those contracts.
+
+3. **Validator regression coverage blocker:** Test suite no longer proves rejection of missing snapshot directory, missing `cache.db`, wrong schema, missing table, or database corruption (new integrity check).
+
+4. **Current-focus record blocker:** Scribe-authored `.squad/identity/now.md` incorrectly reported full suite and CI as pending when 1,661 local tests and refreshed checks had passed.
+
+#### Assignments
+
+- **Frost** (filesystem-security specialist; Ripley locked): Fix macOS case containment while preserving separator-aware checks and case-sensitive filesystem behavior.
+- **Hudson** (independent test specialist; Lambert/Parker/Bishop/Burke locked): Restore all exporter/validator rejection scenarios and add deterministic corruption coverage; ensure case-only test runs meaningfully on macOS.
+- **Kane** (approved focus author): Correct current-focus record to acknowledge prior completion while reopening gate.
+
+#### Recheck (Second Review): APPROVED at 2026-08-26T18:40-05:00
+
+**Frost's exporter revision:** Boundary equality and descendant checks ignore case on Windows and macOS; remain ordinal on Linux. Destination-parent identity recheck uses same rule. Initial containment completes before temp directory or database creation. Distinct case-only siblings remain permitted on ordinal platforms.
+
+**Hudson's exporter + validator revisions:** Case-only regression no longer skips macOS; detects whether alias is true (rejects with unchanged source and publication state) or distinct (exports successfully, preserves source). Exporter rejection scenarios verify focused diagnostics and residue; applicable cases verify source integrity. Missing-parent case proves no parent created. Validator covers missing snapshot, database, wrong schema, missing table, deterministic corruption (integrity check returns non-OK, validation returns invalid result without throwing, reports diagnostic). Corruption passed ten additional repetitions. Existing boundary, sidecar, traversal, missing-file, and size coverage remains intact.
+
+**Kane's focus record:** Accurately acknowledges prior 1,661-test local gate and refreshed checks, reopened review gate, assigned revisions, and required fresh full-suite and Ubuntu/Windows CI runs.
+
+**Gate Status:** All 43 focused `SnapshotExportTests` passed with no skips or failures (DOTNET_ROLL_FORWARD=Major). Independent revision gate cleared. PR #127 ready for full local suite and fresh Ubuntu/Windows CI validation.
+
+#### File Ownership (Locked)
+
+**Frost:** `SnapshotExporter.cs` (macOS case containment fix)  
+**Hudson:** `SnapshotExportTests.cs`, `SnapshotValidator.cs` (negative path and corruption coverage)  
+**Kane:** `.squad/identity/now.md` (approved focus record — mechanical preservation only)
+
+---
+
+### 2026-08-26T19:04:54-05:00: macOS Snapshot Export Boundary Containment Policy
+
+**By:** Frost  
+**Status:** APPROVED — In effect
+
+Snapshot-export security boundaries use ordinal ignore-case comparison on Windows and macOS, and ordinal comparison on Linux and other platforms. macOS is intentionally conservative: case-sensitive volume may reject distinct case-only sibling, but case-only alias on default case-insensitive filesystem cannot bypass source containment. Equality, separator-bounded descendant checks, and destination-parent identity rechecks share these semantics.
+
+---
+
+### 2026-08-26T12:00:00-05:00: Snapshot Export Hardening Design & Review Gate
 
 ### 2026-08-26T12:00:00-05:00: Snapshot Export Hardening Design & Review Gate
 

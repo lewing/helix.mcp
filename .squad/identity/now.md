@@ -1,17 +1,16 @@
 ---
-updated_at: 2026-08-26T18:39:32Z
-focus_area: PR #127 validator review completed — boundary checks approved; pending full suite and CI validation.
-active_issues: []
+updated_at: 2026-08-26T18:57:36-05:00
+focus_area: PR #127 re-review reopened — macOS containment and regression coverage revisions required.
+active_issues:
+  - macOS case-sensitive spelling can bypass source-tree containment on a case-insensitive volume
+  - exporter and validator negative-path coverage must be restored
+  - deterministic database-corruption coverage is missing
 ---
 
 # What We're Focused On
 
-**APPROVED & GATED:** PR #127 snapshot validator and test boundary revisions. Dallas reviewed validator, tests, and orchestration log; rejected all three artifacts initially due to missing physical boundary checks for external aliases. Subsequent revisions:
-- Brett (validator): cache.db and artifacts/ physical containment checks implemented
-- Burke (tests): boundary regression coverage added (external DB/artifacts/, root pointer cases)
-- Kane (documentation): orchestration log path references corrected
+PR #127 is **not currently approved**. The previous revised head completed its gates successfully: 1,661 local tests passed with two pre-existing skips and no failures, and the refreshed Ubuntu, Windows, and Squad CI checks passed.
 
-All 43 focused tests passed with DOTNET_ROLL_FORWARD=Major. Frozen artifacts: Brett, Burke, Kane. Independent review gate cleared.
+A fresh Copilot re-review reopened the gate. Frost must correct macOS case containment without weakening separator-aware checks or case-sensitive filesystem behavior. Hudson must restore the removed exporter and validator rejection scenarios, add deterministic corruption coverage, and ensure the case-only containment test runs meaningfully on macOS.
 
-**Next:** Full test suite validation and Ubuntu/Windows CI validation. Escalation required: recruit new .NET filesystem-security specialist (not Ripley) and independent .NET cross-platform filesystem test specialist (not Lambert, Parker, Bishop) for future revisions if needed.
-
+**Next:** Frost and Hudson complete their revisions, then Dallas reviews and approves the resulting artifacts. Only after that approval may the fresh full suite and fresh Ubuntu and Windows CI runs establish the final gate.
