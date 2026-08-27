@@ -49,13 +49,16 @@ internal static class SnapshotEvalTestHarness
             Pooling = false
         }.ToString();
 
-        using (var source = new SqliteConnection(sourceConnectionString))
-        using (var destination = new SqliteConnection(destinationConnectionString))
-        {
-            source.Open();
-            destination.Open();
-            source.BackupDatabase(destination);
-        }
+        // SqliteCacheStore's constructor starts an eviction pass that nothing awaits
+        // (`_ = Task.Run(() => EvictExpiredAsync())`) and that Dispose does not cancel,
+        // so it can still hold a write lock or WAL snapshot on the live database after
+        // `writer` has been disposed. A single-shot BackupDatabase may encounter
+        // SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT; guarding against this transient condition
+        // by retrying until the eviction releases the database. Only lock acquisition
+        // is retried, so the bytes copied are identical whichever attempt wins, and
+        // exhausting the budget rethrows instead of silently producing an incomplete
+        // snapshot.
+        await BackupWithRetryAsync(sourceConnectionString, destinationConnectionString);
 
         var liveArtifacts = Path.Combine(liveRoot, "artifacts");
         var snapshotArtifacts = Path.Combine(snapshotRoot, "artifacts");
@@ -71,6 +74,41 @@ internal static class SnapshotEvalTestHarness
             }
         }
     }
+
+    // Bounded so a genuinely stuck lock still fails the test instead of hanging:
+    // 200 attempts x 25ms = 5s, far beyond the expected eviction window.
+    private const int BackupAttempts = 200;
+    private static readonly TimeSpan BackupRetryDelay = TimeSpan.FromMilliseconds(25);
+
+    private static async Task BackupWithRetryAsync(
+        string sourceConnectionString,
+        string destinationConnectionString)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                using var source = new SqliteConnection(sourceConnectionString);
+                using var destination = new SqliteConnection(destinationConnectionString);
+                source.Open();
+                destination.Open();
+                source.BackupDatabase(destination);
+                return;
+            }
+            catch (SqliteException ex) when (IsTransientLock(ex) && attempt < BackupAttempts)
+            {
+                // SQLITE_BUSY_SNAPSHOT invalidates the read snapshot, so the source
+                // connection is reopened on the next attempt rather than reused.
+                await Task.Delay(BackupRetryDelay);
+            }
+        }
+    }
+
+    // SQLITE_BUSY (5) and SQLITE_LOCKED (6), including extended forms such as
+    // SQLITE_BUSY_SNAPSHOT (261), whose low byte is the primary code.
+    private static bool IsTransientLock(SqliteException ex)
+        => (ex.SqliteErrorCode & 0xFF) is 5 or 6
+        || (ex.SqliteExtendedErrorCode & 0xFF) is 5 or 6;
 
     public static async Task CopySharedAsync(string sourcePath, string destinationPath)
     {
@@ -520,16 +558,15 @@ public class SnapshotCiEvidenceScenarioTests : IDisposable
     public async Task EvalMode_ExpiredSnapshotEntries_StillReadable()
     {
         // Verify TTL bypass: entries expired 4 hours ago must still be returned.
-        var writerOpts = new CacheOptions { CacheRoot = _parentDir, EvalMode = false, AuthTokenHash = null };
-        using (var writerStore = new SqliteCacheStore(writerOpts))
-        {
-            var build = new AzdoBuild { Id = 99, Status = "completed" };
-            var buildKey = "azdo:dnceng-public:public:build:99";
-            // Delay lets the background eviction complete on the empty DB before writing
-            // a TimeSpan.Zero-TTL row, avoiding a race where eviction deletes the just-written row.
-            await Task.Delay(30);
-            await writerStore.SetMetadataAsync(buildKey, JsonSerializer.Serialize(build), TimeSpan.Zero);
-        }
+        var buildKey = "azdo:dnceng-public:public:build:99";
+        await ExpiredSnapshot.CreateAsync(
+            Path.Combine(_parentDir, "live"),
+            _snapshotDir,
+            writer => writer.SetMetadataAsync(
+                buildKey,
+                JsonSerializer.Serialize(new AzdoBuild { Id = 99, Status = "completed" }),
+                ExpiredSnapshot.SeedTtl),
+            metadataKeys: [buildKey]);
 
         var evalOpts = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true, AuthTokenHash = null };
         using var evalStore = new SqliteCacheStore(evalOpts);
