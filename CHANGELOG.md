@@ -6,6 +6,41 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ---
 
+## [Unreleased]
+
+### `azdo_evidence_plan` — Failed job → evidence artifact planner (MCP + CLI)
+
+New read-only tool for planning which artifacts correspond to failed or canceled jobs in an AzDO build. Maps jobs to evidence via two strategies:
+
+- **Primary:** GUID join (`artifact.source == job.id`) — 100% resolution on real builds, handles retried attempts correctly by construction.
+- **Fallback:** Normalized-exact name matching (dotnet/runtime PR #132609 parity) — for unmapped jobs when GUID join leaves gaps.
+
+Matching strategy is configurable via `--match` parameter: `auto` (default, recommended), `source-id`, `normalized-exact`, or `exact`.
+
+**CLI:** `hlx azdo evidence plan <buildId> [--job-results RESULTS] [--artifact-pattern PAT] [--artifact-job-prefix PREFIX] [--keep-attempt-prefix] [--match MODE] [--json]`. `AttemptN_` is stripped and recorded by default; pass the bare `--keep-attempt-prefix` flag to retain it. The former `--strip-attempt-prefix` spelling is no longer recognized, but it only restated the default: remove it from scripts rather than replacing it with the opposite-meaning keep flag.
+
+**MCP:** `azdo_evidence_plan(buildIdOrUrl, jobResults?, artifactPattern?, artifactJobPrefix?, stripAttemptPrefix?, match?, ...)` → structured plan with status per job (`mapped`, `ambiguous`, `missing`), ranked candidates, and completeness signal. MCP retains the positive `stripAttemptPrefix` parameter (default `true`); CLI `--keep-attempt-prefix` is its inverse.
+
+**Exit codes:** `0` complete, `2` incomplete-but-useful (plan still output), `1` error.
+
+**Key properties:**
+- Never silently chooses ambiguous candidates — the full candidate count is reported, retained candidates are ranked, and the entry has `status: "ambiguous"`.
+- Preserves attempt numbers for deterministic ranking (real builds retry with `Attempt1`, `Attempt2`, etc.).
+- Read-only planning boundary: no download, extract, or write operations; analysis remains in binlog-mcp.
+- Completeness contract: `complete` signals whether all jobs are unambiguously mapped and no output was truncated. `incompleteReasons[]` explains gaps.
+- Structured output: job records (including timeline order and attempt when present), candidate artifacts (name, id, size, download URL, type, source GUID, attempt), and build provenance (PR metadata if applicable).
+- Partial-response bounds: 200 entries, 10 candidates per entry. Every entry reports `candidateTotal` and `candidatesTruncated`; candidate overflow also supplies `candidateNote`. Entry or candidate overflow sets plan-level `complete: false` and `truncated: true`; `totalEntries` reports the selected-job total and `note` summarizes the truncation.
+
+**Why `auto` is default:** Testing on real failed builds shows normalized-name matching (PR #132609) has a 12.7% miss rate because AzDO job display names include a matrix-leg `crossaot` suffix that artifact names omit, and 100% ambiguity on retried attempts. `auto` uses the source-GUID join first and normalized-name fallback only for unmapped jobs; `source-id` is the source-ID-only mode.
+
+### Fixed: `StringHelpers.MatchesPattern` — trailing-`*` prefix globs now work
+
+`MatchesPattern("Logs_Build_Attempt1_x", "Logs_Build_*")` now returns `true`. Previously, trailing-`*` globs (prefix patterns) matched nothing because they were treated as literal substrings.
+
+This fixes `hlx azdo artifacts --pattern 'Logs_Build_*'` and `azdo_artifacts(pattern: 'Logs_Build_*')`, which are now usable for evidence planning. The fix is additive and ReDoS-free (O(n) scan with early exit). Suffix globs (`*.binlog`) and bare-substring matching remain unchanged.
+
+---
+
 ## [v0.9.1] — 2026-07-28
 
 ### helix_find_files — optional `workItem` parameter for faster, scoped searches (#117)
@@ -117,4 +152,3 @@ Internal refactor — centralized AzDO filter normalization (trim, case-fold, de
 
 - **User-Agent identifier** (PR #73, @akoeplinger): All outbound HTTP traffic from hlx now carries `User-Agent: helix.mcp/{version}` and a custom `X-Helix-Mcp-Tool: helix.mcp` header on AzDO and Helix clients, enabling arcade-services to distinguish hlx traffic from other callers.
 - **Work item status bucketing fix** (PR #71, backport of #70): `GetWorkItemDetailAsync` now applies `IsCompleted` bucketing correctly — in-progress and waiting work items are no longer miscounted as failed in detailed work item queries.
-

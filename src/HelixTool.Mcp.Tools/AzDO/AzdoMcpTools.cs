@@ -333,6 +333,53 @@ public sealed class AzdoMcpTools
             ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
     }
 
+    [McpServerTool(Name = "azdo_evidence_plan", Title = "AzDO Evidence Plan", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
+     Description("Plan CI evidence collection for an Azure DevOps build: maps failed/canceled Job records to their artifact candidates. Nothing is downloaded. Use azdo_artifacts / azdo_timeline first to explore; use this tool to produce a deterministic, complete artifact-job mapping. Primary strategy ('auto') uses artifact.source GUID join, then normalized-name fallback. Set match='normalized-exact' for PR #132609 parity.")]
+    public async Task<AzdoEvidencePlan> EvidencePlan(
+        [Description("AzDO build ID as a JSON string (for example, '1570501') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
+        [Description("Glob pattern for artifact names to include. Supports '*' (all), '*.ext' (suffix), 'Prefix*' (prefix), or substring. Default: '*'")] string artifactPattern = "*",
+        [Description("Prefix stripped from artifact names before matching (e.g. 'Logs_Build_'). Ordinal StartsWith; no regex.")] string? artifactJobPrefix = null,
+        [Description("Strip 'AttemptN_' from artifact names after the job prefix, recording the attempt number. Default: true")] bool stripAttemptPrefix = true,
+        [Description("Matching strategy: 'auto' (default) = source-id join then normalized-name fallback; 'source-id' = GUID join only; 'normalized-exact' = PR #132609 name parity; 'exact' = ordinal equality after prefix strip."),
+         AllowedValues("auto", "source-id", "normalized-exact", "exact")] string match = "auto",
+        // No [AllowedValues]: this is a comma-separated multi-value string, so a JSON-schema enum
+        // would reject every valid combination (including the 'failed,canceled' default). Matches
+        // the sibling 'outcomes' parameter on azdo_test_results; per-token validation is below.
+        [Description("Comma-separated job results to include (e.g. 'failed', 'failed,canceled', 'succeeded,succeededWithIssues'). Any combination of: failed, canceled, abandoned, skipped, succeededWithIssues, succeeded, none. Unknown values are rejected. Default: 'failed,canceled'.")] string jobResults = "failed,canceled")
+    {
+        // Parse and validate jobResults
+        var resultList = jobResults
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(r => r.Trim())
+            .Where(r => r.Length > 0)
+            .ToList();
+        if (resultList.Count == 0)
+            resultList = ["failed", "canceled"];
+
+        var validResults = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "failed", "canceled", "abandoned", "skipped", "succeededWithIssues", "succeeded", "none" };
+        var bad = resultList.FirstOrDefault(r => !validResults.Contains(r));
+        if (bad is not null)
+            throw new McpException($"Invalid jobResults value '{bad}'. Must be one of: {string.Join(", ", validResults.OrderBy(v => v))}.");
+
+        if (!AzdoEvidenceMatchStrategy.AllValues.Contains(match, StringComparer.OrdinalIgnoreCase))
+            throw new McpException($"Invalid match '{match}'. Must be one of: {string.Join(", ", AzdoEvidenceMatchStrategy.AllValues)}.");
+
+        var options = new AzdoEvidencePlanOptions
+        {
+            ArtifactPattern = artifactPattern,
+            ArtifactJobPrefix = artifactJobPrefix,
+            StripAttemptPrefix = stripAttemptPrefix,
+            Match = match,
+            JobResults = resultList
+        };
+
+        return await McpExceptionHandler.RunServiceCallAsync(
+            () => _svc.GetEvidencePlanAsync(buildIdOrUrl, options),
+            "build evidence plan",
+            ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
+    }
+
     [McpServerTool(Name = "azdo_auth_status", Title = "AzDO Auth Status", ReadOnly = true, Idempotent = true, OpenWorld = false),
      Description("Current AzDO auth method (anonymous, PAT, Entra, az CLI), expiry, and warnings. No API call made.")]
     public async Task<CallToolResult> AuthStatus()

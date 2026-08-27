@@ -102,7 +102,7 @@ hlx cache clear    # Wipe all cached data
 | `helix_download` | Download files from a work item or direct blob URL. Supports glob patterns for work-item downloads. |
 | `helix_parse_uploaded_trx` | Parse TRX/xUnit XML files uploaded to Helix blob storage into test names, outcomes, and error messages. |
 
-### AzDO Tools (11)
+### AzDO Tools (12)
 
 | Tool | Description |
 |------|-------------|
@@ -117,6 +117,7 @@ hlx cache clear    # Wipe all cached data
 | `azdo_test_results` | Individual test results. Filter by outcome (`outcomes` param). Defaults to failed tests only (top 200). |
 | `azdo_artifacts` | Build artifacts with pattern filtering (e.g., `*.binlog`). |
 | `azdo_test_attachments` | Test result attachments (screenshots, logs, dumps). |
+| `azdo_evidence_plan` | Plan failed/canceled job → artifact evidence mapping. `auto` (default) joins by source GUID, then falls back to normalized-exact names; source-ID-only, normalized-exact, and exact-name modes are also available. Read-only; returns ranked candidates, ambiguity and truncation metadata, and completeness status (never silently chooses). The MCP `stripAttemptPrefix` parameter defaults to `true`; the equivalent CLI strips by default and exposes the inverse bare flag `--keep-attempt-prefix`. |
 
 > **Parameter validation:** MCP tools reject unknown parameter names with a structured error (including a "Did you mean?" hint when the unknown name is close to a known parameter) — LLM-hallucinated or mistyped param names get immediate feedback instead of silent drops.
 > Common aliases are resolved automatically before validation: `buildId` / `build_id` / `buildUrl` → `buildIdOrUrl` on AzDO tools that accept a build identifier; `result` → `resultFilter` on `azdo_search_timeline`.

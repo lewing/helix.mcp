@@ -34,7 +34,8 @@ public class DescribeTests
         "azdo test-results",
         "azdo artifacts",
         "azdo search-timeline",
-        "azdo test-attachments"
+        "azdo test-attachments",
+        "azdo evidence plan"
     ];
 
     [Fact]

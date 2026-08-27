@@ -110,16 +110,45 @@ public sealed record AzdoIdentityRef
 
 /// <summary>
 /// Trigger information for PR-triggered builds.
-/// AzDO stores PR number in <c>ci.message</c> as "Merge pull request {n} ..."
-/// and in <c>pr.number</c> when available.
+/// AzDO stores PR metadata in <c>pr.*</c> keys; only planning-relevant fields are modelled.
+/// <c>pr.isFork</c> and <c>pr.draft</c> arrive as the strings <c>"True"</c>/<c>"False"</c>
+/// and are exposed as raw strings — callers use <see cref="TryParseAzdoBool"/> to convert.
 /// </summary>
 public sealed record AzdoTriggerInfo
 {
+    /// <summary>CI commit message, e.g. "Merge pull request 42 from …". Present on PR and CI builds.</summary>
     [JsonPropertyName("ci.message")]
     public string? CiMessage { get; init; }
 
     [JsonPropertyName("pr.number")]
     public string? PrNumber { get; init; }
+
+    [JsonPropertyName("pr.sourceSha")]
+    public string? PrSourceSha { get; init; }
+
+    [JsonPropertyName("pr.sourceBranch")]
+    public string? PrSourceBranch { get; init; }
+
+    /// <summary>Raw string from AzDO: <c>"True"</c> or <c>"False"</c>. Use <see cref="TryParseAzdoBool"/>.</summary>
+    [JsonPropertyName("pr.isFork")]
+    public string? PrIsFork { get; init; }
+
+    /// <summary>Raw string from AzDO: <c>"True"</c> or <c>"False"</c>. Use <see cref="TryParseAzdoBool"/>.</summary>
+    [JsonPropertyName("pr.draft")]
+    public string? PrDraft { get; init; }
+
+    [JsonPropertyName("pr.providerId")]
+    public string? PrProviderId { get; init; }
+
+    /// <summary>
+    /// Parse <c>"True"</c>/<c>"true"</c>/<c>"False"</c>/<c>"false"</c> to <c>bool?</c>.
+    /// Returns <c>null</c> for null, empty, or unrecognised values — never throws.
+    /// </summary>
+    public static bool? TryParseAzdoBool(string? raw) =>
+        raw is null ? null :
+        raw.Equals("true", StringComparison.OrdinalIgnoreCase) ? true :
+        raw.Equals("false", StringComparison.OrdinalIgnoreCase) ? false :
+        null;
 }
 
 /// <summary>Query parameters for filtering builds (client-side, not serialized from API).</summary>
@@ -197,6 +226,9 @@ public sealed record AzdoTimelineRecord
 
     [JsonPropertyName("workerName")]
     public string? WorkerName { get; init; }
+
+    [JsonPropertyName("attempt")]
+    public int? Attempt { get; init; }
 
     [JsonPropertyName("previousAttempts")]
     public IReadOnlyList<AzdoTimelineAttempt>? PreviousAttempts { get; init; }
@@ -328,6 +360,10 @@ public sealed record AzdoBuildArtifact
     [JsonPropertyName("name")]
     public string? Name { get; init; }
 
+    /// <summary>GUID of the Job timeline record that published this artifact.</summary>
+    [JsonPropertyName("source")]
+    public string? Source { get; init; }
+
     [JsonPropertyName("resource")]
     public AzdoArtifactResource? Resource { get; init; }
 }
@@ -346,6 +382,10 @@ public sealed record AzdoArtifactResource
 
     [JsonPropertyName("url")]
     public string? Url { get; init; }
+
+    /// <summary>Bag of artifact metadata; <c>artifactsize</c> is present for Pipeline artifacts.</summary>
+    [JsonPropertyName("properties")]
+    public IReadOnlyDictionary<string, string>? Properties { get; init; }
 }
 
 /// <summary>Attachment on a test result (GET _apis/test/Runs/{runId}/Results/{resultId}/attachments).</summary>
