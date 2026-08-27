@@ -153,6 +153,14 @@ Frozen files with no change expected: `SqliteCacheStore.cs`, `CacheOptions.cs`, 
 
 ---
 
+### 2026-08-26T18:29:40.518-05:00: macOS Snapshot Export Comparison Policy
+**By:** Kane
+**Status:** APPROVED — Supersedes prior macOS policy
+
+Supersedes the 2026-08-26 macOS policy. Conservative destination deny-list checks use ordinal ignore-case on Windows/macOS and ordinal elsewhere. Positive artifact-containment, validator-containment, and destination-parent identity proofs use ordinal ignore-case only on Windows and ordinal on macOS/Linux. Thus macOS deny-list checks remain conservative, while case-only distinct paths do not prove containment or identity on case-sensitive volumes.
+
+---
+
 ## Archive
 
 See `archive/` for dated snapshots.
