@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using HelixTool.Core.Cache;
 using Microsoft.Data.Sqlite;
 using Xunit;
+using Xunit.Sdk;
 
 namespace HelixTool.Tests;
 
@@ -73,6 +74,53 @@ internal sealed class CheckpointReadinessStateMachine
         new(
             $"Invalid WAL checkpoint row ({row.Busy}, {row.WalPages}, " +
             $"{row.CheckpointedPages}): {reason}.");
+}
+
+file sealed class SynchronousProgress<T>(Action<T> onReport) : IProgress<T>
+{
+    public void Report(T value) => onReport(value);
+}
+
+internal sealed class CaseSensitiveFileSystemFactAttribute : FactAttribute
+{
+    private static readonly bool SupportsDistinctCaseOnlyDirectories =
+        DetectDistinctCaseOnlyDirectories();
+
+    public CaseSensitiveFileSystemFactAttribute()
+    {
+        if (!SupportsDistinctCaseOnlyDirectories)
+        {
+            Skip =
+                "The test output filesystem aliases case-only directory spellings; " +
+                "this test requires distinct case-only siblings.";
+        }
+    }
+
+    private static bool DetectDistinctCaseOnlyDirectories()
+    {
+        var probeRoot = Path.Combine(
+            AppContext.BaseDirectory,
+            "snapshot-test-data",
+            $".case-sensitivity-probe-{Guid.NewGuid():N}");
+        var lower = Path.Combine(probeRoot, "case");
+        var upper = Path.Combine(probeRoot, "CASE");
+        try
+        {
+            Directory.CreateDirectory(lower);
+            return !Directory.Exists(upper);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(probeRoot, recursive: true);
+            }
+            catch
+            {
+                // Best effort only.
+            }
+        }
+    }
 }
 
 file static class SnapshotTestHelper
@@ -296,6 +344,41 @@ file static class SnapshotTestHelper
             .Select(Path.GetFileName)
             .Order(StringComparer.Ordinal)
             .ToArray()!;
+    }
+
+    public static void CreateDistinctCaseOnlySibling(
+        string existingDirectory,
+        string caseOnlySibling)
+    {
+        Assert.True(Directory.Exists(existingDirectory));
+        Assert.NotEqual(existingDirectory, caseOnlySibling);
+        Assert.Equal(existingDirectory, caseOnlySibling, ignoreCase: true);
+
+        if (Directory.Exists(caseOnlySibling))
+        {
+            throw new XunitException(
+                "The current filesystem does not support distinct case-only sibling " +
+                $"directories ('{existingDirectory}' and '{caseOnlySibling}').");
+        }
+
+        Directory.CreateDirectory(caseOnlySibling);
+        var markerName = $".case-sibling-probe-{Guid.NewGuid():N}";
+        var siblingMarker = Path.Combine(caseOnlySibling, markerName);
+        var existingMarker = Path.Combine(existingDirectory, markerName);
+        File.WriteAllText(siblingMarker, "case-sensitive");
+        try
+        {
+            if (File.Exists(existingMarker))
+            {
+                throw new XunitException(
+                    "The current filesystem aliases case-only directory spellings; " +
+                    "a distinct case-only sibling topology cannot be created.");
+            }
+        }
+        finally
+        {
+            File.Delete(siblingMarker);
+        }
     }
 
     public static async Task<InvalidOperationException> AssertRejectedWithoutPublicationAsync(
@@ -675,6 +758,43 @@ public class SnapshotExporterTests : IDisposable
         Assert.Contains("artifact", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [CaseSensitiveFileSystemFact]
+    public async Task Export_ArtifactLinkIntoCaseOnlySibling_IsRejectedWithoutPublicationResidue()
+    {
+        var workspace = Workspace("case-artifact-link");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 1,
+            useWal: false);
+        var artifact = Assert.Single(source.Artifacts);
+        var artifactsRoot = Path.Combine(source.Root, "artifacts");
+        var caseOnlySibling = Path.Combine(source.Root, "ARTIFACTS");
+        SnapshotTestHelper.CreateDistinctCaseOnlySibling(
+            artifactsRoot,
+            caseOnlySibling);
+
+        var externalArtifact = Path.Combine(caseOnlySibling, artifact.RelativePath);
+        Directory.CreateDirectory(Path.GetDirectoryName(externalArtifact)!);
+        File.WriteAllBytes(externalArtifact, artifact.Content);
+
+        var referencedArtifact = Path.Combine(artifactsRoot, artifact.RelativePath);
+        File.Delete(referencedArtifact);
+        await SnapshotTestHelper.CreateFileAliasAsync(referencedArtifact, externalArtifact);
+        try
+        {
+            var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+                source,
+                Path.Combine(workspace, "snapshot"));
+
+            Assert.Contains("artifact", exception.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("escape", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteFileAlias(referencedArtifact);
+        }
+    }
+
     [Fact]
     public async Task Export_PersistedArtifactSizeMismatch_FailsWithoutPublicationResidue()
     {
@@ -796,6 +916,30 @@ public class SnapshotExporterTests : IDisposable
     }
 
     [Fact]
+    public void IsEqualOrDescendant_CaseOnlySibling_DoesNotProveContainmentOutsideWindows()
+    {
+        var root = Path.Combine(AppContext.BaseDirectory, "artifacts");
+        var caseOnlySiblingChild =
+            Path.Combine(AppContext.BaseDirectory, "ARTIFACTS", "artifact.bin");
+
+        Assert.Equal(
+            OperatingSystem.IsWindows(),
+            SnapshotExporter.IsEqualOrDescendant(caseOnlySiblingChild, root));
+    }
+
+    [Fact]
+    public void CouldBeEqualOrDescendant_CaseOnlySibling_IsConservativeOnMacOSAndWindows()
+    {
+        var root = Path.Combine(AppContext.BaseDirectory, "artifacts");
+        var caseOnlySiblingChild =
+            Path.Combine(AppContext.BaseDirectory, "ARTIFACTS", "artifact.bin");
+
+        Assert.Equal(
+            OperatingSystem.IsWindows() || OperatingSystem.IsMacOS(),
+            SnapshotExporter.CouldBeEqualOrDescendant(caseOnlySiblingChild, root));
+    }
+
+    [Fact]
     public async Task Export_SiblingPrefixDestination_Succeeds()
     {
         var workspace = Workspace("sibling-prefix");
@@ -810,7 +954,7 @@ public class SnapshotExporterTests : IDisposable
     }
 
     [Fact]
-    public async Task Export_CaseOnlyDestination_UsesPlatformBoundaryComparison()
+    public async Task Export_CaseOnlyDestination_UsesConservativeMacOSAndWindowsBoundary()
     {
         var workspace = Workspace("case-boundary");
         var source = SnapshotTestHelper.CreateSource(
@@ -819,8 +963,17 @@ public class SnapshotExporterTests : IDisposable
         var caseOnlySourceSpelling = Path.Combine(workspace, "CACHE");
         var destination = Path.Combine(caseOnlySourceSpelling, "snapshot");
         var aliasesSource = Directory.Exists(caseOnlySourceSpelling);
+        var usesConservativeBoundary =
+            OperatingSystem.IsWindows() || OperatingSystem.IsMacOS();
 
-        if (aliasesSource)
+        if (!aliasesSource)
+        {
+            SnapshotTestHelper.CreateDistinctCaseOnlySibling(
+                source.Root,
+                caseOnlySourceSpelling);
+        }
+
+        if (aliasesSource || usesConservativeBoundary)
         {
             var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
                 source,
@@ -940,6 +1093,60 @@ public class SnapshotExporterTests : IDisposable
         }
     }
 
+    [CaseSensitiveFileSystemFact]
+    public async Task Export_CaseOnlyDestinationParentRetarget_IsRejectedAndCleansTemporarySnapshot()
+    {
+        var workspace = Workspace("case-parent-retarget");
+        var source = SnapshotTestHelper.CreateSource(workspace, useWal: false);
+        var originalParent = Path.Combine(workspace, "publish");
+        var retargetedParent = Path.Combine(workspace, "PUBLISH");
+        Directory.CreateDirectory(originalParent);
+        SnapshotTestHelper.CreateDistinctCaseOnlySibling(
+            originalParent,
+            retargetedParent);
+
+        var alias = Path.Combine(workspace, "destination-parent");
+        await SnapshotTestHelper.CreateDirectoryAliasAsync(alias, originalParent);
+        try
+        {
+            await AssertDestinationParentRetargetRejectedAsync(
+                source.Root,
+                alias,
+                originalParent,
+                retargetedParent);
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteDirectoryAlias(alias);
+        }
+    }
+
+    [Fact]
+    public async Task Export_DistinctDestinationParentRetarget_IsRejectedOnEveryPlatform()
+    {
+        var workspace = Workspace("distinct-parent-retarget");
+        var source = SnapshotTestHelper.CreateSource(workspace, useWal: false);
+        var originalParent = Path.Combine(workspace, "publish-a");
+        var retargetedParent = Path.Combine(workspace, "publish-b");
+        Directory.CreateDirectory(originalParent);
+        Directory.CreateDirectory(retargetedParent);
+
+        var alias = Path.Combine(workspace, "destination-parent");
+        await SnapshotTestHelper.CreateDirectoryAliasAsync(alias, originalParent);
+        try
+        {
+            await AssertDestinationParentRetargetRejectedAsync(
+                source.Root,
+                alias,
+                originalParent,
+                retargetedParent);
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteDirectoryAlias(alias);
+        }
+    }
+
     [Fact]
     public async Task Export_DestinationBelowPhysicalLinkedArtifactsRoot_IsRejected()
     {
@@ -1037,6 +1244,82 @@ public class SnapshotExporterTests : IDisposable
             SnapshotTestHelper.DeleteDirectoryAlias(first);
             SnapshotTestHelper.DeleteDirectoryAlias(second);
         }
+    }
+
+    private static async Task AssertDestinationParentRetargetRejectedAsync(
+        string sourceRoot,
+        string destinationParentAlias,
+        string originalParent,
+        string retargetedParent)
+    {
+        var destination = Path.Combine(destinationParentAlias, "snapshot");
+        var originalDestination = Path.Combine(originalParent, "snapshot");
+        var retargetedDestination = Path.Combine(retargetedParent, "snapshot");
+        var sourceBefore = SnapshotTestHelper.FingerprintTree(sourceRoot);
+        var originalParentBefore = SnapshotTestHelper.ParentEntries(originalParent);
+        var retargetedParentBefore = SnapshotTestHelper.ParentEntries(retargetedParent);
+        var reachedValidation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var resumeExport = new ManualResetEventSlim(initialState: false);
+        var validationReports = 0;
+        var progress = new SynchronousProgress<string>(message =>
+        {
+            if (!string.Equals(
+                    message,
+                    "Validating temporary snapshot...",
+                    StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (Interlocked.Increment(ref validationReports) != 1)
+                return;
+
+            reachedValidation.TrySetResult();
+            if (!resumeExport.Wait(TimeSpan.FromSeconds(15)))
+                throw new TimeoutException("The destination-parent retarget hook was not released.");
+        });
+
+        var exportTask = Task.Run(
+            () => SnapshotExporter.ExportAsync(sourceRoot, destination, progress));
+        try
+        {
+            var completed = await Task.WhenAny(reachedValidation.Task, exportTask)
+                .WaitAsync(TimeSpan.FromSeconds(15));
+            if (completed == exportTask)
+            {
+                var earlyFailure = await Record.ExceptionAsync(async () => await exportTask);
+                throw new XunitException(
+                    earlyFailure == null
+                        ? "Export completed before the deterministic retarget hook was reached."
+                        : "Export failed before the deterministic retarget hook was reached: " +
+                          earlyFailure.Message);
+            }
+
+            SnapshotTestHelper.DeleteDirectoryAlias(destinationParentAlias);
+            Assert.False(Directory.Exists(destinationParentAlias));
+            Assert.False(File.Exists(destinationParentAlias));
+            await SnapshotTestHelper.CreateDirectoryAliasAsync(
+                destinationParentAlias,
+                retargetedParent);
+        }
+        finally
+        {
+            resumeExport.Set();
+        }
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await exportTask);
+
+        Assert.Contains(
+            "destination parent changed",
+            exception.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(sourceBefore, SnapshotTestHelper.FingerprintTree(sourceRoot));
+        Assert.Equal(originalParentBefore, SnapshotTestHelper.ParentEntries(originalParent));
+        Assert.Equal(retargetedParentBefore, SnapshotTestHelper.ParentEntries(retargetedParent));
+        Assert.False(Directory.Exists(originalDestination));
+        Assert.False(Directory.Exists(retargetedDestination));
     }
 
     [Fact]
@@ -1608,6 +1891,83 @@ public class SnapshotValidatorTests : IDisposable
         }
     }
 
+    [CaseSensitiveFileSystemFact]
+    public async Task Validate_ArtifactLinkIntoCaseOnlySibling_IsUnsafeAndNotMissing()
+    {
+        var workspace = Workspace("case-artifact-link");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 1,
+            useWal: false);
+        var artifact = Assert.Single(source.Artifacts);
+        var artifactsRoot = Path.Combine(source.Root, "artifacts");
+        var caseOnlySibling = Path.Combine(source.Root, "ARTIFACTS");
+        SnapshotTestHelper.CreateDistinctCaseOnlySibling(
+            artifactsRoot,
+            caseOnlySibling);
+
+        var externalArtifact = Path.Combine(caseOnlySibling, artifact.RelativePath);
+        Directory.CreateDirectory(Path.GetDirectoryName(externalArtifact)!);
+        File.WriteAllBytes(externalArtifact, artifact.Content);
+
+        var referencedArtifact = Path.Combine(artifactsRoot, artifact.RelativePath);
+        File.Delete(referencedArtifact);
+        await SnapshotTestHelper.CreateFileAliasAsync(referencedArtifact, externalArtifact);
+        try
+        {
+            var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+            Assert.False(result.IsValid);
+            Assert.Equal(0, result.MissingArtifactFiles);
+            Assert.Contains(result.Errors, IsUnsafeArtifactPathError);
+            Assert.DoesNotContain(result.Errors, IsMissingError);
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteFileAlias(referencedArtifact);
+        }
+    }
+
+    [CaseSensitiveFileSystemFact]
+    public async Task Validate_MissingArtifactBelowCaseOnlyExternalParent_IsUnsafeAndNotMissing()
+    {
+        var workspace = Workspace("case-missing-parent");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            metadataRows: 0,
+            artifactRows: 0,
+            useWal: false);
+        var artifactsRoot = Path.Combine(source.Root, "artifacts");
+        var caseOnlySibling = Path.Combine(source.Root, "ARTIFACTS");
+        SnapshotTestHelper.CreateDistinctCaseOnlySibling(
+            artifactsRoot,
+            caseOnlySibling);
+
+        var externalParentAlias = Path.Combine(artifactsRoot, "external-parent");
+        await SnapshotTestHelper.CreateDirectoryAliasAsync(
+            externalParentAlias,
+            caseOnlySibling);
+        SnapshotTestHelper.InsertArtifactReference(
+            source.DatabasePath,
+            "case-only-external-parent",
+            Path.Combine("external-parent", "missing.bin"),
+            1);
+        try
+        {
+            var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+            Assert.False(result.IsValid);
+            Assert.Equal(1, result.ArtifactEntries);
+            Assert.Equal(0, result.MissingArtifactFiles);
+            Assert.Contains(result.Errors, IsUnsafeArtifactPathError);
+            Assert.DoesNotContain(result.Errors, IsMissingError);
+        }
+        finally
+        {
+            SnapshotTestHelper.DeleteDirectoryAlias(externalParentAlias);
+        }
+    }
+
     [Fact]
     public async Task Validate_TraversalOnly_IsInvalidWithoutIncrementingMissingCount()
     {
@@ -1735,6 +2095,11 @@ public class SnapshotValidatorTests : IDisposable
         => error.Contains("travers", StringComparison.OrdinalIgnoreCase)
            || error.Contains("escape", StringComparison.OrdinalIgnoreCase)
            || error.Contains("unsafe", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsUnsafeArtifactPathError(string error)
+        => IsTraversalError(error)
+           || error.Contains("outside", StringComparison.OrdinalIgnoreCase)
+           || error.Contains("cannot be resolved safely", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsMissingError(string error)
         => error.Contains("missing artifact", StringComparison.OrdinalIgnoreCase);

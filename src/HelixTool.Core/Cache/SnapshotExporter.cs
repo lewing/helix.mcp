@@ -19,8 +19,12 @@ public static class SnapshotExporter
     private const int BusyTimeoutMilliseconds = BusyTimeoutSeconds * 1000;
     private const int MaxLinkResolutions = 64;
 
-    private static StringComparison BoundaryPathComparison =>
+    private static StringComparison ConservativeDenyListPathComparison =>
         OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+        ? StringComparison.OrdinalIgnoreCase
+        : StringComparison.Ordinal;
+
+    private static StringComparison PositivePathProofComparison => OperatingSystem.IsWindows()
         ? StringComparison.OrdinalIgnoreCase
         : StringComparison.Ordinal;
 
@@ -163,10 +167,9 @@ public static class SnapshotExporter
             // publication. The move itself always uses the selected physical parent.
             var currentPhysicalDestinationParent =
                 CanonicalizeExistingPath(lexicalDestinationParent, requireDirectory: true);
-            if (!string.Equals(
+            if (!PathsAreEqualForPositiveProof(
                     currentPhysicalDestinationParent,
-                    physicalDestinationParent,
-                    BoundaryPathComparison))
+                    physicalDestinationParent))
             {
                 throw new InvalidOperationException(
                     "Destination parent changed while the snapshot was being exported.");
@@ -263,17 +266,35 @@ public static class SnapshotExporter
     }
 
     internal static bool IsEqualOrDescendant(string candidate, string root)
+        => IsEqualOrDescendantUsingComparison(candidate, root, PositivePathProofComparison);
+
+    internal static bool CouldBeEqualOrDescendant(string candidate, string root)
+        => IsEqualOrDescendantUsingComparison(
+            candidate,
+            root,
+            ConservativeDenyListPathComparison);
+
+    private static bool IsEqualOrDescendantUsingComparison(
+        string candidate,
+        string root,
+        StringComparison comparison)
     {
         var normalizedCandidate = Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidate));
         var normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
-        if (string.Equals(normalizedCandidate, normalizedRoot, BoundaryPathComparison))
+        if (string.Equals(normalizedCandidate, normalizedRoot, comparison))
             return true;
 
         var rootPrefix = Path.EndsInDirectorySeparator(normalizedRoot)
             ? normalizedRoot
             : normalizedRoot + Path.DirectorySeparatorChar;
-        return normalizedCandidate.StartsWith(rootPrefix, BoundaryPathComparison);
+        return normalizedCandidate.StartsWith(rootPrefix, comparison);
     }
+
+    private static bool PathsAreEqualForPositiveProof(string left, string right)
+        => string.Equals(
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
+            PositivePathProofComparison);
 
     internal static bool PathEntryExists(string path)
     {
@@ -356,10 +377,7 @@ public static class SnapshotExporter
             return false;
         }
 
-        if (string.Equals(
-                Path.TrimEndingDirectorySeparator(candidate),
-                Path.TrimEndingDirectorySeparator(artifactsRoot),
-                BoundaryPathComparison) ||
+        if (PathsAreEqualForPositiveProof(candidate, artifactsRoot) ||
             !IsEqualOrDescendant(candidate, artifactsRoot))
         {
             error = $"Artifact path escapes the artifacts/ directory: {relativePath}";
@@ -493,11 +511,12 @@ public static class SnapshotExporter
         string sourceRoot,
         string? sourceArtifacts)
     {
-        if (IsEqualOrDescendant(destination, sourceRoot))
+        if (CouldBeEqualOrDescendant(destination, sourceRoot))
             throw new InvalidOperationException(
                 $"Destination must not be the source cache root or a child of it: {destination}");
 
-        if (sourceArtifacts != null && IsEqualOrDescendant(destination, sourceArtifacts))
+        if (sourceArtifacts != null &&
+            CouldBeEqualOrDescendant(destination, sourceArtifacts))
             throw new InvalidOperationException(
                 $"Destination must not be the source artifacts directory or a child of it: {destination}");
     }
@@ -621,10 +640,7 @@ public static class SnapshotExporter
             var destinationPath =
                 Path.GetFullPath(Path.Combine(destinationArtifacts, normalizedRelativePath));
             if (!IsEqualOrDescendant(destinationPath, destinationArtifacts) ||
-                string.Equals(
-                    Path.TrimEndingDirectorySeparator(destinationPath),
-                    Path.TrimEndingDirectorySeparator(destinationArtifacts),
-                    BoundaryPathComparison))
+                PathsAreEqualForPositiveProof(destinationPath, destinationArtifacts))
             {
                 throw new InvalidOperationException(
                     $"Artifact destination path is unsafe: {reference.FilePath}");
