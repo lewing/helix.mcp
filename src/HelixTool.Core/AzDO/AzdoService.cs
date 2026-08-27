@@ -1090,13 +1090,34 @@ public class AzdoService
         };
 
         var buildIncomplete = !string.Equals(build.Status, "completed", StringComparison.OrdinalIgnoreCase);
+        var allWarnings = new List<string>(planResult.Warnings.Count + 1);
+        var warningSet = new HashSet<string>(StringComparer.Ordinal);
+
+        void AddWarning(string warning)
+        {
+            if (warningSet.Add(warning))
+                allWarnings.Add(warning);
+        }
+
+        if (buildIncomplete)
+        {
+            AddWarning(
+                "Build is not completed; this evidence plan is a point-in-time snapshot and may change.");
+        }
+        foreach (var warning in planResult.Warnings)
+            AddWarning(warning);
+
+        var warningTotal = allWarnings.Count;
+        var warnings = allWarnings
+            .Take(AzdoEvidencePlan.MaxWarnings)
+            .ToList();
 
         return new AzdoEvidencePlan
         {
             BuildId = build.Id,
             Build = provenance,
             BuildIncomplete = buildIncomplete,
-            MatchStrategy = options.Match,
+            MatchStrategy = planResult.MatchStrategy,
             JobResultsFilter = options.JobResults,
             ArtifactPattern = options.ArtifactPattern,
             ArtifactJobPrefix = options.ArtifactJobPrefix,
@@ -1104,6 +1125,9 @@ public class AzdoService
             Entries = planResult.Entries,
             Complete = planResult.Complete,
             IncompleteReasons = planResult.IncompleteReasons,
+            Warnings = warnings,
+            WarningTotal = warningTotal,
+            WarningsTruncated = warningTotal > warnings.Count,
             Truncated = planResult.Truncated,
             TotalEntries = planResult.Truncated ? planResult.Total : null,
             Note = planResult.Note,

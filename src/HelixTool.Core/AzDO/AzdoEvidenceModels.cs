@@ -54,12 +54,28 @@ public static class AzdoEvidenceMatchStrategy
     /// <summary>PR #132609 parity: normalize key, then exact equality. May be ambiguous on retried builds.</summary>
     public const string NormalizedExact = "normalized-exact";
 
-    /// <summary>Ordinal equality after prefix strip, no normalization.</summary>
+    /// <summary>Ordinal-ignore-case equality after prefix strip, no normalization.</summary>
     public const string Exact = "exact";
 
     /// <summary>All valid strategy names, for validation.</summary>
     public static readonly IReadOnlyList<string> AllValues =
         [Auto, SourceId, NormalizedExact, Exact];
+
+    /// <summary>Returns the documented lowercase form of a valid strategy name.</summary>
+    public static string Canonicalize(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+
+        foreach (var candidate in AllValues)
+        {
+            if (string.Equals(candidate, value, StringComparison.OrdinalIgnoreCase))
+                return candidate;
+        }
+
+        throw new ArgumentException(
+            $"Invalid match strategy '{value}'. Must be one of: {string.Join(", ", AllValues)}.",
+            nameof(value));
+    }
 }
 
 /// <summary>
@@ -274,11 +290,20 @@ public sealed record AzdoBuiltPlanResult
     /// <summary>Human-readable reason for each ambiguous/missing/truncated entry.</summary>
     public IReadOnlyList<string> IncompleteReasons { get; init; } = [];
 
+    /// <summary>
+    /// Non-fatal planning diagnostics produced by the matcher. This internal list is not capped;
+    /// <see cref="AzdoService.GetEvidencePlanAsync"/> applies the public result bound.
+    /// </summary>
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+
     /// <summary><c>true</c> when the entry list or any entry's candidate list was truncated.</summary>
     public bool Truncated { get; init; }
 
     /// <summary>Total selected jobs before entry truncation.</summary>
     public int Total { get; init; }
+
+    /// <summary>Canonical documented match strategy used to build the entries.</summary>
+    public string MatchStrategy { get; init; } = "";
 
     /// <summary>Human-readable summary note (set when truncated).</summary>
     public string? Note { get; init; }
@@ -291,6 +316,9 @@ public sealed record AzdoBuiltPlanResult
 /// </summary>
 public sealed record AzdoEvidencePlan
 {
+    /// <summary>Maximum number of original warning diagnostics returned in <see cref="Warnings"/>.</summary>
+    public const int MaxWarnings = 10;
+
     [JsonPropertyName("buildId")]
     public int BuildId { get; init; }
 
@@ -329,9 +357,22 @@ public sealed record AzdoEvidencePlan
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public IReadOnlyList<string> IncompleteReasons { get; init; } = [];
 
+    /// <summary>
+    /// The first <see cref="MaxWarnings"/> original non-fatal planning diagnostics in deterministic order.
+    /// </summary>
+    [JsonPropertyName("warnings")]
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+
+    /// <summary>Total warnings before the bounded <see cref="Warnings"/> list was truncated.</summary>
+    [JsonPropertyName("warningTotal")]
+    public int WarningTotal { get; init; }
+
+    /// <summary><c>true</c> when <see cref="WarningTotal"/> exceeds the number of returned warnings.</summary>
+    [JsonPropertyName("warningsTruncated")]
+    public bool WarningsTruncated { get; init; }
+
     /// <summary><c>true</c> when the entry list or any entry's candidate list was truncated.</summary>
     [JsonPropertyName("truncated")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool Truncated { get; init; }
 
     [JsonPropertyName("totalEntries")]

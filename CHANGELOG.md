@@ -15,7 +15,7 @@ New read-only tool for planning which artifacts correspond to failed or canceled
 - **Primary:** GUID join (`artifact.source == job.id`) — 100% resolution on real builds, handles retried attempts correctly by construction.
 - **Fallback:** Normalized-exact name matching (dotnet/runtime PR #132609 parity) — for unmapped jobs when GUID join leaves gaps.
 
-Matching strategy is configurable via `--match` parameter: `auto` (default, recommended), `source-id`, `normalized-exact`, or `exact`.
+Matching strategy is configurable via `--match` parameter: `auto` (default, recommended), `source-id`, `normalized-exact`, or `exact`. The `exact` strategy uses ordinal-ignore-case equality after prefix stripping, with no normalization.
 
 **CLI:** `hlx azdo evidence plan <buildId> [--job-results RESULTS] [--artifact-pattern PAT] [--artifact-job-prefix PREFIX] [--keep-attempt-prefix] [--match MODE] [--json]`. `AttemptN_` is stripped and recorded by default; pass the bare `--keep-attempt-prefix` flag to retain it. The former `--strip-attempt-prefix` spelling is no longer recognized, but it only restated the default: remove it from scripts rather than replacing it with the opposite-meaning keep flag.
 
@@ -28,6 +28,7 @@ Matching strategy is configurable via `--match` parameter: `auto` (default, reco
 - Preserves attempt numbers for deterministic ranking (real builds retry with `Attempt1`, `Attempt2`, etc.).
 - Read-only planning boundary: no download, extract, or write operations; analysis remains in binlog-mcp.
 - Completeness contract: `complete` signals whether all jobs are unambiguously mapped and no output was truncated. `incompleteReasons[]` explains gaps.
+- Warning contract: `warnings[]`, `warningTotal`, and `warningsTruncated` are always present. `warnings` contains the first 10 original diagnostics in deterministic order (never a synthetic truncation member); `warningTotal` reports the pre-cap count and `warningsTruncated` reports whether any were omitted.
 - Structured output: job records (including timeline order and attempt when present), candidate artifacts (name, id, size, download URL, type, source GUID, attempt), and build provenance (PR metadata if applicable).
 - Partial-response bounds: 200 entries, 10 candidates per entry. Every entry reports `candidateTotal` and `candidatesTruncated`; candidate overflow also supplies `candidateNote`. Entry or candidate overflow sets plan-level `complete: false` and `truncated: true`; `totalEntries` reports the selected-job total and `note` summarizes the truncation.
 

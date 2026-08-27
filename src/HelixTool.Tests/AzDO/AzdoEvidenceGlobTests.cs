@@ -1,10 +1,6 @@
 // Group D — trailing-star glob regression (§9.1 / R5).
 //
-// StringHelpers.MatchesPattern currently treats "Logs_Build_*" as a literal substring including
-// the '*', so it matches nothing. D1 documents that this FAILS on main today.
-// After Ripley's R5 fix (add trailing-* branch), all D tests must be green.
-//
-// Run these first: `dotnet test --filter "FullyQualifiedName~AzdoEvidenceGlobTests"`
+// Run: `dotnet test --filter "FullyQualifiedName~AzdoEvidenceGlobTests"`
 
 using HelixTool.Core;
 using HelixTool.Core.AzDO;
@@ -15,8 +11,7 @@ namespace HelixTool.Tests.AzDO;
 
 public class AzdoEvidenceGlobTests
 {
-    // ── D1 — trailing-* prefix glob regression (FAILS ON MAIN TODAY) ─────────
-    // This is the gate test: D1 must fail on main and pass on the branch (§11.3).
+    // ── D1 — trailing-* prefix glob regression ──────────────────────────────
 
     [Fact]
     public void MatchesPattern_TrailingStar_MatchesPrefix()

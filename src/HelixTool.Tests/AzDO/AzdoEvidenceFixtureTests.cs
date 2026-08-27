@@ -1,14 +1,5 @@
 // Groups B and C — real-fixture regression tests and provenance/model-contract tests.
 //
-// COMPILE GAP: references types not yet implemented by Ripley:
-//   - AzdoEvidenceMatcher, AzdoEvidencePlan, AzdoEvidencePlanEntry, AzdoEvidenceCandidate
-//   - AzdoEvidencePlanOptions, AzdoBuildProvenance (HelixTool.Core.AzDO)
-//   - AzdoBuildArtifact.Source (model addition)
-//   - AzdoArtifactResource.Properties (model addition)
-//   - AzdoTimelineRecord.Attempt (model addition)
-//   - AzdoTriggerInfo: PrSourceSha, PrSourceBranch, PrIsFork, PrDraft, PrProviderId
-// Remove the COMPILE GAP comment when Ripley lands these types.
-//
 // Fixtures represent the falsifying evidence from builds 1570501 and 1569889 (§3).
 // No operational download URLs, real SHAs, or sender data are included.
 //

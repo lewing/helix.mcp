@@ -117,7 +117,8 @@ public class AzdoEvidenceSurfaceTests
     [Fact]
     public async Task EvidencePlan_IncompletePlan_ProducesUsableOutput()
     {
-        // D8: exit 2 carries the full plan — not a fatal error. Plan is still usable.
+        // Service-level shape check. The exit-code half of D8 is gated by the real CLI
+        // subprocess test CliEvidencePlan_IncompletePlan_ExitsTwoWithUsableJsonPlanOnStdout.
         SetupIncompleteMockPlan();
 
         var plan = await _svc.GetEvidencePlanAsync("1570501", DefaultOptions());
@@ -319,7 +320,7 @@ public class AzdoEvidenceSurfaceTests
                 typeof(string),
                 hasDefault: true,
                 defaultValue: "auto",
-                "Matching strategy: 'auto' (default) = source-id join then normalized-name fallback; 'source-id' = GUID join only; 'normalized-exact' = PR #132609 name parity; 'exact' = ordinal equality after prefix strip."),
+                "Matching strategy: 'auto' (default) = source-id join then normalized-name fallback; 'source-id' = GUID join only; 'normalized-exact' = PR #132609 name parity; 'exact' = ordinal-ignore-case equality after prefix strip, no normalization."),
             parameter => AssertMcpParameter(
                 parameter,
                 "jobResults",
@@ -569,6 +570,680 @@ public class AzdoEvidenceSurfaceTests
         finally
         {
             Environment.ExitCode = originalExitCode;
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // E3b — Real CLI subprocess: incomplete plan exits 2 with a usable stdout plan
+    // ════════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task CliEvidencePlan_IncompletePlan_ExitsTwoWithUsableJsonPlanOnStdout()
+    {
+        // D8: exit 2 is not a fatal error — the full, usable plan is still written to stdout.
+        // Runs the real built CLI as a subprocess against an offline snapshot: no network,
+        // no credentials, deterministic input.
+        const int buildId = 1570502;
+        const string mappedJobId = "job-mapped";
+        const string missingJobId = "job-missing";
+        const string ambiguousJobId = "job-ambiguous";
+
+        var cacheRoot = Path.Combine(AppContext.BaseDirectory, $"evidence-cli-incomplete-{Guid.NewGuid():N}");
+        var snapshotRoot = Path.Combine(cacheRoot, "public");
+
+        try
+        {
+            await SeedEvidenceSnapshotAsync(
+                cacheRoot,
+                buildId,
+                new AzdoBuild
+                {
+                    Id = buildId,
+                    BuildNumber = "incomplete-cli",
+                    Status = "completed",
+                    Result = "failed",
+                    Definition = new AzdoBuildDefinition { Id = 666, Name = "runtime" }
+                },
+                new AzdoTimeline
+                {
+                    Records =
+                    [
+                        new() { Id = mappedJobId,    Type = "Job", Result = "failed", Name = "Mapped Job",    Order = 1, Attempt = 1 },
+                        new() { Id = missingJobId,   Type = "Job", Result = "failed", Name = "Missing Job",   Order = 2, Attempt = 1 },
+                        new() { Id = ambiguousJobId, Type = "Job", Result = "failed", Name = "Ambiguous Job", Order = 3, Attempt = 1 },
+                    ]
+                },
+                [
+                    new() { Id = 1, Name = "Logs_Build_Attempt1_Mapped_Job",      Source = mappedJobId,    Resource = new() { Type = "Container" } },
+                    new() { Id = 2, Name = "Logs_Build_Attempt1_Ambiguous_Job",   Source = ambiguousJobId, Resource = new() { Type = "Container" } },
+                    new() { Id = 3, Name = "Logs_Build_Attempt2_Ambiguous_Job",   Source = ambiguousJobId, Resource = new() { Type = "Container" } },
+                ]);
+
+            var result = await RunCliAsync(
+                snapshotRoot,
+                "azdo", "evidence", "plan", buildId.ToString(CultureInfo.InvariantCulture),
+                "--artifact-pattern", "Logs_Build_*",
+                "--artifact-job-prefix", "Logs_Build_",
+                "--json");
+
+            Assert.True(
+                result.ExitCode == 2,
+                $"Expected exit 2 for an incomplete plan, got {result.ExitCode}.{Environment.NewLine}stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
+            Assert.True(string.IsNullOrWhiteSpace(result.Stderr), result.Stderr);
+
+            // Exit 2 must still carry a parseable, usable plan on stdout.
+            using var json = JsonDocument.Parse(result.Stdout);
+            var root = json.RootElement;
+
+            Assert.Equal(buildId, root.GetProperty("buildId").GetInt32());
+            Assert.False(root.GetProperty("complete").GetBoolean());
+            Assert.False(root.GetProperty("truncated").GetBoolean());
+
+            var entries = root.GetProperty("entries");
+            Assert.Equal(3, entries.GetArrayLength());
+
+            var byJobId = entries
+                .EnumerateArray()
+                .ToDictionary(e => e.GetProperty("jobId").GetString()!, e => e);
+
+            var mapped = byJobId[mappedJobId];
+            Assert.Equal("mapped", mapped.GetProperty("status").GetString());
+            Assert.Equal("source-id", mapped.GetProperty("matchedBy").GetString());
+            Assert.Equal(
+                "Logs_Build_Attempt1_Mapped_Job",
+                mapped.GetProperty("candidates")[0].GetProperty("artifactName").GetString());
+
+            var missing = byJobId[missingJobId];
+            Assert.Equal("missing", missing.GetProperty("status").GetString());
+            Assert.Equal(0, missing.GetProperty("candidates").GetArrayLength());
+            Assert.False(missing.TryGetProperty("matchedBy", out _));
+
+            var ambiguous = byJobId[ambiguousJobId];
+            Assert.Equal("ambiguous", ambiguous.GetProperty("status").GetString());
+            Assert.Equal(2, ambiguous.GetProperty("candidateTotal").GetInt32());
+            Assert.Equal(2, ambiguous.GetProperty("candidates").GetArrayLength());
+            Assert.False(ambiguous.GetProperty("candidatesTruncated").GetBoolean());
+
+            // Diagnostics naming the actual jobs — the plan is actionable, not a bare failure.
+            var reasons = root.GetProperty("incompleteReasons")
+                .EnumerateArray()
+                .Select(r => r.GetString()!)
+                .ToList();
+            Assert.Equal(2, reasons.Count);
+            Assert.Contains(reasons, r => r.Contains("Missing Job", StringComparison.Ordinal));
+            Assert.Contains(reasons, r => r.Contains("Ambiguous Job", StringComparison.Ordinal));
+        }
+        finally
+        {
+            CleanupSnapshot(cacheRoot);
+        }
+    }
+
+    [Fact]
+    public async Task CliEvidencePlan_IncompletePlan_HumanOutput_ExitsTwoWithUsablePlanOnStdout()
+    {
+        // The default (non---json) CLI path must also emit a usable plan on stdout with exit 2.
+        const int buildId = 1570503;
+        const string missingJobId = "job-missing";
+
+        var cacheRoot = Path.Combine(AppContext.BaseDirectory, $"evidence-cli-incomplete-text-{Guid.NewGuid():N}");
+        var snapshotRoot = Path.Combine(cacheRoot, "public");
+
+        try
+        {
+            await SeedEvidenceSnapshotAsync(
+                cacheRoot,
+                buildId,
+                new AzdoBuild
+                {
+                    Id = buildId,
+                    BuildNumber = "incomplete-cli-text",
+                    Status = "completed",
+                    Result = "failed",
+                    Definition = new AzdoBuildDefinition { Id = 666, Name = "runtime" }
+                },
+                new AzdoTimeline
+                {
+                    Records =
+                    [
+                        new() { Id = missingJobId, Type = "Job", Result = "failed", Name = "Missing Job", Order = 1, Attempt = 1 }
+                    ]
+                },
+                []);
+
+            var result = await RunCliAsync(
+                snapshotRoot,
+                "azdo", "evidence", "plan", buildId.ToString(CultureInfo.InvariantCulture),
+                "--artifact-job-prefix", "Logs_Build_");
+
+            Assert.True(
+                result.ExitCode == 2,
+                $"Expected exit 2 for an incomplete plan, got {result.ExitCode}.{Environment.NewLine}stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
+            Assert.True(string.IsNullOrWhiteSpace(result.Stderr), result.Stderr);
+
+            var stdout = result.Stdout.Replace("\r\n", "\n", StringComparison.Ordinal);
+            Assert.StartsWith($"Evidence plan for build #{buildId}", stdout, StringComparison.Ordinal);
+            Assert.Contains("Complete:          no", stdout, StringComparison.Ordinal);
+            Assert.Contains("Truncated:         no", stdout, StringComparison.Ordinal);
+            Assert.Contains("[\"missing\"] Job \"Missing Job\"", stdout, StringComparison.Ordinal);
+            Assert.Contains("Incomplete reasons:", stdout, StringComparison.Ordinal);
+            Assert.Contains("Missing Job", stdout, StringComparison.Ordinal);
+
+            // The warnings block is conditional: a completed build with no truncation has
+            // nothing to warn about, so the section must be absent rather than empty.
+            Assert.DoesNotContain("Warnings:", stdout, StringComparison.Ordinal);
+        }
+        finally
+        {
+            CleanupSnapshot(cacheRoot);
+        }
+    }
+
+    [Fact]
+    public async Task CliEvidencePlan_IncompleteBuild_HumanOutput_RendersWarningsSection()
+    {
+        // Warnings are serialized for --json consumers, but the default human path renders them
+        // in its own section. A non-completed build produces the point-in-time warning while the
+        // mapping itself is complete, so this also proves warnings are non-fatal: exit stays 0.
+        const int buildId = 1570506;
+        const string jobId = "job-warn";
+
+        var cacheRoot = Path.Combine(AppContext.BaseDirectory, $"evidence-cli-warn-text-{Guid.NewGuid():N}");
+        var snapshotRoot = Path.Combine(cacheRoot, "public");
+
+        try
+        {
+            await SeedEvidenceSnapshotAsync(
+                cacheRoot,
+                buildId,
+                new AzdoBuild
+                {
+                    Id = buildId,
+                    BuildNumber = "warn-cli-text",
+                    Status = "inProgress",
+                    Result = "failed",
+                    Definition = new AzdoBuildDefinition { Id = 666, Name = "runtime" }
+                },
+                new AzdoTimeline
+                {
+                    Records =
+                    [
+                        new() { Id = jobId, Type = "Job", Result = "failed", Name = "Warned Job", Order = 1, Attempt = 1 }
+                    ]
+                },
+                [
+                    new() { Id = 1, Name = "Logs_Build_Attempt1_Warned_Job", Source = jobId, Resource = new() { Type = "Container" } }
+                ]);
+
+            var result = await RunCliAsync(
+                snapshotRoot,
+                "azdo", "evidence", "plan", buildId.ToString(CultureInfo.InvariantCulture),
+                "--artifact-job-prefix", "Logs_Build_");
+
+            Assert.True(
+                result.ExitCode == 0,
+                $"Expected exit 0 for a complete plan with warnings, got {result.ExitCode}.{Environment.NewLine}stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
+            Assert.True(string.IsNullOrWhiteSpace(result.Stderr), result.Stderr);
+
+            var stdout = result.Stdout.Replace("\r\n", "\n", StringComparison.Ordinal);
+            Assert.Contains("Complete:          yes", stdout, StringComparison.Ordinal);
+            Assert.Contains("Build incomplete:  yes", stdout, StringComparison.Ordinal);
+
+            // Untruncated warnings use the bare header, and the warning text itself is rendered.
+            Assert.Contains("\nWarnings:\n", stdout, StringComparison.Ordinal);
+            Assert.DoesNotContain("truncated):", stdout, StringComparison.Ordinal);
+            Assert.Contains(
+                "  - \"Build is not completed; this evidence plan is a point-in-time snapshot and may change.\"",
+                stdout,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            CleanupSnapshot(cacheRoot);
+        }
+    }
+
+    [Fact]
+    public async Task CliEvidencePlan_CompletePlan_ExitsZero_ProvingExitTwoIsNotUnconditional()
+    {
+        // Falsifies the exit-2 gate: the same CLI path over a fully-mapped snapshot exits 0.
+        const int buildId = 1570504;
+        const string jobId = "job-complete";
+
+        var cacheRoot = Path.Combine(AppContext.BaseDirectory, $"evidence-cli-complete-{Guid.NewGuid():N}");
+        var snapshotRoot = Path.Combine(cacheRoot, "public");
+
+        try
+        {
+            await SeedEvidenceSnapshotAsync(
+                cacheRoot,
+                buildId,
+                new AzdoBuild { Id = buildId, BuildNumber = "complete-cli", Status = "completed", Result = "failed" },
+                new AzdoTimeline
+                {
+                    Records =
+                    [
+                        new() { Id = jobId, Type = "Job", Result = "failed", Name = "Mapped Job", Order = 1, Attempt = 1 }
+                    ]
+                },
+                [
+                    new() { Id = 1, Name = "Logs_Build_Attempt1_Mapped_Job", Source = jobId, Resource = new() { Type = "Container" } }
+                ]);
+
+            var result = await RunCliAsync(
+                snapshotRoot,
+                "azdo", "evidence", "plan", buildId.ToString(CultureInfo.InvariantCulture),
+                "--artifact-job-prefix", "Logs_Build_",
+                "--json");
+
+            Assert.True(
+                result.ExitCode == 0,
+                $"Expected exit 0 for a complete plan, got {result.ExitCode}.{Environment.NewLine}stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
+
+            using var json = JsonDocument.Parse(result.Stdout);
+            Assert.True(json.RootElement.GetProperty("complete").GetBoolean());
+        }
+        finally
+        {
+            CleanupSnapshot(cacheRoot);
+        }
+    }
+
+    [Theory]
+    [InlineData("AUTO")]
+    [InlineData("Auto")]
+    [InlineData("NORMALIZED-EXACT")]
+    [InlineData("Exact")]
+    public async Task CliEvidencePlan_UppercaseMatchStrategy_CanonicalizedEndToEnd(string match)
+    {
+        // A mixed-case --match must be accepted, canonicalized in the serialized plan, and must
+        // not regress every entry to "missing" (which would flip the exit code to 2).
+        const int buildId = 1570505;
+        const string jobId = "job-case";
+
+        var cacheRoot = Path.Combine(AppContext.BaseDirectory, $"evidence-cli-case-{Guid.NewGuid():N}");
+        var snapshotRoot = Path.Combine(cacheRoot, "public");
+
+        try
+        {
+            await SeedEvidenceSnapshotAsync(
+                cacheRoot,
+                buildId,
+                new AzdoBuild { Id = buildId, BuildNumber = "case-cli", Status = "completed", Result = "failed" },
+                new AzdoTimeline
+                {
+                    Records =
+                    [
+                        new() { Id = jobId, Type = "Job", Result = "failed", Name = "Mapped Job", Order = 1, Attempt = 1 }
+                    ]
+                },
+                [
+                    new() { Id = 1, Name = "Logs_Build_Attempt1_Mapped Job", Source = jobId, Resource = new() { Type = "Container" } }
+                ]);
+
+            var result = await RunCliAsync(
+                snapshotRoot,
+                "azdo", "evidence", "plan", buildId.ToString(CultureInfo.InvariantCulture),
+                "--artifact-job-prefix", "Logs_Build_",
+                "--match", match,
+                "--json");
+
+            Assert.True(
+                result.ExitCode == 0,
+                $"Expected exit 0 for --match {match}, got {result.ExitCode}.{Environment.NewLine}stdout:{Environment.NewLine}{result.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{result.Stderr}");
+
+            using var json = JsonDocument.Parse(result.Stdout);
+            var root = json.RootElement;
+
+            Assert.Equal(match.ToLowerInvariant(), root.GetProperty("matchStrategy").GetString());
+            Assert.True(root.GetProperty("complete").GetBoolean());
+            Assert.Equal("mapped", root.GetProperty("entries")[0].GetProperty("status").GetString());
+        }
+        finally
+        {
+            CleanupSnapshot(cacheRoot);
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // E3c — `truncated` is always serialized, both false and true
+    // ════════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task EvidencePlan_UntruncatedPlan_SerializesTruncatedAsFalse()
+    {
+        SetupCompleteMockPlan();
+
+        var plan = await _svc.GetEvidencePlanAsync("1570501", DefaultOptions());
+
+        Assert.False(plan.Truncated);
+
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(plan));
+        Assert.True(
+            json.RootElement.TryGetProperty("truncated", out var truncated),
+            "`truncated` must always be serialized, including when false.");
+        Assert.Equal(JsonValueKind.False, truncated.ValueKind);
+        Assert.False(truncated.GetBoolean());
+
+        // `totalEntries` stays absent when nothing was truncated.
+        Assert.False(json.RootElement.TryGetProperty("totalEntries", out _));
+    }
+
+    [Fact]
+    public async Task EvidencePlan_TruncatedPlan_SerializesTruncatedAsTrue()
+    {
+        // MaxPlanEntries + 5 failed jobs → entry-list truncation.
+        const int jobCount = AzdoEvidenceMatcher.MaxPlanEntries + 5;
+
+        _mockApi.GetBuildAsync("dnceng-public", "public", 1570501, Arg.Any<CancellationToken>())
+            .Returns(new AzdoBuild { Id = 1570501, Status = "completed", Result = "failed" });
+        _mockApi.GetTimelineAsync("dnceng-public", "public", 1570501, Arg.Any<CancellationToken>())
+            .Returns(new AzdoTimeline
+            {
+                Records = Enumerable.Range(0, jobCount)
+                    .Select(i => new AzdoTimelineRecord
+                    {
+                        Id = $"job-{i:D4}",
+                        Type = "Job",
+                        Result = "failed",
+                        Name = $"Job {i:D4}",
+                        Order = i,
+                        Attempt = 1
+                    })
+                    .ToList()
+            });
+        _mockApi.GetBuildArtifactsAsync("dnceng-public", "public", 1570501, Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuildArtifact>());
+
+        var plan = await _svc.GetEvidencePlanAsync("1570501", DefaultOptions());
+
+        Assert.True(plan.Truncated);
+        Assert.Equal(AzdoEvidenceMatcher.MaxPlanEntries, plan.Entries.Count);
+
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(plan));
+        var root = json.RootElement;
+        Assert.True(root.TryGetProperty("truncated", out var truncated));
+        Assert.Equal(JsonValueKind.True, truncated.ValueKind);
+        Assert.True(truncated.GetBoolean());
+        Assert.Equal(jobCount, root.GetProperty("totalEntries").GetInt32());
+        Assert.False(root.GetProperty("complete").GetBoolean());
+    }
+
+    [Fact]
+    public async Task CliEvidencePlan_UntruncatedPlan_EmitsTruncatedFalseOverTheRealCli()
+    {
+        // End-to-end: the serialized CLI payload must carry `"truncated": false`, not omit it.
+        const int buildId = 1570506;
+        const string jobId = "job-untruncated";
+
+        var cacheRoot = Path.Combine(AppContext.BaseDirectory, $"evidence-cli-truncated-{Guid.NewGuid():N}");
+        var snapshotRoot = Path.Combine(cacheRoot, "public");
+
+        try
+        {
+            await SeedEvidenceSnapshotAsync(
+                cacheRoot,
+                buildId,
+                new AzdoBuild { Id = buildId, BuildNumber = "truncation-cli", Status = "completed", Result = "failed" },
+                new AzdoTimeline
+                {
+                    Records =
+                    [
+                        new() { Id = jobId, Type = "Job", Result = "failed", Name = "Mapped Job", Order = 1, Attempt = 1 }
+                    ]
+                },
+                [
+                    new() { Id = 1, Name = "Logs_Build_Attempt1_Mapped_Job", Source = jobId, Resource = new() { Type = "Container" } }
+                ]);
+
+            var result = await RunCliAsync(
+                snapshotRoot,
+                "azdo", "evidence", "plan", buildId.ToString(CultureInfo.InvariantCulture),
+                "--artifact-job-prefix", "Logs_Build_",
+                "--json");
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("\"truncated\": false", result.Stdout, StringComparison.Ordinal);
+
+            using var json = JsonDocument.Parse(result.Stdout);
+            Assert.Equal(JsonValueKind.False, json.RootElement.GetProperty("truncated").ValueKind);
+        }
+        finally
+        {
+            CleanupSnapshot(cacheRoot);
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // E3d — Bounded warnings contract
+    // ════════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task EvidencePlan_CleanPlan_WarningsContractPresentAndEmpty()
+    {
+        // The three warning fields are always serialized so consumers can bind them
+        // unconditionally — and they stay empty/zero/false when nothing is warnable.
+        SetupCompleteMockPlan();
+
+        var plan = await _svc.GetEvidencePlanAsync("1570501", DefaultOptions());
+
+        Assert.Empty(plan.Warnings);
+        Assert.Equal(0, plan.WarningTotal);
+        Assert.False(plan.WarningsTruncated);
+
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(plan));
+        var root = json.RootElement;
+
+        Assert.Equal(JsonValueKind.Array, root.GetProperty("warnings").ValueKind);
+        Assert.Equal(0, root.GetProperty("warnings").GetArrayLength());
+        Assert.Equal(0, root.GetProperty("warningTotal").GetInt32());
+        Assert.Equal(JsonValueKind.False, root.GetProperty("warningsTruncated").ValueKind);
+    }
+
+    [Fact]
+    public async Task EvidencePlan_WarnablePlan_PopulatesWarningsMeaningfully()
+    {
+        // Two distinct warnable conditions in one plan: an in-flight build and a
+        // truncated candidate list. Both must be reported, with real content.
+        var plan = await BuildWarnablePlanAsync();
+
+        // Pre-condition: the fixture really does trip both conditions, so the assertions
+        // below are not vacuously satisfied by an empty warning set.
+        Assert.True(plan.BuildIncomplete);
+        var crowded = Assert.Single(plan.Entries, e => e.CandidatesTruncated);
+        Assert.Equal(AzdoEvidenceMatcher.MaxCandidatesPerEntry, crowded.Candidates.Count);
+        Assert.Equal(AzdoEvidenceMatcher.MaxCandidatesPerEntry + 2, crowded.CandidateTotal);
+
+        Assert.Equal(2, plan.Warnings.Count);
+        Assert.Equal(2, plan.WarningTotal);
+        Assert.False(plan.WarningsTruncated);
+
+        // Non-vacuous: every warning is substantive and distinct.
+        Assert.All(plan.Warnings, w =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(w));
+            Assert.True(w.Length >= 20, $"Warning is not meaningful: '{w}'");
+        });
+        Assert.Equal(plan.Warnings.Count, plan.Warnings.Distinct(StringComparer.Ordinal).Count());
+
+        // Each warning names the condition that produced it.
+        Assert.Contains("not completed", plan.Warnings[0], StringComparison.Ordinal);
+        Assert.Contains("snapshot", plan.Warnings[0], StringComparison.Ordinal);
+
+        Assert.Contains("Candidate lists truncated", plan.Warnings[1], StringComparison.Ordinal);
+        Assert.Contains("candidateTotal", plan.Warnings[1], StringComparison.Ordinal);
+
+        // Warnings are non-fatal diagnostics, distinct from the completeness reasons.
+        Assert.NotEmpty(plan.IncompleteReasons);
+        Assert.Empty(plan.Warnings.Intersect(plan.IncompleteReasons, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task EvidencePlan_Warnings_SerializeStablyAndInDeterministicOrder()
+    {
+        var first = await BuildWarnablePlanAsync();
+        var second = await BuildWarnablePlanAsync(shuffleInputs: true);
+
+        // Deterministic order: shuffled timeline/artifact input yields the same warning sequence,
+        // with the build-level warning ahead of the matcher-level warning.
+        Assert.Equal(first.Warnings, second.Warnings);
+        Assert.StartsWith("Build is not completed", first.Warnings[0], StringComparison.Ordinal);
+
+        // Stable serialization: repeated serialization of the same plan is byte-identical, and
+        // the array preserves list order.
+        var json1 = JsonSerializer.Serialize(first);
+        var json2 = JsonSerializer.Serialize(first);
+        Assert.Equal(json1, json2);
+
+        using var document = JsonDocument.Parse(json1);
+        var serializedWarnings = document.RootElement.GetProperty("warnings")
+            .EnumerateArray()
+            .Select(w => w.GetString()!)
+            .ToList();
+        Assert.Equal(first.Warnings, serializedWarnings);
+        Assert.Equal(first.WarningTotal, document.RootElement.GetProperty("warningTotal").GetInt32());
+        Assert.Equal(
+            first.WarningsTruncated,
+            document.RootElement.GetProperty("warningsTruncated").GetBoolean());
+    }
+
+    [Fact]
+    public async Task GetEvidencePlanAsync_WarningsOverBound_RetainsOriginalDetailsAndSerializesTrueTotal()
+    {
+        SetupOverBoundWarningMockPlan(reverseInputs: false);
+        var first = await _svc.GetEvidencePlanAsync("1570501", DefaultOptions());
+
+        SetupOverBoundWarningMockPlan(reverseInputs: true);
+        var reversed = await _svc.GetEvidencePlanAsync("1570501", DefaultOptions());
+
+        var expectedWarnings = Enumerable.Range(0, AzdoEvidencePlan.MaxWarnings)
+            .Select(i =>
+                $"Candidate lists truncated for job 'Crowded Job {i:D2}' (job-crowded-{i:D2}): " +
+                $"showing first {AzdoEvidenceMatcher.MaxCandidatesPerEntry} of " +
+                $"{AzdoEvidenceMatcher.MaxCandidatesPerEntry + 1}; candidateTotal preserves the full count.")
+            .ToList();
+
+        Assert.False(first.Complete);
+        Assert.True(first.Truncated);
+        Assert.Equal(11, first.TotalEntries);
+        Assert.Equal(11, first.Entries.Count);
+        Assert.All(first.Entries, entry =>
+        {
+            Assert.True(entry.CandidatesTruncated);
+            Assert.Equal(AzdoEvidenceMatcher.MaxCandidatesPerEntry + 1, entry.CandidateTotal);
+            Assert.Equal(AzdoEvidenceMatcher.MaxCandidatesPerEntry, entry.Candidates.Count);
+        });
+
+        Assert.Equal(10, AzdoEvidencePlan.MaxWarnings);
+        Assert.Equal(10, first.Warnings.Count);
+        Assert.Equal(11, first.WarningTotal);
+        Assert.True(first.WarningsTruncated);
+        Assert.Equal(expectedWarnings, first.Warnings);
+        Assert.Equal(first.Warnings, reversed.Warnings);
+        Assert.DoesNotContain(
+            first.Warnings,
+            warning => warning.Contains("Warning diagnostics truncated by the service", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            first.Warnings,
+            warning => warning.Contains("Crowded Job 10", StringComparison.Ordinal));
+
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(first));
+        var root = json.RootElement;
+
+        var serialized = root.GetProperty("warnings")
+            .EnumerateArray()
+            .Select(w => w.GetString()!)
+            .ToList();
+
+        Assert.Equal(JsonValueKind.Array, root.GetProperty("warnings").ValueKind);
+        Assert.Equal(expectedWarnings, serialized);
+        Assert.Equal(11, root.GetProperty("warningTotal").GetInt32());
+        Assert.Equal(JsonValueKind.True, root.GetProperty("warningsTruncated").ValueKind);
+        Assert.Equal(JsonValueKind.False, root.GetProperty("complete").ValueKind);
+        Assert.Equal(JsonValueKind.True, root.GetProperty("truncated").ValueKind);
+        Assert.Equal(11, root.GetProperty("totalEntries").GetInt32());
+    }
+
+    [Fact]
+    public async Task McpTool_EvidencePlan_SurfacesTruncatedWarningContract()
+    {
+        SetupOverBoundWarningMockPlan(reverseInputs: true);
+
+        var plan = await _tools.EvidencePlan(
+            "1570501",
+            artifactPattern: "Logs_Build_*",
+            artifactJobPrefix: "Logs_Build_",
+            stripAttemptPrefix: true,
+            match: "auto",
+            jobResults: "failed,canceled");
+
+        Assert.Equal(10, plan.Warnings.Count);
+        Assert.Equal(11, plan.WarningTotal);
+        Assert.True(plan.WarningsTruncated);
+        Assert.StartsWith("Candidate lists truncated for job 'Crowded Job 00'", plan.Warnings[0], StringComparison.Ordinal);
+        Assert.StartsWith("Candidate lists truncated for job 'Crowded Job 09'", plan.Warnings[^1], StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            plan.Warnings,
+            warning => warning.Contains("Warning diagnostics truncated by the service", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CliEvidencePlan_TruncatedWarningsReachJsonAndHumanHeader()
+    {
+        const int buildId = 1570508;
+
+        var cacheRoot = Path.Combine(AppContext.BaseDirectory, $"evidence-cli-warn-{Guid.NewGuid():N}");
+        var snapshotRoot = Path.Combine(cacheRoot, "public");
+
+        try
+        {
+            var (timeline, artifacts) = CreateOverBoundWarningInputs(reverseInputs: true);
+            await SeedEvidenceSnapshotAsync(
+                cacheRoot,
+                buildId,
+                new AzdoBuild { Id = buildId, BuildNumber = "warn-cli", Status = "completed", Result = "failed" },
+                timeline,
+                artifacts);
+
+            var jsonResult = await RunCliAsync(
+                snapshotRoot,
+                "azdo", "evidence", "plan", buildId.ToString(CultureInfo.InvariantCulture),
+                "--artifact-job-prefix", "Logs_Build_",
+                "--json");
+
+            Assert.True(
+                jsonResult.ExitCode == 2,
+                $"Expected exit 2, got {jsonResult.ExitCode}.{Environment.NewLine}stdout:{Environment.NewLine}{jsonResult.Stdout}{Environment.NewLine}stderr:{Environment.NewLine}{jsonResult.Stderr}");
+
+            using var json = JsonDocument.Parse(jsonResult.Stdout);
+            var root = json.RootElement;
+
+            var warnings = root.GetProperty("warnings")
+                .EnumerateArray()
+                .Select(w => w.GetString()!)
+                .ToList();
+            Assert.Equal(10, warnings.Count);
+            Assert.StartsWith("Candidate lists truncated for job 'Crowded Job 00'", warnings[0], StringComparison.Ordinal);
+            Assert.StartsWith("Candidate lists truncated for job 'Crowded Job 09'", warnings[^1], StringComparison.Ordinal);
+            Assert.Equal(11, root.GetProperty("warningTotal").GetInt32());
+            Assert.Equal(JsonValueKind.True, root.GetProperty("warningsTruncated").ValueKind);
+            Assert.DoesNotContain(
+                warnings,
+                warning => warning.Contains("Warning diagnostics truncated by the service", StringComparison.Ordinal));
+
+            var humanResult = await RunCliAsync(
+                snapshotRoot,
+                "azdo", "evidence", "plan", buildId.ToString(CultureInfo.InvariantCulture),
+                "--artifact-job-prefix", "Logs_Build_");
+
+            Assert.Equal(2, humanResult.ExitCode);
+            var stdout = humanResult.Stdout.Replace("\r\n", "\n", StringComparison.Ordinal);
+            Assert.Contains("\nWarnings (showing 10 of 11; truncated):\n", stdout, StringComparison.Ordinal);
+            Assert.DoesNotContain("Warning diagnostics truncated by the service", stdout, StringComparison.Ordinal);
+        }
+        finally
+        {
+            CleanupSnapshot(cacheRoot);
         }
     }
 
@@ -867,6 +1542,170 @@ public class AzdoEvidenceSurfaceTests
         // No artifact with matching source → missing entry
         _mockApi.GetBuildArtifactsAsync("dnceng-public", "public", 1570501, Arg.Any<CancellationToken>())
             .Returns(new List<AzdoBuildArtifact>());
+    }
+
+    /// <summary>
+    /// Builds a plan that trips both warnable conditions: an in-flight build (build-level
+    /// warning) and a job with more candidates than <c>MaxCandidatesPerEntry</c>
+    /// (matcher-level warning).
+    /// </summary>
+    private void SetupWarnableMockPlan(bool shuffleInputs)
+    {
+        _mockApi.GetBuildAsync("dnceng-public", "public", 1570501, Arg.Any<CancellationToken>())
+            .Returns(new AzdoBuild
+            {
+                Id = 1570501,
+                BuildNumber = "20260827.11",
+                Status = "inProgress",
+                Result = null,
+                Definition = new AzdoBuildDefinition { Id = 666, Name = "runtime" }
+            });
+
+        const string crowdedJobId = "job-crowded";
+        const string mappedJobId = "job-mapped";
+
+        var records = new List<AzdoTimelineRecord>
+        {
+            new() { Id = crowdedJobId, Type = "Job", Result = "failed", Name = "Crowded Job", Order = 1, Attempt = 1 },
+            new() { Id = mappedJobId,  Type = "Job", Result = "failed", Name = "Mapped Job",  Order = 2, Attempt = 1 }
+        };
+
+        var artifacts = Enumerable.Range(1, AzdoEvidenceMatcher.MaxCandidatesPerEntry + 2)
+            .Select(i => new AzdoBuildArtifact
+            {
+                Id = i,
+                Name = $"Logs_Build_Attempt{i}_Crowded_Job",
+                Source = crowdedJobId,
+                Resource = new AzdoArtifactResource { Type = "Container" }
+            })
+            .ToList();
+
+        artifacts.Add(new AzdoBuildArtifact
+        {
+            Id = 999,
+            Name = "Logs_Build_Attempt1_Mapped_Job",
+            Source = mappedJobId,
+            Resource = new AzdoArtifactResource { Type = "Container" }
+        });
+
+        if (shuffleInputs)
+        {
+            records.Reverse();
+            artifacts.Reverse();
+        }
+
+        _mockApi.GetTimelineAsync("dnceng-public", "public", 1570501, Arg.Any<CancellationToken>())
+            .Returns(new AzdoTimeline { Records = records });
+        _mockApi.GetBuildArtifactsAsync("dnceng-public", "public", 1570501, Arg.Any<CancellationToken>())
+            .Returns(artifacts);
+    }
+
+    private async Task<AzdoEvidencePlan> BuildWarnablePlanAsync(bool shuffleInputs = false)
+    {
+        SetupWarnableMockPlan(shuffleInputs);
+        return await _svc.GetEvidencePlanAsync("1570501", DefaultOptions());
+    }
+
+    private void SetupOverBoundWarningMockPlan(bool reverseInputs)
+    {
+        _mockApi.GetBuildAsync("dnceng-public", "public", 1570501, Arg.Any<CancellationToken>())
+            .Returns(new AzdoBuild
+            {
+                Id = 1570501,
+                BuildNumber = "20260827.12",
+                Status = "completed",
+                Result = "failed",
+                Definition = new AzdoBuildDefinition { Id = 666, Name = "runtime" }
+            });
+
+        var (timeline, artifacts) = CreateOverBoundWarningInputs(reverseInputs);
+        _mockApi.GetTimelineAsync("dnceng-public", "public", 1570501, Arg.Any<CancellationToken>())
+            .Returns(timeline);
+        _mockApi.GetBuildArtifactsAsync("dnceng-public", "public", 1570501, Arg.Any<CancellationToken>())
+            .Returns(artifacts);
+    }
+
+    private static (AzdoTimeline Timeline, List<AzdoBuildArtifact> Artifacts)
+        CreateOverBoundWarningInputs(bool reverseInputs)
+    {
+        var records = new List<AzdoTimelineRecord>();
+        var artifacts = new List<AzdoBuildArtifact>();
+
+        for (var jobIndex = 0; jobIndex < 11; jobIndex++)
+        {
+            var jobId = $"job-crowded-{jobIndex:D2}";
+            records.Add(new AzdoTimelineRecord
+            {
+                Id = jobId,
+                Type = "Job",
+                Result = "failed",
+                Name = $"Crowded Job {jobIndex:D2}",
+                Order = jobIndex + 1,
+                Attempt = 1
+            });
+
+            for (var attempt = 1; attempt <= AzdoEvidenceMatcher.MaxCandidatesPerEntry + 1; attempt++)
+            {
+                artifacts.Add(new AzdoBuildArtifact
+                {
+                    Id = (jobIndex * 100) + attempt,
+                    Name = $"Logs_Build_Attempt{attempt}_Crowded_Job_{jobIndex:D2}",
+                    Source = jobId,
+                    Resource = new AzdoArtifactResource { Type = "Container" }
+                });
+            }
+        }
+
+        if (reverseInputs)
+        {
+            records.Reverse();
+            artifacts.Reverse();
+        }
+
+        return (new AzdoTimeline { Records = records }, artifacts);
+    }
+
+    /// <summary>
+    /// Writes build/timeline/artifact payloads into an offline eval snapshot the CLI can
+    /// read via <c>HLX_EVAL_SNAPSHOT</c>, so subprocess tests never touch the network.
+    /// </summary>
+    private static async Task SeedEvidenceSnapshotAsync(
+        string cacheRoot,
+        int buildId,
+        AzdoBuild build,
+        AzdoTimeline timeline,
+        List<AzdoBuildArtifact> artifacts)
+    {
+        var ttl = TimeSpan.FromHours(1);
+        using var store = new SqliteCacheStore(new CacheOptions { CacheRoot = cacheRoot, AuthTokenHash = null });
+
+        await store.SetMetadataAsync(
+            $"azdo:dnceng-public:public:build:{buildId}",
+            JsonSerializer.Serialize(build),
+            ttl);
+        await store.SetMetadataAsync(
+            $"azdo:dnceng-public:public:timeline:{buildId}",
+            JsonSerializer.Serialize(timeline),
+            ttl);
+        await store.SetMetadataAsync(
+            $"azdo:dnceng-public:public:artifacts:{buildId}",
+            JsonSerializer.Serialize(artifacts),
+            ttl);
+    }
+
+    private static void CleanupSnapshot(string cacheRoot)
+    {
+        if (!Directory.Exists(cacheRoot))
+            return;
+
+        try
+        {
+            Directory.Delete(cacheRoot, recursive: true);
+        }
+        catch (IOException)
+        {
+            // Best-effort cleanup; a locked snapshot file must not fail the test.
+        }
     }
 
     private void SetupMockPlanForOrg(string org, string project, int buildId)

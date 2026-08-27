@@ -1995,6 +1995,16 @@ public class AzdoCommands
                 Console.WriteLine($"  - {QuoteUntrusted(reason)}");
         }
 
+        if (plan.Warnings.Count > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine(plan.WarningsTruncated
+                ? $"Warnings (showing {FormatInvariant(plan.Warnings.Count)} of {FormatInvariant(plan.WarningTotal)}; truncated):"
+                : "Warnings:");
+            foreach (var warning in plan.Warnings)
+                Console.WriteLine($"  - {QuoteUntrusted(warning)}");
+        }
+
         if (plan.Note is not null)
             Console.WriteLine($"Note: {QuoteUntrusted(plan.Note)}");
 

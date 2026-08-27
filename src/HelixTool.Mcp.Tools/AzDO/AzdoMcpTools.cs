@@ -340,7 +340,7 @@ public sealed class AzdoMcpTools
         [Description("Glob pattern for artifact names to include. Supports '*' (all), '*.ext' (suffix), 'Prefix*' (prefix), or substring. Default: '*'")] string artifactPattern = "*",
         [Description("Prefix stripped from artifact names before matching (e.g. 'Logs_Build_'). Ordinal StartsWith; no regex.")] string? artifactJobPrefix = null,
         [Description("Strip 'AttemptN_' from artifact names after the job prefix, recording the attempt number. Default: true")] bool stripAttemptPrefix = true,
-        [Description("Matching strategy: 'auto' (default) = source-id join then normalized-name fallback; 'source-id' = GUID join only; 'normalized-exact' = PR #132609 name parity; 'exact' = ordinal equality after prefix strip."),
+        [Description("Matching strategy: 'auto' (default) = source-id join then normalized-name fallback; 'source-id' = GUID join only; 'normalized-exact' = PR #132609 name parity; 'exact' = ordinal-ignore-case equality after prefix strip, no normalization."),
          AllowedValues("auto", "source-id", "normalized-exact", "exact")] string match = "auto",
         // No [AllowedValues]: this is a comma-separated multi-value string, so a JSON-schema enum
         // would reject every valid combination (including the 'failed,canceled' default). Matches

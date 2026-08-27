@@ -1,14 +1,5 @@
 // Group A — AzdoEvidenceMatcher pure unit tests (no HTTP, no mocks needed).
 //
-// COMPILE GAP: references types not yet implemented by Ripley:
-//   - AzdoEvidenceMatcher (HelixTool.Core.AzDO)
-//   - AzdoEvidencePlan, AzdoEvidencePlanEntry, AzdoEvidenceCandidate (HelixTool.Core.AzDO)
-//   - AzdoEvidencePlanOptions (HelixTool.Core.AzDO)
-//   - AzdoBuildArtifact.Source (model addition)
-//   - AzdoArtifactResource.Properties (model addition)
-//   - AzdoTimelineRecord.Attempt (model addition)
-// Remove the COMPILE GAP comment when Ripley lands these types.
-//
 // Run: `dotnet test --filter "FullyQualifiedName~AzdoEvidenceMatcherTests"`
 
 using System.Globalization;
@@ -525,10 +516,10 @@ public class AzdoEvidenceMatcherTests
     }
 
     [Fact]
-    public void BuildPlan_MatchExact_OrdinalEquality_NoNormalization()
+    public void BuildPlan_MatchExact_OrdinalIgnoreCase_NoNormalization()
     {
-        // exact: ordinal equality after prefix strip, no case folding.
-        // "Alpha" != "alpha" in ordinal mode.
+        // exact: equality after prefix strip using StringComparison.OrdinalIgnoreCase.
+        // Case differs only ("alpha" vs "Alpha") → still a match; no normalization is applied.
         var jobs = new List<AzdoTimelineRecord>
         {
             new() { Id = "job-1", Type = "Job", Result = "failed", Name = "alpha", Order = 1, Attempt = 1 }
@@ -544,7 +535,400 @@ public class AzdoEvidenceMatcherTests
 
         var plan = AzdoEvidenceMatcher.BuildPlan(jobs, artifacts, opts);
 
-        Assert.Equal("missing", plan.Entries[0].Status);
+        Assert.Equal("mapped", plan.Entries[0].Status);
+        Assert.Equal("exact", plan.Entries[0].MatchedBy);
+        Assert.Equal(1, plan.Entries[0].Candidates[0].ArtifactId);
+    }
+
+    [Theory]
+    // Only case differs → OrdinalIgnoreCase matches.
+    [InlineData("linux-x64 Release", "Logs_Build_LINUX-X64 RELEASE", "mapped")]
+    [InlineData("LINUX-X64 RELEASE", "Logs_Build_linux-x64 release", "mapped")]
+    // Separators/punctuation differ → still a miss, because exact does NOT normalize.
+    [InlineData("linux-x64 release", "Logs_Build_linux_x64_release", "missing")]
+    [InlineData("linux-x64 release", "Logs_Build_linuxx64release", "missing")]
+    public void BuildPlan_MatchExact_IsCaseInsensitiveButNotNormalizing(
+        string jobName,
+        string artifactName,
+        string expectedStatus)
+    {
+        var jobs = new List<AzdoTimelineRecord>
+        {
+            new() { Id = "job-1", Type = "Job", Result = "failed", Name = jobName, Order = 1, Attempt = 1 }
+        };
+        var artifacts = new List<AzdoBuildArtifact>
+        {
+            new() { Id = 1, Name = artifactName, Source = "unrelated-guid", Resource = new() { Type = "Container" } }
+        };
+        var opts = new AzdoEvidencePlanOptions
+        {
+            JobResults = ["failed"], ArtifactJobPrefix = "Logs_Build_", StripAttemptPrefix = true, Match = "exact"
+        };
+
+        var plan = AzdoEvidenceMatcher.BuildPlan(jobs, artifacts, opts);
+
+        Assert.Equal(expectedStatus, plan.Entries[0].Status);
+    }
+
+    [Fact]
+    public void BuildPlan_MatchExact_UsesOrdinalIgnoreCase_NotCultureIgnoreCase()
+    {
+        // Ordinal-ignore-case must not apply Turkish casing: "ILIKE" and "ilike" match in every
+        // culture, and the dotless "ı" never folds to ASCII "i".
+        var jobs = new List<AzdoTimelineRecord>
+        {
+            new() { Id = "job-ascii",   Type = "Job", Result = "failed", Name = "ILIKE", Order = 1, Attempt = 1 },
+            new() { Id = "job-dotless", Type = "Job", Result = "failed", Name = "ıLIKE", Order = 2, Attempt = 1 },
+        };
+        var artifacts = new List<AzdoBuildArtifact>
+        {
+            new() { Id = 1, Name = "ilike", Source = "unrelated-guid", Resource = new() { Type = "Container" } }
+        };
+        var opts = new AzdoEvidencePlanOptions { JobResults = ["failed"], Match = "exact" };
+
+        var saved = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = new CultureInfo("tr-TR");
+            var plan = AzdoEvidenceMatcher.BuildPlan(jobs, artifacts, opts);
+
+            Assert.Equal("mapped", plan.Entries.Single(e => e.JobId == "job-ascii").Status);
+            Assert.Equal("missing", plan.Entries.Single(e => e.JobId == "job-dotless").Status);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = saved;
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // A14 — Strategy inputs are canonicalized case-insensitively
+    // ════════════════════════════════════════════════════════════════════════
+
+    [Theory]
+    [InlineData("auto")]
+    [InlineData("AUTO")]
+    [InlineData("Auto")]
+    [InlineData("aUtO")]
+    public void BuildPlan_AutoStrategy_IsCaseInsensitive_NoAllMissingRegression(string match)
+    {
+        // A mixed-case strategy name must behave identically to its canonical spelling.
+        // The regression this guards: an unrecognized casing silently falls through every
+        // strategy branch and reports every entry as "missing".
+        var jobs = new List<AzdoTimelineRecord>
+        {
+            new() { Id = "job-1", Type = "Job", Result = "failed", Name = "Alpha", Order = 1, Attempt = 1 },
+            new() { Id = "job-2", Type = "Job", Result = "failed", Name = "Beta",  Order = 2, Attempt = 1 },
+        };
+        var artifacts = new List<AzdoBuildArtifact>
+        {
+            new() { Id = 1, Name = "Logs_Build_Alpha", Source = "job-1",         Resource = new() { Type = "Container" } },
+            new() { Id = 2, Name = "Logs_Build_Beta",  Source = "no-match-guid", Resource = new() { Type = "Container" } },
+        };
+        var opts = new AzdoEvidencePlanOptions
+        {
+            JobResults = ["failed"], ArtifactJobPrefix = "Logs_Build_", StripAttemptPrefix = true, Match = match
+        };
+
+        var plan = AzdoEvidenceMatcher.BuildPlan(jobs, artifacts, opts);
+
+        // Non-vacuous: both entries resolve, and each uses the branch canonical "auto" would use.
+        Assert.Equal(2, plan.Entries.Count);
+        Assert.DoesNotContain(plan.Entries, e => e.Status == "missing");
+        Assert.Equal("source-id",       plan.Entries.Single(e => e.JobId == "job-1").MatchedBy);
+        Assert.Equal("normalized-name", plan.Entries.Single(e => e.JobId == "job-2").MatchedBy);
+        Assert.True(plan.Complete);
+        Assert.Empty(plan.IncompleteReasons);
+    }
+
+    [Theory]
+    [InlineData("source-id",        "SOURCE-ID")]
+    [InlineData("source-id",        "Source-Id")]
+    [InlineData("normalized-exact", "NORMALIZED-EXACT")]
+    [InlineData("normalized-exact", "Normalized-Exact")]
+    [InlineData("exact",            "EXACT")]
+    [InlineData("exact",            "Exact")]
+    [InlineData("auto",             "AUTO")]
+    public void BuildPlan_StrategyCasing_ProducesIdenticalPlanToCanonical(string canonical, string variant)
+    {
+        // Every strategy — not just auto — must canonicalize case-insensitively and produce
+        // byte-identical entry status/matchedBy/candidate output.
+        var jobs = new List<AzdoTimelineRecord>
+        {
+            new() { Id = "job-1", Type = "Job", Result = "failed", Name = "Alpha", Order = 1, Attempt = 1 },
+            new() { Id = "job-2", Type = "Job", Result = "failed", Name = "Beta",  Order = 2, Attempt = 1 },
+        };
+        var artifacts = new List<AzdoBuildArtifact>
+        {
+            new() { Id = 1, Name = "Logs_Build_Alpha", Source = "job-1",         Resource = new() { Type = "Container" } },
+            new() { Id = 2, Name = "Logs_Build_Beta",  Source = "no-match-guid", Resource = new() { Type = "Container" } },
+        };
+
+        AzdoBuiltPlanResult Build(string match) => AzdoEvidenceMatcher.BuildPlan(
+            jobs,
+            artifacts,
+            new AzdoEvidencePlanOptions
+            {
+                JobResults = ["failed"],
+                ArtifactJobPrefix = "Logs_Build_",
+                StripAttemptPrefix = true,
+                Match = match
+            });
+
+        var expected = Build(canonical);
+        var actual = Build(variant);
+
+        Assert.Equal(
+            JsonSerializer.Serialize(expected.Entries),
+            JsonSerializer.Serialize(actual.Entries));
+        Assert.Equal(expected.Complete, actual.Complete);
+        Assert.Equal(expected.IncompleteReasons, actual.IncompleteReasons);
+
+        // Guard against a vacuous comparison of two all-missing plans: the canonical run must
+        // resolve at least one entry for every strategy exercised here.
+        Assert.Contains(expected.Entries, e => e.Status == "mapped");
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // A15 — Empty normalized keys never false-map
+    // ════════════════════════════════════════════════════════════════════════
+
+    [Theory]
+    [InlineData("日本語")]                 // all non-ASCII
+    [InlineData("Ωμέγα")]                  // all non-ASCII (Greek)
+    [InlineData("---___...")]              // all punctuation
+    [InlineData("   ")]                    // all whitespace
+    [InlineData("\r\n\t\u0000\u0007")]     // all control characters
+    [InlineData("")]                       // empty
+    public void NormalizeKey_NonAlnumOnly_ProducesEmptyKey(string input)
+    {
+        Assert.Equal("", AzdoEvidenceMatcher.NormalizeKey(input));
+    }
+
+    [Theory]
+    [InlineData("auto")]
+    [InlineData("normalized-exact")]
+    public void BuildPlan_EmptyNormalizedKeys_NeverFalseMap(string match)
+    {
+        // A job whose name normalizes to "" must not collide with an artifact whose name
+        // also normalizes to "" — an empty key carries no identity and must never match.
+        var jobs = new List<AzdoTimelineRecord>
+        {
+            new() { Id = "job-nonascii",  Type = "Job", Result = "failed", Name = "日本語",              Order = 1, Attempt = 1 },
+            new() { Id = "job-punct",     Type = "Job", Result = "failed", Name = "---___...",          Order = 2, Attempt = 1 },
+            new() { Id = "job-control",   Type = "Job", Result = "failed", Name = "\r\n\t\u0000\u0007", Order = 3, Attempt = 1 },
+        };
+        var artifacts = new List<AzdoBuildArtifact>
+        {
+            // Every artifact name also normalizes to the empty key.
+            new() { Id = 1, Name = "Logs_Build_Ωμέγα",      Source = "unrelated-1", Resource = new() { Type = "Container" } },
+            new() { Id = 2, Name = "Logs_Build_...___---",  Source = "unrelated-2", Resource = new() { Type = "Container" } },
+            new() { Id = 3, Name = "Logs_Build_\u0007\r\n", Source = "unrelated-3", Resource = new() { Type = "Container" } },
+        };
+        var opts = new AzdoEvidencePlanOptions
+        {
+            JobResults = ["failed"], ArtifactJobPrefix = "Logs_Build_", StripAttemptPrefix = true, Match = match
+        };
+
+        // Pre-condition: the fixture really does produce empty keys on both sides.
+        Assert.All(jobs, j => Assert.Equal("", AzdoEvidenceMatcher.NormalizeKey(j.Name!)));
+        Assert.All(
+            artifacts,
+            a => Assert.Equal(
+                "",
+                AzdoEvidenceMatcher.NormalizeKey(
+                    AzdoEvidenceMatcher.StripArtifactPrefix(a.Name!, "Logs_Build_", true).name)));
+
+        var plan = AzdoEvidenceMatcher.BuildPlan(jobs, artifacts, opts);
+
+        Assert.Equal(3, plan.Entries.Count);
+        Assert.All(plan.Entries, e =>
+        {
+            Assert.Equal("missing", e.Status);
+            Assert.Null(e.MatchedBy);
+            Assert.Empty(e.Candidates);
+            Assert.Equal(0, e.CandidateTotal);
+        });
+        Assert.False(plan.Complete);
+    }
+
+    [Fact]
+    public void BuildPlan_EmptyNormalizedKey_StillMapsViaSourceId()
+    {
+        // The empty-key guard must be scoped to name matching only. A job with an
+        // unnormalizable name still maps when the artifact carries its source GUID.
+        var jobs = new List<AzdoTimelineRecord>
+        {
+            new() { Id = "job-nonascii", Type = "Job", Result = "failed", Name = "日本語",     Order = 1, Attempt = 1 },
+            new() { Id = "job-punct",    Type = "Job", Result = "failed", Name = "---___...", Order = 2, Attempt = 1 },
+        };
+        var artifacts = new List<AzdoBuildArtifact>
+        {
+            // Maps by GUID despite an equally unnormalizable artifact name.
+            new() { Id = 1, Name = "Logs_Build_Ωμέγα",     Source = "job-nonascii", Resource = new() { Type = "Container" } },
+            new() { Id = 2, Name = "Logs_Build_...___---", Source = "unrelated",    Resource = new() { Type = "Container" } },
+        };
+
+        foreach (var match in new[] { "auto", "source-id" })
+        {
+            var plan = AzdoEvidenceMatcher.BuildPlan(
+                jobs,
+                artifacts,
+                new AzdoEvidencePlanOptions
+                {
+                    JobResults = ["failed"],
+                    ArtifactJobPrefix = "Logs_Build_",
+                    StripAttemptPrefix = true,
+                    Match = match
+                });
+
+            var mapped = plan.Entries.Single(e => e.JobId == "job-nonascii");
+            Assert.Equal("mapped", mapped.Status);
+            Assert.Equal("source-id", mapped.MatchedBy);
+            Assert.Equal(1, mapped.Candidates[0].ArtifactId);
+
+            // The other empty-key job has no source-id join and must not fall back onto
+            // the empty-key artifact.
+            var unmapped = plan.Entries.Single(e => e.JobId == "job-punct");
+            Assert.Equal("missing", unmapped.Status);
+            Assert.Empty(unmapped.Candidates);
+        }
+    }
+
+    [Fact]
+    public void BuildPlan_EmptyNormalizedKey_DoesNotSuppressValidNormalizedMatches()
+    {
+        // Guard against over-correcting: suppressing empty keys must not disturb a
+        // normally-normalizing job in the same plan.
+        var jobs = new List<AzdoTimelineRecord>
+        {
+            new() { Id = "job-empty", Type = "Job", Result = "failed", Name = "日本語",           Order = 1, Attempt = 1 },
+            new() { Id = "job-real",  Type = "Job", Result = "failed", Name = "linux-x64 release", Order = 2, Attempt = 1 },
+        };
+        var artifacts = new List<AzdoBuildArtifact>
+        {
+            new() { Id = 1, Name = "Logs_Build_日本語",              Source = "unrelated-1", Resource = new() { Type = "Container" } },
+            new() { Id = 2, Name = "Logs_Build_linux_x64_release",  Source = "unrelated-2", Resource = new() { Type = "Container" } },
+        };
+        var opts = new AzdoEvidencePlanOptions
+        {
+            JobResults = ["failed"], ArtifactJobPrefix = "Logs_Build_", StripAttemptPrefix = true, Match = "normalized-exact"
+        };
+
+        var plan = AzdoEvidenceMatcher.BuildPlan(jobs, artifacts, opts);
+
+        Assert.Equal("missing", plan.Entries.Single(e => e.JobId == "job-empty").Status);
+
+        var real = plan.Entries.Single(e => e.JobId == "job-real");
+        Assert.Equal("mapped", real.Status);
+        Assert.Equal("normalized-name", real.MatchedBy);
+        Assert.Equal(2, real.Candidates[0].ArtifactId);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void BuildPlan_MatchExact_EmptyJobName_NeverMapsToEmptyBareArtifact(string? jobName)
+    {
+        // exact compares the *bare* artifact name, so it has its own empty-key hazard that
+        // normalization-based suppression does not cover: a job with no usable name collapses
+        // to "", and prefix/attempt stripping can collapse an artifact name to "" as well.
+        // Two empty strings are ordinal-ignore-case equal, so nothing but an explicit guard
+        // stops them joining. An empty key carries no identity and must never map.
+        var jobs = new List<AzdoTimelineRecord>
+        {
+            new() { Id = "job-empty", Type = "Job", Result = "failed", Name = jobName,  Order = 1, Attempt = 1 },
+            new() { Id = "job-real",  Type = "Job", Result = "failed", Name = "Alpha",  Order = 2, Attempt = 1 },
+        };
+        var artifacts = new List<AzdoBuildArtifact>
+        {
+            // Bare name becomes "" through job-prefix stripping alone.
+            new() { Id = 1, Name = "Logs_Build_",          Source = "unrelated-1", Resource = new() { Type = "Container" } },
+            // Bare name becomes "" through job-prefix + AttemptN_ stripping.
+            new() { Id = 2, Name = "Logs_Build_Attempt2_", Source = "unrelated-2", Resource = new() { Type = "Container" } },
+            // Control: a normal artifact that exact must still resolve.
+            new() { Id = 3, Name = "Logs_Build_Alpha",     Source = "unrelated-3", Resource = new() { Type = "Container" } },
+        };
+        var opts = new AzdoEvidencePlanOptions
+        {
+            JobResults = ["failed"], ArtifactJobPrefix = "Logs_Build_", StripAttemptPrefix = true, Match = "exact"
+        };
+
+        // Pre-condition: the fixture really does produce empty bare names on both sides, and
+        // the attempt artifact is stripped via the attempt path (not merely the prefix path).
+        var strippedPrefixOnly = AzdoEvidenceMatcher.StripArtifactPrefix("Logs_Build_", "Logs_Build_", true);
+        Assert.Equal("", strippedPrefixOnly.name);
+        Assert.Null(strippedPrefixOnly.attempt);
+
+        var strippedAttempt = AzdoEvidenceMatcher.StripArtifactPrefix("Logs_Build_Attempt2_", "Logs_Build_", true);
+        Assert.Equal("", strippedAttempt.name);
+        Assert.Equal(2, strippedAttempt.attempt);
+
+        Assert.Equal("", jobName ?? "");
+
+        var plan = AzdoEvidenceMatcher.BuildPlan(jobs, artifacts, opts);
+
+        var empty = plan.Entries.Single(e => e.JobId == "job-empty");
+        Assert.Equal("missing", empty.Status);
+        Assert.Null(empty.MatchedBy);
+        Assert.Empty(empty.Candidates);
+        Assert.Equal(0, empty.CandidateTotal);
+
+        // Non-vacuous: suppressing the empty key must not disable exact matching for the
+        // normally-named job sharing the plan.
+        var real = plan.Entries.Single(e => e.JobId == "job-real");
+        Assert.Equal("mapped", real.Status);
+        Assert.Equal("exact", real.MatchedBy);
+        Assert.Equal(3, real.Candidates[0].ArtifactId);
+
+        Assert.False(plan.Complete);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void BuildPlan_MatchExact_EmptyJobName_StaysMissingRegardlessOfSourceId(string? jobName)
+    {
+        // The exact empty-key guard must be source-ID independent in both directions:
+        // exact never consults artifact.source, so carrying the job GUID neither rescues the
+        // empty-name job under exact nor is required for it to be suppressed. The same fixture
+        // under auto/source-id still maps via the GUID, proving the miss is specific to exact
+        // rather than a broken fixture.
+        var jobs = new List<AzdoTimelineRecord>
+        {
+            new() { Id = "job-empty", Type = "Job", Result = "failed", Name = jobName, Order = 1, Attempt = 1 },
+        };
+        var artifacts = new List<AzdoBuildArtifact>
+        {
+            // Bare name collapses to "" AND carries the job's source GUID.
+            new() { Id = 1, Name = "Logs_Build_Attempt3_", Source = "job-empty", Resource = new() { Type = "Container" } },
+        };
+
+        AzdoBuiltPlanResult Build(string match) => AzdoEvidenceMatcher.BuildPlan(
+            jobs,
+            artifacts,
+            new AzdoEvidencePlanOptions
+            {
+                JobResults = ["failed"],
+                ArtifactJobPrefix = "Logs_Build_",
+                StripAttemptPrefix = true,
+                Match = match
+            });
+
+        var exact = Build("exact").Entries.Single();
+        Assert.Equal("missing", exact.Status);
+        Assert.Null(exact.MatchedBy);
+        Assert.Empty(exact.Candidates);
+        Assert.Equal(0, exact.CandidateTotal);
+
+        // Control: the GUID join itself is sound, so the exact miss is a strategy property.
+        foreach (var match in new[] { "auto", "source-id" })
+        {
+            var mapped = Build(match).Entries.Single();
+            Assert.Equal("mapped", mapped.Status);
+            Assert.Equal("source-id", mapped.MatchedBy);
+            Assert.Equal(1, mapped.Candidates[0].ArtifactId);
+        }
     }
 
     // ════════════════════════════════════════════════════════════════════════

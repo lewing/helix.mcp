@@ -94,10 +94,9 @@ public static class AzdoEvidenceMatcher
         IEnumerable<AzdoBuildArtifact> artifacts,
         AzdoEvidencePlanOptions options)
     {
+        var strategy = AzdoEvidenceMatchStrategy.Canonicalize(options.Match);
         var jobs = SelectAndSortJobs(allRecords, options.JobResults);
         var artifactList = artifacts is IReadOnlyList<AzdoBuildArtifact> l ? l : artifacts.ToList();
-
-        var strategy = options.Match;
 
         // Pre-process artifacts: strip prefixes + compute match keys once
         var processedArtifacts = new List<ProcessedArtifact>(artifactList.Count);
@@ -159,10 +158,7 @@ public static class AzdoEvidenceMatcher
                 if (rawCandidates is null or { Count: 0 } &&
                     strategy == AzdoEvidenceMatchStrategy.Auto)
                 {
-                    var jobKey = NormalizeKey(jobName);
-                    var nameMatches = processedArtifacts
-                        .Where(pa => string.Equals(pa.NormalizedKey, jobKey, StringComparison.Ordinal))
-                        .ToList();
+                    var nameMatches = FindNormalizedMatches(processedArtifacts, jobName);
                     if (nameMatches.Count > 0)
                     {
                         rawCandidates = nameMatches;
@@ -172,10 +168,7 @@ public static class AzdoEvidenceMatcher
             }
             else if (strategy == AzdoEvidenceMatchStrategy.NormalizedExact)
             {
-                var jobKey = NormalizeKey(jobName);
-                var nameMatches = processedArtifacts
-                    .Where(pa => string.Equals(pa.NormalizedKey, jobKey, StringComparison.Ordinal))
-                    .ToList();
+                var nameMatches = FindNormalizedMatches(processedArtifacts, jobName);
                 if (nameMatches.Count > 0)
                 {
                     rawCandidates = nameMatches;
@@ -184,13 +177,18 @@ public static class AzdoEvidenceMatcher
             }
             else if (strategy == AzdoEvidenceMatchStrategy.Exact)
             {
-                var exactMatches = processedArtifacts
-                    .Where(pa => string.Equals(pa.Bare, jobName, StringComparison.Ordinal))
-                    .ToList();
-                if (exactMatches.Count > 0)
+                if (jobName.Length > 0)
                 {
-                    rawCandidates = exactMatches;
-                    matchedBy = "exact";
+                    var exactMatches = processedArtifacts
+                        .Where(pa =>
+                            pa.Bare.Length > 0 &&
+                            string.Equals(pa.Bare, jobName, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+                    if (exactMatches.Count > 0)
+                    {
+                        rawCandidates = exactMatches;
+                        matchedBy = "exact";
+                    }
                 }
             }
 
@@ -261,27 +259,50 @@ public static class AzdoEvidenceMatcher
 
         // Assemble completeness diagnostics
         var incompleteReasons = new List<string>();
+        var warnings = new List<string>();
+        var warningSet = new HashSet<string>(StringComparer.Ordinal);
+
+        void AddWarning(string warning)
+        {
+            if (warningSet.Add(warning))
+                warnings.Add(warning);
+        }
+
+        var notes = new List<string>(2);
+        if (entriesTruncated)
+        {
+            incompleteReasons.Add(
+                $"Plan is incomplete because {totalJobs - entries.Count} of {totalJobs} selected jobs are not represented.");
+
+            var msg =
+                $"Plan entries truncated: showing first {entries.Count} of {totalJobs} selected jobs. " +
+                $"Maximum is {MaxPlanEntries}.";
+            AddWarning(msg);
+            notes.Add(msg);
+        }
+
         foreach (var e in entries)
         {
             if (e.Status == "missing")
                 incompleteReasons.Add($"Job '{e.JobName}' ({e.JobId}): no matching artifact found.");
             else if (e.Status == "ambiguous")
                 incompleteReasons.Add($"Job '{e.JobName}' ({e.JobId}): {e.CandidateTotal} ambiguous candidates — none selected.");
-        }
 
-        var notes = new List<string>(2);
-        if (entriesTruncated)
-        {
-            var msg = $"Plan truncated: showing first {entries.Count} of {totalJobs} selected jobs. Maximum is {MaxPlanEntries}.";
-            incompleteReasons.Add(msg);
-            notes.Add(msg);
+            if (e.CandidatesTruncated)
+            {
+                AddWarning(
+                    $"Candidate lists truncated for job '{e.JobName}' ({e.JobId}): " +
+                    $"showing first {e.Candidates.Count} of {e.CandidateTotal}; " +
+                    "candidateTotal preserves the full count.");
+            }
         }
 
         if (truncatedCandidateLists > 0)
         {
-            notes.Add(
+            var msg =
                 $"Candidate lists truncated for {truncatedCandidateLists} of {entries.Count} returned entries. " +
-                "Affected entries report candidateTotal, candidatesTruncated, and candidateNote.");
+                "Affected entries report candidateTotal, candidatesTruncated, and candidateNote.";
+            notes.Add(msg);
         }
 
         var truncated = entriesTruncated || truncatedCandidateLists > 0;
@@ -292,10 +313,27 @@ public static class AzdoEvidenceMatcher
             Entries = entries,
             Complete = complete,
             IncompleteReasons = incompleteReasons,
+            Warnings = warnings,
             Truncated = truncated,
             Total = totalJobs,
+            MatchStrategy = strategy,
             Note = notes.Count == 0 ? null : string.Join(" ", notes)
         };
+    }
+
+    private static List<ProcessedArtifact> FindNormalizedMatches(
+        IReadOnlyList<ProcessedArtifact> processedArtifacts,
+        string jobName)
+    {
+        var jobKey = NormalizeKey(jobName);
+        if (jobKey.Length == 0)
+            return [];
+
+        return processedArtifacts
+            .Where(pa =>
+                pa.NormalizedKey.Length > 0 &&
+                string.Equals(pa.NormalizedKey, jobKey, StringComparison.Ordinal))
+            .ToList();
     }
 
     /// <summary>

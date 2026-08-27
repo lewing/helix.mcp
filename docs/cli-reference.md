@@ -254,7 +254,7 @@ The MCP equivalent keeps its positive `stripAttemptPrefix` boolean, which defaul
   - `auto` — Join by artifact `source` (GUID) first, fall back to normalized-exact name matching. **Recommended.** Handles retried jobs correctly and has 0% miss rate on real builds.
   - `source-id` — GUID join only; unmapped jobs reported as `missing`. No fallback.
   - `normalized-exact` — Name-only matching (dotnet/runtime PR #132609 parity). Note: 12.7% miss rate on real builds with matrix variants, and 100% ambiguous on retried jobs. Kept for reproduction/audit purposes.
-  - `exact` — Ordinal equality after prefix stripping, no case normalization.
+  - `exact` — Ordinal-ignore-case equality after prefix stripping, with no normalization.
 
 **Exit Codes:**
 
@@ -271,7 +271,7 @@ Without `--json`, the CLI prints a deterministic human-readable plan. With `--js
 - `buildId` — The AzDO build ID (numeric).
 - `build` — Build provenance: `buildId`, `buildNumber`, `definitionName`, `definitionId`, `status`, `result`, `sourceBranch`, `sourceVersion`, `finishTime`, `webUrl`, `org`, `project`. PR metadata (if applicable): `prNumber`, `prSourceSha`, `prSourceBranch`, `prIsFork`, `prDraft`, `prProviderId`.
 - `buildIncomplete` — `true` if the AzDO build is still running (status not `"completed"`).
-- `matchStrategy` — The `--match` value used (e.g., `"auto"`, `"source-id"`).
+- `matchStrategy` — Canonical lowercase form of the effective `--match` value (e.g., `"auto"`, `"source-id"`). Mixed-case input is accepted and emitted in lowercase.
 - `jobResultsFilter` — The `--job-results` values that were matched.
 - `artifactPattern`, `artifactJobPrefix`, `stripAttemptPrefix` — Echo of the effective input options. `stripAttemptPrefix` is `false` when the CLI receives `--keep-attempt-prefix`.
 - `entries[]` — One entry per selected job. Each contains:
@@ -287,6 +287,9 @@ Without `--json`, the CLI prints a deterministic human-readable plan. With `--js
   - `candidateNote` — Human-readable candidate truncation summary, present when `candidatesTruncated` is `true`.
 - `complete` — `true` only if all entries have `status: "mapped"` and no output was truncated.
 - `incompleteReasons[]` — Human-readable lines (present only if `complete == false`) explaining ambiguities, gaps, or entry truncation.
+- `warnings[]` — Non-fatal planning diagnostics in deterministic order, capped at 10. Always present (empty when there are no warnings).
+- `warningTotal` — Total warnings before the 10-item bound. Always present.
+- `warningsTruncated` — `true` when `warningTotal` exceeds the number returned in `warnings`; otherwise `false`. Always present.
 - `truncated` — `true` if either the 200-entry limit or any entry's 10-candidate limit was exceeded.
 - `totalEntries` — Total selected jobs (present whenever `truncated` is `true`, whether entry or candidate overflow caused it).
 - `note` — Present on truncation; summarizes entry truncation, candidate-list truncation, or both.
