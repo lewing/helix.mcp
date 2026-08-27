@@ -87,8 +87,8 @@ public static class SnapshotValidator
         catch (Exception ex)
         {
             errors.Add(
-                $"Snapshot database must be a readable file with exactly one hard link: " +
-                $"{ex.Message}");
+                $"Snapshot database must be a readable regular file with exactly one hard " +
+                $"link: {ex.Message}");
             return Task.FromResult(Fail(errors, warnings));
         }
 

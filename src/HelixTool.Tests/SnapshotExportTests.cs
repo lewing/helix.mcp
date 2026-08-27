@@ -3262,6 +3262,339 @@ public class SnapshotValidatorTests : IDisposable
 
     private static bool IsMissingError(string error)
         => error.Contains("missing artifact", StringComparison.OrdinalIgnoreCase);
+
+    // ------------------------------------------------------------------------------------
+    // FIFO regression harness.
+    //
+    // SnapshotValidator hashes cache.db and every artifact through
+    // SnapshotExporter.HashFileRequiringExactlyOneLink, which opens the path with a plain
+    // FileStream. On Unix, open(2) against a FIFO that has no writer blocks inside the kernel
+    // until a writer appears. That block is an uninterruptible native call: CancellationToken,
+    // Task cancellation and Thread.Interrupt all fail to release it. A corrupt or hostile
+    // snapshot can therefore hang validation forever.
+    //
+    // Reproducing that hang safely is the whole difficulty. Everything below exists so the
+    // *test* terminates on a bounded schedule even when the *product* does not, and so the
+    // fixture is never torn down while a thread is still parked inside it.
+    // ------------------------------------------------------------------------------------
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int mkfifo(string pathname, uint mode);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int open(string pathname, int flags);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int close(int fd);
+
+    /// <summary>Permission bits handed to mkfifo: 0600, owner read/write.</summary>
+    private const uint FifoMode = 384;
+
+    /// <summary>O_RDWR. 0x2 is uniform across every POSIX platform this suite runs on.</summary>
+    private const int OpenReadWrite = 0x2;
+
+    /// <summary>
+    /// How long validation may take before we declare it hung. This fixture holds one metadata
+    /// row and at most one artifact, so a correct validator finishes in single-digit
+    /// milliseconds; the budget leaves roughly three orders of magnitude of headroom for a
+    /// loaded CI machine while staying strictly bounded.
+    /// </summary>
+    private static readonly TimeSpan HangThreshold = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// How long the blocked worker may take to drain once the FIFO has been joined. After
+    /// open(2) returns, the remaining work is a failed stat/seek and a return, so this budget
+    /// only has to absorb scheduling latency.
+    /// </summary>
+    private static readonly TimeSpan DrainThreshold = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// O_NONBLOCK is not portable as a literal. BSD-derived kernels (macOS, FreeBSD) define it
+    /// as 0x0004, while Linux's asm-generic fcntl.h defines it as 0o4000 (0x800) on the x86-64
+    /// and arm64 targets this suite runs on. Hard-coding either value alone silently requests an
+    /// unrelated flag on the other platform, so it is selected per platform.
+    /// </summary>
+    private static int OpenNonBlock =>
+        RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ||
+        RuntimeInformation.IsOSPlatform(OSPlatform.FreeBSD)
+            ? 0x0004
+            : 0x800;
+
+    private static void CreateFifo(string path)
+    {
+        if (mkfifo(path, FifoMode) != 0)
+            Assert.Fail($"mkfifo(\"{path}\", 0600) failed: errno {Marshal.GetLastWin32Error()}.");
+    }
+
+    /// <summary>
+    /// Releases a reader blocked in open(2) on <paramref name="path"/> by joining the FIFO as a
+    /// peer.
+    ///
+    /// O_RDWR is deliberate: on a FIFO it registers the descriptor as both reader and writer, so
+    /// the call cannot itself block waiting for a peer, which would merely relocate the deadlock
+    /// into the cleanup path. O_NONBLOCK then guarantees an immediate return in every case.
+    ///
+    /// Returns true only when the raw open actually succeeded, because a successful open is the
+    /// only evidence that the blocked reader was released. Callers must never assume success: a
+    /// silently swallowed failure here turns a bounded test into an unbounded wait.
+    /// </summary>
+    private static bool TryUnblockFifo(string path, out string diagnostic)
+    {
+        var fd = open(path, OpenReadWrite | OpenNonBlock);
+        if (fd < 0)
+        {
+            diagnostic =
+                $"open(\"{path}\", O_RDWR|O_NONBLOCK) failed: errno {Marshal.GetLastWin32Error()}.";
+            return false;
+        }
+
+        // The reader was released the instant open() returned; close only reclaims the
+        // descriptor and cannot undo the unblock, so a close failure is reported but not fatal.
+        diagnostic = close(fd) < 0
+            ? $"close({fd}) failed: errno {Marshal.GetLastWin32Error()}."
+            : string.Empty;
+        return true;
+    }
+
+    /// <summary>
+    /// Runs the validator on a dedicated background thread.
+    ///
+    /// A dedicated thread rather than Task.Run is load-bearing. The blocking open(2) cannot be
+    /// cancelled, so whichever thread enters it may be lost for the life of the process. On the
+    /// thread pool that permanently removes a worker from a pool shared with every other test
+    /// and with the runner itself. IsBackground = true is equally load-bearing: the CLR does not
+    /// wait on background threads at shutdown, so even a permanently stranded worker cannot stop
+    /// the xUnit host from exiting normally. Together these are what let this harness fail safely
+    /// without ever reaching for Environment.Exit or Environment.FailFast.
+    /// </summary>
+    private static Task<SnapshotValidationResult> StartValidatorWorker(
+        string snapshotRoot,
+        string probeName)
+    {
+        var completion = new TaskCompletionSource<SnapshotValidationResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                completion.TrySetResult(
+                    SnapshotValidator.ValidateAsync(snapshotRoot).GetAwaiter().GetResult());
+            }
+            catch (Exception ex)
+            {
+                completion.TrySetException(ex);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = probeName,
+        };
+
+        thread.Start();
+        return completion.Task;
+    }
+
+    /// <summary>
+    /// Waits for <paramref name="task"/> for at most <paramref name="budget"/>. Returns whether
+    /// the task reached a terminal state; faulting counts as terminating, which is the property
+    /// under test. Uses WaitAsync so no timer outlives the wait.
+    /// </summary>
+    private static async Task<bool> CompletedWithinAsync(Task task, TimeSpan budget)
+    {
+        try
+        {
+            await task.WaitAsync(budget).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            return false;
+        }
+        catch
+        {
+            // The worker terminated by throwing. The caller re-observes the task for detail.
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Drives validation of a snapshot whose <paramref name="fifoPath"/> has been replaced by a
+    /// FIFO, and guarantees termination on a bounded schedule regardless of product behaviour.
+    /// Owns <paramref name="workspace"/> cleanup, which is skipped whenever a worker is still
+    /// touching it.
+    /// </summary>
+    private static async Task RunFifoRegressionAsync(
+        string workspace,
+        string snapshotRoot,
+        string fifoPath,
+        string probeName,
+        Action<SnapshotValidationResult> assertResult)
+    {
+        var workerStranded = false;
+
+        try
+        {
+            var worker = StartValidatorWorker(snapshotRoot, probeName);
+
+            if (!await CompletedWithinAsync(worker, HangThreshold))
+            {
+                // Validation is blocked in open(2). Join the FIFO to release it, then bound the
+                // second wait as well: an unbounded await here is exactly what would strand the
+                // runner, and the unblock itself can fail.
+                var unblocked = TryUnblockFifo(fifoPath, out var unblockDiagnostic);
+                var drained = unblocked && await CompletedWithinAsync(worker, DrainThreshold);
+                workerStranded = !drained;
+
+                Assert.Fail(DescribeHang(fifoPath, unblocked, unblockDiagnostic, drained));
+            }
+
+            assertResult(await worker);
+        }
+        finally
+        {
+            // A stranded worker is still parked inside open(2) on a path in this workspace.
+            // Deleting the tree would pull it out from under a live thread, so the directory is
+            // deliberately leaked instead. It sits under the gitignored test output folder and
+            // is reclaimed by the next clean build.
+            if (!workerStranded)
+            {
+                try
+                {
+                    Directory.Delete(workspace, recursive: true);
+                }
+                catch
+                {
+                    // Best effort only, matching the class-level cleanup contract.
+                }
+            }
+        }
+    }
+
+    private static string DescribeHang(
+        string fifoPath,
+        bool unblocked,
+        string unblockDiagnostic,
+        bool drained)
+    {
+        var report = new StringBuilder();
+        report.Append(CultureInfo.InvariantCulture,
+            $"SnapshotValidator.ValidateAsync did not return within {HangThreshold.TotalSeconds:0}s ");
+        report.Append(CultureInfo.InvariantCulture,
+            $"after '{fifoPath}' was replaced by a FIFO. Validation must refuse a path that is ");
+        report.Append("not a regular file instead of blocking in open(2).");
+
+        report.Append(unblocked
+            ? " The FIFO was joined to release the blocked open."
+            : " The FIFO could NOT be joined, so the blocked open was never released.");
+
+        if (unblockDiagnostic.Length != 0)
+            report.Append(CultureInfo.InvariantCulture, $" {unblockDiagnostic}");
+
+        if (!drained)
+        {
+            report.Append(
+                " The worker never drained, so its background thread is stranded (it cannot block " +
+                "host shutdown) and the temporary workspace was intentionally left on disk rather " +
+                "than deleted underneath it.");
+        }
+
+        return report.ToString();
+    }
+
+    /// <summary>
+    /// Accepts the diagnostics a validator can legitimately raise for a path that is not a
+    /// regular file, without over-fitting to one exact sentence.
+    /// </summary>
+    private static bool IsIrregularFileDiagnostic(string error)
+        => error.Contains("regular file", StringComparison.OrdinalIgnoreCase)
+           || error.Contains("hard link", StringComparison.OrdinalIgnoreCase)
+           || error.Contains("cannot be inspected safely", StringComparison.OrdinalIgnoreCase);
+
+    [Fact]
+    public async Task ValidateAsync_DatabaseReplacedByFifo_ReturnsInvalidPromptly()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return;
+
+        var workspace = SnapshotTestHelper.CreateWorkspace("validator-fifo-db");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            metadataRows: 1,
+            artifactRows: 0,
+            useWal: false);
+
+        File.Delete(source.DatabasePath);
+        CreateFifo(source.DatabasePath);
+
+        await RunFifoRegressionAsync(
+            workspace,
+            source.Root,
+            source.DatabasePath,
+            "fifo-db-validator",
+            result =>
+            {
+                Assert.False(result.IsValid);
+                Assert.Contains(
+                    result.Errors,
+                    e => e.Contains("cache.db", StringComparison.Ordinal));
+                Assert.Contains(result.Errors, IsIrregularFileDiagnostic);
+            });
+    }
+
+    [Fact]
+    public async Task ValidateAsync_ArtifactReplacedByFifo_ReturnsInvalidPromptly()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return;
+
+        var workspace = SnapshotTestHelper.CreateWorkspace("validator-fifo-artifact");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            metadataRows: 1,
+            artifactRows: 1,
+            useWal: false);
+
+        var artifact = Assert.Single(source.Artifacts);
+        var artifactPath = Path.Combine(source.Root, "artifacts", artifact.RelativePath);
+
+        File.Delete(artifactPath);
+        CreateFifo(artifactPath);
+
+        await RunFifoRegressionAsync(
+            workspace,
+            source.Root,
+            artifactPath,
+            "fifo-artifact-validator",
+            result =>
+            {
+                Assert.False(result.IsValid);
+                Assert.Contains(
+                    result.Errors,
+                    e => e.Contains(artifact.RelativePath, StringComparison.Ordinal));
+                Assert.Contains(result.Errors, IsIrregularFileDiagnostic);
+            });
+    }
+
+    /// <summary>
+    /// Control: the same fixture shape with ordinary regular files must stay valid, so a failure
+    /// in either FIFO test above is attributable to the FIFO and not to the fixture.
+    /// </summary>
+    [Fact]
+    public async Task ValidateAsync_RegularValidSnapshot_RemainsValidControl()
+    {
+        var workspace = Workspace("regular-valid");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            metadataRows: 1,
+            artifactRows: 1,
+            useWal: false);
+
+        var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+        Assert.True(result.IsValid, string.Join(Environment.NewLine, result.Errors));
+        Assert.Empty(result.Errors);
+    }
 }
 
 [CollectionDefinition("SnapshotProcessGlobals", DisableParallelization = true)]

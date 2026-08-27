@@ -981,16 +981,10 @@ public static class SnapshotExporter
     {
         ct.ThrowIfCancellationRequested();
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        using var stream = new FileStream(
-            path,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,
-            bufferSize: 81920,
-            FileOptions.SequentialScan);
-        SnapshotDestinationDirectory.EnsureExactlyOneHardLink(
-            stream.SafeFileHandle,
-            path);
+        // The handle is proven to be a regular file with exactly one hard link before any
+        // read, so a FIFO or device planted at this path fails instead of blocking open(2).
+        using var stream =
+            SnapshotDestinationDirectory.OpenRegularFileWithExactlyOneLink(path);
         var expectedLength = stream.Length;
         var buffer = GC.AllocateUninitializedArray<byte>(81920);
         int bytesRead;

@@ -19,6 +19,7 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
     private const int MacOpenNoFollow = 0x100;
     private const int MacOpenCloseOnExec = 0x1000000;
     private const int LinuxAtEmptyPath = 0x1000;
+    private const uint LinuxStatxFileType = 0x00000001;
     private const uint LinuxStatxHardLinkCount = 0x00000004;
     private const uint LinuxStatxInode = 0x00000100;
     private const int LinuxStatxBufferSize = 0x100;
@@ -27,6 +28,24 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
     private const uint LinuxRenameNoReplace = 1;
     private const int AtCurrentWorkingDirectory = -100;
 
+    // O_RDONLY is zero on every supported Unix. O_NONBLOCK keeps open(2) from waiting on a
+    // FIFO or device planted at a snapshot path; asm-generic's 00004000 is shared by every
+    // supported Linux architecture, and Darwin's sys/fcntl.h uses 0x0004.
+    private const int UnixOpenReadOnly = 0x0;
+    private const int LinuxOpenNonBlocking = 0x800;
+    private const int MacOpenNonBlocking = 0x4;
+
+    // F_GETFL and F_SETFL share these values on Linux and Darwin.
+    private const int UnixGetStatusFlags = 3;
+    private const int UnixSetStatusFlags = 4;
+
+    // S_IFMT and S_IFREG from sys/stat.h; identical on Linux and Darwin.
+    private const uint UnixFileTypeMask = 0xF000;
+    private const uint UnixRegularFileType = 0x8000;
+
+    private const int SnapshotReadBufferSize = 81920;
+
+    private const uint GenericRead = 0x80000000;
     private const uint FileReadAttributes = 0x00000080;
     private const uint FileShareRead = 0x00000001;
     private const uint FileShareWrite = 0x00000002;
@@ -34,6 +53,8 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
     private const uint OpenExisting = 3;
     private const uint FileFlagBackupSemantics = 0x02000000;
     private const uint FileFlagOpenReparsePoint = 0x00200000;
+    private const uint FileFlagSequentialScan = 0x08000000;
+    private const uint FileTypeDisk = 0x00000001;
     private const uint FileAttributeDirectory = 0x00000010;
     private const uint FileAttributeReparsePoint = 0x00000400;
     private const int FileAttributeTagInformationSize = 8;
@@ -131,6 +152,36 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
             if (string.Equals(next, current, StringComparison.Ordinal))
                 return;
             current = next;
+        }
+    }
+
+    /// <summary>
+    /// Opens a snapshot file for reading only after the opened handle itself is proven to
+    /// reference a regular file with exactly one hard link. The open never blocks on a FIFO
+    /// or device planted at <paramref name="path"/>, never follows a final symbolic link, and
+    /// never consults the pathname a second time, so no check-to-use window exists.
+    /// </summary>
+    internal static FileStream OpenRegularFileWithExactlyOneLink(string path)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        EnsureSupportedPlatform();
+
+        var fullPath = Path.GetFullPath(path);
+        var handle = OpenRegularFileHandle(fullPath);
+        try
+        {
+            EnsureRegularFile(handle, fullPath);
+            EnsureExactlyOneHardLink(handle, fullPath);
+            if (!OperatingSystem.IsWindows())
+                RestoreBlockingReads(handle, fullPath);
+
+            // FileStream takes ownership: disposing the stream closes this descriptor.
+            return new FileStream(handle, FileAccess.Read, SnapshotReadBufferSize);
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
         }
     }
 
@@ -448,6 +499,157 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
         return new SafeFileHandle((nint)descriptor, ownsHandle: true);
     }
 
+    private static SafeFileHandle OpenRegularFileHandle(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            // FILE_FLAG_OPEN_REPARSE_POINT is the O_NOFOLLOW analogue: the final component is
+            // opened literally so a reparse point can be rejected instead of traversed.
+            var handle = CreateFileW(
+                ToExtendedPath(path),
+                GenericRead,
+                FileShareRead,
+                IntPtr.Zero,
+                OpenExisting,
+                FileFlagOpenReparsePoint | FileFlagSequentialScan,
+                IntPtr.Zero);
+            if (handle.IsInvalid)
+            {
+                var error = Marshal.GetLastPInvokeError();
+                handle.Dispose();
+                throw NativeFailure($"Unable to open snapshot file '{path}'", error);
+            }
+
+            return handle;
+        }
+
+        var flags = OperatingSystem.IsMacOS()
+            ? UnixOpenReadOnly | MacOpenNonBlocking | MacOpenNoFollow | MacOpenCloseOnExec
+            : GetLinuxOpenRegularFileFlags(RuntimeInformation.ProcessArchitecture);
+        var descriptor = open(path, flags);
+        if (descriptor < 0)
+        {
+            throw NativeFailure(
+                $"Unable to open snapshot file '{path}'",
+                Marshal.GetLastPInvokeError());
+        }
+
+        return new SafeFileHandle((nint)descriptor, ownsHandle: true);
+    }
+
+    private static int GetLinuxOpenRegularFileFlags(Architecture architecture)
+    {
+        // ARM and PowerPC preserve their historical open(2) values instead of asm-generic's.
+        var noFollow = architecture switch
+        {
+            Architecture.Arm or Architecture.Arm64 or Architecture.Armv6 or
+                Architecture.Ppc64le =>
+                LinuxArmPpcOpenNoFollow,
+            Architecture.X86 or Architecture.X64 or Architecture.S390x or
+                Architecture.LoongArch64 or Architecture.RiscV64 =>
+                LinuxGenericOpenNoFollow,
+            var unsupportedArchitecture => throw new PlatformNotSupportedException(
+                $"Snapshot export does not define Linux open flags for {unsupportedArchitecture}."),
+        };
+
+        return UnixOpenReadOnly | LinuxOpenNonBlocking | noFollow | LinuxOpenCloseOnExec;
+    }
+
+    /// <summary>
+    /// Proves the already-open handle references a regular file. Nothing here reopens or
+    /// re-resolves the pathname, so the answer describes the object that will be read.
+    /// </summary>
+    private static void EnsureRegularFile(SafeFileHandle handle, string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            // FILE_TYPE_DISK excludes pipes, character devices, and consoles. Anything else,
+            // including FILE_TYPE_UNKNOWN from a failed query, fails closed.
+            if (GetFileType(handle) != FileTypeDisk)
+            {
+                throw new InvalidOperationException(
+                    $"Snapshot file must be a regular file: {path}");
+            }
+
+            var information = GetWindowsAttributeInformation(handle);
+            if ((information.FileAttributes & FileAttributeDirectory) != 0 ||
+                (information.FileAttributes & FileAttributeReparsePoint) != 0)
+            {
+                throw new InvalidOperationException(
+                    $"Snapshot file must be a regular file: {path}");
+            }
+
+            return;
+        }
+
+        var status = GetUnixInformation(handle);
+        if (!status.HasFileType)
+        {
+            throw new InvalidOperationException(
+                "The filesystem did not provide a stable snapshot file type.");
+        }
+
+        var fileType = status.Mode & UnixFileTypeMask;
+        if (fileType != UnixRegularFileType)
+        {
+            throw new InvalidOperationException(
+                $"Snapshot file must be a regular file: {path} " +
+                $"(file type 0x{fileType:x4}).");
+        }
+    }
+
+    /// <summary>
+    /// Drops O_NONBLOCK once the descriptor is proven regular. O_NONBLOCK is only needed to
+    /// survive open(2); leaving it set would let read(2) return EAGAIN on exotic mounts.
+    /// </summary>
+    private static void RestoreBlockingReads(SafeFileHandle handle, string path)
+    {
+        var nonBlocking = OperatingSystem.IsMacOS() ? MacOpenNonBlocking : LinuxOpenNonBlocking;
+        var addedReference = false;
+        try
+        {
+            handle.DangerousAddRef(ref addedReference);
+            var descriptor = checked((int)handle.DangerousGetHandle());
+
+            var flags = FileControl(descriptor, UnixGetStatusFlags, 0);
+            if (flags < 0)
+            {
+                throw NativeFailure(
+                    $"Unable to read snapshot file status flags for '{path}'",
+                    Marshal.GetLastPInvokeError());
+            }
+
+            if ((flags & nonBlocking) == 0)
+                return;
+
+            if (FileControl(descriptor, UnixSetStatusFlags, flags & ~nonBlocking) < 0)
+            {
+                throw NativeFailure(
+                    $"Unable to clear non-blocking mode for snapshot file '{path}'",
+                    Marshal.GetLastPInvokeError());
+            }
+
+            // Read the flags back instead of trusting the store. fcntl is variadic, so a
+            // mismarshalled third argument can report success while changing nothing.
+            var updated = FileControl(descriptor, UnixGetStatusFlags, 0);
+            if (updated < 0 || (updated & nonBlocking) != 0)
+            {
+                throw new InvalidOperationException(
+                    $"Unable to restore blocking reads for snapshot file: {path}");
+            }
+        }
+        finally
+        {
+            if (addedReference)
+                handle.DangerousRelease();
+        }
+    }
+
+    private static int FileControl(int descriptor, int command, nint argument) =>
+        OperatingSystem.IsMacOS()
+            ? MacFileControl(descriptor, command, argument)
+            : LinuxFileControl(descriptor, command, argument);
+
     private static int GetLinuxOpenDirectoryFlags(Architecture architecture)
     {
         // ARM and PowerPC preserve their historical open(2) values instead of asm-generic's.
@@ -573,7 +775,7 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
                 descriptor,
                 string.Empty,
                 LinuxAtEmptyPath,
-                LinuxStatxHardLinkCount | LinuxStatxInode,
+                LinuxStatxFileType | LinuxStatxHardLinkCount | LinuxStatxInode,
                 out var status) != 0)
         {
             var error = Marshal.GetLastPInvokeError();
@@ -594,7 +796,9 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
             status.Inode,
             status.HardLinkCount,
             (status.Mask & LinuxStatxInode) != 0,
-            (status.Mask & LinuxStatxHardLinkCount) != 0);
+            (status.Mask & LinuxStatxHardLinkCount) != 0,
+            status.Mode,
+            (status.Mask & LinuxStatxFileType) != 0);
     }
 
     private static nint GetLinuxStatxSyscallNumber(Architecture architecture) =>
@@ -639,7 +843,9 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
             status.Inode,
             status.HardLinkCount,
             HasInode: true,
-            HasHardLinkCount: true);
+            HasHardLinkCount: true,
+            Mode: status.Mode,
+            HasFileType: true);
     }
 
     private static FileAttributeTagInformation GetWindowsAttributeInformation(
@@ -797,7 +1003,9 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
         ulong Inode,
         uint HardLinkCount,
         bool HasInode,
-        bool HasHardLinkCount);
+        bool HasHardLinkCount,
+        uint Mode,
+        bool HasFileType);
 
     // include/uapi/linux/stat.h defines this architecture-independent ABI.
     [StructLayout(LayoutKind.Explicit, Size = LinuxStatxBufferSize)]
@@ -808,6 +1016,9 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
 
         [FieldOffset(0x10)]
         internal uint HardLinkCount;
+
+        [FieldOffset(0x1c)]
+        internal ushort Mode;
 
         [FieldOffset(0x20)]
         internal ulong Inode;
@@ -826,6 +1037,9 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
     {
         [FieldOffset(0)]
         internal int Device;
+
+        [FieldOffset(4)]
+        internal ushort Mode;
 
         [FieldOffset(6)]
         internal ushort HardLinkCount;
@@ -874,6 +1088,9 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
         SafeFileHandle file,
         out ByHandleFileInformation information);
 
+    [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern uint GetFileType(SafeFileHandle file);
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool MoveFileExW(
@@ -883,6 +1100,29 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
 
     [DllImport("libc", SetLastError = true)]
     private static extern int open(string path, int flags);
+
+    // glibc and musl declare fcntl variadic, but every Linux architecture this tool supports
+    // passes variadic integer arguments in the same registers as named ones, so a fixed
+    // arity declaration is ABI-correct. Only F_GETFL and F_SETFL are issued through it, and
+    // the third argument is pointer-sized because glibc reads it with va_arg(ap, void *).
+    [DllImport(
+        "libc",
+        EntryPoint = "fcntl",
+        CallingConvention = CallingConvention.Cdecl,
+        ExactSpelling = true,
+        SetLastError = true)]
+    private static extern int LinuxFileControl(int descriptor, int command, nint argument);
+
+    // Darwin's fcntl is genuinely variadic and Apple's arm64 ABI passes variadic arguments on
+    // the stack, so a fixed arity declaration would hand libc an uninitialized third argument.
+    // __fcntl is the non-variadic libsystem_kernel entry point that wrapper forwards to.
+    [DllImport(
+        "libc",
+        EntryPoint = "__fcntl",
+        CallingConvention = CallingConvention.Cdecl,
+        ExactSpelling = true,
+        SetLastError = true)]
+    private static extern int MacFileControl(int descriptor, int command, nint argument);
 
     [DllImport(
         "libc",
