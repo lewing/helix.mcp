@@ -17,7 +17,8 @@ public class SnapshotCommands
     /// </summary>
     /// <param name="destination">
     /// Destination directory for the snapshot. Must not already exist or resolve within the source
-    /// cache. Its parent must be trusted not to maliciously mutate the namespace during export.
+    /// cache. Its parent must be a trusted namespace: no other same-principal process may rename,
+    /// replace, or mutate entries in that parent during export.
     /// </param>
     [Command("snapshot export")]
     public async Task Export([Argument] string destination, CancellationToken ct = default)
