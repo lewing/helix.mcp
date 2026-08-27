@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 
 namespace HelixTool.Core.Cache;
@@ -41,7 +43,8 @@ public static class SnapshotExporter
     /// </param>
     /// <param name="destination">
     /// Destination directory path. Must not already exist or be within the physical source cache
-    /// or artifact tree.
+    /// or artifact tree. The destination parent is part of the trusted local environment: callers
+    /// must not maliciously replace or mutate its namespace while an export is in progress.
     /// </param>
     /// <param name="progress">Optional progress reporter; receives human-readable status strings.</param>
     /// <param name="ct">Cancellation token.</param>
@@ -50,6 +53,15 @@ public static class SnapshotExporter
     /// Thrown if the source is invalid, a path cannot be resolved safely, the destination is
     /// unsafe or already exists, or the temporary snapshot fails validation.
     /// </exception>
+    /// <remarks>
+    /// The destination parent is selected and retained before the first progress callback.
+    /// Cooperative parent moves and alias retargeting are checked at explicit revalidation points.
+    /// On Linux and macOS, those checks are not a security boundary against an adversary racing
+    /// pathname operations between the checks; the parent must therefore be trusted. Windows
+    /// additionally freezes the staged tree after the final <see cref="IProgress{T}.Report"/> call
+    /// while its on-disk contents are validated, then publishes it relative to the retained parent
+    /// handle without another report.
+    /// </remarks>
     public static async Task<ExportResult> ExportAsync(
         string sourceRoot,
         string destination,
@@ -113,45 +125,87 @@ public static class SnapshotExporter
                 $"Destination already exists: {physicalDestination}. " +
                 "Remove it first or choose a different path to avoid overwriting a snapshot.");
 
-        progress?.Report("Validating source cache schema...");
-        ValidateSourceSchema(physicalDbPath);
+        // Select and retain the destination parent before invoking any user callback.
+        using var destinationDirectory =
+            SnapshotDestinationDirectory.Open(physicalDestinationParent);
+        ValidateRetainedDestination();
 
-        var tempDestination = Path.Combine(
-            physicalDestinationParent,
-            $"{destinationLeaf}.tmp.{Guid.NewGuid():N}");
-        while (PathEntryExists(tempDestination))
+        string ValidateRetainedDestination()
         {
-            tempDestination = Path.Combine(
-                physicalDestinationParent,
-                $"{destinationLeaf}.tmp.{Guid.NewGuid():N}");
+            var retainedDestinationParent = destinationDirectory.GetCurrentPhysicalPath(
+                lexicalDestinationParent);
+            var retainedDestination =
+                Path.GetFullPath(Path.Combine(retainedDestinationParent, destinationLeaf));
+            RejectDestinationWithinSource(
+                retainedDestination,
+                physicalSourceRoot,
+                physicalSourceArtifacts);
+            return retainedDestinationParent;
         }
 
-        string? tempDestinationToClean = tempDestination;
+        using var sourceConnection =
+            OpenConnection(physicalDbPath, SqliteOpenMode.ReadOnly);
+
+        progress?.Report("Validating source cache schema...");
+        ValidateSourceSchema(sourceConnection);
+
+        ValidateRetainedDestination();
+        using var temporaryDirectory =
+            destinationDirectory.CreateTemporaryDirectory(destinationLeaf);
         try
         {
-            Directory.CreateDirectory(tempDestination);
-            var tempDbPath = Path.Combine(tempDestination, "cache.db");
-            var tempArtifacts = Path.Combine(tempDestination, "artifacts");
-            Directory.CreateDirectory(tempArtifacts);
+            temporaryDirectory.CreateDirectory("artifacts");
 
             progress?.Report("Backing up cache.db...");
-            BackupDatabase(physicalDbPath, tempDbPath, ct);
-            EnsureNoDatabaseSidecars(tempDbPath);
+            using var stagedDatabase = OpenMemoryConnection();
+            BackupDatabase(sourceConnection, stagedDatabase, ct);
+            var serializedDatabase = SerializeDatabase(stagedDatabase);
+            await WriteDatabaseAsync(
+                temporaryDirectory,
+                "cache.db",
+                serializedDatabase,
+                ct);
+            var expectedDatabaseHash =
+                Convert.ToHexString(SHA256.HashData(serializedDatabase));
+            EnsureNoDatabaseSidecars(
+                Path.Combine(temporaryDirectory.GetCurrentPath(), "cache.db"));
 
             progress?.Report("Reading artifact references from the backed-up database...");
-            var artifactReferences = ReadArtifactReferences(tempDbPath, ct);
+            var artifactReferences = ReadArtifactReferences(stagedDatabase, ct);
 
             progress?.Report("Copying referenced artifacts...");
-            var artifactCount = await CopyArtifactsAsync(
+            var copiedArtifacts = await CopyArtifactsAsync(
                 artifactReferences,
                 physicalSourceArtifacts,
-                tempArtifacts,
+                temporaryDirectory,
+                Path.Combine(temporaryDirectory.GetCurrentPath(), "artifacts"),
                 ct);
-            progress?.Report($"Copied {artifactCount} artifact file(s).");
-
-            EnsureNoDatabaseSidecars(tempDbPath);
+            progress?.Report($"Copied {copiedArtifacts.Count} artifact file(s).");
 
             progress?.Report("Validating temporary snapshot...");
+            progress?.Report("Finalizing snapshot (atomic rename)...");
+
+            // There are no progress.Report calls after this point. Revalidate the selected parent,
+            // then freeze the Windows staging tree before inspecting the serialized output.
+            ct.ThrowIfCancellationRequested();
+            var retainedParent = ValidateRetainedDestination();
+            var retainedDestination = Path.Combine(retainedParent, destinationLeaf);
+            if (PathEntryExists(retainedDestination))
+            {
+                throw new InvalidOperationException(
+                    $"Destination already exists: {retainedDestination}. It was not overwritten.");
+            }
+
+            destinationDirectory.CompleteStaging(temporaryDirectory);
+            var tempDestination = temporaryDirectory.GetCurrentPath();
+            var tempDbPath = Path.Combine(tempDestination, "cache.db");
+            EnsureNoDatabaseSidecars(tempDbPath);
+            ValidatePortableLayout(
+                tempDestination,
+                expectedDatabaseHash,
+                copiedArtifacts,
+                ct);
+
             var validation = await SnapshotValidator.ValidateAsync(tempDestination, ct);
             if (!validation.IsValid)
             {
@@ -162,45 +216,27 @@ public static class SnapshotExporter
 
             EnsureNoDatabaseSidecars(tempDbPath);
             var dbSize = new FileInfo(tempDbPath).Length;
-
-            // Re-resolve the caller-supplied parent so retargeting an alias cannot redirect
-            // publication. The move itself always uses the selected physical parent.
-            var currentPhysicalDestinationParent =
-                CanonicalizeExistingPath(lexicalDestinationParent, requireDirectory: true);
-            if (!PathsAreEqualForPositiveProof(
-                    currentPhysicalDestinationParent,
-                    physicalDestinationParent))
-            {
-                throw new InvalidOperationException(
-                    "Destination parent changed while the snapshot was being exported.");
-            }
-
-            if (PathEntryExists(physicalDestination))
-                throw new InvalidOperationException(
-                    $"Destination already exists: {physicalDestination}. " +
-                    "It was not overwritten.");
-
-            progress?.Report("Finalizing snapshot (atomic rename)...");
-            Directory.Move(tempDestination, physicalDestination);
-            tempDestinationToClean = null;
+            ct.ThrowIfCancellationRequested();
+            destinationDirectory.Publish(
+                temporaryDirectory,
+                lexicalDestinationParent,
+                destinationLeaf);
 
             return new ExportResult(
                 Destination: lexicalDestination,
-                ArtifactCount: artifactCount,
+                ArtifactCount: copiedArtifacts.Count,
                 DbSizeBytes: dbSize);
         }
-        catch
+
+        catch (Exception exportFailure)
         {
-            if (tempDestinationToClean != null)
+            try
             {
-                try
-                {
-                    Directory.Delete(tempDestinationToClean, recursive: true);
-                }
-                catch
-                {
-                    // Best-effort cleanup preserves the original export failure.
-                }
+                destinationDirectory.Cleanup(temporaryDirectory);
+            }
+            catch (Exception cleanupFailure)
+            {
+                exportFailure.Data["SnapshotCleanupFailure"] = cleanupFailure;
             }
 
             throw;
@@ -213,6 +249,11 @@ public static class SnapshotExporter
     internal static void ValidateSourceSchema(string dbPath)
     {
         using var connection = OpenConnection(dbPath, SqliteOpenMode.ReadOnly);
+        ValidateSourceSchema(connection);
+    }
+
+    private static void ValidateSourceSchema(SqliteConnection connection)
+    {
         using var command = connection.CreateCommand();
         command.CommandText = "PRAGMA user_version;";
         var version = Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
@@ -290,7 +331,7 @@ public static class SnapshotExporter
         return normalizedCandidate.StartsWith(rootPrefix, comparison);
     }
 
-    private static bool PathsAreEqualForPositiveProof(string left, string right)
+    internal static bool PathsAreEqualForPositiveProof(string left, string right)
         => string.Equals(
             Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
             Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
@@ -547,35 +588,53 @@ public static class SnapshotExporter
         }
     }
 
+    private static SqliteConnection OpenMemoryConnection()
+    {
+        var builder = new SqliteConnectionStringBuilder
+        {
+            DataSource = ":memory:",
+            Mode = SqliteOpenMode.Memory,
+            Cache = SqliteCacheMode.Private,
+            Pooling = false,
+            DefaultTimeout = BusyTimeoutSeconds,
+        };
+        var connection = new SqliteConnection(builder.ToString());
+        try
+        {
+            connection.Open();
+            return connection;
+        }
+        catch
+        {
+            connection.Dispose();
+            throw;
+        }
+    }
+
     private static void BackupDatabase(
-        string sourceDbPath,
-        string destinationDbPath,
+        SqliteConnection sourceConnection,
+        SqliteConnection destinationConnection,
         CancellationToken ct)
     {
-        using var sourceConnection = OpenConnection(sourceDbPath, SqliteOpenMode.ReadOnly);
-        using var destinationConnection =
-            OpenConnection(destinationDbPath, SqliteOpenMode.ReadWriteCreate);
-
         ct.ThrowIfCancellationRequested();
         sourceConnection.BackupDatabase(destinationConnection);
         ct.ThrowIfCancellationRequested();
 
         using var command = destinationConnection.CreateCommand();
-        command.CommandText = "PRAGMA journal_mode=DELETE;";
+        command.CommandText = "PRAGMA journal_mode;";
         var journalMode = Convert.ToString(
             command.ExecuteScalar(),
             CultureInfo.InvariantCulture);
-        if (!string.Equals(journalMode, "delete", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(journalMode, "memory", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException(
-                $"Exported database could not switch to DELETE journaling (reported '{journalMode}').");
+                $"In-memory snapshot database reported unexpected journaling mode '{journalMode}'.");
     }
 
     private static IReadOnlyList<ArtifactReference> ReadArtifactReferences(
-        string dbPath,
+        SqliteConnection connection,
         CancellationToken ct)
     {
         var references = new List<ArtifactReference>();
-        using var connection = OpenConnection(dbPath, SqliteOpenMode.ReadOnly);
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT file_path, file_size
@@ -592,13 +651,79 @@ public static class SnapshotExporter
         return references;
     }
 
-    private static async Task<int> CopyArtifactsAsync(
+    private static byte[] SerializeDatabase(SqliteConnection connection)
+    {
+        var pointer = SQLitePCL.raw.sqlite3_serialize(
+            connection.Handle,
+            "main",
+            out var size,
+            0);
+        if (pointer == IntPtr.Zero || size <= 0)
+            throw new InvalidOperationException("Unable to serialize the in-memory snapshot database.");
+        if (size > Array.MaxLength)
+        {
+            SQLitePCL.raw.sqlite3_free(pointer);
+            throw new InvalidOperationException(
+                $"The snapshot database is too large to serialize safely ({size} bytes).");
+        }
+
+        try
+        {
+            var bytes = GC.AllocateUninitializedArray<byte>((int)size);
+            Marshal.Copy(pointer, bytes, 0, bytes.Length);
+            NormalizeSerializedDatabaseHeader(bytes);
+            return bytes;
+        }
+        finally
+        {
+            SQLitePCL.raw.sqlite3_free(pointer);
+        }
+    }
+
+    private static void NormalizeSerializedDatabaseHeader(byte[] database)
+    {
+        ReadOnlySpan<byte> sqliteHeader = "SQLite format 3\0"u8;
+        if (database.Length < 100 ||
+            !database.AsSpan(0, sqliteHeader.Length).SequenceEqual(sqliteHeader) ||
+            database[18] is not (1 or 2) ||
+            database[19] is not (1 or 2))
+        {
+            throw new InvalidOperationException(
+                "The in-memory backup did not serialize as a valid SQLite database image.");
+        }
+
+        // In-memory databases report MEMORY journaling but retain WAL header versions copied
+        // from a WAL-mode source. A standalone serialized image must request rollback journaling.
+        database[18] = 1;
+        database[19] = 1;
+    }
+
+    private static async Task WriteDatabaseAsync(
+        SnapshotTemporaryDirectory temporaryDirectory,
+        string destinationRelativePath,
+        byte[] database,
+        CancellationToken ct)
+    {
+        await using var destination =
+            temporaryDirectory.CreateNewFile(destinationRelativePath);
+        await destination.WriteAsync(database, ct);
+        await destination.FlushAsync(ct);
+        if (destination.Length != database.LongLength)
+        {
+            throw new IOException(
+                $"Serialized snapshot database write was incomplete " +
+                $"(expected {database.LongLength}, wrote {destination.Length}).");
+        }
+    }
+
+    private static async Task<IReadOnlyDictionary<string, CopiedArtifact>> CopyArtifactsAsync(
         IReadOnlyList<ArtifactReference> references,
         string? sourceArtifacts,
+        SnapshotTemporaryDirectory temporaryDirectory,
         string destinationArtifacts,
         CancellationToken ct)
     {
-        var copiedDestinations = new Dictionary<string, long>(PathComparer);
+        var copiedDestinations = new Dictionary<string, CopiedArtifact>(PathComparer);
 
         foreach (var reference in references)
         {
@@ -646,39 +771,52 @@ public static class SnapshotExporter
                     $"Artifact destination path is unsafe: {reference.FilePath}");
             }
 
-            if (copiedDestinations.TryGetValue(destinationPath, out var copiedSize))
+            var normalizedDestination =
+                Path.GetRelativePath(destinationArtifacts, destinationPath);
+            if (copiedDestinations.TryGetValue(
+                    normalizedDestination,
+                    out var copiedArtifact))
             {
-                if (copiedSize != reference.FileSize)
+                if (copiedArtifact.FileSize != reference.FileSize)
                     throw new InvalidOperationException(
                         $"Artifact rows resolve to the same file with conflicting sizes: " +
                         $"{reference.FilePath}");
                 continue;
             }
 
-            var destinationDirectory = Path.GetDirectoryName(destinationPath)
+            _ = Path.GetDirectoryName(destinationPath)
                 ?? throw new InvalidOperationException(
                     $"Artifact destination has no parent directory: {reference.FilePath}");
-            Directory.CreateDirectory(destinationDirectory);
-            await CopyArtifactAsync(
+            var stagingRelativePath = Path.Combine("artifacts", normalizedRelativePath);
+            var stagingDirectory = Path.GetDirectoryName(stagingRelativePath)
+                ?? throw new InvalidOperationException(
+                    $"Artifact staging destination has no parent: {reference.FilePath}");
+            temporaryDirectory.CreateDirectory(stagingDirectory);
+            var sha256 = await CopyArtifactAsync(
                 physicalSourcePath,
-                destinationPath,
+                temporaryDirectory,
+                stagingRelativePath,
                 reference.FilePath,
                 reference.FileSize,
                 ct);
-            copiedDestinations.Add(destinationPath, reference.FileSize);
+            copiedDestinations.Add(
+                normalizedDestination,
+                new CopiedArtifact(reference.FileSize, sha256));
         }
 
-        return copiedDestinations.Count;
+        return copiedDestinations;
     }
 
-    private static async Task CopyArtifactAsync(
+    private static async Task<string> CopyArtifactAsync(
         string sourcePath,
-        string destinationPath,
+        SnapshotTemporaryDirectory temporaryDirectory,
+        string destinationRelativePath,
         string relativePath,
         long expectedSize,
         CancellationToken ct)
     {
         long copiedSize;
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         await using (var source = new FileStream(
             sourcePath,
             FileMode.Open,
@@ -692,14 +830,15 @@ public static class SnapshotExporter
                     $"Artifact '{relativePath}' size changed or does not match the database " +
                     $"(expected {expectedSize}, found {source.Length}).");
 
-            await using var destination = new FileStream(
-                destinationPath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                bufferSize: 81920,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
-            await source.CopyToAsync(destination, ct);
+            await using var destination =
+                temporaryDirectory.CreateNewFile(destinationRelativePath);
+            var buffer = GC.AllocateUninitializedArray<byte>(81920);
+            int bytesRead;
+            while ((bytesRead = await source.ReadAsync(buffer, ct)) != 0)
+            {
+                hash.AppendData(buffer, 0, bytesRead);
+                await destination.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
+            }
             await destination.FlushAsync(ct);
             copiedSize = destination.Length;
 
@@ -712,38 +851,150 @@ public static class SnapshotExporter
             throw new InvalidOperationException(
                 $"Copied artifact '{relativePath}' has the wrong size " +
                 $"(expected {expectedSize}, copied {copiedSize}).");
+
+        return Convert.ToHexString(hash.GetHashAndReset());
+    }
+
+    private static void ValidatePortableLayout(
+        string snapshotPath,
+        string expectedDatabaseHash,
+        IReadOnlyDictionary<string, CopiedArtifact> copiedArtifacts,
+        CancellationToken ct)
+    {
+        var rootEntries = new DirectoryInfo(snapshotPath)
+            .EnumerateFileSystemInfos()
+            .ToDictionary(entry => entry.Name, PathComparer);
+        if (rootEntries.Count != 2 ||
+            !rootEntries.TryGetValue("cache.db", out var databaseEntry) ||
+            databaseEntry is not FileInfo ||
+            IsFileSystemLink(databaseEntry) ||
+            !rootEntries.TryGetValue("artifacts", out var artifactsEntry) ||
+            artifactsEntry is not DirectoryInfo artifactsDirectory ||
+            IsFileSystemLink(artifactsEntry))
+        {
+            throw new InvalidOperationException(
+                "Temporary snapshot must contain only a direct cache.db file and artifacts directory.");
+        }
+
+        var databaseHash = HashFile(databaseEntry.FullName, ct);
+        if (!string.Equals(
+                databaseHash,
+                expectedDatabaseHash,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The serialized cache.db changed before final validation.");
+        }
+
+        var expectedDirectories = new HashSet<string>(PathComparer);
+        foreach (var relativePath in copiedArtifacts.Keys)
+        {
+            var directory = Path.GetDirectoryName(relativePath);
+            while (!string.IsNullOrEmpty(directory) && directory != ".")
+            {
+                expectedDirectories.Add(directory);
+                directory = Path.GetDirectoryName(directory);
+            }
+        }
+
+        var remainingArtifacts = new HashSet<string>(copiedArtifacts.Keys, PathComparer);
+        ValidateArtifactDirectory(artifactsDirectory, string.Empty);
+        if (remainingArtifacts.Count != 0)
+        {
+            throw new InvalidOperationException(
+                "The temporary snapshot is missing one or more copied artifact files.");
+        }
+
+        void ValidateArtifactDirectory(DirectoryInfo directory, string relativeDirectory)
+        {
+            foreach (var entry in directory.EnumerateFileSystemInfos())
+            {
+                ct.ThrowIfCancellationRequested();
+                if (IsFileSystemLink(entry))
+                {
+                    throw new InvalidOperationException(
+                        $"The temporary snapshot contains an unsafe filesystem link: {entry.FullName}");
+                }
+
+                var relativePath = string.IsNullOrEmpty(relativeDirectory)
+                    ? entry.Name
+                    : Path.Combine(relativeDirectory, entry.Name);
+                if (entry is DirectoryInfo childDirectory)
+                {
+                    if (!expectedDirectories.Contains(relativePath))
+                    {
+                        throw new InvalidOperationException(
+                            $"The temporary snapshot contains an unreferenced artifact directory: " +
+                            $"{relativePath}");
+                    }
+
+                    ValidateArtifactDirectory(childDirectory, relativePath);
+                    continue;
+                }
+
+                if (entry is not FileInfo file ||
+                    !copiedArtifacts.TryGetValue(relativePath, out var expectedArtifact))
+                {
+                    throw new InvalidOperationException(
+                        $"The temporary snapshot contains an unreferenced artifact entry: " +
+                        $"{relativePath}");
+                }
+
+                if (file.Length != expectedArtifact.FileSize ||
+                    !string.Equals(
+                        HashFile(file.FullName, ct),
+                        expectedArtifact.Sha256,
+                        StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        $"Copied artifact '{relativePath}' changed before final validation.");
+                }
+
+                remainingArtifacts.Remove(relativePath);
+            }
+        }
+    }
+
+    private static bool IsFileSystemLink(FileSystemInfo entry) =>
+        (entry.Attributes & FileAttributes.ReparsePoint) != 0 ||
+        entry.LinkTarget != null;
+
+    private static string HashFile(string path, CancellationToken ct)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 81920,
+            FileOptions.SequentialScan);
+        var buffer = GC.AllocateUninitializedArray<byte>(81920);
+        int bytesRead;
+        while ((bytesRead = stream.Read(buffer)) != 0)
+        {
+            ct.ThrowIfCancellationRequested();
+            hash.AppendData(buffer, 0, bytesRead);
+        }
+
+        return Convert.ToHexString(hash.GetHashAndReset());
     }
 
     private static void EnsureNoDatabaseSidecars(string dbPath)
     {
-        foreach (var suffix in new[] { "-wal", "-shm" })
+        foreach (var suffix in new[] { "-wal", "-shm", "-journal" })
         {
             var sidecarPath = dbPath + suffix;
             if (!PathEntryExists(sidecarPath))
                 continue;
-            if (!File.Exists(sidecarPath))
-                throw new InvalidOperationException(
-                    $"Unexpected SQLite sidecar entry was created: {sidecarPath}");
-
-            var sidecar = new FileInfo(sidecarPath);
-            if ((sidecar.Attributes & FileAttributes.ReparsePoint) != 0 ||
-                sidecar.LinkTarget != null)
-            {
-                throw new InvalidOperationException(
-                    $"Unexpected linked SQLite sidecar was created: {sidecarPath}");
-            }
-            if (sidecar.Length != 0)
-                throw new InvalidOperationException(
-                    $"Unexpected non-empty SQLite sidecar was created: {sidecarPath}");
-
-            File.Delete(sidecarPath);
-            if (PathEntryExists(sidecarPath))
-                throw new InvalidOperationException(
-                    $"Unable to remove empty SQLite sidecar: {sidecarPath}");
+            throw new InvalidOperationException(
+                $"Unexpected SQLite sidecar entry was created: {sidecarPath}");
         }
     }
 
     private sealed record ArtifactReference(string FilePath, long FileSize);
+
+    private sealed record CopiedArtifact(long FileSize, string Sha256);
 }
 
 /// <summary>Result of a successful snapshot export operation.</summary>

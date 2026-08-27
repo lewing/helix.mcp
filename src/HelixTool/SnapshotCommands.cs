@@ -16,7 +16,8 @@ public class SnapshotCommands
     /// The snapshot preserves cache keys and can be used with the HLX_EVAL_SNAPSHOT environment variable.
     /// </summary>
     /// <param name="destination">
-    /// Destination directory for the snapshot. Must not already exist or resolve within the source cache.
+    /// Destination directory for the snapshot. Must not already exist or resolve within the source
+    /// cache. Its parent must be trusted not to maliciously mutate the namespace during export.
     /// </param>
     [Command("snapshot export")]
     public async Task Export([Argument] string destination, CancellationToken ct = default)
@@ -53,7 +54,7 @@ public class SnapshotCommands
 
         Console.Error.WriteLine();
 
-        var progress = new Progress<string>(msg => Console.Error.WriteLine($"  {msg}"));
+        var progress = new ConsoleProgress();
 
         try
         {
@@ -129,5 +130,10 @@ public class SnapshotCommands
         Console.Error.WriteLine($"  Metadata entries: {result.MetadataEntries}");
         Console.Error.WriteLine($"  Artifact entries: {result.ArtifactEntries}");
         Console.Error.WriteLine($"  Missing files:    {result.MissingArtifactFiles}");
+    }
+
+    private sealed class ConsoleProgress : IProgress<string>
+    {
+        public void Report(string value) => Console.Error.WriteLine($"  {value}");
     }
 }

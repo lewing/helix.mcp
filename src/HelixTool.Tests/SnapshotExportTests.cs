@@ -1093,6 +1093,180 @@ public class SnapshotExporterTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Export_DestinationParentIsAnchoredBeforeFirstProgressCallback()
+    {
+        const string firstProgressMessage = "Validating source cache schema...";
+        var workspace = Workspace("early-parent-replacement");
+        var source = SnapshotTestHelper.CreateSource(workspace, useWal: false);
+        var sourceBefore = SnapshotTestHelper.FingerprintTree(source.Root);
+        var destinationParent = Path.Combine(workspace, "publish");
+        var movedParent = Path.Combine(workspace, "publish-original");
+        Directory.CreateDirectory(destinationParent);
+        File.WriteAllText(Path.Combine(destinationParent, "original.txt"), "original");
+        var originalParentBefore = SnapshotTestHelper.FingerprintTree(destinationParent);
+        var destination = Path.Combine(destinationParent, "snapshot");
+        var movedDestination = Path.Combine(movedParent, "snapshot");
+        var callbackReached = false;
+        var parentReplaced = false;
+        var progress = new SynchronousProgress<string>(message =>
+        {
+            if (!string.Equals(message, firstProgressMessage, StringComparison.Ordinal))
+                return;
+
+            Assert.False(callbackReached);
+            callbackReached = true;
+            Directory.Move(destinationParent, movedParent);
+            Directory.CreateDirectory(destinationParent);
+            parentReplaced = true;
+        });
+
+        var exception = await Record.ExceptionAsync(
+            () => SnapshotExporter.ExportAsync(source.Root, destination, progress));
+
+        Assert.True(callbackReached);
+        Assert.Equal(sourceBefore, SnapshotTestHelper.FingerprintTree(source.Root));
+        Assert.False(SnapshotExporter.PathEntryExists(destination));
+        Assert.False(SnapshotExporter.PathEntryExists(movedDestination));
+        if (!parentReplaced)
+        {
+            Assert.True(
+                OperatingSystem.IsWindows(),
+                $"Only the Windows no-delete lease may deny the parent move: {exception}");
+            Assert.True(
+                exception is IOException or UnauthorizedAccessException,
+                $"The Windows no-delete lease did not deny the parent move: {exception}");
+            Assert.False(SnapshotExporter.PathEntryExists(movedParent));
+            Assert.Equal(
+                originalParentBefore,
+                SnapshotTestHelper.FingerprintTree(destinationParent));
+            return;
+        }
+
+        Assert.True(parentReplaced);
+        var invalidOperation = Assert.IsType<InvalidOperationException>(exception);
+        Assert.Contains(
+            "destination parent",
+            invalidOperation.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(
+            originalParentBefore,
+            SnapshotTestHelper.FingerprintTree(movedParent));
+        Assert.Empty(SnapshotTestHelper.ParentEntries(destinationParent));
+    }
+
+    [Theory]
+    [InlineData("replace-database")]
+    [InlineData("corrupt-database")]
+    [InlineData("alter-artifact")]
+    [InlineData("remove-artifact")]
+    [InlineData("add-sidecar")]
+    public async Task Export_FinalProgressMutation_IsRejectedWithoutPublication(string mutation)
+    {
+        const string finalizationMessage = "Finalizing snapshot (atomic rename)...";
+        var workspace = Workspace($"final-mutation-{mutation}");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 1,
+            useWal: false);
+        var sourceBefore = SnapshotTestHelper.FingerprintTree(source.Root);
+        var destinationParent = Path.Combine(workspace, "publish");
+        Directory.CreateDirectory(destinationParent);
+        var destination = Path.Combine(destinationParent, "snapshot");
+        var replacementDatabase = Path.Combine(workspace, "replacement.db");
+        if (mutation == "replace-database")
+        {
+            using var replacement = SnapshotTestHelper.OpenConnection(
+                replacementDatabase,
+                SqliteOpenMode.ReadWriteCreate);
+            SnapshotTestHelper.ExecuteNonQuery(
+                replacement,
+                "PRAGMA user_version=1; CREATE TABLE replacement_marker(value TEXT NOT NULL);");
+        }
+
+        var finalizationReports = 0;
+        var progress = new SynchronousProgress<string>(message =>
+        {
+            if (!string.Equals(message, finalizationMessage, StringComparison.Ordinal))
+                return;
+
+            Assert.Equal(1, Interlocked.Increment(ref finalizationReports));
+            var tempLeaf = Assert.Single(
+                SnapshotTestHelper.ParentEntries(destinationParent),
+                entry => entry.StartsWith("snapshot.tmp.", StringComparison.Ordinal));
+            var temporaryPath = Path.Combine(destinationParent, tempLeaf);
+            var databasePath = Path.Combine(temporaryPath, "cache.db");
+            var artifactPath = Path.Combine(
+                temporaryPath,
+                "artifacts",
+                source.Artifacts[0].RelativePath);
+
+            switch (mutation)
+            {
+                case "replace-database":
+                    File.Move(replacementDatabase, databasePath, overwrite: true);
+                    break;
+                case "corrupt-database":
+                    File.WriteAllBytes(databasePath, [0x00, 0x01, 0x02]);
+                    break;
+                case "alter-artifact":
+                    var content = File.ReadAllBytes(artifactPath);
+                    content[0] ^= 0xff;
+                    File.WriteAllBytes(artifactPath, content);
+                    break;
+                case "remove-artifact":
+                    File.Delete(artifactPath);
+                    break;
+                case "add-sidecar":
+                    File.WriteAllText(databasePath + "-wal", "unexpected");
+                    break;
+                default:
+                    throw new XunitException($"Unknown final mutation '{mutation}'.");
+            }
+        });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => SnapshotExporter.ExportAsync(source.Root, destination, progress));
+
+        Assert.Equal(1, finalizationReports);
+        Assert.Equal(sourceBefore, SnapshotTestHelper.FingerprintTree(source.Root));
+        Assert.False(SnapshotExporter.PathEntryExists(destination));
+        Assert.Empty(SnapshotTestHelper.ParentEntries(destinationParent));
+    }
+
+    [Fact]
+    public async Task Export_ConcurrentDestinationCreation_IsNeverOverwritten()
+    {
+        const string finalizationMessage = "Finalizing snapshot (atomic rename)...";
+        var workspace = Workspace("concurrent-destination");
+        var source = SnapshotTestHelper.CreateSource(workspace, useWal: false);
+        var sourceBefore = SnapshotTestHelper.FingerprintTree(source.Root);
+        var destinationParent = Path.Combine(workspace, "publish");
+        Directory.CreateDirectory(destinationParent);
+        var destination = Path.Combine(destinationParent, "snapshot");
+        var finalizationReports = 0;
+        var progress = new SynchronousProgress<string>(message =>
+        {
+            if (!string.Equals(message, finalizationMessage, StringComparison.Ordinal))
+                return;
+
+            Assert.Equal(1, Interlocked.Increment(ref finalizationReports));
+            Directory.CreateDirectory(destination);
+        });
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => SnapshotExporter.ExportAsync(source.Root, destination, progress));
+
+        Assert.Equal(1, finalizationReports);
+        Assert.Contains("already exists", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(sourceBefore, SnapshotTestHelper.FingerprintTree(source.Root));
+        Assert.True(Directory.Exists(destination));
+        Assert.Empty(SnapshotTestHelper.ParentEntries(destination));
+        Assert.Equal(
+            new[] { "snapshot" },
+            SnapshotTestHelper.ParentEntries(destinationParent));
+    }
+
     [CaseSensitiveFileSystemFact]
     public async Task Export_CaseOnlyDestinationParentRetarget_IsRejectedAndCleansTemporarySnapshot()
     {
