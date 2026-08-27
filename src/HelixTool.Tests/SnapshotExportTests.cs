@@ -774,6 +774,28 @@ public class SnapshotExporterTests : IDisposable
     }
 
     [Fact]
+    public void IsEqualOrDescendant_FilesystemRoot_IsEqualToItself()
+    {
+        var filesystemRoot = Path.GetPathRoot(Path.GetFullPath(AppContext.BaseDirectory))
+            ?? throw new InvalidOperationException("The test base directory has no filesystem root.");
+
+        Assert.True(SnapshotExporter.IsEqualOrDescendant(filesystemRoot, filesystemRoot));
+    }
+
+    [Fact]
+    public void IsEqualOrDescendant_FilesystemRoot_ContainsPathBeneathRoot()
+    {
+        var filesystemRoot = Path.GetPathRoot(Path.GetFullPath(AppContext.BaseDirectory))
+            ?? throw new InvalidOperationException("The test base directory has no filesystem root.");
+        var descendant = Path.Combine(
+            filesystemRoot,
+            "snapshot-export-root-regression",
+            "descendant");
+
+        Assert.True(SnapshotExporter.IsEqualOrDescendant(descendant, filesystemRoot));
+    }
+
+    [Fact]
     public async Task Export_SiblingPrefixDestination_Succeeds()
     {
         var workspace = Workspace("sibling-prefix");

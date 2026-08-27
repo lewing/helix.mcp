@@ -59,8 +59,6 @@ Snapshot-export security boundaries use ordinal ignore-case comparison on Window
 
 ### 2026-08-26T12:00:00-05:00: Snapshot Export Hardening Design & Review Gate
 
-### 2026-08-26T12:00:00-05:00: Snapshot Export Hardening Design & Review Gate
-
 **By:** Dallas (Lead)  
 **Status:** Approved — Complete implementation gate cleared
 

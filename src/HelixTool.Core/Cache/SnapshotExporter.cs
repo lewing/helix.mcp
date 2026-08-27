@@ -269,7 +269,9 @@ public static class SnapshotExporter
         if (string.Equals(normalizedCandidate, normalizedRoot, BoundaryPathComparison))
             return true;
 
-        var rootPrefix = normalizedRoot + Path.DirectorySeparatorChar;
+        var rootPrefix = Path.EndsInDirectorySeparator(normalizedRoot)
+            ? normalizedRoot
+            : normalizedRoot + Path.DirectorySeparatorChar;
         return normalizedCandidate.StartsWith(rootPrefix, BoundaryPathComparison);
     }
 
