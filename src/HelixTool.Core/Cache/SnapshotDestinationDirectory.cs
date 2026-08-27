@@ -18,6 +18,11 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
     private const int MacOpenDirectory = 0x100000;
     private const int MacOpenNoFollow = 0x100;
     private const int MacOpenCloseOnExec = 0x1000000;
+    private const int LinuxAtEmptyPath = 0x1000;
+    private const uint LinuxStatxHardLinkCount = 0x00000004;
+    private const uint LinuxStatxInode = 0x00000100;
+    private const int LinuxStatxBufferSize = 0x100;
+    private const int MacFileStatusBufferSize = 144;
     private const uint MacRenameExclusive = 0x00000004;
     private const uint LinuxRenameNoReplace = 1;
     private const int AtCurrentWorkingDirectory = -100;
@@ -35,6 +40,7 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
     private const int FileIdInformationSize = 24;
 
     private const int ErrorExists = 17;
+    private const int LinuxErrorFunctionNotImplemented = 38;
     private const int LinuxErrorNotEmpty = 39;
     private const int MacErrorNotEmpty = 66;
     private const int ErrorFileExists = 80;
@@ -466,15 +472,15 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
             return GetWindowsIdentity(handle);
 
         var status = GetUnixInformation(handle);
-        if (status.Inode == 0)
+        if (!status.HasInode || status.Inode == 0)
         {
             throw new InvalidOperationException(
-                "fstat did not provide stable snapshot file identity.");
+                "The filesystem did not provide stable snapshot file identity.");
         }
 
         return new SnapshotDirectoryIdentity(
-            unchecked((ulong)status.Device),
-            unchecked((ulong)status.Inode),
+            status.Device,
+            status.Inode,
             0);
     }
 
@@ -493,13 +499,13 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
         }
 
         var status = GetUnixInformation(handle);
-        if (status.HardLinkCount <= 0)
+        if (!status.HasHardLinkCount || status.HardLinkCount == 0)
         {
             throw new InvalidOperationException(
-                "fstat did not provide a stable snapshot hard-link count.");
+                "The filesystem did not provide a stable snapshot hard-link count.");
         }
 
-        return checked((uint)status.HardLinkCount);
+        return status.HardLinkCount;
     }
 
     private static SnapshotDirectoryIdentity GetWindowsIdentity(SafeFileHandle handle)
@@ -532,7 +538,7 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
             fileIdHigh);
     }
 
-    private static UnixFileStatus GetUnixInformation(SafeFileHandle handle)
+    private static UnixFileInformation GetUnixInformation(SafeFileHandle handle)
     {
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
         {
@@ -540,17 +546,100 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
                 "Snapshot metadata inspection supports Windows, Linux, and macOS.");
         }
 
-        // System.Native's fixed FileStatus ABI reads the native fstat st_dev, st_ino, and
-        // st_nlink fields in the runtime PAL built for each Unix RID. This avoids assuming one
-        // raw struct-stat layout across x64, arm64, 32-bit ARM, and PowerPC.
-        if (SystemNativeFStat(handle, out var status) != 0)
+        var addedReference = false;
+        try
+        {
+            handle.DangerousAddRef(ref addedReference);
+            var descriptor = checked((int)handle.DangerousGetHandle());
+            return OperatingSystem.IsLinux()
+                ? GetLinuxInformation(descriptor)
+                : GetMacInformation(descriptor);
+        }
+        finally
+        {
+            if (addedReference)
+                handle.DangerousRelease();
+        }
+    }
+
+    private static UnixFileInformation GetLinuxInformation(int descriptor)
+    {
+        // Linux's statx UAPI uses fixed-width fields and a 256-byte layout on every
+        // architecture. Calling it through libc's stable syscall wrapper avoids requiring
+        // the statx symbol added after the oldest supported libc. AT_EMPTY_PATH makes this
+        // query the already-open file, not its name.
+        if (LinuxStatxSystemCall(
+                GetLinuxStatxSyscallNumber(RuntimeInformation.ProcessArchitecture),
+                descriptor,
+                string.Empty,
+                LinuxAtEmptyPath,
+                LinuxStatxHardLinkCount | LinuxStatxInode,
+                out var status) != 0)
+        {
+            var error = Marshal.GetLastPInvokeError();
+            if (error == LinuxErrorFunctionNotImplemented)
+            {
+                throw new PlatformNotSupportedException(
+                    "Snapshot metadata inspection requires Linux statx (kernel 4.11 or " +
+                    "later) and a sandbox that permits the statx system call.");
+            }
+
+            throw NativeFailure(
+                "Unable to inspect snapshot file metadata with statx",
+                error);
+        }
+
+        return new UnixFileInformation(
+            ((ulong)status.DeviceMajor << 32) | status.DeviceMinor,
+            status.Inode,
+            status.HardLinkCount,
+            (status.Mask & LinuxStatxInode) != 0,
+            (status.Mask & LinuxStatxHardLinkCount) != 0);
+    }
+
+    private static nint GetLinuxStatxSyscallNumber(Architecture architecture) =>
+        architecture switch
+        {
+            // arch/x86/entry/syscalls/syscall_64.tbl
+            Architecture.X64 => 332,
+            // arch/x86/entry/syscalls/syscall_32.tbl and
+            // arch/powerpc/kernel/syscalls/syscall.tbl
+            Architecture.X86 or Architecture.Ppc64le => 383,
+            // arch/arm/tools/syscall.tbl
+            Architecture.Arm or Architecture.Armv6 => 397,
+            // include/uapi/asm-generic/unistd.h
+            Architecture.Arm64 or Architecture.LoongArch64 or Architecture.RiscV64 => 291,
+            // arch/s390/kernel/syscalls/syscall.tbl
+            Architecture.S390x => 379,
+            var unsupportedArchitecture => throw new PlatformNotSupportedException(
+                $"Snapshot metadata inspection does not define the Linux statx syscall for " +
+                $"{unsupportedArchitecture}."),
+        };
+
+    private static UnixFileInformation GetMacInformation(int descriptor)
+    {
+        MacFileStatus status;
+        var result = RuntimeInformation.ProcessArchitecture switch
+        {
+            Architecture.X64 => MacFStatInode64(descriptor, out status),
+            Architecture.Arm64 => MacFStat(descriptor, out status),
+            var architecture => throw new PlatformNotSupportedException(
+                $"Snapshot metadata inspection does not define the macOS stat ABI for " +
+                $"{architecture}."),
+        };
+        if (result != 0)
         {
             throw NativeFailure(
                 "Unable to inspect snapshot file metadata with fstat",
                 Marshal.GetLastPInvokeError());
         }
 
-        return status;
+        return new UnixFileInformation(
+            unchecked((uint)status.Device),
+            status.Inode,
+            status.HardLinkCount,
+            HasInode: true,
+            HasHardLinkCount: true);
     }
 
     private static FileAttributeTagInformation GetWindowsAttributeInformation(
@@ -703,27 +792,46 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
         internal ulong IdentifierHigh;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct UnixFileStatus
+    private readonly record struct UnixFileInformation(
+        ulong Device,
+        ulong Inode,
+        uint HardLinkCount,
+        bool HasInode,
+        bool HasHardLinkCount);
+
+    // include/uapi/linux/stat.h defines this architecture-independent ABI.
+    [StructLayout(LayoutKind.Explicit, Size = LinuxStatxBufferSize)]
+    private struct LinuxFileStatus
     {
-        internal int Flags;
-        internal int Mode;
-        internal uint UserId;
-        internal uint GroupId;
-        internal long Size;
-        internal long AccessTime;
-        internal long AccessTimeNanoseconds;
-        internal long ModificationTime;
-        internal long ModificationTimeNanoseconds;
-        internal long ChangeTime;
-        internal long ChangeTimeNanoseconds;
-        internal long BirthTime;
-        internal long BirthTimeNanoseconds;
-        internal long Device;
-        internal long RawDevice;
-        internal long Inode;
-        internal uint UserFlags;
-        internal int HardLinkCount;
+        [FieldOffset(0x00)]
+        internal uint Mask;
+
+        [FieldOffset(0x10)]
+        internal uint HardLinkCount;
+
+        [FieldOffset(0x20)]
+        internal ulong Inode;
+
+        [FieldOffset(0x88)]
+        internal uint DeviceMajor;
+
+        [FieldOffset(0x8c)]
+        internal uint DeviceMinor;
+    }
+
+    // Darwin's 64-bit struct stat layout is shared by arm64 and x86_64. The
+    // latter exposes it through the fstat$INODE64 symbol for ABI compatibility.
+    [StructLayout(LayoutKind.Explicit, Size = MacFileStatusBufferSize)]
+    private struct MacFileStatus
+    {
+        [FieldOffset(0)]
+        internal int Device;
+
+        [FieldOffset(6)]
+        internal ushort HardLinkCount;
+
+        [FieldOffset(8)]
+        internal ulong Inode;
     }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -776,10 +884,26 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
     [DllImport("libc", SetLastError = true)]
     private static extern int open(string path, int flags);
 
-    [DllImport("System.Native", EntryPoint = "SystemNative_FStat", SetLastError = true)]
-    private static extern int SystemNativeFStat(
-        SafeFileHandle file,
-        out UnixFileStatus status);
+    [DllImport(
+        "libc",
+        EntryPoint = "syscall",
+        CallingConvention = CallingConvention.Cdecl,
+        ExactSpelling = true,
+        SetLastError = true)]
+    private static extern nint LinuxStatxSystemCall(
+        nint number,
+        int directory,
+        [MarshalAs(UnmanagedType.LPUTF8Str)]
+        string path,
+        int flags,
+        uint mask,
+        out LinuxFileStatus status);
+
+    [DllImport("libc", EntryPoint = "fstat", SetLastError = true)]
+    private static extern int MacFStat(int descriptor, out MacFileStatus status);
+
+    [DllImport("libc", EntryPoint = "fstat$INODE64", SetLastError = true)]
+    private static extern int MacFStatInode64(int descriptor, out MacFileStatus status);
 
     [DllImport("libc", SetLastError = true)]
     private static extern int renameat2(

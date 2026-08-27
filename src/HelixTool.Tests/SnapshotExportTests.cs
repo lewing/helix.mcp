@@ -967,6 +967,115 @@ public class SnapshotExporterTests : IDisposable
             Assert.IsType<int>(selector.Invoke(null, [architecture])));
     }
 
+    [HardLinkFileSystemFact]
+    public void UnixHardLinkClassification_UsesPortableProductionPath()
+    {
+        const BindingFlags nativeFlags = BindingFlags.Static | BindingFlags.NonPublic;
+        var owner = typeof(SnapshotDestinationDirectory);
+
+        if (!OperatingSystem.IsWindows())
+        {
+            var workspace = Workspace("unix-hard-link-classification");
+            var file = Path.Combine(workspace, "artifact.bin");
+            File.WriteAllBytes(file, [0x48, 0x4c, 0x58]);
+
+            using (var singleLink = File.OpenHandle(file))
+            {
+                SnapshotDestinationDirectory.EnsureExactlyOneHardLink(singleLink, file);
+            }
+
+            SnapshotTestHelper.ReplaceWithHardLink(
+                file,
+                Path.Combine(workspace, "external-artifact.bin"));
+            using var multipleLinks = File.OpenHandle(file);
+            var exception = Assert.Throws<InvalidOperationException>(
+                () => SnapshotDestinationDirectory.EnsureExactlyOneHardLink(multipleLinks, file));
+            Assert.Contains("exactly one hard link", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("(found 2)", exception.Message, StringComparison.Ordinal);
+        }
+
+        Assert.DoesNotContain(
+            owner.GetMethods(nativeFlags),
+            method =>
+            {
+                var import = method.GetCustomAttribute<DllImportAttribute>();
+                return import is not null &&
+                    string.Equals(import.Value, "System.Native", StringComparison.Ordinal) &&
+                    string.Equals(
+                        import.EntryPoint,
+                        "SystemNative_FStat",
+                        StringComparison.Ordinal);
+            });
+    }
+
+    [Fact]
+    public void LinuxStatxInterop_DoesNotDependOnGlibcWrapper()
+    {
+        const BindingFlags nativeFlags = BindingFlags.Static | BindingFlags.NonPublic;
+        var owner = typeof(SnapshotDestinationDirectory);
+        var imports = owner.GetMethods(nativeFlags)
+            .Select(method => (Method: method, Import: method.GetCustomAttribute<DllImportAttribute>()))
+            .Where(candidate => candidate.Import is not null)
+            .Select(candidate => (candidate.Method, Import: candidate.Import!))
+            .ToArray();
+
+        static string EntryPoint((MethodInfo Method, DllImportAttribute Import) candidate) =>
+            string.IsNullOrEmpty(candidate.Import.EntryPoint)
+                ? candidate.Method.Name
+                : candidate.Import.EntryPoint;
+
+        Assert.DoesNotContain(
+            imports,
+            candidate => string.Equals(
+                EntryPoint(candidate),
+                "statx",
+                StringComparison.Ordinal));
+
+        var syscall = imports.SingleOrDefault(
+            candidate => string.Equals(
+                EntryPoint(candidate),
+                "syscall",
+                StringComparison.Ordinal));
+        if (syscall.Method is null)
+            return;
+
+        Assert.Equal("libc", syscall.Import.Value);
+        Assert.Equal(typeof(nint), syscall.Method.ReturnType);
+        Assert.Equal(typeof(nint), Assert.Single(syscall.Method.GetParameters(), parameter =>
+            parameter.Position == 0).ParameterType);
+
+        var selector = owner.GetMethod(
+            "GetLinuxStatxSyscallNumber",
+            nativeFlags,
+            binder: null,
+            [typeof(Architecture)],
+            modifiers: null);
+        Assert.NotNull(selector);
+
+        (Architecture Architecture, long Number)[] expected =
+        [
+            (Architecture.X64, 332),
+            (Architecture.X86, 383),
+            (Architecture.Arm, 397),
+            (Architecture.Armv6, 397),
+            (Architecture.Arm64, 291),
+            (Architecture.Ppc64le, 383),
+            (Architecture.S390x, 379),
+            (Architecture.LoongArch64, 291),
+            (Architecture.RiscV64, 291),
+        ];
+        foreach (var (architecture, number) in expected)
+        {
+            var selected = selector.Invoke(null, [architecture]);
+            Assert.NotNull(selected);
+            Assert.Equal(
+                number,
+                selected is nint native
+                    ? native.ToInt64()
+                    : Convert.ToInt64(selected, CultureInfo.InvariantCulture));
+        }
+    }
+
     [Fact]
     public void WindowsFileIdInformation_MatchesNativeAbiAndKeepsLinkCountSeparate()
     {
