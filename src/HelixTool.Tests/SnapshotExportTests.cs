@@ -14,6 +14,67 @@ file sealed record SourceFixture(
     string DatabasePath,
     IReadOnlyList<ArtifactFixture> Artifacts);
 
+internal readonly record struct CheckpointRow(int Busy, int WalPages, int CheckpointedPages);
+
+internal sealed class CheckpointReadinessStateMachine
+{
+    private readonly TimeSpan _readinessTimeout;
+    private readonly Func<TimeSpan> _elapsed;
+
+    public CheckpointReadinessStateMachine(
+        TimeSpan readinessTimeout,
+        Func<TimeSpan>? elapsed = null)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(readinessTimeout, TimeSpan.Zero);
+        _readinessTimeout = readinessTimeout;
+        if (elapsed is not null)
+        {
+            _elapsed = elapsed;
+            return;
+        }
+
+        var startedAt = Stopwatch.GetTimestamp();
+        _elapsed = () => Stopwatch.GetElapsedTime(startedAt);
+    }
+
+    public bool IsReady { get; private set; }
+
+    public bool Observe(CheckpointRow row)
+    {
+        if (row.Busy is < 0 or > 1)
+            throw InvalidRow(row, "busy must be 0 or 1");
+
+        var noCurrentWal = row.WalPages == -1 && row.CheckpointedPages == -1;
+        if (!noCurrentWal)
+        {
+            if (row.WalPages < 0 || row.CheckpointedPages < 0)
+                throw InvalidRow(row, "negative page counts must be exactly (-1, -1)");
+            if (row.CheckpointedPages > row.WalPages)
+                throw InvalidRow(row, "checkpointed pages cannot exceed WAL pages");
+        }
+
+        if (!IsReady && _elapsed() >= _readinessTimeout)
+        {
+            throw new TimeoutException(
+                $"No positive WAL checkpoint progress within {_readinessTimeout}.");
+        }
+
+        if (noCurrentWal)
+            return false;
+
+        var madeProgress =
+            row.Busy == 0 && row.WalPages > 0 && row.CheckpointedPages > 0;
+        if (madeProgress)
+            IsReady = true;
+        return madeProgress;
+    }
+
+    private static InvalidOperationException InvalidRow(CheckpointRow row, string reason) =>
+        new(
+            $"Invalid WAL checkpoint row ({row.Busy}, {row.WalPages}, " +
+            $"{row.CheckpointedPages}): {reason}.");
+}
+
 file static class SnapshotTestHelper
 {
     private const string CreatedAt = "2026-08-26T00:00:00.0000000+00:00";
@@ -957,6 +1018,57 @@ public class SnapshotExporterTests : IDisposable
     }
 
     [Fact]
+    public void CheckpointReadiness_NoWalThenPositive_TransitionsOnlyOnPositiveProgress()
+    {
+        var state = new CheckpointReadinessStateMachine(TimeSpan.FromMinutes(1));
+
+        Assert.False(state.Observe(new CheckpointRow(0, -1, -1)));
+        Assert.False(state.IsReady);
+
+        Assert.True(state.Observe(new CheckpointRow(0, 4, 4)));
+        Assert.True(state.IsReady);
+
+        Assert.False(state.Observe(new CheckpointRow(1, -1, -1)));
+        Assert.True(state.IsReady);
+    }
+
+    [Fact]
+    public void CheckpointReadiness_PersistentNoWal_TimesOutDeterministically()
+    {
+        var timeout = TimeSpan.FromSeconds(10);
+        var elapsed = TimeSpan.Zero;
+        var state = new CheckpointReadinessStateMachine(timeout, () => elapsed);
+
+        Assert.False(state.Observe(new CheckpointRow(0, -1, -1)));
+        elapsed = timeout - TimeSpan.FromTicks(1);
+        Assert.False(state.Observe(new CheckpointRow(1, -1, -1)));
+        elapsed = timeout;
+
+        Assert.Throws<TimeoutException>(
+            () => state.Observe(new CheckpointRow(0, -1, -1)));
+    }
+
+    [Theory]
+    [InlineData(-1, 0, 0)]
+    [InlineData(2, 0, 0)]
+    [InlineData(0, -1, 0)]
+    [InlineData(0, 0, -1)]
+    [InlineData(0, -2, -2)]
+    [InlineData(0, -2, 0)]
+    [InlineData(0, 0, -2)]
+    [InlineData(0, 1, 2)]
+    public void CheckpointReadiness_InvalidRowsFail(
+        int busy,
+        int walPages,
+        int checkpointedPages)
+    {
+        var state = new CheckpointReadinessStateMachine(TimeSpan.FromMinutes(1));
+
+        Assert.Throws<InvalidOperationException>(
+            () => state.Observe(new CheckpointRow(busy, walPages, checkpointedPages)));
+    }
+
+    [Fact]
     public async Task Export_ActiveWalWriterAndPassiveCheckpointer_ProducesConsistentSnapshots()
     {
         var workspace = Workspace("online-backup");
@@ -965,31 +1077,42 @@ public class SnapshotExporterTests : IDisposable
             metadataRows: 3,
             artifactRows: 2);
         using var stop = new CancellationTokenSource();
-        var writerReady = new TaskCompletionSource(
+        var writerInitialized = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var checkpointerReady = new TaskCompletionSource(
+        var checkpointerInitialized = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var committedWrite = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var checkpointProgress = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var writeCount = 0;
         var checkpointCount = 0;
+        var anchor = SnapshotTestHelper.OpenConnection(source.DatabasePath);
 
         var writer = Task.Run(
             () => RunWriterAsync(
-                source.DatabasePath,
-                writerReady,
+                anchor,
+                checkpointerInitialized.Task,
+                writerInitialized,
+                committedWrite,
                 () => Interlocked.Increment(ref writeCount),
                 stop.Token));
         var checkpointer = Task.Run(
             () => RunCheckpointerAsync(
                 source.DatabasePath,
-                writerReady.Task,
-                checkpointerReady,
+                writerInitialized.Task,
+                committedWrite.Task,
+                checkpointerInitialized,
+                checkpointProgress,
                 () => Interlocked.Increment(ref checkpointCount),
                 stop.Token));
 
         try
         {
-            await Task.WhenAll(writerReady.Task, checkpointerReady.Task)
+            await Task.WhenAll(writerInitialized.Task, checkpointerInitialized.Task)
                 .WaitAsync(TimeSpan.FromSeconds(10));
+            await Task.WhenAll(committedWrite.Task, checkpointProgress.Task)
+                .WaitAsync(TimeSpan.FromSeconds(15));
             Assert.True(Volatile.Read(ref writeCount) >= 1);
             Assert.True(Volatile.Read(ref checkpointCount) >= 1);
 
@@ -1058,22 +1181,35 @@ public class SnapshotExporterTests : IDisposable
         finally
         {
             stop.Cancel();
-            await Task.WhenAll(writer, checkpointer).WaitAsync(TimeSpan.FromSeconds(10));
+            try
+            {
+                await Task.WhenAll(writer, checkpointer);
+            }
+            finally
+            {
+                anchor.Dispose();
+            }
         }
     }
 
     private static async Task RunWriterAsync(
-        string databasePath,
-        TaskCompletionSource ready,
+        SqliteConnection connection,
+        Task checkpointerInitialized,
+        TaskCompletionSource initialized,
+        TaskCompletionSource committedWrite,
         Action committed,
         CancellationToken cancellationToken)
     {
         try
         {
-            using var connection = SnapshotTestHelper.OpenConnection(databasePath);
-            SnapshotTestHelper.ExecuteNonQuery(
-                connection,
-                "PRAGMA busy_timeout=2000; PRAGMA wal_autocheckpoint=0;");
+            AssertWalMode(connection, setWalMode: true);
+            Assert.Equal(0, ReadInt32(connection, "PRAGMA wal_autocheckpoint=0;"));
+            Assert.Equal(
+                new CheckpointRow(0, 0, 0),
+                ReadCheckpointRow(connection, truncate: true));
+            initialized.TrySetResult();
+            await checkpointerInitialized.WaitAsync(cancellationToken);
+
             using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(2));
             var sequence = 0;
 
@@ -1101,75 +1237,99 @@ public class SnapshotExporterTests : IDisposable
                 command.ExecuteNonQuery();
                 transaction.Commit();
                 committed();
-                ready.TrySetResult();
+                committedWrite.TrySetResult();
             }
             while (await timer.WaitForNextTickAsync(cancellationToken));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            initialized.TrySetCanceled(cancellationToken);
+            committedWrite.TrySetCanceled(cancellationToken);
             // Expected bounded shutdown.
         }
         catch (Exception exception)
         {
-            ready.TrySetException(exception);
+            initialized.TrySetException(exception);
+            committedWrite.TrySetException(exception);
             throw;
         }
     }
 
     private static async Task RunCheckpointerAsync(
         string databasePath,
+        Task writerInitialized,
         Task committedWrite,
-        TaskCompletionSource ready,
+        TaskCompletionSource initialized,
+        TaskCompletionSource checkpointProgress,
         Action checkpointed,
         CancellationToken cancellationToken)
     {
         try
         {
-            await committedWrite.WaitAsync(cancellationToken);
+            await writerInitialized.WaitAsync(cancellationToken);
             using var connection = SnapshotTestHelper.OpenConnection(databasePath);
+            Assert.Equal(0, ReadInt32(connection, "PRAGMA wal_autocheckpoint=0;"));
             SnapshotTestHelper.ExecuteNonQuery(connection, "PRAGMA busy_timeout=2000;");
+            AssertWalMode(connection, setWalMode: false);
+            Assert.Equal(3, ReadInt32(connection, "SELECT COUNT(*) FROM cache_metadata;"));
+            initialized.TrySetResult();
+
+            await committedWrite.WaitAsync(cancellationToken);
+            var readiness = new CheckpointReadinessStateMachine(TimeSpan.FromSeconds(10));
             using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(2));
 
             do
             {
-                using var command = connection.CreateCommand();
-                command.CommandText = "PRAGMA wal_checkpoint(PASSIVE);";
-                using var reader = command.ExecuteReader();
-                Assert.True(reader.Read());
-                var busy = reader.GetInt32(0);
-                var walPages = reader.GetInt32(1);
-                var checkpointedPages = reader.GetInt32(2);
-                Assert.False(reader.Read());
-                Assert.InRange(busy, 0, 1);
-
-                if (ready.Task.IsCompletedSuccessfully
-                    && busy == 0
-                    && walPages == -1
-                    && checkpointedPages == -1)
-                {
-                    continue;
-                }
-
-                Assert.True(walPages >= 0, $"Unexpected WAL page count: {walPages}.");
-                Assert.InRange(checkpointedPages, 0, walPages);
-
-                if (busy == 0 && walPages > 0 && checkpointedPages > 0)
+                if (readiness.Observe(ReadCheckpointRow(connection, truncate: false)))
                 {
                     checkpointed();
-                    ready.TrySetResult();
+                    checkpointProgress.TrySetResult();
                 }
             }
             while (await timer.WaitForNextTickAsync(cancellationToken));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            initialized.TrySetCanceled(cancellationToken);
+            checkpointProgress.TrySetCanceled(cancellationToken);
             // Expected bounded shutdown.
         }
         catch (Exception exception)
         {
-            ready.TrySetException(exception);
+            initialized.TrySetException(exception);
+            checkpointProgress.TrySetException(exception);
             throw;
         }
+    }
+
+    private static void AssertWalMode(SqliteConnection connection, bool setWalMode)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = setWalMode ? "PRAGMA journal_mode=WAL;" : "PRAGMA journal_mode;";
+        var journalMode = Convert.ToString(
+            command.ExecuteScalar(),
+            CultureInfo.InvariantCulture);
+        Assert.True(
+            string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase),
+            $"Expected SQLite journal mode 'wal', found '{journalMode ?? "<null>"}'.");
+    }
+
+    private static CheckpointRow ReadCheckpointRow(
+        SqliteConnection connection,
+        bool truncate)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = truncate
+            ? "PRAGMA wal_checkpoint(TRUNCATE);"
+            : "PRAGMA wal_checkpoint(PASSIVE);";
+        using var reader = command.ExecuteReader();
+        Assert.True(reader.Read());
+        var row = new CheckpointRow(
+            reader.GetInt32(0),
+            reader.GetInt32(1),
+            reader.GetInt32(2));
+        Assert.False(reader.Read());
+        return row;
     }
 
     private static void AssertIntegrityCheck(SqliteConnection connection)
