@@ -55,11 +55,16 @@ public class SnapshotCommands
 
         Console.Error.WriteLine();
 
-        var progress = new ConsoleProgress();
+        Action<string> reportProgress =
+            message => Console.Error.WriteLine($"  {message}");
 
         try
         {
-            var result = await SnapshotExporter.ExportAsync(sourceRoot, destination, progress, ct);
+            var result = await SnapshotExporter.ExportAsync(
+                sourceRoot,
+                destination,
+                reportProgress,
+                ct);
 
             Console.Error.WriteLine();
             Console.Error.WriteLine("Snapshot exported successfully.");
@@ -86,7 +91,8 @@ public class SnapshotCommands
 
     /// <summary>
     /// Validate a snapshot directory for use with HLX_EVAL_SNAPSHOT.
-    /// Checks layout, database integrity and schema, SQLite sidecar absence, and artifact references and sizes.
+    /// Checks its single-link layout, database integrity and schema, SQLite sidecar absence,
+    /// and artifact references and sizes.
     /// </summary>
     /// <param name="snapshotPath">Path to the snapshot directory to validate.</param>
     [Command("snapshot validate")]
@@ -131,10 +137,5 @@ public class SnapshotCommands
         Console.Error.WriteLine($"  Metadata entries: {result.MetadataEntries}");
         Console.Error.WriteLine($"  Artifact entries: {result.ArtifactEntries}");
         Console.Error.WriteLine($"  Missing files:    {result.MissingArtifactFiles}");
-    }
-
-    private sealed class ConsoleProgress : IProgress<string>
-    {
-        public void Report(string value) => Console.Error.WriteLine($"  {value}");
     }
 }

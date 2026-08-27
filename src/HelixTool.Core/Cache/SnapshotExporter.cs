@@ -46,7 +46,9 @@ public static class SnapshotExporter
     /// or artifact tree. Its parent must be a trusted namespace: no other same-principal process
     /// may rename, replace, or mutate entries in that parent while export is in progress.
     /// </param>
-    /// <param name="progress">Optional progress reporter; receives human-readable status strings.</param>
+    /// <param name="progress">
+    /// Optional synchronous callback that receives human-readable status strings.
+    /// </param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>An <see cref="ExportResult"/> describing the completed export.</returns>
     /// <exception cref="InvalidOperationException">
@@ -57,14 +59,15 @@ public static class SnapshotExporter
     /// The destination parent is selected and retained before the first progress callback.
     /// Cooperative parent moves and alias retargeting are checked at explicit revalidation points.
     /// These point-in-time checks are not a security boundary against a process with write access
-    /// to that namespace. After the final <see cref="IProgress{T}.Report"/> call, the exporter
-    /// validates the serialized database, artifact correspondence, exact staged tree, and absence
-    /// of SQLite sidecars, then publishes with an atomic no-replace rename and no further callbacks.
+    /// to that namespace. Progress callbacks run synchronously. After the final callback returns,
+    /// the exporter validates the serialized database, artifact correspondence, exact staged tree,
+    /// single-link file ownership, and absence of SQLite sidecars, then publishes with an atomic
+    /// no-replace rename and no further callbacks.
     /// </remarks>
     public static async Task<ExportResult> ExportAsync(
         string sourceRoot,
         string destination,
-        IProgress<string>? progress = null,
+        Action<string>? progress = null,
         CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
@@ -109,6 +112,12 @@ public static class SnapshotExporter
                 $"Source artifacts path cannot be resolved as a directory: {lexicalSourceArtifacts}");
         }
 
+        var sourceRootIdentity =
+            SnapshotDestinationDirectory.GetDirectoryIdentityNoFollow(physicalSourceRoot);
+        SnapshotDirectoryIdentity? sourceArtifactsIdentity = physicalSourceArtifacts == null
+            ? null
+            : SnapshotDestinationDirectory.GetDirectoryIdentityNoFollow(physicalSourceArtifacts);
+
         var physicalDestinationParent =
             CanonicalizeExistingPath(lexicalDestinationParent, requireDirectory: true);
         var physicalDestination =
@@ -139,13 +148,17 @@ public static class SnapshotExporter
                 retainedDestination,
                 physicalSourceRoot,
                 physicalSourceArtifacts);
+            SnapshotDestinationDirectory.RejectSourceIdentityInDestinationAncestors(
+                retainedDestinationParent,
+                sourceRootIdentity,
+                sourceArtifactsIdentity);
             return retainedDestinationParent;
         }
 
         using var sourceConnection =
             OpenConnection(physicalDbPath, SqliteOpenMode.ReadOnly);
 
-        progress?.Report("Validating source cache schema...");
+        progress?.Invoke("Validating source cache schema...");
         ValidateSourceSchema(sourceConnection);
 
         ValidateRetainedDestination();
@@ -155,7 +168,7 @@ public static class SnapshotExporter
         {
             temporaryDirectory.CreateDirectory("artifacts");
 
-            progress?.Report("Backing up cache.db...");
+            progress?.Invoke("Backing up cache.db...");
             using var stagedDatabase = OpenMemoryConnection();
             BackupDatabase(sourceConnection, stagedDatabase, ct);
             var serializedDatabase = SerializeDatabase(stagedDatabase);
@@ -169,22 +182,22 @@ public static class SnapshotExporter
             EnsureNoDatabaseSidecars(
                 Path.Combine(temporaryDirectory.GetCurrentPath(), "cache.db"));
 
-            progress?.Report("Reading artifact references from the backed-up database...");
+            progress?.Invoke("Reading artifact references from the backed-up database...");
             var artifactReferences = ReadArtifactReferences(stagedDatabase, ct);
 
-            progress?.Report("Copying referenced artifacts...");
+            progress?.Invoke("Copying referenced artifacts...");
             var copiedArtifacts = await CopyArtifactsAsync(
                 artifactReferences,
                 physicalSourceArtifacts,
                 temporaryDirectory,
                 Path.Combine(temporaryDirectory.GetCurrentPath(), "artifacts"),
                 ct);
-            progress?.Report($"Copied {copiedArtifacts.Count} artifact file(s).");
+            progress?.Invoke($"Copied {copiedArtifacts.Count} artifact file(s).");
 
-            progress?.Report("Validating temporary snapshot...");
-            progress?.Report("Finalizing snapshot (atomic rename)...");
+            progress?.Invoke("Validating temporary snapshot...");
+            progress?.Invoke("Finalizing snapshot (atomic rename)...");
 
-            // There are no progress.Report calls after this point. Revalidate the complete staged
+            // There are no progress callbacks after this point. Revalidate the complete staged
             // tree and publish it immediately, without another caller-controlled callback.
             ct.ThrowIfCancellationRequested();
             var retainedParent = ValidateRetainedDestination();
@@ -215,6 +228,7 @@ public static class SnapshotExporter
             EnsureNoDatabaseSidecars(tempDbPath);
             var dbSize = new FileInfo(tempDbPath).Length;
             ct.ThrowIfCancellationRequested();
+            ValidateRetainedDestination();
             destinationDirectory.Publish(
                 temporaryDirectory,
                 lexicalDestinationParent,
@@ -878,9 +892,9 @@ public static class SnapshotExporter
                 "Temporary snapshot must contain only a direct cache.db file and artifacts directory.");
         }
 
-        var databaseHash = HashFile(databaseEntry.FullName, ct);
+        var databaseHash = HashFileRequiringExactlyOneLink(databaseEntry.FullName, ct);
         if (!string.Equals(
-                databaseHash,
+                databaseHash.Sha256,
                 expectedDatabaseHash,
                 StringComparison.Ordinal))
         {
@@ -941,9 +955,10 @@ public static class SnapshotExporter
                         $"{relativePath}");
                 }
 
-                if (file.Length != expectedArtifact.FileSize ||
+                var artifactHash = HashFileRequiringExactlyOneLink(file.FullName, ct);
+                if (artifactHash.FileSize != expectedArtifact.FileSize ||
                     !string.Equals(
-                        HashFile(file.FullName, ct),
+                        artifactHash.Sha256,
                         expectedArtifact.Sha256,
                         StringComparison.Ordinal))
                 {
@@ -960,8 +975,11 @@ public static class SnapshotExporter
         (entry.Attributes & FileAttributes.ReparsePoint) != 0 ||
         entry.LinkTarget != null;
 
-    private static string HashFile(string path, CancellationToken ct)
+    internal static SnapshotFileHash HashFileRequiringExactlyOneLink(
+        string path,
+        CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         using var stream = new FileStream(
             path,
@@ -970,6 +988,10 @@ public static class SnapshotExporter
             FileShare.Read,
             bufferSize: 81920,
             FileOptions.SequentialScan);
+        SnapshotDestinationDirectory.EnsureExactlyOneHardLink(
+            stream.SafeFileHandle,
+            path);
+        var expectedLength = stream.Length;
         var buffer = GC.AllocateUninitializedArray<byte>(81920);
         int bytesRead;
         while ((bytesRead = stream.Read(buffer)) != 0)
@@ -978,7 +1000,17 @@ public static class SnapshotExporter
             hash.AppendData(buffer, 0, bytesRead);
         }
 
-        return Convert.ToHexString(hash.GetHashAndReset());
+        var sha256 = Convert.ToHexString(hash.GetHashAndReset());
+        SnapshotDestinationDirectory.EnsureExactlyOneHardLink(
+            stream.SafeFileHandle,
+            path);
+        ct.ThrowIfCancellationRequested();
+        if (stream.Length != expectedLength)
+            throw new InvalidOperationException($"Snapshot file changed while hashing: {path}");
+
+        return new SnapshotFileHash(
+            expectedLength,
+            sha256);
     }
 
     private static void EnsureNoDatabaseSidecars(string dbPath)
@@ -997,6 +1029,8 @@ public static class SnapshotExporter
 
     private sealed record CopiedArtifact(long FileSize, string Sha256);
 }
+
+internal readonly record struct SnapshotFileHash(long FileSize, string Sha256);
 
 /// <summary>Result of a successful snapshot export operation.</summary>
 /// <param name="Destination">Absolute path to the created snapshot directory.</param>

@@ -31,6 +31,8 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
     private const uint FileFlagOpenReparsePoint = 0x00200000;
     private const uint FileAttributeDirectory = 0x00000010;
     private const uint FileAttributeReparsePoint = 0x00000400;
+    private const int FileAttributeTagInformationSize = 8;
+    private const int FileIdInformationSize = 24;
 
     private const int ErrorExists = 17;
     private const int LinuxErrorNotEmpty = 39;
@@ -63,15 +65,84 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
 
     public static SnapshotDestinationDirectory Open(string physicalPath)
     {
-        if (!OperatingSystem.IsWindows() &&
-            !OperatingSystem.IsLinux() &&
-            !OperatingSystem.IsMacOS())
-        {
-            throw new PlatformNotSupportedException(
-                "Snapshot export supports Windows, Linux, and macOS.");
-        }
-
+        EnsureSupportedPlatform();
         return new SnapshotDestinationDirectory(physicalPath);
+    }
+
+    internal static SnapshotDirectoryIdentity GetDirectoryIdentityNoFollow(string path)
+    {
+        EnsureSupportedPlatform();
+        using var handle = OpenDirectory(path);
+        return GetIdentity(handle);
+    }
+
+    internal static void RejectSourceIdentityInDestinationAncestors(
+        string destinationParent,
+        SnapshotDirectoryIdentity sourceRootIdentity,
+        SnapshotDirectoryIdentity? sourceArtifactsIdentity)
+    {
+        EnsureSupportedPlatform();
+        var current = Path.TrimEndingDirectorySeparator(Path.GetFullPath(destinationParent));
+        while (true)
+        {
+            SnapshotDirectoryIdentity identity;
+            try
+            {
+                using var handle = OpenDirectory(current);
+                identity = GetIdentity(handle);
+            }
+            catch (Exception ex) when (
+                ex is InvalidOperationException or IOException or
+                    UnauthorizedAccessException or NotSupportedException or
+                    DllNotFoundException or EntryPointNotFoundException)
+            {
+                throw new InvalidOperationException(
+                    $"Unable to verify destination-parent ancestor identity '{current}': " +
+                    ex.Message,
+                    ex);
+            }
+
+            if (identity == sourceRootIdentity)
+            {
+                throw new InvalidOperationException(
+                    "Destination must not be the source cache root or a child of it. " +
+                    $"A destination-parent ancestor has the source directory identity: {current}");
+            }
+
+            if (sourceArtifactsIdentity is { } artifactsIdentity &&
+                identity == artifactsIdentity)
+            {
+                throw new InvalidOperationException(
+                    "Destination must not be the source artifacts directory or a child of it. " +
+                    $"A destination-parent ancestor has the artifacts directory identity: {current}");
+            }
+
+            var parent = Path.GetDirectoryName(current);
+            if (string.IsNullOrEmpty(parent))
+                return;
+
+            var next = Path.TrimEndingDirectorySeparator(Path.GetFullPath(parent));
+            if (string.Equals(next, current, StringComparison.Ordinal))
+                return;
+            current = next;
+        }
+    }
+
+    internal static void EnsureExactlyOneHardLink(
+        SafeFileHandle handle,
+        string path)
+    {
+        ArgumentNullException.ThrowIfNull(handle);
+        if (handle.IsInvalid || handle.IsClosed)
+            throw new InvalidOperationException("An open snapshot file handle is required.");
+
+        var hardLinkCount = GetHardLinkCount(handle);
+        if (hardLinkCount != 1)
+        {
+            throw new InvalidOperationException(
+                $"Snapshot file must have exactly one hard link: {Path.GetFullPath(path)} " +
+                $"(found {hardLinkCount}).");
+        }
     }
 
     public SnapshotTemporaryDirectory CreateTemporaryDirectory(string destinationLeaf)
@@ -345,7 +416,7 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
                 throw NativeFailure($"Unable to open snapshot directory '{path}'", error);
             }
 
-            var information = GetWindowsInformation(handle);
+            var information = GetWindowsAttributeInformation(handle);
             if ((information.FileAttributes & FileAttributeDirectory) == 0 ||
                 (information.FileAttributes & FileAttributeReparsePoint) != 0)
             {
@@ -392,51 +463,111 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
     private static SnapshotDirectoryIdentity GetIdentity(SafeFileHandle handle)
     {
         if (OperatingSystem.IsWindows())
+            return GetWindowsIdentity(handle);
+
+        var status = GetUnixInformation(handle);
+        if (status.Inode == 0)
+        {
+            throw new InvalidOperationException(
+                "fstat did not provide stable snapshot file identity.");
+        }
+
+        return new SnapshotDirectoryIdentity(
+            unchecked((ulong)status.Device),
+            unchecked((ulong)status.Inode),
+            0);
+    }
+
+    private static uint GetHardLinkCount(SafeFileHandle handle)
+    {
+        if (OperatingSystem.IsWindows())
         {
             var information = GetWindowsInformation(handle);
-            return new SnapshotDirectoryIdentity(
-                information.VolumeSerialNumber,
-                ((ulong)information.FileIndexHigh << 32) | information.FileIndexLow);
+            if (information.NumberOfLinks == 0)
+            {
+                throw new InvalidOperationException(
+                    "The filesystem did not provide a stable snapshot hard-link count.");
+            }
+
+            return information.NumberOfLinks;
         }
 
-        const int statBufferSize = 256;
-        var buffer = Marshal.AllocHGlobal(statBufferSize);
-        try
+        var status = GetUnixInformation(handle);
+        if (status.HardLinkCount <= 0)
         {
-            int result;
-            var descriptor = checked((int)handle.DangerousGetHandle());
-            if (OperatingSystem.IsMacOS() &&
-                RuntimeInformation.ProcessArchitecture == Architecture.X64)
-            {
-                result = fstat_inode64(descriptor, buffer);
-            }
-            else
-            {
-                result = fstat(descriptor, buffer);
-            }
-
-            if (result != 0)
-            {
-                throw NativeFailure(
-                    "Unable to inspect a retained snapshot directory",
-                    Marshal.GetLastPInvokeError());
-            }
-
-            if (OperatingSystem.IsMacOS())
-            {
-                return new SnapshotDirectoryIdentity(
-                    unchecked((uint)Marshal.ReadInt32(buffer, 0)),
-                    unchecked((ulong)Marshal.ReadInt64(buffer, 8)));
-            }
-
-            return new SnapshotDirectoryIdentity(
-                unchecked((ulong)Marshal.ReadInt64(buffer, 0)),
-                unchecked((ulong)Marshal.ReadInt64(buffer, 8)));
+            throw new InvalidOperationException(
+                "fstat did not provide a stable snapshot hard-link count.");
         }
-        finally
+
+        return checked((uint)status.HardLinkCount);
+    }
+
+    private static SnapshotDirectoryIdentity GetWindowsIdentity(SafeFileHandle handle)
+    {
+        if (!GetFileIdInformationByHandle(
+                handle,
+                FileInfoByHandleClass.FileIdInfo,
+                out var information,
+                (uint)FileIdInformationSize))
         {
-            Marshal.FreeHGlobal(buffer);
+            throw NativeFailure(
+                "Unable to inspect snapshot file identity",
+                Marshal.GetLastPInvokeError());
         }
+
+        var fileIdLow = information.FileId.IdentifierLow;
+        var fileIdHigh = information.FileId.IdentifierHigh;
+        // MS-FSCC reserves zero for unsupported 128-bit IDs and all-ones when a
+        // unique 128-bit ID cannot be established. Neither value can prove identity.
+        if ((fileIdLow == 0 && fileIdHigh == 0) ||
+            (fileIdLow == ulong.MaxValue && fileIdHigh == ulong.MaxValue))
+        {
+            throw new InvalidOperationException(
+                "The filesystem did not provide a unique 128-bit snapshot file identifier.");
+        }
+
+        return new SnapshotDirectoryIdentity(
+            information.VolumeSerialNumber,
+            fileIdLow,
+            fileIdHigh);
+    }
+
+    private static UnixFileStatus GetUnixInformation(SafeFileHandle handle)
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+        {
+            throw new PlatformNotSupportedException(
+                "Snapshot metadata inspection supports Windows, Linux, and macOS.");
+        }
+
+        // System.Native's fixed FileStatus ABI reads the native fstat st_dev, st_ino, and
+        // st_nlink fields in the runtime PAL built for each Unix RID. This avoids assuming one
+        // raw struct-stat layout across x64, arm64, 32-bit ARM, and PowerPC.
+        if (SystemNativeFStat(handle, out var status) != 0)
+        {
+            throw NativeFailure(
+                "Unable to inspect snapshot file metadata with fstat",
+                Marshal.GetLastPInvokeError());
+        }
+
+        return status;
+    }
+
+    private static FileAttributeTagInformation GetWindowsAttributeInformation(
+        SafeFileHandle handle)
+    {
+        if (!GetFileAttributeInformationByHandle(
+                handle,
+                FileInfoByHandleClass.FileAttributeTagInfo,
+                out var information,
+                (uint)FileAttributeTagInformationSize))
+        {
+            throw NativeFailure(
+                "Unable to inspect snapshot file attributes",
+                Marshal.GetLastPInvokeError());
+        }
+
+        return information;
     }
 
     private static ByHandleFileInformation GetWindowsInformation(SafeFileHandle handle)
@@ -444,11 +575,22 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
         if (!GetFileInformationByHandle(handle, out var information))
         {
             throw NativeFailure(
-                "Unable to inspect a retained snapshot directory",
+                "Unable to inspect snapshot file metadata",
                 Marshal.GetLastPInvokeError());
         }
 
         return information;
+    }
+
+    private static void EnsureSupportedPlatform()
+    {
+        if (!OperatingSystem.IsWindows() &&
+            !OperatingSystem.IsLinux() &&
+            !OperatingSystem.IsMacOS())
+        {
+            throw new PlatformNotSupportedException(
+                "Snapshot export supports Windows, Linux, and macOS.");
+        }
     }
 
     private static void DeleteTreeWithoutFollowingLinks(string path)
@@ -525,6 +667,65 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
         public uint FileIndexLow;
     }
 
+    private enum FileInfoByHandleClass
+    {
+        FileAttributeTagInfo = 0x09,
+        FileIdInfo = 0x12,
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = FileAttributeTagInformationSize)]
+    private struct FileAttributeTagInformation
+    {
+        [FieldOffset(0)]
+        internal uint FileAttributes;
+
+        [FieldOffset(4)]
+        internal uint ReparseTag;
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = FileIdInformationSize)]
+    private struct FileIdInformation
+    {
+        [FieldOffset(0)]
+        internal ulong VolumeSerialNumber;
+
+        [FieldOffset(8)]
+        internal FileId128 FileId;
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 16)]
+    private struct FileId128
+    {
+        [FieldOffset(0)]
+        internal ulong IdentifierLow;
+
+        [FieldOffset(8)]
+        internal ulong IdentifierHigh;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct UnixFileStatus
+    {
+        internal int Flags;
+        internal int Mode;
+        internal uint UserId;
+        internal uint GroupId;
+        internal long Size;
+        internal long AccessTime;
+        internal long AccessTimeNanoseconds;
+        internal long ModificationTime;
+        internal long ModificationTimeNanoseconds;
+        internal long ChangeTime;
+        internal long ChangeTimeNanoseconds;
+        internal long BirthTime;
+        internal long BirthTimeNanoseconds;
+        internal long Device;
+        internal long RawDevice;
+        internal long Inode;
+        internal uint UserFlags;
+        internal int HardLinkCount;
+    }
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern SafeFileHandle CreateFileW(
         string fileName,
@@ -534,6 +735,30 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
         uint creationDisposition,
         uint flagsAndAttributes,
         IntPtr templateFile);
+
+    [DllImport(
+        "kernel32.dll",
+        EntryPoint = "GetFileInformationByHandleEx",
+        ExactSpelling = true,
+        SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileAttributeInformationByHandle(
+        SafeFileHandle file,
+        FileInfoByHandleClass informationClass,
+        out FileAttributeTagInformation information,
+        uint bufferSize);
+
+    [DllImport(
+        "kernel32.dll",
+        EntryPoint = "GetFileInformationByHandleEx",
+        ExactSpelling = true,
+        SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileIdInformationByHandle(
+        SafeFileHandle file,
+        FileInfoByHandleClass informationClass,
+        out FileIdInformation information,
+        uint bufferSize);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -551,11 +776,10 @@ internal sealed class SnapshotDestinationDirectory : IDisposable
     [DllImport("libc", SetLastError = true)]
     private static extern int open(string path, int flags);
 
-    [DllImport("libc", SetLastError = true)]
-    private static extern int fstat(int descriptor, IntPtr stat);
-
-    [DllImport("libc", EntryPoint = "fstat$INODE64", SetLastError = true)]
-    private static extern int fstat_inode64(int descriptor, IntPtr stat);
+    [DllImport("System.Native", EntryPoint = "SystemNative_FStat", SetLastError = true)]
+    private static extern int SystemNativeFStat(
+        SafeFileHandle file,
+        out UnixFileStatus status);
 
     [DllImport("libc", SetLastError = true)]
     private static extern int renameat2(
@@ -635,4 +859,7 @@ internal sealed class SnapshotTemporaryDirectory : IDisposable
     public void Dispose() => Handle.Dispose();
 }
 
-internal readonly record struct SnapshotDirectoryIdentity(ulong Volume, ulong FileId);
+internal readonly record struct SnapshotDirectoryIdentity(
+    ulong Volume,
+    ulong FileIdLow,
+    ulong FileIdHigh);

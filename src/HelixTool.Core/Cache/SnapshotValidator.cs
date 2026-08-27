@@ -5,7 +5,7 @@ namespace HelixTool.Core.Cache;
 
 /// <summary>
 /// Validates a snapshot directory for use with <c>HLX_EVAL_SNAPSHOT</c>, including its SQLite
-/// integrity, schema, sidecar-free layout, and artifact references and sizes.
+/// integrity, schema, sidecar-free single-link layout, and artifact references and sizes.
 /// </summary>
 public static class SnapshotValidator
 {
@@ -73,6 +73,22 @@ public static class SnapshotValidator
         if (HasSidecar(lexicalDbPath, errors) ||
             (!string.Equals(dbPath, lexicalDbPath, PathComparison) && HasSidecar(dbPath, errors)))
         {
+            return Task.FromResult(Fail(errors, warnings));
+        }
+
+        try
+        {
+            _ = SnapshotExporter.HashFileRequiringExactlyOneLink(dbPath, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            errors.Add(
+                $"Snapshot database must be a readable file with exactly one hard link: " +
+                $"{ex.Message}");
             return Task.FromResult(Fail(errors, warnings));
         }
 
@@ -333,24 +349,29 @@ public static class SnapshotValidator
                 continue;
             }
 
-            long actualSize;
+            SnapshotFileHash artifactHash;
             try
             {
-                actualSize = new FileInfo(physicalArtifactPath).Length;
+                artifactHash = SnapshotExporter.HashFileRequiringExactlyOneLink(
+                    physicalArtifactPath,
+                    ct);
             }
-            catch (Exception ex) when (
-                ex is IOException or UnauthorizedAccessException or NotSupportedException)
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
             {
                 errors.Add(
                     $"Artifact file cannot be inspected safely: {row.FilePath} ({ex.Message})");
                 continue;
             }
 
-            if (actualSize != row.FileSize)
+            if (artifactHash.FileSize != row.FileSize)
             {
                 errors.Add(
                     $"Artifact file size mismatch for '{row.FilePath}': " +
-                    $"expected {row.FileSize}, found {actualSize}.");
+                    $"expected {row.FileSize}, found {artifactHash.FileSize}.");
             }
         }
 
