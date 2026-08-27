@@ -19,7 +19,8 @@ public static class SnapshotExporter
     private const int BusyTimeoutMilliseconds = BusyTimeoutSeconds * 1000;
     private const int MaxLinkResolutions = 64;
 
-    private static StringComparison PathComparison => OperatingSystem.IsWindows()
+    private static StringComparison BoundaryPathComparison =>
+        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
         ? StringComparison.OrdinalIgnoreCase
         : StringComparison.Ordinal;
 
@@ -165,7 +166,7 @@ public static class SnapshotExporter
             if (!string.Equals(
                     currentPhysicalDestinationParent,
                     physicalDestinationParent,
-                    PathComparison))
+                    BoundaryPathComparison))
             {
                 throw new InvalidOperationException(
                     "Destination parent changed while the snapshot was being exported.");
@@ -265,11 +266,11 @@ public static class SnapshotExporter
     {
         var normalizedCandidate = Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidate));
         var normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
-        if (string.Equals(normalizedCandidate, normalizedRoot, PathComparison))
+        if (string.Equals(normalizedCandidate, normalizedRoot, BoundaryPathComparison))
             return true;
 
         var rootPrefix = normalizedRoot + Path.DirectorySeparatorChar;
-        return normalizedCandidate.StartsWith(rootPrefix, PathComparison);
+        return normalizedCandidate.StartsWith(rootPrefix, BoundaryPathComparison);
     }
 
     internal static bool PathEntryExists(string path)
@@ -356,7 +357,7 @@ public static class SnapshotExporter
         if (string.Equals(
                 Path.TrimEndingDirectorySeparator(candidate),
                 Path.TrimEndingDirectorySeparator(artifactsRoot),
-                PathComparison) ||
+                BoundaryPathComparison) ||
             !IsEqualOrDescendant(candidate, artifactsRoot))
         {
             error = $"Artifact path escapes the artifacts/ directory: {relativePath}";
@@ -621,7 +622,7 @@ public static class SnapshotExporter
                 string.Equals(
                     Path.TrimEndingDirectorySeparator(destinationPath),
                     Path.TrimEndingDirectorySeparator(destinationArtifacts),
-                    PathComparison))
+                    BoundaryPathComparison))
             {
                 throw new InvalidOperationException(
                     $"Artifact destination path is unsafe: {reference.FilePath}");

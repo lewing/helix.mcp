@@ -483,6 +483,121 @@ public class SnapshotExporterTests : IDisposable
     }
 
     [Fact]
+    public async Task Export_MissingSourceRoot_IsRejectedWithoutPublicationResidue()
+    {
+        var workspace = Workspace("missing-source");
+        var sourceRoot = Path.Combine(workspace, "missing-cache");
+        var source = new SourceFixture(
+            sourceRoot,
+            Path.Combine(sourceRoot, "cache.db"),
+            []);
+        var destination = Path.Combine(workspace, "snapshot");
+
+        var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+            source,
+            destination);
+
+        Assert.Contains(
+            "source cache root does not exist",
+            exception.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(sourceRoot));
+    }
+
+    [Fact]
+    public async Task Export_MissingSourceDatabase_IsRejectedWithoutPublicationResidue()
+    {
+        var workspace = Workspace("missing-database");
+        var sourceRoot = Path.Combine(workspace, "cache");
+        Directory.CreateDirectory(sourceRoot);
+        File.WriteAllText(Path.Combine(sourceRoot, "sentinel.txt"), "unchanged");
+        var source = new SourceFixture(
+            sourceRoot,
+            Path.Combine(sourceRoot, "cache.db"),
+            []);
+        var destination = Path.Combine(workspace, "snapshot");
+
+        var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+            source,
+            destination);
+
+        Assert.Contains(
+            "source cache database not found",
+            exception.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Export_MissingDestinationParent_IsRejectedWithoutCreatingParentOrResidue()
+    {
+        var workspace = Workspace("missing-destination-parent");
+        var source = SnapshotTestHelper.CreateSource(workspace, useWal: false);
+        var missingParent = Path.Combine(workspace, "missing-parent");
+        var destination = Path.Combine(missingParent, "snapshot");
+
+        var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+            source,
+            destination);
+
+        Assert.Contains(
+            "destination parent directory does not exist",
+            exception.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(missingParent));
+        Assert.False(File.Exists(missingParent));
+    }
+
+    [Fact]
+    public async Task Export_SchemaVersionZero_IsRejectedWithoutPublicationResidue()
+    {
+        var workspace = Workspace("schema-version-zero");
+        var source = SnapshotTestHelper.CreateSource(workspace, useWal: false);
+        using (var connection = SnapshotTestHelper.OpenConnection(source.DatabasePath))
+            SnapshotTestHelper.ExecuteNonQuery(connection, "PRAGMA user_version=0;");
+        var destination = Path.Combine(workspace, "snapshot");
+
+        var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+            source,
+            destination);
+
+        Assert.Contains("schema version 0", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Export_UnsupportedSchemaVersion_IsRejectedWithoutPublicationResidue()
+    {
+        var workspace = Workspace("unsupported-schema-version");
+        var source = SnapshotTestHelper.CreateSource(workspace, useWal: false);
+        using (var connection = SnapshotTestHelper.OpenConnection(source.DatabasePath))
+            SnapshotTestHelper.ExecuteNonQuery(connection, "PRAGMA user_version=42;");
+        var destination = Path.Combine(workspace, "snapshot");
+
+        var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+            source,
+            destination);
+
+        Assert.Contains("schema version 42", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("expected 1", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Export_MissingRequiredTable_IsRejectedWithoutPublicationResidue()
+    {
+        var workspace = Workspace("missing-required-table");
+        var source = SnapshotTestHelper.CreateSource(workspace, useWal: false);
+        using (var connection = SnapshotTestHelper.OpenConnection(source.DatabasePath))
+            SnapshotTestHelper.ExecuteNonQuery(connection, "DROP TABLE cache_job_state;");
+        var destination = Path.Combine(workspace, "snapshot");
+
+        var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
+            source,
+            destination);
+
+        Assert.Contains("missing expected table", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cache_job_state", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Export_MissingReferencedArtifact_FailsWithoutPublicationResidue()
     {
         var workspace = Workspace("missing-artifact");
@@ -614,26 +729,33 @@ public class SnapshotExporterTests : IDisposable
     [Fact]
     public async Task Export_CaseOnlyDestination_UsesPlatformBoundaryComparison()
     {
-        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
-            return;
-
         var workspace = Workspace("case-boundary");
         var source = SnapshotTestHelper.CreateSource(
             workspace,
             sourceRoot: Path.Combine(workspace, "cache"));
-        var destination = Path.Combine(workspace, "CACHE");
+        var caseOnlySourceSpelling = Path.Combine(workspace, "CACHE");
+        var destination = Path.Combine(caseOnlySourceSpelling, "snapshot");
+        var aliasesSource = Directory.Exists(caseOnlySourceSpelling);
 
-        if (OperatingSystem.IsWindows())
+        if (aliasesSource)
         {
             var exception = await SnapshotTestHelper.AssertRejectedWithoutPublicationAsync(
                 source,
                 destination);
+            Assert.Contains("source", exception.Message, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("already exists", exception.Message, StringComparison.OrdinalIgnoreCase);
         }
         else
         {
+            var sourceBefore = SnapshotTestHelper.FingerprintTree(source.Root);
+            Directory.CreateDirectory(caseOnlySourceSpelling);
+            Assert.True(Directory.Exists(source.Root));
+            Assert.True(Directory.Exists(caseOnlySourceSpelling));
+
             await SnapshotTestHelper.ExportAndAssertAtomicPublicationAsync(source, destination);
+
             SnapshotTestHelper.AssertFinalLayout(destination);
+            Assert.Equal(sourceBefore, SnapshotTestHelper.FingerprintTree(source.Root));
         }
     }
 
@@ -1046,6 +1168,108 @@ public class SnapshotValidatorTests : IDisposable
         Assert.Equal(4, result.MetadataEntries);
         Assert.Equal(3, result.ArtifactEntries);
         Assert.Equal(0, result.MissingArtifactFiles);
+    }
+
+    [Fact]
+    public async Task Validate_MissingSnapshotDirectory_IsInvalidWithFocusedDiagnostic()
+    {
+        var workspace = Workspace("missing-directory");
+        var snapshot = Path.Combine(workspace, "missing-snapshot");
+
+        var result = await SnapshotValidator.ValidateAsync(snapshot);
+
+        Assert.False(result.IsValid);
+        var error = Assert.Single(result.Errors);
+        Assert.Contains("directory does not exist", error, StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(snapshot));
+    }
+
+    [Fact]
+    public async Task Validate_MissingDatabase_IsInvalidWithFocusedDiagnostic()
+    {
+        var workspace = Workspace("missing-database");
+        var snapshot = Path.Combine(workspace, "snapshot");
+        Directory.CreateDirectory(snapshot);
+
+        var result = await SnapshotValidator.ValidateAsync(snapshot);
+
+        Assert.False(result.IsValid);
+        var error = Assert.Single(result.Errors);
+        Assert.Contains("missing required database file", error, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cache.db", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Validate_WrongSchemaVersion_IsInvalidWithFocusedDiagnostic()
+    {
+        var workspace = Workspace("wrong-schema");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 0,
+            useWal: false);
+        using (var connection = SnapshotTestHelper.OpenConnection(source.DatabasePath))
+            SnapshotTestHelper.ExecuteNonQuery(connection, "PRAGMA user_version=42;");
+
+        var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(
+            result.Errors,
+            error => error.Contains("schema version mismatch", StringComparison.OrdinalIgnoreCase)
+                && error.Contains("expected 1", StringComparison.OrdinalIgnoreCase)
+                && error.Contains("found 42", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Validate_MissingRequiredTable_IsInvalidWithFocusedDiagnostic()
+    {
+        var workspace = Workspace("missing-required-table");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 0,
+            useWal: false);
+        using (var connection = SnapshotTestHelper.OpenConnection(source.DatabasePath))
+            SnapshotTestHelper.ExecuteNonQuery(connection, "DROP TABLE cache_job_state;");
+
+        var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(
+            result.Errors,
+            error => error.Contains("missing required table", StringComparison.OrdinalIgnoreCase)
+                && error.Contains("cache_job_state", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Validate_CorruptDatabase_IsInvalidWithoutThrowingAndReportsIntegrityFailure()
+    {
+        var workspace = Workspace("corrupt-database");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 0,
+            useWal: false);
+        using (var connection = SnapshotTestHelper.OpenConnection(source.DatabasePath))
+        {
+            SnapshotTestHelper.ExecuteNonQuery(connection, """
+                PRAGMA writable_schema=ON;
+                UPDATE sqlite_schema
+                SET rootpage = (
+                    SELECT rootpage
+                    FROM sqlite_schema
+                    WHERE type='table' AND name='cache_metadata'
+                )
+                WHERE type='table' AND name='cache_job_state';
+                PRAGMA writable_schema=OFF;
+                """);
+        }
+
+        var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(
+            result.Errors,
+            error => error.Contains("integrity", StringComparison.OrdinalIgnoreCase)
+                || error.Contains("corrupt", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
