@@ -493,6 +493,7 @@ internal readonly record struct SnapshotDirectoryIdentity(ulong Volume, ulong Fi
 internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationDirectory
 {
     private const uint FileListDirectory = 0x00000001;
+    private const uint FileTraverse = 0x00000020;
     private const uint FileReadAttributes = 0x00000080;
     private const uint DeleteAccess = 0x00010000;
     private const uint FileShareRead = 0x00000001;
@@ -505,7 +506,7 @@ internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationD
     private const uint FileAttributeReparsePoint = 0x00000400;
     private const int ErrorFileExists = 80;
     private const int ErrorAlreadyExists = 183;
-    private const int FileRenameInfo = 3;
+    private const int FileRenameInformationClass = 10;
 
     private readonly SafeFileHandle _parentHandle;
     private readonly SnapshotDirectoryIdentity _parentIdentity;
@@ -515,7 +516,7 @@ internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationD
     {
         _parentHandle = OpenDirectory(
             PhysicalPath,
-            FileListDirectory | FileReadAttributes,
+            FileListDirectory | FileTraverse | FileReadAttributes,
             FileShareRead | FileShareWrite | FileShareDelete);
         try
         {
@@ -863,7 +864,7 @@ internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationD
             destinationParent.DangerousAddRef(ref parentAddedRef);
             var information = new FileRenameInformation
             {
-                Flags = 0,
+                ReplaceIfExists = 0,
                 RootDirectory = destinationParent.DangerousGetHandle(),
                 FileNameLength = checked((uint)nameBytes.Length),
                 FileName = '\0',
@@ -871,13 +872,15 @@ internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationD
             Marshal.StructureToPtr(information, buffer, false);
             Marshal.Copy(nameBytes, 0, buffer + nameOffset, nameBytes.Length);
 
-            if (!SetFileInformationByHandle(
-                    source,
-                    FileRenameInfo,
-                    buffer,
-                    (uint)bufferSize))
+            var status = NtSetInformationFile(
+                source,
+                out _,
+                buffer,
+                (uint)bufferSize,
+                FileRenameInformationClass);
+            if (status < 0)
             {
-                var error = Marshal.GetLastPInvokeError();
+                var error = unchecked((int)RtlNtStatusToDosError(status));
                 if (error is ErrorFileExists or ErrorAlreadyExists)
                 {
                     throw new InvalidOperationException(
@@ -923,11 +926,18 @@ internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationD
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct FileRenameInformation
     {
-        public uint Flags;
+        public byte ReplaceIfExists;
         public IntPtr RootDirectory;
         public uint FileNameLength;
         [MarshalAs(UnmanagedType.U2)]
         public char FileName;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IoStatusBlock
+    {
+        public IntPtr StatusOrPointer;
+        public UIntPtr Information;
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 4)]
@@ -968,13 +978,16 @@ internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationD
         uint pathLength,
         uint flags);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetFileInformationByHandle(
+    [DllImport("ntdll.dll", ExactSpelling = true)]
+    private static extern int NtSetInformationFile(
         SafeFileHandle file,
-        int informationClass,
+        out IoStatusBlock ioStatusBlock,
         IntPtr information,
-        uint bufferSize);
+        uint length,
+        int informationClass);
+
+    [DllImport("ntdll.dll", ExactSpelling = true)]
+    private static extern uint RtlNtStatusToDosError(int status);
 }
 
 internal sealed class WindowsSnapshotTemporaryDirectory : SnapshotTemporaryDirectory
