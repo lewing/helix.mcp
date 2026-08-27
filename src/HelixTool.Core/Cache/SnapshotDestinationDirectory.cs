@@ -851,19 +851,24 @@ internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationD
     {
         ValidateLeaf(destinationLeaf);
         var nameBytes = Encoding.Unicode.GetBytes(destinationLeaf);
-        var rootOffset = IntPtr.Size == 8 ? 8 : 4;
-        var lengthOffset = rootOffset + IntPtr.Size;
-        var nameOffset = lengthOffset + sizeof(uint);
-        var bufferSize = checked(nameOffset + nameBytes.Length);
+        var informationSize = Marshal.SizeOf<FileRenameInformation>();
+        var nameOffset = Marshal.OffsetOf<FileRenameInformation>(
+            nameof(FileRenameInformation.FileName)).ToInt32();
+        var bufferSize = checked(informationSize + nameBytes.Length);
         var buffer = Marshal.AllocHGlobal(bufferSize);
         var parentAddedRef = false;
         try
         {
-            for (var offset = 0; offset < nameOffset; offset += sizeof(int))
-                Marshal.WriteInt32(buffer, offset, 0);
+            Marshal.Copy(new byte[bufferSize], 0, buffer, bufferSize);
             destinationParent.DangerousAddRef(ref parentAddedRef);
-            Marshal.WriteIntPtr(buffer, rootOffset, destinationParent.DangerousGetHandle());
-            Marshal.WriteInt32(buffer, lengthOffset, nameBytes.Length);
+            var information = new FileRenameInformation
+            {
+                Flags = 0,
+                RootDirectory = destinationParent.DangerousGetHandle(),
+                FileNameLength = checked((uint)nameBytes.Length),
+                FileName = '\0',
+            };
+            Marshal.StructureToPtr(information, buffer, false);
             Marshal.Copy(nameBytes, 0, buffer + nameOffset, nameBytes.Length);
 
             if (!SetFileInformationByHandle(
@@ -914,6 +919,16 @@ internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationD
 
     private static InvalidOperationException NativeFailure(string operation, int error) =>
         new($"{operation}: {new Win32Exception(error).Message} (error {error}).");
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct FileRenameInformation
+    {
+        public uint Flags;
+        public IntPtr RootDirectory;
+        public uint FileNameLength;
+        [MarshalAs(UnmanagedType.U2)]
+        public char FileName;
+    }
 
     [StructLayout(LayoutKind.Sequential, Pack = 4)]
     private struct ByHandleFileInformation

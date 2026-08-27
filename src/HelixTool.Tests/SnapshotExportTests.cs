@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using HelixTool.Core.Cache;
 using Microsoft.Data.Sqlite;
@@ -554,6 +556,34 @@ public class SnapshotExporterTests : IDisposable
                 // Best effort only.
             }
         }
+    }
+
+    [Fact]
+    public void WindowsFileRenameInformation_UsesNativeVariableTailLayout()
+    {
+        var informationType = typeof(WindowsSnapshotDestinationDirectory).GetNestedType(
+            "FileRenameInformation",
+            BindingFlags.NonPublic);
+        Assert.NotNull(informationType);
+
+        var rootDirectoryOffset = IntPtr.Size == 8 ? 8 : 4;
+        var fileNameLengthOffset = rootDirectoryOffset + IntPtr.Size;
+        var fileNameOffset = fileNameLengthOffset + sizeof(uint);
+
+        Assert.Equal(IntPtr.Size == 8 ? 24 : 16, Marshal.SizeOf(informationType!));
+        Assert.Equal(0, Marshal.OffsetOf(informationType, "Flags").ToInt32());
+        Assert.Equal(
+            rootDirectoryOffset,
+            Marshal.OffsetOf(informationType, "RootDirectory").ToInt32());
+        Assert.Equal(
+            fileNameLengthOffset,
+            Marshal.OffsetOf(informationType, "FileNameLength").ToInt32());
+        Assert.Equal(fileNameOffset, Marshal.OffsetOf(informationType, "FileName").ToInt32());
+
+        var fileName = informationType.GetField("FileName");
+        Assert.NotNull(fileName);
+        Assert.Equal(typeof(char), fileName.FieldType);
+        Assert.Equal(UnmanagedType.U2, fileName.GetCustomAttribute<MarshalAsAttribute>()?.Value);
     }
 
     [Fact]
