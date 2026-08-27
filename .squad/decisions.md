@@ -2553,3 +2553,119 @@ With `DOTNET_ROLL_FORWARD=Major`: case-only test passed build run + 10 consecuti
 - ✅ All focused snapshot tests passing (54/54)
 - ✅ Frost's production exporter remains accepted and frozen
 - ✅ Gate cleared for full suite and fresh CI validation
+# PR #127 WAL Readiness CI Triage
+
+**By:** Dallas (Lead)  
+**Date:** 2026-08-26T19:28:01-05:00  
+**Head:** `9a7fd86`  
+**Verdict:** **REJECT the stress-test helper revision.** Frost's production exporter remains
+accepted and frozen.
+
+## Actual Race
+
+Ubuntu failed in `RunCheckpointerAsync` on `walPages == -1`; Windows was canceled by fail-fast.
+Vasquez's latest revision did not touch this helper.
+The immediately preceding `f615329` Ubuntu/Windows run passed, while `9a7fd86` changed only the
+Squad status record, so the pass-to-fail transition occurred with byte-identical stress code.
+
+The test treats a committed-write signal as proof that a separately opened checkpointer connection
+must immediately report a current WAL. That implication is invalid:
+
+- `CreateSource` closes every setup connection, so SQLite may finish/checkpoint and remove the
+  current WAL/SHM generation while the database remains configured for WAL.
+- The writer signals only after `Commit()`, which proves the transaction committed but does not
+  prove that the later checkpointer connection has attached to a current WAL generation.
+- The checkpointer opens only after that signal and executes only connection-local
+  `PRAGMA busy_timeout` before its first checkpoint. WAL attachment/journal mode is not explicitly
+  established or asserted on that connection.
+- SQLite initializes checkpoint counts to `-1`; the exact pair `(-1, -1)` is a legitimate
+  no-checkpoint/no-current-WAL result, and checkpoint-lock contention may report it with `busy == 1`.
+  It is not checkpoint progress.
+
+Bishop's branch retries the exact no-current-WAL row only after `checkpointerReady` is already
+complete. The same transient before readiness therefore throws instead of polling. Lambert's
+original vacuity concern remains solved only if `-1` is non-progress, never readiness.
+
+## Assigned Revision Owner
+
+**Hicks** — new independent .NET/SQLite concurrency test specialist.
+
+Lambert, Parker, Bishop, Burke, Hudson, and Vasquez are locked out of this revision **and its
+advice**. Hicks must derive the revision from this decision and the code/API contract, not from
+those authors. No production file may change.
+
+## Required Deterministic Design
+
+1. Use an unpooled writer/anchor connection. Explicitly obtain and assert `journal_mode=wal`, set
+   `wal_autocheckpoint=0`, and keep that connection alive from worker initialization through worker
+   cancellation and join.
+2. Establish a clean checkpoint baseline before the known write (for example, a successful
+   `TRUNCATE` checkpoint while the anchor is live), so later positive counts cannot be stale setup
+   progress.
+3. Use separate asynchronous gates for writer/anchor initialization, checkpointer initialization,
+   first committed write, and first genuine checkpoint progress. The checkpointer must open and
+   force a real database read/assert WAL mode while the anchor is live; the writer must signal the
+   committed-write gate only after `transaction.Commit()`.
+4. The checkpointer must wait for the committed-write gate before polling
+   `PRAGMA wal_checkpoint(PASSIVE)`.
+5. Classify checkpoint rows strictly:
+   - `busy` must be `0` or `1`.
+   - Exact `walPages == -1 && checkpointedPages == -1` is retryable non-progress both before and
+     after readiness, under the existing bounded timeout. It must not increment a counter or
+     complete readiness.
+   - Mixed negative values, values below `-1`, or `checkpointedPages > walPages` fail.
+   - Readiness requires one post-commit result with `busy == 0`, `walPages > 0`, and
+     `checkpointedPages > 0`.
+6. Export must not begin until both the committed-write and checkpoint-progress gates complete.
+   Retain the existing counter assertions, active-task assertions, four exports, integrity,
+   transactional head/count, exact baseline key/value, artifact, validator, no-sidecar, and cleanup
+   checks.
+7. Use synchronization gates, not sleeps, for ordering. Polling/backoff is allowed only inside the
+   finite readiness deadline. On shutdown, cancel and join both workers while the anchor is still
+   open, then dispose it. Continue propagating every non-cancellation worker exception.
+
+## Acceptance Gates
+
+- A deterministic test of the checkpoint-row state machine proves
+  `(-1,-1) -> positive` does not become ready on the first sample and does on the positive sample;
+  persistent `(-1,-1)` times out; mixed negatives fail.
+- All `SnapshotExportTests` pass.
+- The real stress test passes 100 consecutive repetitions, with no skipped run.
+- Full suite passes with only the two pre-existing skips.
+- Fresh Ubuntu and Windows GitHub Actions jobs both pass at the revision head.
+- Diff is confined to `src/HelixTool.Tests/SnapshotExportTests.cs` plus Squad records. Frost's
+  production exporter remains unchanged.
+
+# PR #127 WAL Readiness CI Recheck
+
+**By:** Dallas (Lead)  
+**Date:** 2026-08-26T19:46:20-05:00  
+**Base head:** `9a7fd86` plus Hicks's working-tree test revision  
+**Verdict:** **APPROVE** the WAL-readiness test revision for full-suite and fresh CI validation.
+Frost's production exporter remains accepted and frozen.
+
+## Gate Verification
+
+- The unpooled writer/anchor establishes and asserts WAL mode, disables autocheckpointing, records a
+  successful zero-page `TRUNCATE` baseline, and remains live until both canceled workers join.
+- Distinct writer-init, checkpointer-init, committed-write, and checkpoint-progress gates establish
+  ordering without sleeps. The checkpointer asserts WAL mode and performs a real baseline read before
+  the writer commits; exports wait for both commit and genuine checkpoint progress.
+- Checkpoint rows are classified strictly. Exact `(-1,-1)` is non-progress before and after
+  readiness; mixed/below-`-1` negatives, invalid busy values, and over-checkpoint rows fail.
+  Readiness requires a post-commit, non-busy result with both page counts positive.
+- Ordering uses no sleeps, and the readiness phase has a finite deadline. Non-cancellation worker
+  failures propagate, while shutdown cancels and joins both workers before disposing the anchor.
+- The four exports and all prior task, counter, integrity, transactional consistency, baseline,
+  artifact, validator, no-sidecar, atomic-publication, and cleanup assertions remain intact.
+- The implementation diff is test/Squad-only; no production file changed.
+
+## Validation
+
+- All 53 tests declared in `SnapshotExportTests.cs` passed with zero skips under
+  `DOTNET_ROLL_FORWARD=Major`.
+- The real WAL writer/checkpointer stress test passed 100 consecutive isolated repetitions with zero
+  failures or skips under `DOTNET_ROLL_FORWARD=Major`.
+
+The local revision gate is cleared. The full suite (allowing only the two pre-existing skips) and
+fresh Ubuntu and Windows GitHub Actions jobs remain mandatory before final approval.

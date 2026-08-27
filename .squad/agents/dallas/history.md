@@ -671,3 +671,38 @@ branches remain substantive. With `DOTNET_ROLL_FORWARD=Major`, the case-only tes
 run plus 10 repeated no-build runs, and all 54 focused snapshot tests passed with no skips. Frost's
 production exporter remains accepted and frozen; the local gate is cleared for the full suite and
 fresh Ubuntu/Windows CI.
+
+---
+
+## 2026-08-26 — PR #127 WAL readiness CI triage
+
+**Verdict:** **REJECT** the stress helper at `9a7fd86`; Frost's production exporter remains accepted
+and frozen. Ubuntu exposed the startup form of the WAL lifecycle race Bishop handled only after
+readiness: a committed-write signal does not guarantee that a separately and lazily opened
+checkpointer connection immediately has a current WAL, so exact `(-1,-1)` is legitimate
+non-progress before readiness too.
+
+The replacement must establish and hold an explicit WAL writer/anchor, assert WAL mode on both
+worker connections, sequence worker initialization before a known committed write, and retry exact
+`(-1,-1)` under a bounded timeout without completing readiness. Readiness still requires a
+post-commit, non-busy PASSIVE result with positive WAL and checkpointed page counts.
+
+Hicks is assigned as the new independent .NET/SQLite concurrency test specialist. Lambert, Parker,
+Bishop, Burke, Hudson, and Vasquez are locked out from both revision and advice. Exact gates are in
+`.squad/decisions/inbox/dallas-pr127-wal-readiness-ci-triage.md`; fresh Ubuntu and Windows CI remain
+mandatory.
+
+---
+
+## 2026-08-26 — PR #127 WAL readiness CI recheck
+
+**Verdict:** **APPROVE** Hicks's test-only WAL-readiness revision for the full-suite and fresh-CI
+gate. The unpooled anchor now spans initialization through cancellation and worker join; WAL mode,
+autocheckpointing, the zero-page baseline, four ordering gates, and checkpointer attachment are
+explicit. The strict state machine treats exact `(-1,-1)` as retryable non-progress before and after
+readiness, rejects invalid rows, and permits readiness only for positive post-commit progress.
+
+All 53 tests in `SnapshotExportTests.cs` passed, followed by 100 isolated repetitions of the real
+writer/checkpointer stress test, with zero failures or skips under `DOTNET_ROLL_FORWARD=Major`.
+Existing export invariants are unchanged and no production file changed. Frost's exporter remains
+accepted and frozen; the local gate is cleared for the full suite and fresh Ubuntu/Windows CI.
