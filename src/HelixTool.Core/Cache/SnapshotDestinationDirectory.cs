@@ -35,7 +35,8 @@ internal abstract class SnapshotDestinationDirectory : IDisposable
     public abstract void Publish(
         SnapshotTemporaryDirectory temporaryDirectory,
         string currentParentPath,
-        string destinationLeaf);
+        string destinationLeaf,
+        CancellationToken cancellationToken);
 
     public abstract string GetCurrentPhysicalPath(string currentParentPath);
 
@@ -241,8 +242,10 @@ internal sealed class UnixSnapshotDestinationDirectory : SnapshotDestinationDire
     public override void Publish(
         SnapshotTemporaryDirectory temporaryDirectory,
         string currentParentPath,
-        string destinationLeaf)
+        string destinationLeaf,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var temporary = RequireTemporaryDirectory(temporaryDirectory);
         var parentPath = GetCurrentPhysicalPath(currentParentPath);
         var sourcePath = GetOwnedTemporaryPath(temporary);
@@ -254,6 +257,7 @@ internal sealed class UnixSnapshotDestinationDirectory : SnapshotDestinationDire
                 $"Destination already exists: {destinationPath}. It was not overwritten.");
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         int result;
         if (OperatingSystem.IsMacOS())
         {
@@ -488,11 +492,13 @@ internal readonly record struct SnapshotDirectoryIdentity(ulong Volume, ulong Fi
 
 /// <summary>
 /// Windows retains parent and staging handles. After the last callback, the complete staged tree is
-/// opened without write or delete sharing while its serialized files are validated.
+/// held by read-handle oplocks and handles without write or delete sharing from validation through
+/// its handle-relative publication.
 /// </summary>
 internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationDirectory
 {
     private const uint FileListDirectory = 0x00000001;
+    private const uint FileReadData = 0x00000001;
     private const uint FileTraverse = 0x00000020;
     private const uint FileReadAttributes = 0x00000080;
     private const uint DeleteAccess = 0x00010000;
@@ -502,10 +508,22 @@ internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationD
     private const uint OpenExisting = 3;
     private const uint FileFlagBackupSemantics = 0x02000000;
     private const uint FileFlagOpenReparsePoint = 0x00200000;
+    private const uint FileFlagOverlapped = 0x40000000;
     private const uint FileAttributeDirectory = 0x00000010;
     private const uint FileAttributeReparsePoint = 0x00000400;
+    private const uint FsctlRequestOplock = 0x00090240;
+    private const uint OplockLevelCacheRead = 0x00000001;
+    private const uint OplockLevelCacheHandle = 0x00000002;
+    private const uint RequestOplockInputFlagRequest = 0x00000001;
+    private const uint RequestOplockInputFlagAck = 0x00000002;
+    private const uint RequestOplockOutputFlagAckRequired = 0x00000001;
+    private const uint RequestOplockOutputFlagModesProvided = 0x00000002;
+    private const ushort RequestOplockCurrentVersion = 1;
     private const int ErrorFileExists = 80;
     private const int ErrorAlreadyExists = 183;
+    private const int ErrorIoPending = 997;
+    private const int StatusPending = 0x00000103;
+    private const int StatusCancelled = unchecked((int)0xC0000120);
     private const int FileRenameInformationClass = 10;
 
     private readonly SafeFileHandle _parentHandle;
@@ -584,31 +602,34 @@ internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationD
     public override void Publish(
         SnapshotTemporaryDirectory temporaryDirectory,
         string currentParentPath,
-        string destinationLeaf)
+        string destinationLeaf,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var temporary = RequireTemporaryDirectory(temporaryDirectory);
+        var freeze = temporary.GetFreeze();
+        freeze.ThrowIfBrokenBeforePublication();
         _ = GetCurrentPhysicalPath(currentParentPath);
-        var temporaryPath = GetOwnedTemporaryPath(temporary);
-        var destinationPath = Path.Combine(GetFinalPath(_parentHandle), destinationLeaf);
-        if (SnapshotExporter.PathEntryExists(destinationPath))
-        {
-            throw new InvalidOperationException(
-                $"Destination already exists: {destinationPath}. It was not overwritten.");
-        }
-
-        temporary.ReleaseFreeze();
-        using var publishingHandle = OpenDirectory(
-            temporaryPath,
-            FileListDirectory | FileReadAttributes | DeleteAccess,
-            FileShareRead | FileShareWrite | FileShareDelete);
-        if (GetIdentity(publishingHandle) != temporary.Identity)
+        if (GetIdentity(freeze.RootHandle) != temporary.Identity)
         {
             throw new InvalidOperationException(
                 "The temporary snapshot changed before publication.");
         }
 
-        RenameByHandle(publishingHandle, _parentHandle, destinationLeaf);
+        var parentPath = GetFinalPath(_parentHandle);
+        var temporaryPath = GetFinalPath(freeze.RootHandle);
+        var expectedPath = Path.Combine(parentPath, temporary.CurrentName);
+        if (!SnapshotExporter.PathsAreEqualForPositiveProof(temporaryPath, expectedPath))
+        {
+            throw new InvalidOperationException(
+                "The owned temporary snapshot directory is no longer present at its retained name.");
+        }
+
+        freeze.ThrowIfBrokenBeforePublication();
+        cancellationToken.ThrowIfCancellationRequested();
+        RenameByHandle(freeze, _parentHandle, destinationLeaf, cancellationToken);
         temporary.CurrentName = destinationLeaf;
+        temporary.ReleaseFreeze();
     }
 
     public override string GetCurrentPhysicalPath(string currentParentPath)
@@ -649,8 +670,16 @@ internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationD
         if (temporary.Removed)
             return;
 
-        temporary.ReleaseFreeze();
-        var currentPath = GetFinalPath(temporary.Handle);
+        string currentPath;
+        try
+        {
+            currentPath = GetFinalPath(temporary.Handle);
+        }
+        finally
+        {
+            temporary.ReleaseFreeze();
+        }
+
         DeleteTreeWithoutFollowingLinks(currentPath);
         temporary.Removed = true;
     }
@@ -690,37 +719,44 @@ internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationD
     internal void FreezeTree(WindowsSnapshotTemporaryDirectory temporary)
     {
         var rootPath = GetOwnedTemporaryPath(temporary);
-        var leases = new List<IDisposable>();
+        var leases = new List<WindowsOplockLease>();
+        WindowsFreezeState? freeze = null;
         try
         {
-            FreezeDirectory(rootPath, temporary.Identity, leases);
-            temporary.SetFreeze(leases);
+            var root = OpenFreezeLease(
+                rootPath,
+                expectDirectory: true,
+                isRoot: true,
+                additionalAccess: DeleteAccess);
+            leases.Add(root);
+            if (GetIdentity(root.Handle) != temporary.Identity)
+            {
+                throw new InvalidOperationException(
+                    "A staged snapshot directory changed while it was being frozen.");
+            }
+
+            FreezeDirectory(rootPath, leases);
+            freeze = new WindowsFreezeState(root, leases);
+            freeze.ThrowIfBrokenBeforePublication();
+            temporary.SetFreeze(freeze);
+            freeze = null;
         }
         catch
         {
-            foreach (var lease in leases)
-                lease.Dispose();
+            freeze?.Dispose();
+            if (freeze == null)
+            {
+                for (var index = leases.Count - 1; index >= 0; index--)
+                    leases[index].Dispose();
+            }
             throw;
         }
     }
 
     private static void FreezeDirectory(
         string path,
-        SnapshotDirectoryIdentity expectedIdentity,
-        List<IDisposable> leases)
+        List<WindowsOplockLease> leases)
     {
-        var directoryHandle = OpenDirectory(
-            path,
-            FileListDirectory | FileReadAttributes,
-            FileShareRead);
-        if (GetIdentity(directoryHandle) != expectedIdentity)
-        {
-            directoryHandle.Dispose();
-            throw new InvalidOperationException(
-                "A staged snapshot directory changed while it was being frozen.");
-        }
-
-        leases.Add(directoryHandle);
         foreach (var entry in new DirectoryInfo(path).EnumerateFileSystemInfos())
         {
             if (IsLink(entry))
@@ -731,22 +767,66 @@ internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationD
 
             if (entry is DirectoryInfo directory)
             {
-                using var identityHandle = OpenDirectory(
+                var lease = OpenFreezeLease(
                     directory.FullName,
-                    FileListDirectory | FileReadAttributes,
-                    FileShareRead | FileShareWrite | FileShareDelete);
-                var identity = GetIdentity(identityHandle);
-                FreezeDirectory(directory.FullName, identity, leases);
+                    expectDirectory: true,
+                    isRoot: false,
+                    additionalAccess: 0);
+                leases.Add(lease);
+                FreezeDirectory(directory.FullName, leases);
                 continue;
             }
 
-            leases.Add(new FileStream(
+            leases.Add(OpenFreezeLease(
                 entry.FullName,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read,
-                bufferSize: 1,
-                FileOptions.SequentialScan));
+                expectDirectory: false,
+                isRoot: false,
+                additionalAccess: 0));
+        }
+    }
+
+    private static WindowsOplockLease OpenFreezeLease(
+        string path,
+        bool expectDirectory,
+        bool isRoot,
+        uint additionalAccess)
+    {
+        var flags = FileFlagOpenReparsePoint | FileFlagOverlapped |
+            (expectDirectory ? FileFlagBackupSemantics : 0);
+        var handle = CreateFileW(
+            ToExtendedPath(path),
+            FileReadAttributes |
+                (expectDirectory ? FileListDirectory | FileTraverse : FileReadData) |
+                additionalAccess,
+            FileShareRead,
+            IntPtr.Zero,
+            OpenExisting,
+            flags,
+            IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            var error = Marshal.GetLastPInvokeError();
+            handle.Dispose();
+            throw NativeFailure($"Unable to freeze staged snapshot entry '{path}'", error);
+        }
+
+        try
+        {
+            var information = GetInformation(handle);
+            var isDirectory = (information.FileAttributes & FileAttributeDirectory) != 0;
+            if (isDirectory != expectDirectory ||
+                (information.FileAttributes & FileAttributeReparsePoint) != 0)
+            {
+                throw new InvalidOperationException(
+                    $"Staged snapshot entry changed while it was being frozen: {path}");
+            }
+
+            return new WindowsOplockLease(handle, isRoot);
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
         }
     }
 
@@ -846,21 +926,31 @@ internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationD
     }
 
     private static void RenameByHandle(
-        SafeFileHandle source,
+        WindowsFreezeState freeze,
         SafeFileHandle destinationParent,
-        string destinationLeaf)
+        string destinationLeaf,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ValidateLeaf(destinationLeaf);
         var nameBytes = Encoding.Unicode.GetBytes(destinationLeaf);
         var informationSize = Marshal.SizeOf<FileRenameInformation>();
         var nameOffset = Marshal.OffsetOf<FileRenameInformation>(
             nameof(FileRenameInformation.FileName)).ToInt32();
         var bufferSize = checked(informationSize + nameBytes.Length);
-        var buffer = Marshal.AllocHGlobal(bufferSize);
+        var buffer = IntPtr.Zero;
+        var ioStatusBlock = IntPtr.Zero;
+        var cancellationStatusBlock = IntPtr.Zero;
         var parentAddedRef = false;
         try
         {
+            buffer = Marshal.AllocHGlobal(bufferSize);
+            ioStatusBlock = Marshal.AllocHGlobal(Marshal.SizeOf<IoStatusBlock>());
+            cancellationStatusBlock =
+                Marshal.AllocHGlobal(Marshal.SizeOf<IoStatusBlock>());
             Marshal.Copy(new byte[bufferSize], 0, buffer, bufferSize);
+            Marshal.StructureToPtr(new IoStatusBlock(), ioStatusBlock, fDeleteOld: false);
+            Marshal.WriteInt32(ioStatusBlock, StatusPending);
             destinationParent.DangerousAddRef(ref parentAddedRef);
             var information = new FileRenameInformation
             {
@@ -872,12 +962,39 @@ internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationD
             Marshal.StructureToPtr(information, buffer, false);
             Marshal.Copy(nameBytes, 0, buffer + nameOffset, nameBytes.Length);
 
+            cancellationToken.ThrowIfCancellationRequested();
             var status = NtSetInformationFile(
-                source,
-                out _,
+                freeze.RootHandle,
+                ioStatusBlock,
                 buffer,
                 (uint)bufferSize,
                 FileRenameInformationClass);
+            if (status == StatusPending)
+            {
+                var cancellationRequested = false;
+                try
+                {
+                    status = WaitForRename(
+                        freeze,
+                        freeze.RootHandle,
+                        ioStatusBlock,
+                        cancellationStatusBlock,
+                        cancellationToken,
+                        out cancellationRequested);
+                }
+                catch
+                {
+                    CancelRenameAndWait(
+                        freeze.RootHandle,
+                        ioStatusBlock,
+                        cancellationStatusBlock);
+                    throw;
+                }
+
+                if (cancellationRequested && status == StatusCancelled)
+                    throw new OperationCanceledException(cancellationToken);
+            }
+
             if (status < 0)
             {
                 var error = unchecked((int)RtlNtStatusToDosError(status));
@@ -889,12 +1006,407 @@ internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationD
 
                 throw NativeFailure("Unable to atomically publish the snapshot", error);
             }
+
+            freeze.DrainBreaksAfterRename();
         }
         finally
         {
             if (parentAddedRef)
                 destinationParent.DangerousRelease();
-            Marshal.FreeHGlobal(buffer);
+            if (cancellationStatusBlock != IntPtr.Zero)
+                Marshal.FreeHGlobal(cancellationStatusBlock);
+            if (ioStatusBlock != IntPtr.Zero)
+                Marshal.FreeHGlobal(ioStatusBlock);
+            if (buffer != IntPtr.Zero)
+                Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    private static int WaitForRename(
+        WindowsFreezeState freeze,
+        SafeFileHandle source,
+        IntPtr ioStatusBlock,
+        IntPtr cancellationStatusBlock,
+        CancellationToken cancellationToken,
+        out bool cancellationRequested)
+    {
+        cancellationRequested = false;
+        while (true)
+        {
+            var status = ReadIoStatus(ioStatusBlock);
+            if (status != StatusPending)
+                return status;
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                cancellationRequested = true;
+                return CancelRenameAndWait(
+                    source,
+                    ioStatusBlock,
+                    cancellationStatusBlock);
+            }
+
+            if (!freeze.ProcessBreaksForPendingRename(ioStatusBlock))
+                Thread.Sleep(1);
+        }
+    }
+
+    private static int CancelRenameAndWait(
+        SafeFileHandle source,
+        IntPtr ioStatusBlock,
+        IntPtr cancellationStatusBlock)
+    {
+        if (ReadIoStatus(ioStatusBlock) != StatusPending)
+            return ReadIoStatus(ioStatusBlock);
+
+        Marshal.StructureToPtr(
+            new IoStatusBlock(),
+            cancellationStatusBlock,
+            fDeleteOld: false);
+        Marshal.WriteInt32(cancellationStatusBlock, StatusPending);
+        var cancellationStatus = NtCancelIoFileEx(
+            source,
+            ioStatusBlock,
+            cancellationStatusBlock);
+        if (cancellationStatus == StatusPending)
+        {
+            while (ReadIoStatus(cancellationStatusBlock) == StatusPending)
+                Thread.Sleep(1);
+        }
+
+        while (ReadIoStatus(ioStatusBlock) == StatusPending)
+            Thread.Sleep(1);
+
+        return ReadIoStatus(ioStatusBlock);
+    }
+
+    private static int ReadIoStatus(IntPtr ioStatusBlock)
+    {
+        Thread.MemoryBarrier();
+        return Marshal.ReadInt32(ioStatusBlock);
+    }
+
+    internal sealed class WindowsFreezeState : IDisposable
+    {
+        private readonly WindowsOplockLease _root;
+        private readonly IReadOnlyList<WindowsOplockLease> _leases;
+        private int _disposed;
+
+        internal WindowsFreezeState(
+            WindowsOplockLease root,
+            IReadOnlyList<WindowsOplockLease> leases)
+        {
+            _root = root;
+            _leases = leases;
+        }
+
+        internal SafeFileHandle RootHandle => _root.Handle;
+
+        internal void ThrowIfBrokenBeforePublication()
+        {
+            foreach (var lease in _leases)
+            {
+                if (lease.TryObserveBreak(out _))
+                {
+                    throw new InvalidOperationException(
+                        "The staged snapshot freeze broke before publication.");
+                }
+            }
+        }
+
+        internal bool ProcessBreaksForPendingRename(IntPtr ioStatusBlock)
+        {
+            var processed = false;
+            foreach (var lease in _leases)
+            {
+                if (!lease.TryObserveBreak(out var oplockBreak))
+                    continue;
+
+                processed = true;
+                if (ReadIoStatus(ioStatusBlock) != StatusPending)
+                {
+                    throw new InvalidOperationException(
+                        "The staged snapshot freeze broke unexpectedly during publication.");
+                }
+
+                if ((oplockBreak.Flags & RequestOplockOutputFlagModesProvided) != 0)
+                {
+                    lease.AcknowledgeWithoutClosing(oplockBreak);
+                    continue;
+                }
+
+                if (lease.IsRoot ||
+                    (oplockBreak.Flags & RequestOplockOutputFlagAckRequired) == 0)
+                {
+                    throw new InvalidOperationException(
+                        "The staged snapshot freeze received an unexpected oplock break " +
+                        "during publication.");
+                }
+
+                // An acknowledged descendant handle break is what keeps the native
+                // ancestor rename pending. Closing that handle lets only that rename advance.
+                lease.CloseForPendingRename();
+            }
+
+            return processed;
+        }
+
+        internal void DrainBreaksAfterRename()
+        {
+            foreach (var lease in _leases)
+            {
+                if (!lease.TryObserveBreak(out var oplockBreak))
+                    continue;
+
+                if ((oplockBreak.Flags & RequestOplockOutputFlagModesProvided) != 0)
+                {
+                    lease.AcknowledgeWithoutClosing(oplockBreak);
+                    continue;
+                }
+
+                throw new InvalidOperationException(
+                    "The staged snapshot freeze broke unexpectedly as publication completed.");
+            }
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            for (var index = _leases.Count - 1; index >= 0; index--)
+                _leases[index].Dispose();
+        }
+    }
+
+    internal sealed class WindowsOplockLease : IDisposable
+    {
+        private readonly object _gate = new();
+        private PendingOplockRequest? _request;
+        private int _disposed;
+
+        internal WindowsOplockLease(SafeFileHandle handle, bool isRoot)
+        {
+            Handle = handle;
+            IsRoot = isRoot;
+            try
+            {
+                _request = PendingOplockRequest.Start(
+                    Handle,
+                    RequestOplockInputFlagRequest);
+            }
+            catch
+            {
+                Handle.Dispose();
+                throw;
+            }
+        }
+
+        internal SafeFileHandle Handle { get; }
+
+        internal bool IsRoot { get; }
+
+        internal bool TryObserveBreak(out RequestOplockOutputBuffer oplockBreak)
+        {
+            lock (_gate)
+            {
+                oplockBreak = default;
+                var request = _request;
+                if (request == null || Volatile.Read(ref _disposed) != 0 ||
+                    !request.IsCompleted)
+                {
+                    return false;
+                }
+
+                oplockBreak = request.Complete(Handle);
+                _request = null;
+                request.Dispose();
+                return true;
+            }
+        }
+
+        internal void AcknowledgeWithoutClosing(
+            RequestOplockOutputBuffer oplockBreak)
+        {
+            lock (_gate)
+            {
+                if (_request != null)
+                {
+                    throw new InvalidOperationException(
+                        "A staged snapshot oplock break was acknowledged twice.");
+                }
+
+                var flags =
+                    (oplockBreak.Flags & RequestOplockOutputFlagAckRequired) != 0
+                        ? RequestOplockInputFlagAck
+                        : RequestOplockInputFlagRequest;
+                // Renew RH as part of the acknowledgment. The queued create then reaches
+                // the retained handle's sharing check and fails, while the renewed oplock
+                // still gives the ancestor rename a break to which we can safely close.
+                _request = PendingOplockRequest.Start(Handle, flags);
+            }
+        }
+
+        internal void CloseForPendingRename() => Dispose();
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            PendingOplockRequest? request;
+            lock (_gate)
+            {
+                request = _request;
+                _request = null;
+            }
+
+            if (request != null)
+                request.Cancel(Handle);
+            Handle.Dispose();
+            request?.Dispose();
+        }
+
+        private sealed class PendingOplockRequest : IDisposable
+        {
+            private readonly EventWaitHandle _completed =
+                new(initialState: false, EventResetMode.ManualReset);
+            private IntPtr _inputBuffer;
+            private IntPtr _outputBuffer;
+            private IntPtr _overlapped;
+            private bool _pending;
+            private int _disposed;
+
+            private PendingOplockRequest()
+            {
+            }
+
+            internal bool IsCompleted => _completed.WaitOne(0);
+
+            internal static PendingOplockRequest Start(
+                SafeFileHandle handle,
+                uint flags)
+            {
+                var request = new PendingOplockRequest();
+                try
+                {
+                    var inputSize = Marshal.SizeOf<RequestOplockInputBuffer>();
+                    var outputSize = Marshal.SizeOf<RequestOplockOutputBuffer>();
+                    request._inputBuffer = Marshal.AllocHGlobal(inputSize);
+                    request._outputBuffer = Marshal.AllocHGlobal(outputSize);
+                    request._overlapped =
+                        Marshal.AllocHGlobal(Marshal.SizeOf<WindowsOverlapped>());
+                    Marshal.StructureToPtr(
+                        new RequestOplockInputBuffer
+                        {
+                            StructureVersion = RequestOplockCurrentVersion,
+                            StructureLength = checked((ushort)inputSize),
+                            RequestedOplockLevel =
+                                OplockLevelCacheRead | OplockLevelCacheHandle,
+                            Flags = flags,
+                        },
+                        request._inputBuffer,
+                        fDeleteOld: false);
+                    Marshal.StructureToPtr(
+                        new RequestOplockOutputBuffer
+                        {
+                            StructureVersion = RequestOplockCurrentVersion,
+                            StructureLength = checked((ushort)outputSize),
+                        },
+                        request._outputBuffer,
+                        fDeleteOld: false);
+                    Marshal.StructureToPtr(
+                        new WindowsOverlapped
+                        {
+                            EventHandle =
+                                request._completed.SafeWaitHandle.DangerousGetHandle(),
+                        },
+                        request._overlapped,
+                        fDeleteOld: false);
+
+                    if (DeviceIoControl(
+                            handle,
+                            FsctlRequestOplock,
+                            request._inputBuffer,
+                            (uint)inputSize,
+                            request._outputBuffer,
+                            (uint)outputSize,
+                            IntPtr.Zero,
+                            request._overlapped))
+                    {
+                        throw new InvalidOperationException(
+                            "A staged snapshot oplock completed synchronously " +
+                            "instead of being granted.");
+                    }
+
+                    var error = Marshal.GetLastPInvokeError();
+                    if (error != ErrorIoPending)
+                    {
+                        throw NativeFailure(
+                            flags == RequestOplockInputFlagAck
+                                ? "Unable to acknowledge and renew a staged snapshot oplock"
+                                : "Unable to request an oplock on a staged snapshot entry",
+                            error);
+                    }
+
+                    request._pending = true;
+                    return request;
+                }
+                catch
+                {
+                    request.Dispose();
+                    throw;
+                }
+            }
+
+            internal RequestOplockOutputBuffer Complete(SafeFileHandle handle)
+            {
+                if (!_pending ||
+                    !GetOverlappedResult(
+                        handle,
+                        _overlapped,
+                        out _,
+                        wait: false))
+                {
+                    throw NativeFailure(
+                        "Unable to receive a staged snapshot oplock break",
+                        Marshal.GetLastPInvokeError());
+                }
+
+                _pending = false;
+                return Marshal.PtrToStructure<RequestOplockOutputBuffer>(_outputBuffer);
+            }
+
+            internal void Cancel(SafeFileHandle handle)
+            {
+                if (!_pending)
+                    return;
+
+                _ = CancelIoEx(handle, _overlapped);
+                handle.Dispose();
+                _completed.WaitOne();
+                _pending = false;
+            }
+
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                    return;
+
+                if (_pending)
+                {
+                    throw new InvalidOperationException(
+                        "An active staged snapshot oplock request was released prematurely.");
+                }
+
+                if (_overlapped != IntPtr.Zero)
+                    Marshal.FreeHGlobal(_overlapped);
+                if (_outputBuffer != IntPtr.Zero)
+                    Marshal.FreeHGlobal(_outputBuffer);
+                if (_inputBuffer != IntPtr.Zero)
+                    Marshal.FreeHGlobal(_inputBuffer);
+                _completed.Dispose();
+            }
         }
     }
 
@@ -940,6 +1452,37 @@ internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationD
         public UIntPtr Information;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RequestOplockInputBuffer
+    {
+        public ushort StructureVersion;
+        public ushort StructureLength;
+        public uint RequestedOplockLevel;
+        public uint Flags;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct RequestOplockOutputBuffer
+    {
+        public ushort StructureVersion;
+        public ushort StructureLength;
+        public uint OriginalOplockLevel;
+        public uint NewOplockLevel;
+        public uint Flags;
+        public uint AccessMode;
+        public ushort ShareMode;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WindowsOverlapped
+    {
+        public IntPtr Internal;
+        public IntPtr InternalHigh;
+        public uint Offset;
+        public uint OffsetHigh;
+        public IntPtr EventHandle;
+    }
+
     [StructLayout(LayoutKind.Sequential, Pack = 4)]
     private struct ByHandleFileInformation
     {
@@ -978,13 +1521,45 @@ internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationD
         uint pathLength,
         uint flags);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DeviceIoControl(
+        SafeFileHandle file,
+        uint controlCode,
+        IntPtr inputBuffer,
+        uint inputBufferSize,
+        IntPtr outputBuffer,
+        uint outputBufferSize,
+        IntPtr bytesReturned,
+        IntPtr overlapped);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetOverlappedResult(
+        SafeFileHandle file,
+        IntPtr overlapped,
+        out uint bytesTransferred,
+        [MarshalAs(UnmanagedType.Bool)] bool wait);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CancelIoEx(
+        SafeFileHandle file,
+        IntPtr overlapped);
+
     [DllImport("ntdll.dll", ExactSpelling = true)]
     private static extern int NtSetInformationFile(
         SafeFileHandle file,
-        out IoStatusBlock ioStatusBlock,
+        IntPtr ioStatusBlock,
         IntPtr information,
         uint length,
         int informationClass);
+
+    [DllImport("ntdll.dll", ExactSpelling = true)]
+    private static extern int NtCancelIoFileEx(
+        SafeFileHandle file,
+        IntPtr ioRequestToCancel,
+        IntPtr ioStatusBlock);
 
     [DllImport("ntdll.dll", ExactSpelling = true)]
     private static extern uint RtlNtStatusToDosError(int status);
@@ -993,7 +1568,9 @@ internal sealed class WindowsSnapshotDestinationDirectory : SnapshotDestinationD
 internal sealed class WindowsSnapshotTemporaryDirectory : SnapshotTemporaryDirectory
 {
     private readonly WindowsSnapshotDestinationDirectory _owner;
-    private List<IDisposable>? _freezeLeases;
+    private SafeFileHandle? _stagingHandle;
+    private WindowsSnapshotDestinationDirectory.WindowsFreezeState? _freeze;
+    private int _disposed;
 
     public WindowsSnapshotTemporaryDirectory(
         string name,
@@ -1002,12 +1579,15 @@ internal sealed class WindowsSnapshotTemporaryDirectory : SnapshotTemporaryDirec
         WindowsSnapshotDestinationDirectory owner)
         : base(name)
     {
-        Handle = handle;
+        _stagingHandle = handle;
         Identity = identity;
         _owner = owner;
     }
 
-    internal SafeFileHandle Handle { get; }
+    internal SafeFileHandle Handle =>
+        _freeze?.RootHandle ??
+        _stagingHandle ??
+        throw new ObjectDisposedException(nameof(WindowsSnapshotTemporaryDirectory));
 
     internal SnapshotDirectoryIdentity Identity { get; }
 
@@ -1021,26 +1601,39 @@ internal sealed class WindowsSnapshotTemporaryDirectory : SnapshotTemporaryDirec
 
     internal void Freeze() => _owner.FreezeTree(this);
 
-    internal void SetFreeze(List<IDisposable> leases)
+    internal void SetFreeze(
+        WindowsSnapshotDestinationDirectory.WindowsFreezeState freeze)
     {
-        if (_freezeLeases != null)
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(WindowsSnapshotTemporaryDirectory));
+        if (_freeze != null)
             throw new InvalidOperationException("The temporary snapshot is already frozen.");
-        _freezeLeases = leases;
+
+        _freeze = freeze;
+        var stagingHandle = Interlocked.Exchange(ref _stagingHandle, null);
+        stagingHandle?.Dispose();
+    }
+
+    internal WindowsSnapshotDestinationDirectory.WindowsFreezeState GetFreeze()
+    {
+        return _freeze ??
+            throw new InvalidOperationException(
+                "The temporary snapshot must remain frozen through publication.");
     }
 
     internal void ReleaseFreeze()
     {
-        if (_freezeLeases == null)
-            return;
-
-        foreach (var lease in _freezeLeases)
-            lease.Dispose();
-        _freezeLeases = null;
+        var freeze = Interlocked.Exchange(ref _freeze, null);
+        freeze?.Dispose();
     }
 
     public override void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
         ReleaseFreeze();
-        Handle.Dispose();
+        var stagingHandle = Interlocked.Exchange(ref _stagingHandle, null);
+        stagingHandle?.Dispose();
     }
 }

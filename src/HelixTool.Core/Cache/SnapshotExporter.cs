@@ -220,7 +220,8 @@ public static class SnapshotExporter
             destinationDirectory.Publish(
                 temporaryDirectory,
                 lexicalDestinationParent,
-                destinationLeaf);
+                destinationLeaf,
+                ct);
 
             return new ExportResult(
                 Destination: lexicalDestination,

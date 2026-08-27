@@ -87,6 +87,7 @@ file sealed class WindowsDirectoryOplock : IDisposable
 {
     private const uint GenericRead = 0x80000000;
     private const uint FileShareRead = 0x00000001;
+    private const uint FileShareDelete = 0x00000004;
     private const uint OpenExisting = 3;
     private const uint FileFlagBackupSemantics = 0x02000000;
     private const uint FileFlagOverlapped = 0x40000000;
@@ -107,14 +108,16 @@ file sealed class WindowsDirectoryOplock : IDisposable
     private bool _requestCompleted;
     private int _disposed;
 
-    public WindowsDirectoryOplock(string path)
+    public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+
+    public WindowsDirectoryOplock(string path, bool shareDelete = false)
     {
         try
         {
             _handle = CreateFileW(
                 path,
                 GenericRead,
-                FileShareRead,
+                FileShareRead | (shareDelete ? FileShareDelete : 0u),
                 IntPtr.Zero,
                 OpenExisting,
                 FileFlagBackupSemantics | FileFlagOverlapped,
@@ -295,6 +298,15 @@ file sealed class WindowsDirectoryOplock : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CancelIoEx(SafeFileHandle file, IntPtr overlapped);
+}
+
+internal sealed class WindowsFactAttribute : FactAttribute
+{
+    public WindowsFactAttribute()
+    {
+        if (!OperatingSystem.IsWindows())
+            Skip = "This test requires Windows directory oplocks.";
+    }
 }
 
 internal sealed class CaseSensitiveFileSystemFactAttribute : FactAttribute
@@ -1607,6 +1619,146 @@ public class SnapshotExporterTests : IDisposable
             SnapshotTestHelper.ParentEntries(destinationParent));
     }
 
+    [WindowsFact]
+    public async Task Export_CancellationInterruptsPendingWindowsNativeRename()
+    {
+        const string finalizationMessage = "Finalizing snapshot (atomic rename)...";
+        const string sentinelContent = "foreign holder sentinel";
+        var setupTimeout = TimeSpan.FromSeconds(30);
+        var cancellationTimeout = TimeSpan.FromSeconds(10);
+        var cleanupFallbackTimeout = TimeSpan.FromSeconds(30);
+        var workspace = Workspace("cancel-pending-windows-rename");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            artifactRows: 1,
+            useWal: false);
+        var sourceBefore = SnapshotTestHelper.FingerprintTree(source.Root);
+        var destinationParent = Path.Combine(workspace, "publish");
+        Directory.CreateDirectory(destinationParent);
+        var sentinel = Path.Combine(destinationParent, "external-sentinel.txt");
+        File.WriteAllText(sentinel, sentinelContent);
+        var sentinelBefore = File.ReadAllBytes(sentinel);
+        var destination = Path.Combine(destinationParent, "snapshot");
+        var finalizationReached = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var callerCancellation = new CancellationTokenSource(TimeSpan.FromMinutes(1));
+        var callerToken = callerCancellation.Token;
+        string? temporaryPath = null;
+        WindowsDirectoryOplock? publicationOplock = null;
+        var finalizationReports = 0;
+        var progress = new SynchronousProgress<string>(message =>
+        {
+            if (!string.Equals(message, finalizationMessage, StringComparison.Ordinal))
+                return;
+
+            Assert.Equal(1, Interlocked.Increment(ref finalizationReports));
+            var temporaryLeaf = Assert.Single(
+                SnapshotTestHelper.ParentEntries(destinationParent),
+                entry => entry.StartsWith("snapshot.tmp.", StringComparison.Ordinal));
+            temporaryPath = Path.Combine(destinationParent, temporaryLeaf);
+
+            // Delete sharing lets the exporter finish freezing and validating the staged tree.
+            // The break is delivered only when NtSetInformationFile attempts publication.
+            publicationOplock = new WindowsDirectoryOplock(
+                temporaryPath,
+                shareDelete: true);
+            finalizationReached.SetResult();
+        });
+
+        var exportTask = SnapshotExporter.ExportAsync(
+            source.Root,
+            destination,
+            progress,
+            callerToken);
+        OperationCanceledException? observedCancellation = null;
+        XunitException? watchdogFailure = null;
+        try
+        {
+            var firstCompletion = await Task.WhenAny(finalizationReached.Task, exportTask)
+                .WaitAsync(setupTimeout);
+            if (firstCompletion == exportTask)
+            {
+                await exportTask;
+                throw new XunitException(
+                    "Export completed before the final publication hook was reached.");
+            }
+
+            await finalizationReached.Task;
+            Assert.NotNull(publicationOplock);
+            publicationOplock.WaitForBreak(setupTimeout);
+            Assert.False(
+                exportTask.IsCompleted,
+                "The oplock break did not leave the native rename pending.");
+
+            callerCancellation.Cancel();
+            try
+            {
+                await exportTask.WaitAsync(cancellationTimeout);
+                watchdogFailure = new XunitException(
+                    "Export completed successfully after its caller canceled a pending " +
+                    "native rename.");
+            }
+            catch (OperationCanceledException exception)
+            {
+                observedCancellation = exception;
+            }
+            catch (TimeoutException)
+            {
+                watchdogFailure = new XunitException(
+                    $"Export did not honor cancellation within {cancellationTimeout} while " +
+                    "NtSetInformationFile was pending. The foreign oplock was retained until " +
+                    "this watchdog fired.");
+            }
+
+            if (watchdogFailure is null)
+            {
+                Assert.NotNull(observedCancellation);
+                Assert.Equal(callerToken, observedCancellation.CancellationToken);
+                Assert.False(publicationOplock.IsDisposed);
+                Assert.False(SnapshotExporter.PathEntryExists(destination));
+                Assert.NotNull(temporaryPath);
+                Assert.False(SnapshotExporter.PathEntryExists(temporaryPath));
+                Assert.Equal(
+                    new[] { "external-sentinel.txt" },
+                    SnapshotTestHelper.ParentEntries(destinationParent));
+                Assert.Equal(sentinelBefore, File.ReadAllBytes(sentinel));
+                Assert.Equal(sentinelContent, File.ReadAllText(sentinel));
+                Assert.Equal(sourceBefore, SnapshotTestHelper.FingerprintTree(source.Root));
+            }
+        }
+        finally
+        {
+            callerCancellation.Cancel();
+            publicationOplock?.Dispose();
+
+            if (!exportTask.IsCompleted)
+            {
+                var cleanupOutcome = await Record.ExceptionAsync(
+                    async () => await exportTask.WaitAsync(cleanupFallbackTimeout));
+                if (cleanupOutcome is TimeoutException)
+                {
+                    throw new XunitException(
+                        $"Export remained blocked for {cleanupFallbackTimeout} after the " +
+                        "watchdog released its oplock cleanup fallback.");
+                }
+            }
+        }
+
+        if (watchdogFailure is not null)
+            throw watchdogFailure;
+
+        Assert.Equal(1, finalizationReports);
+        Assert.NotNull(publicationOplock);
+        Assert.True(publicationOplock.IsDisposed);
+        Assert.False(SnapshotExporter.PathEntryExists(destination));
+        Assert.NotNull(temporaryPath);
+        Assert.False(SnapshotExporter.PathEntryExists(temporaryPath));
+        Assert.Equal(
+            new[] { "external-sentinel.txt" },
+            SnapshotTestHelper.ParentEntries(destinationParent));
+        Assert.Equal(sentinelBefore, File.ReadAllBytes(sentinel));
+    }
+
     [CaseSensitiveFileSystemFact]
     public async Task Export_CaseOnlyDestinationParentRetarget_IsRejectedAndCleansTemporarySnapshot()
     {
@@ -2594,6 +2746,7 @@ public class SnapshotValidatorTests : IDisposable
     [Theory]
     [InlineData("-wal")]
     [InlineData("-shm")]
+    [InlineData("-journal")]
     public async Task Validate_SqliteSidecar_IsInvalid(string suffix)
     {
         var workspace = Workspace($"sidecar{suffix}");

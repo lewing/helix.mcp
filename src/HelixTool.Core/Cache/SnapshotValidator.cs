@@ -416,7 +416,7 @@ public static class SnapshotValidator
     private static bool HasSidecar(string dbPath, List<string> errors)
     {
         var found = false;
-        foreach (var suffix in new[] { "-wal", "-shm" })
+        foreach (var suffix in new[] { "-wal", "-shm", "-journal" })
         {
             var sidecar = dbPath + suffix;
             try
