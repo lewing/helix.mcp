@@ -43,8 +43,8 @@ public static class SnapshotExporter
     /// </param>
     /// <param name="destination">
     /// Destination directory path. Must not already exist or be within the physical source cache
-    /// or artifact tree. The destination parent is part of the trusted local environment: callers
-    /// must not maliciously replace or mutate its namespace while an export is in progress.
+    /// or artifact tree. Its parent must be a trusted namespace: no other same-principal process
+    /// may rename, replace, or mutate entries in that parent while export is in progress.
     /// </param>
     /// <param name="progress">Optional progress reporter; receives human-readable status strings.</param>
     /// <param name="ct">Cancellation token.</param>
@@ -56,11 +56,10 @@ public static class SnapshotExporter
     /// <remarks>
     /// The destination parent is selected and retained before the first progress callback.
     /// Cooperative parent moves and alias retargeting are checked at explicit revalidation points.
-    /// On Linux and macOS, those checks are not a security boundary against an adversary racing
-    /// pathname operations between the checks; the parent must therefore be trusted. Windows
-    /// additionally freezes the staged tree after the final <see cref="IProgress{T}.Report"/> call
-    /// while its on-disk contents are validated, then publishes it relative to the retained parent
-    /// handle without another report.
+    /// These point-in-time checks are not a security boundary against a process with write access
+    /// to that namespace. After the final <see cref="IProgress{T}.Report"/> call, the exporter
+    /// validates the serialized database, artifact correspondence, exact staged tree, and absence
+    /// of SQLite sidecars, then publishes with an atomic no-replace rename and no further callbacks.
     /// </remarks>
     public static async Task<ExportResult> ExportAsync(
         string sourceRoot,
@@ -185,8 +184,8 @@ public static class SnapshotExporter
             progress?.Report("Validating temporary snapshot...");
             progress?.Report("Finalizing snapshot (atomic rename)...");
 
-            // There are no progress.Report calls after this point. Revalidate the selected parent,
-            // then freeze the Windows staging tree before inspecting the serialized output.
+            // There are no progress.Report calls after this point. Revalidate the complete staged
+            // tree and publish it immediately, without another caller-controlled callback.
             ct.ThrowIfCancellationRequested();
             var retainedParent = ValidateRetainedDestination();
             var retainedDestination = Path.Combine(retainedParent, destinationLeaf);
@@ -196,7 +195,6 @@ public static class SnapshotExporter
                     $"Destination already exists: {retainedDestination}. It was not overwritten.");
             }
 
-            destinationDirectory.CompleteStaging(temporaryDirectory);
             var tempDestination = temporaryDirectory.GetCurrentPath();
             var tempDbPath = Path.Combine(tempDestination, "cache.db");
             EnsureNoDatabaseSidecars(tempDbPath);
@@ -233,7 +231,10 @@ public static class SnapshotExporter
         {
             try
             {
-                destinationDirectory.Cleanup(temporaryDirectory);
+                // Cleanup must still run when the exception was the caller's cancellation.
+                destinationDirectory.Cleanup(
+                    temporaryDirectory,
+                    CancellationToken.None);
             }
             catch (Exception cleanupFailure)
             {
@@ -886,7 +887,6 @@ public static class SnapshotExporter
             throw new InvalidOperationException(
                 "The serialized cache.db changed before final validation.");
         }
-
         var expectedDirectories = new HashSet<string>(PathComparer);
         foreach (var relativePath in copiedArtifacts.Keys)
         {

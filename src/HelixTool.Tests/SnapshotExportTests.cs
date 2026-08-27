@@ -1,10 +1,10 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using HelixTool.Core.Cache;
 using Microsoft.Data.Sqlite;
-using Microsoft.Win32.SafeHandles;
 using Xunit;
 using Xunit.Sdk;
 
@@ -81,232 +81,6 @@ internal sealed class CheckpointReadinessStateMachine
 file sealed class SynchronousProgress<T>(Action<T> onReport) : IProgress<T>
 {
     public void Report(T value) => onReport(value);
-}
-
-file sealed class WindowsDirectoryOplock : IDisposable
-{
-    private const uint GenericRead = 0x80000000;
-    private const uint FileShareRead = 0x00000001;
-    private const uint FileShareDelete = 0x00000004;
-    private const uint OpenExisting = 3;
-    private const uint FileFlagBackupSemantics = 0x02000000;
-    private const uint FileFlagOverlapped = 0x40000000;
-    private const uint FsctlRequestOplock = 0x00090240;
-    private const uint OplockLevelCacheRead = 0x00000001;
-    private const uint OplockLevelCacheHandle = 0x00000002;
-    private const uint RequestOplockInputFlagRequest = 0x00000001;
-    private const ushort RequestOplockCurrentVersion = 1;
-    private const int ErrorIoPending = 997;
-
-    private readonly EventWaitHandle _breakEvent =
-        new(initialState: false, EventResetMode.ManualReset);
-    private SafeFileHandle? _handle;
-    private IntPtr _inputBuffer;
-    private IntPtr _outputBuffer;
-    private IntPtr _overlapped;
-    private bool _requestPending;
-    private bool _requestCompleted;
-    private int _disposed;
-
-    public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
-
-    public WindowsDirectoryOplock(string path, bool shareDelete = false)
-    {
-        try
-        {
-            _handle = CreateFileW(
-                path,
-                GenericRead,
-                FileShareRead | (shareDelete ? FileShareDelete : 0u),
-                IntPtr.Zero,
-                OpenExisting,
-                FileFlagBackupSemantics | FileFlagOverlapped,
-                IntPtr.Zero);
-            if (_handle.IsInvalid)
-            {
-                throw NativeFailure(
-                    $"Unable to open staged snapshot directory '{path}' for an oplock",
-                    Marshal.GetLastPInvokeError());
-            }
-
-            var inputSize = Marshal.SizeOf<RequestOplockInputBuffer>();
-            var outputSize = Marshal.SizeOf<RequestOplockOutputBuffer>();
-            _inputBuffer = Marshal.AllocHGlobal(inputSize);
-            _outputBuffer = Marshal.AllocHGlobal(outputSize);
-            _overlapped = Marshal.AllocHGlobal(Marshal.SizeOf<WindowsOverlapped>());
-            Marshal.StructureToPtr(
-                new RequestOplockInputBuffer
-                {
-                    StructureVersion = RequestOplockCurrentVersion,
-                    StructureLength = checked((ushort)inputSize),
-                    RequestedOplockLevel =
-                        OplockLevelCacheRead | OplockLevelCacheHandle,
-                    Flags = RequestOplockInputFlagRequest,
-                },
-                _inputBuffer,
-                fDeleteOld: false);
-            Marshal.StructureToPtr(
-                new RequestOplockOutputBuffer
-                {
-                    StructureVersion = RequestOplockCurrentVersion,
-                    StructureLength = checked((ushort)outputSize),
-                },
-                _outputBuffer,
-                fDeleteOld: false);
-            Marshal.StructureToPtr(
-                new WindowsOverlapped
-                {
-                    EventHandle = _breakEvent.SafeWaitHandle.DangerousGetHandle(),
-                },
-                _overlapped,
-                fDeleteOld: false);
-
-            if (DeviceIoControl(
-                    _handle,
-                    FsctlRequestOplock,
-                    _inputBuffer,
-                    (uint)inputSize,
-                    _outputBuffer,
-                    (uint)outputSize,
-                    IntPtr.Zero,
-                    _overlapped))
-            {
-                throw new XunitException(
-                    "The staged-directory oplock completed synchronously instead of being granted.");
-            }
-
-            var error = Marshal.GetLastPInvokeError();
-            if (error != ErrorIoPending)
-            {
-                throw NativeFailure(
-                    "Unable to request an oplock on the staged snapshot directory",
-                    error);
-            }
-
-            _requestPending = true;
-        }
-        catch
-        {
-            Dispose();
-            throw;
-        }
-    }
-
-    public void WaitForBreak(TimeSpan timeout)
-    {
-        if (!_breakEvent.WaitOne(timeout))
-            throw new XunitException("Timed out waiting for the publication oplock to break.");
-
-        if (!GetOverlappedResult(_handle!, _overlapped, out _, wait: false))
-        {
-            throw NativeFailure(
-                "The staged-directory oplock did not complete successfully",
-                Marshal.GetLastPInvokeError());
-        }
-
-        _requestCompleted = true;
-    }
-
-    public void Dispose()
-    {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
-            return;
-
-        if (_requestPending && !_requestCompleted)
-        {
-            _ = CancelIoEx(_handle!, _overlapped);
-            _requestCompleted = _breakEvent.WaitOne(TimeSpan.FromSeconds(5));
-        }
-
-        _handle?.Dispose();
-        if (_requestCompleted || !_requestPending)
-        {
-            if (_inputBuffer != IntPtr.Zero)
-                Marshal.FreeHGlobal(_inputBuffer);
-            if (_outputBuffer != IntPtr.Zero)
-                Marshal.FreeHGlobal(_outputBuffer);
-            if (_overlapped != IntPtr.Zero)
-                Marshal.FreeHGlobal(_overlapped);
-            _breakEvent.Dispose();
-        }
-    }
-
-    private static XunitException NativeFailure(string operation, int error) =>
-        new($"{operation} (error {error}).");
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RequestOplockInputBuffer
-    {
-        public ushort StructureVersion;
-        public ushort StructureLength;
-        public uint RequestedOplockLevel;
-        public uint Flags;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RequestOplockOutputBuffer
-    {
-        public ushort StructureVersion;
-        public ushort StructureLength;
-        public uint OriginalOplockLevel;
-        public uint NewOplockLevel;
-        public uint Flags;
-        public uint AccessMode;
-        public ushort ShareMode;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct WindowsOverlapped
-    {
-        public IntPtr Internal;
-        public IntPtr InternalHigh;
-        public uint Offset;
-        public uint OffsetHigh;
-        public IntPtr EventHandle;
-    }
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern SafeFileHandle CreateFileW(
-        string fileName,
-        uint desiredAccess,
-        uint shareMode,
-        IntPtr securityAttributes,
-        uint creationDisposition,
-        uint flagsAndAttributes,
-        IntPtr templateFile);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool DeviceIoControl(
-        SafeFileHandle file,
-        uint controlCode,
-        IntPtr inputBuffer,
-        uint inputBufferSize,
-        IntPtr outputBuffer,
-        uint outputBufferSize,
-        IntPtr bytesReturned,
-        IntPtr overlapped);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetOverlappedResult(
-        SafeFileHandle file,
-        IntPtr overlapped,
-        out uint bytesTransferred,
-        [MarshalAs(UnmanagedType.Bool)] bool wait);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CancelIoEx(SafeFileHandle file, IntPtr overlapped);
-}
-
-internal sealed class WindowsFactAttribute : FactAttribute
-{
-    public WindowsFactAttribute()
-    {
-        if (!OperatingSystem.IsWindows())
-            Skip = "This test requires Windows directory oplocks.";
-    }
 }
 
 internal sealed class CaseSensitiveFileSystemFactAttribute : FactAttribute
@@ -637,13 +411,18 @@ file static class SnapshotTestHelper
     public static async Task<ExportResult> ExportAndAssertAtomicPublicationAsync(
         SourceFixture source,
         string destination,
-        IProgress<string>? progress = null)
+        IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default)
     {
         var fullDestination = Path.GetFullPath(destination);
         var parent = Path.GetDirectoryName(fullDestination)!;
         var before = ParentEntries(parent);
 
-        var result = await SnapshotExporter.ExportAsync(source.Root, destination, progress);
+        var result = await SnapshotExporter.ExportAsync(
+            source.Root,
+            destination,
+            progress,
+            cancellationToken);
 
         var expected = before
             .Append(Path.GetFileName(fullDestination))
@@ -761,6 +540,12 @@ file static class SnapshotTestHelper
 
 public class SnapshotExporterTests : IDisposable
 {
+    private const int LinuxX64OpenDirectory = 0x10000;
+    private const int LinuxX64OpenNoFollow = 0x20000;
+    private const int LinuxArm64OpenDirectory = 0x4000;
+    private const int LinuxArm64OpenNoFollow = 0x8000;
+    private const int LinuxOpenCloseOnExec = 0x80000;
+
     private readonly List<string> _workspaces = [];
 
     private string Workspace(string tag)
@@ -785,8 +570,32 @@ public class SnapshotExporterTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData(
+        Architecture.X64,
+        LinuxX64OpenDirectory | LinuxX64OpenNoFollow | LinuxOpenCloseOnExec)]
+    [InlineData(
+        Architecture.Arm64,
+        LinuxArm64OpenDirectory | LinuxArm64OpenNoFollow | LinuxOpenCloseOnExec)]
+    public void LinuxDirectoryOpenFlags_MatchArchitectureAbi(
+        Architecture architecture,
+        int expectedFlags)
+    {
+        var selector = typeof(SnapshotDestinationDirectory).GetMethod(
+            "GetLinuxOpenDirectoryFlags",
+            BindingFlags.Static | BindingFlags.NonPublic,
+            binder: null,
+            [typeof(Architecture)],
+            modifiers: null);
+
+        Assert.NotNull(selector);
+        Assert.Equal(
+            expectedFlags,
+            Assert.IsType<int>(selector.Invoke(null, [architecture])));
+    }
+
     [Fact]
-    public async Task Export_AtomicPublicationPreservesStagedIdentityAndContent()
+    public async Task Export_PortableSnapshotPublishesAtomicallyWithExpectedContent()
     {
         const string finalizationMessage = "Finalizing snapshot (atomic rename)...";
         var workspace = Workspace("atomic-publication");
@@ -795,7 +604,6 @@ public class SnapshotExporterTests : IDisposable
         Directory.CreateDirectory(destinationParent);
         var destination = Path.Combine(destinationParent, "snapshot");
         string? temporaryPath = null;
-        (uint Volume, ulong FileId)? temporaryIdentity = null;
         var finalizationReports = 0;
         var progress = new SynchronousProgress<string>(message =>
         {
@@ -807,15 +615,6 @@ public class SnapshotExporterTests : IDisposable
                 SnapshotTestHelper.ParentEntries(destinationParent),
                 entry => entry.StartsWith("snapshot.tmp.", StringComparison.Ordinal));
             temporaryPath = Path.Combine(destinationParent, temporaryLeaf);
-            if (OperatingSystem.IsWindows())
-            {
-                using var temporaryHandle = File.OpenHandle(
-                    Path.Combine(temporaryPath, "cache.db"),
-                    FileMode.Open,
-                    FileAccess.Read,
-                    FileShare.ReadWrite | FileShare.Delete);
-                temporaryIdentity = GetWindowsFileIdentity(temporaryHandle);
-            }
         });
 
         var result = await SnapshotTestHelper.ExportAndAssertAtomicPublicationAsync(
@@ -827,18 +626,6 @@ public class SnapshotExporterTests : IDisposable
         Assert.NotNull(temporaryPath);
         Assert.False(SnapshotExporter.PathEntryExists(temporaryPath));
         Assert.True(Directory.Exists(destination));
-        if (OperatingSystem.IsWindows())
-        {
-            Assert.NotNull(temporaryIdentity);
-            using var destinationHandle = File.OpenHandle(
-                Path.Combine(destination, "cache.db"),
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.ReadWrite | FileShare.Delete);
-            Assert.Equal(
-                temporaryIdentity.Value,
-                GetWindowsFileIdentity(destinationHandle));
-        }
 
         SnapshotTestHelper.AssertFinalLayout(destination);
         Assert.Equal(Path.GetFullPath(destination), result.Destination);
@@ -1386,6 +1173,7 @@ public class SnapshotExporterTests : IDisposable
         var sourceBefore = SnapshotTestHelper.FingerprintTree(source.Root);
         var destinationParent = Path.Combine(workspace, "publish");
         var movedParent = Path.Combine(workspace, "publish-original");
+        var replacementMarker = Path.Combine(destinationParent, "replacement.txt");
         Directory.CreateDirectory(destinationParent);
         File.WriteAllText(Path.Combine(destinationParent, "original.txt"), "original");
         var originalParentBefore = SnapshotTestHelper.FingerprintTree(destinationParent);
@@ -1402,6 +1190,7 @@ public class SnapshotExporterTests : IDisposable
             callbackReached = true;
             Directory.Move(destinationParent, movedParent);
             Directory.CreateDirectory(destinationParent);
+            File.WriteAllText(replacementMarker, "replacement");
             parentReplaced = true;
         });
 
@@ -1412,39 +1201,29 @@ public class SnapshotExporterTests : IDisposable
         Assert.Equal(sourceBefore, SnapshotTestHelper.FingerprintTree(source.Root));
         Assert.False(SnapshotExporter.PathEntryExists(destination));
         Assert.False(SnapshotExporter.PathEntryExists(movedDestination));
-        if (!parentReplaced)
-        {
-            Assert.True(
-                OperatingSystem.IsWindows(),
-                $"Only the Windows no-delete lease may deny the parent move: {exception}");
-            Assert.True(
-                exception is IOException or UnauthorizedAccessException,
-                $"The Windows no-delete lease did not deny the parent move: {exception}");
-            Assert.False(SnapshotExporter.PathEntryExists(movedParent));
-            Assert.Equal(
-                originalParentBefore,
-                SnapshotTestHelper.FingerprintTree(destinationParent));
-            return;
-        }
-
         Assert.True(parentReplaced);
         var invalidOperation = Assert.IsType<InvalidOperationException>(exception);
         Assert.Contains(
-            "destination parent",
+            "destination parent changed",
             invalidOperation.Message,
             StringComparison.OrdinalIgnoreCase);
         Assert.Equal(
             originalParentBefore,
             SnapshotTestHelper.FingerprintTree(movedParent));
-        Assert.Empty(SnapshotTestHelper.ParentEntries(destinationParent));
+        Assert.True(Directory.Exists(destinationParent));
+        Assert.Equal("replacement", File.ReadAllText(replacementMarker));
+        Assert.Equal(
+            new[] { Path.GetFileName(replacementMarker) },
+            SnapshotTestHelper.ParentEntries(destinationParent));
     }
 
     [Theory]
-    [InlineData("replace-database")]
-    [InlineData("corrupt-database")]
+    [InlineData("alter-database")]
     [InlineData("alter-artifact")]
     [InlineData("remove-artifact")]
-    [InlineData("add-sidecar")]
+    [InlineData("add-wal")]
+    [InlineData("add-shm")]
+    [InlineData("add-journal")]
     public async Task Export_FinalProgressMutation_IsRejectedWithoutPublication(string mutation)
     {
         const string finalizationMessage = "Finalizing snapshot (atomic rename)...";
@@ -1457,16 +1236,6 @@ public class SnapshotExporterTests : IDisposable
         var destinationParent = Path.Combine(workspace, "publish");
         Directory.CreateDirectory(destinationParent);
         var destination = Path.Combine(destinationParent, "snapshot");
-        var replacementDatabase = Path.Combine(workspace, "replacement.db");
-        if (mutation == "replace-database")
-        {
-            using var replacement = SnapshotTestHelper.OpenConnection(
-                replacementDatabase,
-                SqliteOpenMode.ReadWriteCreate);
-            SnapshotTestHelper.ExecuteNonQuery(
-                replacement,
-                "PRAGMA user_version=1; CREATE TABLE replacement_marker(value TEXT NOT NULL);");
-        }
 
         var finalizationReports = 0;
         var progress = new SynchronousProgress<string>(message =>
@@ -1484,14 +1253,12 @@ public class SnapshotExporterTests : IDisposable
                 temporaryPath,
                 "artifacts",
                 source.Artifacts[0].RelativePath);
-
             switch (mutation)
             {
-                case "replace-database":
-                    File.Move(replacementDatabase, databasePath, overwrite: true);
-                    break;
-                case "corrupt-database":
-                    File.WriteAllBytes(databasePath, [0x00, 0x01, 0x02]);
+                case "alter-database":
+                    var databaseContent = File.ReadAllBytes(databasePath);
+                    databaseContent[^1] ^= 0xff;
+                    File.WriteAllBytes(databasePath, databaseContent);
                     break;
                 case "alter-artifact":
                     var content = File.ReadAllBytes(artifactPath);
@@ -1501,8 +1268,14 @@ public class SnapshotExporterTests : IDisposable
                 case "remove-artifact":
                     File.Delete(artifactPath);
                     break;
-                case "add-sidecar":
+                case "add-wal":
                     File.WriteAllText(databasePath + "-wal", "unexpected");
+                    break;
+                case "add-shm":
+                    File.WriteAllText(databasePath + "-shm", "unexpected");
+                    break;
+                case "add-journal":
+                    File.WriteAllText(databasePath + "-journal", "unexpected");
                     break;
                 default:
                     throw new XunitException($"Unknown final mutation '{mutation}'.");
@@ -1530,8 +1303,6 @@ public class SnapshotExporterTests : IDisposable
         Directory.CreateDirectory(destinationParent);
         var destination = Path.Combine(destinationParent, "snapshot");
         string? temporaryPath = null;
-        WindowsDirectoryOplock? publicationOplock = null;
-        Task? createCollision = null;
         var finalizationReports = 0;
         var progress = new SynchronousProgress<string>(message =>
         {
@@ -1543,69 +1314,20 @@ public class SnapshotExporterTests : IDisposable
                 SnapshotTestHelper.ParentEntries(destinationParent),
                 entry => entry.StartsWith("snapshot.tmp.", StringComparison.Ordinal));
             temporaryPath = Path.Combine(destinationParent, temporaryLeaf);
-            if (OperatingSystem.IsWindows())
-            {
-                // This breaks only when publication requests delete access after its final preflight.
-                var armedOplock = new WindowsDirectoryOplock(temporaryPath);
-                publicationOplock = armedOplock;
-                createCollision = Task.Factory.StartNew(
-                    () =>
-                    {
-                        try
-                        {
-                            armedOplock.WaitForBreak(TimeSpan.FromSeconds(30));
-                            Directory.CreateDirectory(destination);
-                            File.WriteAllText(
-                                Path.Combine(destination, "sentinel.txt"),
-                                sentinelContent);
-                        }
-                        finally
-                        {
-                            armedOplock.Dispose();
-                        }
-                    },
-                    CancellationToken.None,
-                    TaskCreationOptions.LongRunning,
-                    TaskScheduler.Default);
-            }
-            else
-            {
-                Directory.CreateDirectory(destination);
-                File.WriteAllText(Path.Combine(destination, "sentinel.txt"), sentinelContent);
-            }
+            Directory.CreateDirectory(destination);
+            File.WriteAllText(Path.Combine(destination, "sentinel.txt"), sentinelContent);
         });
 
-        InvalidOperationException exception;
-        try
-        {
-            exception = await Assert.ThrowsAsync<InvalidOperationException>(
-                () => SnapshotExporter.ExportAsync(source.Root, destination, progress));
-            if (createCollision is not null)
-                await createCollision;
-        }
-        finally
-        {
-            publicationOplock?.Dispose();
-        }
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => SnapshotExporter.ExportAsync(source.Root, destination, progress));
 
         Assert.Equal(1, finalizationReports);
         Assert.NotNull(temporaryPath);
         Assert.False(SnapshotExporter.PathEntryExists(temporaryPath));
-        if (OperatingSystem.IsWindows())
-        {
-            Assert.NotNull(createCollision);
-            Assert.Equal(
-                $"Destination already exists: {Path.GetFileName(destination)}. " +
-                "It was not overwritten.",
-                exception.Message);
-        }
-        else
-        {
-            Assert.Contains(
-                "already exists",
-                exception.Message,
-                StringComparison.OrdinalIgnoreCase);
-        }
+        Assert.Contains(
+            "already exists",
+            exception.Message,
+            StringComparison.OrdinalIgnoreCase);
         Assert.Equal(sourceBefore, SnapshotTestHelper.FingerprintTree(source.Root));
         Assert.True(Directory.Exists(destination));
         Assert.Equal(
@@ -1617,146 +1339,6 @@ public class SnapshotExporterTests : IDisposable
         Assert.Equal(
             new[] { "snapshot" },
             SnapshotTestHelper.ParentEntries(destinationParent));
-    }
-
-    [WindowsFact]
-    public async Task Export_CancellationInterruptsPendingWindowsNativeRename()
-    {
-        const string finalizationMessage = "Finalizing snapshot (atomic rename)...";
-        const string sentinelContent = "foreign holder sentinel";
-        var setupTimeout = TimeSpan.FromSeconds(30);
-        var cancellationTimeout = TimeSpan.FromSeconds(10);
-        var cleanupFallbackTimeout = TimeSpan.FromSeconds(30);
-        var workspace = Workspace("cancel-pending-windows-rename");
-        var source = SnapshotTestHelper.CreateSource(
-            workspace,
-            artifactRows: 1,
-            useWal: false);
-        var sourceBefore = SnapshotTestHelper.FingerprintTree(source.Root);
-        var destinationParent = Path.Combine(workspace, "publish");
-        Directory.CreateDirectory(destinationParent);
-        var sentinel = Path.Combine(destinationParent, "external-sentinel.txt");
-        File.WriteAllText(sentinel, sentinelContent);
-        var sentinelBefore = File.ReadAllBytes(sentinel);
-        var destination = Path.Combine(destinationParent, "snapshot");
-        var finalizationReached = new TaskCompletionSource(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        using var callerCancellation = new CancellationTokenSource(TimeSpan.FromMinutes(1));
-        var callerToken = callerCancellation.Token;
-        string? temporaryPath = null;
-        WindowsDirectoryOplock? publicationOplock = null;
-        var finalizationReports = 0;
-        var progress = new SynchronousProgress<string>(message =>
-        {
-            if (!string.Equals(message, finalizationMessage, StringComparison.Ordinal))
-                return;
-
-            Assert.Equal(1, Interlocked.Increment(ref finalizationReports));
-            var temporaryLeaf = Assert.Single(
-                SnapshotTestHelper.ParentEntries(destinationParent),
-                entry => entry.StartsWith("snapshot.tmp.", StringComparison.Ordinal));
-            temporaryPath = Path.Combine(destinationParent, temporaryLeaf);
-
-            // Delete sharing lets the exporter finish freezing and validating the staged tree.
-            // The break is delivered only when NtSetInformationFile attempts publication.
-            publicationOplock = new WindowsDirectoryOplock(
-                temporaryPath,
-                shareDelete: true);
-            finalizationReached.SetResult();
-        });
-
-        var exportTask = SnapshotExporter.ExportAsync(
-            source.Root,
-            destination,
-            progress,
-            callerToken);
-        OperationCanceledException? observedCancellation = null;
-        XunitException? watchdogFailure = null;
-        try
-        {
-            var firstCompletion = await Task.WhenAny(finalizationReached.Task, exportTask)
-                .WaitAsync(setupTimeout);
-            if (firstCompletion == exportTask)
-            {
-                await exportTask;
-                throw new XunitException(
-                    "Export completed before the final publication hook was reached.");
-            }
-
-            await finalizationReached.Task;
-            Assert.NotNull(publicationOplock);
-            publicationOplock.WaitForBreak(setupTimeout);
-            Assert.False(
-                exportTask.IsCompleted,
-                "The oplock break did not leave the native rename pending.");
-
-            callerCancellation.Cancel();
-            try
-            {
-                await exportTask.WaitAsync(cancellationTimeout);
-                watchdogFailure = new XunitException(
-                    "Export completed successfully after its caller canceled a pending " +
-                    "native rename.");
-            }
-            catch (OperationCanceledException exception)
-            {
-                observedCancellation = exception;
-            }
-            catch (TimeoutException)
-            {
-                watchdogFailure = new XunitException(
-                    $"Export did not honor cancellation within {cancellationTimeout} while " +
-                    "NtSetInformationFile was pending. The foreign oplock was retained until " +
-                    "this watchdog fired.");
-            }
-
-            if (watchdogFailure is null)
-            {
-                Assert.NotNull(observedCancellation);
-                Assert.Equal(callerToken, observedCancellation.CancellationToken);
-                Assert.False(publicationOplock.IsDisposed);
-                Assert.False(SnapshotExporter.PathEntryExists(destination));
-                Assert.NotNull(temporaryPath);
-                Assert.False(SnapshotExporter.PathEntryExists(temporaryPath));
-                Assert.Equal(
-                    new[] { "external-sentinel.txt" },
-                    SnapshotTestHelper.ParentEntries(destinationParent));
-                Assert.Equal(sentinelBefore, File.ReadAllBytes(sentinel));
-                Assert.Equal(sentinelContent, File.ReadAllText(sentinel));
-                Assert.Equal(sourceBefore, SnapshotTestHelper.FingerprintTree(source.Root));
-            }
-        }
-        finally
-        {
-            callerCancellation.Cancel();
-            publicationOplock?.Dispose();
-
-            if (!exportTask.IsCompleted)
-            {
-                var cleanupOutcome = await Record.ExceptionAsync(
-                    async () => await exportTask.WaitAsync(cleanupFallbackTimeout));
-                if (cleanupOutcome is TimeoutException)
-                {
-                    throw new XunitException(
-                        $"Export remained blocked for {cleanupFallbackTimeout} after the " +
-                        "watchdog released its oplock cleanup fallback.");
-                }
-            }
-        }
-
-        if (watchdogFailure is not null)
-            throw watchdogFailure;
-
-        Assert.Equal(1, finalizationReports);
-        Assert.NotNull(publicationOplock);
-        Assert.True(publicationOplock.IsDisposed);
-        Assert.False(SnapshotExporter.PathEntryExists(destination));
-        Assert.NotNull(temporaryPath);
-        Assert.False(SnapshotExporter.PathEntryExists(temporaryPath));
-        Assert.Equal(
-            new[] { "external-sentinel.txt" },
-            SnapshotTestHelper.ParentEntries(destinationParent));
-        Assert.Equal(sentinelBefore, File.ReadAllBytes(sentinel));
     }
 
     [CaseSensitiveFileSystemFact]
@@ -2333,41 +1915,6 @@ public class SnapshotExporterTests : IDisposable
             rows.Add((reader.GetString(0), reader.GetString(1)));
         return rows.ToArray();
     }
-
-    private static (uint Volume, ulong FileId) GetWindowsFileIdentity(SafeFileHandle handle)
-    {
-        if (!GetFileInformationByHandle(handle, out var information))
-        {
-            throw new XunitException(
-                "Unable to inspect a Windows file handle " +
-                $"(error {Marshal.GetLastPInvokeError()}).");
-        }
-
-        return (
-            information.VolumeSerialNumber,
-            ((ulong)information.FileIndexHigh << 32) | information.FileIndexLow);
-    }
-
-    [StructLayout(LayoutKind.Sequential, Pack = 4)]
-    private struct ByHandleFileInformation
-    {
-        public uint FileAttributes;
-        public long CreationTime;
-        public long LastAccessTime;
-        public long LastWriteTime;
-        public uint VolumeSerialNumber;
-        public uint FileSizeHigh;
-        public uint FileSizeLow;
-        public uint NumberOfLinks;
-        public uint FileIndexHigh;
-        public uint FileIndexLow;
-    }
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetFileInformationByHandle(
-        SafeFileHandle file,
-        out ByHandleFileInformation information);
 }
 
 public class SnapshotValidatorTests : IDisposable
@@ -2825,6 +2372,66 @@ public class SnapshotCommandOutputTests : IDisposable
         {
             // Best effort only.
         }
+    }
+
+    [Fact]
+    public async Task Export_HelpStatesTrustedDestinationParentPrecondition()
+    {
+        var testAssemblyDirectory =
+            new DirectoryInfo(Path.GetDirectoryName(typeof(SnapshotCommandOutputTests).Assembly.Location)!);
+        var testProjectDirectory = testAssemblyDirectory;
+        while (testProjectDirectory != null &&
+               !string.Equals(
+                   testProjectDirectory.Name,
+                   "HelixTool.Tests",
+                   StringComparison.Ordinal))
+        {
+            testProjectDirectory = testProjectDirectory.Parent;
+        }
+
+        Assert.NotNull(testProjectDirectory);
+        Assert.NotNull(testProjectDirectory.Parent);
+        var relativeOutputDirectory = Path.GetRelativePath(
+            testProjectDirectory.FullName,
+            testAssemblyDirectory.FullName);
+        var toolAssembly = Path.Combine(
+            testProjectDirectory.Parent.FullName,
+            "HelixTool",
+            relativeOutputDirectory,
+            "HelixTool.dll");
+        Assert.True(File.Exists(toolAssembly), $"CLI assembly not found: {toolAssembly}");
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add(toolAssembly);
+        startInfo.ArgumentList.Add("snapshot");
+        startInfo.ArgumentList.Add("export");
+        startInfo.ArgumentList.Add("--help");
+
+        using var process = new Process { StartInfo = startInfo };
+        Assert.True(process.Start(), "Failed to start the snapshot export help command.");
+        var standardOutput = process.StandardOutput.ReadToEndAsync();
+        var standardError = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+        var output = (await standardOutput) + (await standardError);
+
+        Assert.True(
+            process.ExitCode == 0,
+            $"Snapshot export help exited with {process.ExitCode}:{Environment.NewLine}{output}");
+        Assert.Contains(
+            "parent must be a trusted namespace",
+            output,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "same-principal process",
+            output,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
