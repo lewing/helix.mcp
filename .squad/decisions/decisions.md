@@ -173,6 +173,18 @@ This decision explicitly supersedes any earlier policy requiring or claiming abs
 
 ---
 
+### 2026-08-26T18:29:40.518-05:00: Final Trusted-Parent Publication Contract
+**By:** Kane
+**Status:** APPROVED — Supersedes all earlier publication-freeze claims
+
+At source/test head `cd8e3ba44b3e62fa5f3dbf0b26f579112aeffeba` and help-only head `59a4269048bfcbd9a5b4b3a8b0f892ddd025b875`, snapshot publication requires an explicit trusted destination-parent namespace on every platform. The parent is anchored before callbacks and cooperative retargeting is detected. This boundary does not claim protection against adversarial same-principal namespace mutation.
+
+After anchoring, the final callback runs; the actual serialized database, artifacts, exact layout, and sidecars are then validated; publication follows immediately with atomic no-overwrite semantics. The validator rejects `-journal`, WAL, and SHM sidecars. Windows publishes with `MoveFileExW` and flags 0, Linux with `renameat2(RENAME_NOREPLACE)`, and macOS with `renamex_np(RENAME_EXCL)`.
+
+This decision preserves the history above but explicitly replaces every earlier claim that Windows freezes a staging tree through rename, uses handle-relative `NtSetInformationFile` publication, or protects against adversarial same-principal mutation. The abandoned oplock/`NtSetInformationFile` freeze design is not part of the supported contract.
+
+---
+
 ## Archive
 
 See `archive/` for dated snapshots.
