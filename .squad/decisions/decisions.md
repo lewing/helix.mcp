@@ -1,6 +1,6 @@
 # Decisions
 
-**Last updated:** 2026-08-26T19:04:54Z
+**Last updated:** 2026-08-26T18:29:40.518-05:00
 **Merge cycle:** 2026-08-26T19:04:54Z (Scribe PR #127 second-review cycle merge)
 
 ---
@@ -161,7 +161,18 @@ Supersedes the 2026-08-26 macOS policy. Conservative destination deny-list check
 
 ---
 
+### 2026-08-26T18:29:40.518-05:00: Final Snapshot Publication Ordering and Namespace Boundary
+**By:** Kane
+**Status:** APPROVED — Supersedes earlier absolute stable-directory-identity policy
+
+The original same-path parent-replacement finding remains valid. Final publication anchors the destination parent before callbacks. The final callback runs before Windows staging freeze and before final validation of the actual serialized database, artifacts, exact output tree, and sidecars; no callback or other caller-controlled hook runs after that validation. SQLite online-backup consistency remains unchanged.
+
+On Windows, publication uses handle-relative `NtSetInformationFile` native no-overwrite rename, with link-safe cleanup. Linux uses `renameat2(RENAME_NOREPLACE)` and macOS uses `renamex_np(RENAME_EXCL)`. The Linux/macOS design operates under the documented trusted destination-parent namespace threat model: cooperative parent retarget is detected, but this is not a claim of atomic defense against malicious same-principal namespace mutation.
+
+This decision explicitly supersedes any earlier policy requiring or claiming absolute stable destination-directory identity across all platforms. The required guarantee is the final ordering and platform-native no-overwrite publication semantics above, within the stated trusted-parent boundary.
+
+---
+
 ## Archive
 
 See `archive/` for dated snapshots.
-
