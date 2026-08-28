@@ -216,6 +216,110 @@ hlx azdo search-timeline 12345678 "test"
 hlx azdo search-timeline 12345678 "build" --type Task --result all
 ```
 
+### `hlx azdo evidence plan <buildId> [--job-results RESULTS] [--artifact-pattern PAT] [--artifact-job-prefix PREFIX] [--keep-attempt-prefix] [--match MODE] [--json]`
+
+Plan failed/canceled job → artifact evidence mapping. Returns a bounded plan with candidate artifacts (if any) for each selected job, ranked by attempt number. It never silently chooses: ambiguous matches retain ranked candidates and report the full candidate count.
+
+```bash
+# Map failed and canceled jobs to evidence artifacts
+hlx azdo evidence plan 12345678
+
+# Map only failed jobs using the default auto strategy (source ID, then name fallback)
+hlx azdo evidence plan 12345678 --job-results failed
+
+# Map to artifacts matching a specific prefix, using normalized-exact matching.
+# AttemptN_ is stripped by default.
+hlx azdo evidence plan 12345678 --artifact-pattern "Logs_Build_*" --artifact-job-prefix "Logs_Build_" --match normalized-exact
+
+# Keep the literal AttemptN_ segment (this is a bare presence flag)
+hlx azdo evidence plan 12345678 --keep-attempt-prefix
+
+# Output as JSON
+hlx azdo evidence plan 12345678 --json
+```
+
+**Parameters:**
+
+- `--job-results RESULTS` — Comma-separated timeline result filter. Default: `failed,canceled`. Allowed: `failed`, `canceled`, `abandoned`, `skipped`, `succeededWithIssues`, `succeeded`, `none`. Case-insensitive. All other values yield an error listing the valid options.
+
+- `--artifact-pattern PAT` — Glob pattern to filter artifacts (e.g., `Logs_Build_*`, `*.binlog`). Default: no filter (all artifacts considered).
+
+- `--artifact-job-prefix PREFIX` — Prefix to strip from artifact names before matching to job names (e.g., `Logs_Build_`). Default: no prefix stripping.
+
+- `--keep-attempt-prefix` — Bare presence flag (it takes no value). Keep `Attempt{N}_` in artifact names after removing `--artifact-job-prefix`. By default this segment is stripped (e.g., `Logs_Build_Attempt1_JobName` → `JobName`), parsed into each candidate's `attempt`, and used for ranking. With this flag, the segment remains part of the name used by name-based matching and the candidate `attempt` property is omitted. The flag is omitted by default.
+
+The MCP equivalent keeps its positive `stripAttemptPrefix` boolean, which defaults to `true`. Thus CLI `--keep-attempt-prefix` is equivalent to MCP `stripAttemptPrefix: false`; omitting either option preserves strip-by-default behavior.
+
+- `--match MODE` — Matching strategy. Default: `auto`.
+  - `auto` — Join by artifact `source` (GUID) first, fall back to normalized-exact name matching. **Recommended.** Handles retried jobs correctly and has 0% miss rate on real builds.
+  - `source-id` — GUID join only; unmapped jobs reported as `missing`. No fallback.
+  - `normalized-exact` — Name-only matching (dotnet/runtime PR #132609 parity). Note: 12.7% miss rate on real builds with matrix variants, and 100% ambiguous on retried jobs. Kept for reproduction/audit purposes.
+  - `exact` — Ordinal-ignore-case equality after prefix stripping, with no normalization.
+
+**Exit Codes:**
+
+| Code | Meaning |
+|------|---------|
+| `0` | Plan produced and all selected jobs have exactly one mapped artifact (`complete == true`). |
+| `2` | Plan produced but contains ambiguous, missing, or truncated results (`complete == false`). **The bounded plan is still written to stdout.** This is informational, not a hard error. |
+| `1` | Hard error: invalid argument, build not found, timeline unavailable, or network error. |
+
+**Output Structure (JSON):**
+
+Without `--json`, the CLI prints a deterministic human-readable plan. With `--json`, it emits the pretty-printed structured response below; MCP always returns this structure.
+
+- `buildId` — The AzDO build ID (numeric).
+- `build` — Build provenance: `buildId`, `buildNumber`, `definitionName`, `definitionId`, `status`, `result`, `sourceBranch`, `sourceVersion`, `finishTime`, `webUrl`, `org`, `project`. PR metadata (if applicable): `prNumber`, `prSourceSha`, `prSourceBranch`, `prIsFork`, `prDraft`, `prProviderId`.
+- `buildIncomplete` — `true` if the AzDO build is still running (status not `"completed"`).
+- `matchStrategy` — Canonical lowercase form of the effective `--match` value (e.g., `"auto"`, `"source-id"`). Mixed-case input is accepted and emitted in lowercase.
+- `jobResultsFilter` — The `--job-results` values that were matched.
+- `artifactPattern`, `artifactJobPrefix`, `stripAttemptPrefix` — Echo of the effective input options. `stripAttemptPrefix` is `false` when the CLI receives `--keep-attempt-prefix`.
+- `entries[]` — One entry per selected job. Each contains:
+  - `jobId`, `jobName` — Timeline record GUID and display name.
+  - `jobResult` — The job's result value (e.g., `"failed"`, `"canceled"`).
+  - `jobOrder` — Timeline record order (if present).
+  - `jobAttempt` — Job attempt number from the timeline (if present).
+  - `matchedBy` — Which strategy produced this entry's candidates: `"source-id"`, `"normalized-name"` (from `--match normalized-exact`), `"exact"`, or `null` (missing).
+  - `status` — `"mapped"` (exactly one candidate), `"ambiguous"` (multiple), or `"missing"` (zero).
+  - `candidates[]` — Up to 10 ranked candidate artifacts. Each carries direct fields: `rank` (0-based), `artifactId`, `artifactName`, `source` (job GUID that published it), `attempt` (parsed from `AttemptN_` when attempt-prefix stripping is enabled, as it is by default; omitted with `--keep-attempt-prefix`), `resourceType`, `downloadUrl`, and `sizeBytes`.
+  - `candidateTotal` — Total matching candidates before the returned list was bounded.
+  - `candidatesTruncated` — `true` when `candidateTotal` exceeds the number returned in `candidates`.
+  - `candidateNote` — Human-readable candidate truncation summary, present when `candidatesTruncated` is `true`.
+- `complete` — `true` only if all entries have `status: "mapped"` and no output was truncated.
+- `incompleteReasons[]` — Human-readable lines (present only if `complete == false`) explaining ambiguities, gaps, or entry truncation.
+- `warnings[]` — Non-fatal planning diagnostics in deterministic order, capped at 10. Always present (empty when there are no warnings).
+- `warningTotal` — Total warnings before the 10-item bound. Always present.
+- `warningsTruncated` — `true` when `warningTotal` exceeds the number returned in `warnings`; otherwise `false`. Always present.
+- `truncated` — `true` if either the 200-entry limit or any entry's 10-candidate limit was exceeded.
+- `totalEntries` — Total selected jobs (present whenever `truncated` is `true`, whether entry or candidate overflow caused it).
+- `note` — Present on truncation; summarizes entry truncation, candidate-list truncation, or both.
+- `generatedAt` — ISO 8601 timestamp when the plan was generated.
+
+**Why `auto` is the default:** Testing on real AzDO builds reveals:
+- Normalized-name matching (PR #132609) has a **12.7% miss rate** because the AzDO job display name includes a matrix-leg suffix that the artifact omits (for example, job `linux-arm64 release CrossAOT_Mono crossaot` versus artifact `Logs_Build_Attempt1_linux__arm64_release_CrossAOT_Mono`).
+- On retried builds, name matching becomes **100% ambiguous** with the default attempt-prefix stripping — both `Attempt1` and `Attempt2` artifacts collapse to the same key and are both returned.
+- GUID joining (`artifact.source == job.id`) has a **100% resolution rate** across real builds and correctly handles retries by construction — each artifact carries the exact job GUID that published it.
+
+Use `--match normalized-exact` only if you need to reproduce or audit against the workflow's existing algorithm.
+
+**Example: Full-stack usage**
+
+```bash
+BUILD_ID=12345678
+
+# Create a redaction-safe manifest of stable artifact identifiers.
+# This projection intentionally does not echo candidate download URLs.
+hlx azdo evidence plan "$BUILD_ID" --job-results failed --json | \
+  jq '{complete, truncated, artifacts: [.entries[] | select(.status == "mapped") | {jobId, jobName, artifactId: .candidates[0].artifactId, artifactName: .candidates[0].artifactName, source: .candidates[0].source, attempt: .candidates[0].attempt}]}'
+
+# Find ambiguous mappings (manual resolution needed)
+hlx azdo evidence plan "$BUILD_ID" --json | \
+  jq '.entries[] | select(.status == "ambiguous")'
+
+# Validate completeness before fetching
+hlx azdo evidence plan "$BUILD_ID" --json | jq '.complete'
+```
+
 ### `hlx azdo test-attachments <runId> <resultId> [--top N]`
 
 List attachments for a test result (screenshots, logs, dumps).

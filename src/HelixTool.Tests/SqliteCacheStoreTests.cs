@@ -354,6 +354,16 @@ public class SqliteCacheStoreEvalModeTests : IDisposable
 
     private string DbPath => Path.Combine(_snapshotDir, "cache.db");
 
+    // Staging root for expired-row seeding. Deliberately distinct from _parentDir so the writer
+    // store never resolves to _snapshotDir; see ExpiredSnapshot for why that separation matters.
+    private string StagingCacheRoot => Path.Combine(_parentDir, "live");
+
+    private Task SeedExpiredSnapshotAsync(
+        Func<SqliteCacheStore, Task> seedAsync,
+        string[]? metadataKeys = null,
+        string[]? jobIds = null)
+        => ExpiredSnapshot.CreateAsync(StagingCacheRoot, _snapshotDir, seedAsync, metadataKeys, jobIds);
+
     // =========================================================================
     // TTL bypass
     // =========================================================================
@@ -361,14 +371,11 @@ public class SqliteCacheStoreEvalModeTests : IDisposable
     [Fact]
     public async Task EvalMode_Metadata_ExpiredEntry_ReturnsValue()
     {
-        using var writer = CreateWriterStore();
         const string key = "job:abc123:details";
         const string json = "{\"Name\":\"expired-job\"}";
-        // Delay to let the fire-and-forget background eviction complete on the empty DB
-        // before we write a TimeSpan.Zero-TTL row (otherwise eviction races the write).
-        await Task.Delay(30);
-        await writer.SetMetadataAsync(key, json, TimeSpan.Zero); // expires immediately
-        writer.Dispose();
+        await SeedExpiredSnapshotAsync(
+            writer => writer.SetMetadataAsync(key, json, ExpiredSnapshot.SeedTtl),
+            metadataKeys: [key]);
 
         using var evalStore = OpenEvalStore();
         var result = await evalStore.GetMetadataAsync(key);
@@ -389,11 +396,10 @@ public class SqliteCacheStoreEvalModeTests : IDisposable
     [Fact]
     public async Task EvalMode_JobState_ExpiredEntry_ReturnsValue()
     {
-        using var writer = CreateWriterStore();
         const string jobId = "d1f9a7c3-2b4e-4f8a-9c0d-e5f6a7b8c9d0";
-        await Task.Delay(30); // wait for background eviction on empty DB
-        await writer.SetJobCompletedAsync(jobId, completed: true, TimeSpan.Zero);
-        writer.Dispose();
+        await SeedExpiredSnapshotAsync(
+            writer => writer.SetJobCompletedAsync(jobId, completed: true, ExpiredSnapshot.SeedTtl),
+            jobIds: [jobId]);
 
         using var evalStore = OpenEvalStore();
         var result = await evalStore.IsJobCompletedAsync(jobId);
@@ -418,13 +424,16 @@ public class SqliteCacheStoreEvalModeTests : IDisposable
     [Fact]
     public async Task EvalMode_EvictExpired_IsNoOp_ExpiredEntriesRemain()
     {
-        using var writer = CreateWriterStore();
         const string key = "job:old123:details";
         const string jobId = "old-job-id";
-        await Task.Delay(30); // wait for background eviction on empty DB before writing zero-TTL rows
-        await writer.SetMetadataAsync(key, "{\"stale\":true}", TimeSpan.Zero);
-        await writer.SetJobCompletedAsync(jobId, true, TimeSpan.Zero);
-        writer.Dispose();
+        await SeedExpiredSnapshotAsync(
+            async writer =>
+            {
+                await writer.SetMetadataAsync(key, "{\"stale\":true}", ExpiredSnapshot.SeedTtl);
+                await writer.SetJobCompletedAsync(jobId, true, ExpiredSnapshot.SeedTtl);
+            },
+            metadataKeys: [key],
+            jobIds: [jobId]);
 
         using var evalStore = OpenEvalStore();
         await evalStore.EvictExpiredAsync();

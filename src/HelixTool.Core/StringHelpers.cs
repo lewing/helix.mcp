@@ -5,12 +5,23 @@ namespace HelixTool.Core;
 /// </summary>
 public static class StringHelpers
 {
-    /// <summary>Simple glob match: '*' matches all, '*.ext' matches suffix, else substring.</summary>
+    /// <summary>
+    /// Simple glob match:
+    /// <list type="bullet">
+    ///   <item><c>*</c> — matches all</item>
+    ///   <item><c>*.ext</c> — suffix match (leading <c>*.</c>)</item>
+    ///   <item><c>Prefix*</c> — prefix match (trailing <c>*</c>, no leading <c>*</c>)</item>
+    ///   <item>anything else — case-insensitive substring match</item>
+    /// </list>
+    /// No regex; all comparisons are <see cref="StringComparison.OrdinalIgnoreCase"/>.
+    /// </summary>
     public static bool MatchesPattern(string name, string pattern)
     {
         if (pattern == "*") return true;
         if (pattern.StartsWith("*."))
             return name.AsSpan().EndsWith(pattern.AsSpan(1), StringComparison.OrdinalIgnoreCase);
+        if (pattern.EndsWith('*') && !pattern.StartsWith('*'))
+            return name.StartsWith(pattern[..^1], StringComparison.OrdinalIgnoreCase);
         return name.Contains(pattern, StringComparison.OrdinalIgnoreCase);
     }
 

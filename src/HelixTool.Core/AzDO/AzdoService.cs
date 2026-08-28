@@ -997,4 +997,118 @@ public class AzdoService
             FailedHelixJobs: failedCount,
             Jobs: jobs);
     }
+
+    // Valid filters for AzDO timeline Job records; "none" selects an unset (null) result.
+    private static readonly HashSet<string> s_validJobResults = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "failed", "canceled", "abandoned", "skipped", "succeededWithIssues", "succeeded", "none"
+    };
+
+    /// <summary>
+    /// Produce a deterministic, read-only evidence plan for a build:
+    /// maps every failed/canceled Job record to its matching artifact candidate(s).
+    /// Three cached GETs (build, timeline, artifacts); no downloads.
+    /// </summary>
+    public async Task<AzdoEvidencePlan> GetEvidencePlanAsync(
+        string buildIdOrUrl,
+        AzdoEvidencePlanOptions options,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        // Validate match strategy
+        if (!AzdoEvidenceMatchStrategy.AllValues.Contains(options.Match, StringComparer.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                $"Invalid match strategy '{options.Match}'. " +
+                $"Must be one of: {string.Join(", ", AzdoEvidenceMatchStrategy.AllValues)}.",
+                nameof(options));
+        }
+
+        // Validate job-result values
+        foreach (var result in options.JobResults)
+        {
+            if (!s_validJobResults.Contains(result))
+                throw new ArgumentException(
+                    $"Invalid job result '{result}'. " +
+                    $"Must be one of: failed, canceled, abandoned, skipped, succeededWithIssues, succeeded, none.",
+                    nameof(options));
+        }
+
+        var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
+
+        // Three cached GETs in parallel
+        var buildTask = _client.GetBuildAsync(org, project, buildId, ct);
+        var timelineTask = _client.GetTimelineAsync(org, project, buildId, ct);
+        var artifactsTask = _client.GetBuildArtifactsAsync(org, project, buildId, ct);
+        await Task.WhenAll(buildTask, timelineTask, artifactsTask);
+
+        var build = await buildTask;
+        if (build is null)
+            throw new InvalidOperationException($"Build {buildId} not found in {org}/{project}.");
+
+        var timeline = await timelineTask;
+        if (timeline is null || timeline.Records.Count == 0)
+            throw new InvalidOperationException($"No timeline available for build {buildId} in {org}/{project}.");
+
+        var allArtifacts = await artifactsTask;
+
+        // Filter artifacts by pattern
+        var filteredArtifacts = options.ArtifactPattern == "*"
+            ? allArtifacts
+            : allArtifacts
+                .Where(a => StringHelpers.MatchesPattern(a.Name ?? string.Empty, options.ArtifactPattern))
+                .ToList();
+
+        // Run the matching algorithm (filtering by type/result is done inside BuildPlan)
+        var planResult = AzdoEvidenceMatcher.BuildPlan(
+            timeline.Records, filteredArtifacts, options);
+
+        var provenance = AzdoBuildProvenance.FromBuild(build, org, project);
+
+        var buildIncomplete = !string.Equals(build.Status, "completed", StringComparison.OrdinalIgnoreCase);
+        var allWarnings = new List<string>(planResult.Warnings.Count + 1);
+        var warningSet = new HashSet<string>(StringComparer.Ordinal);
+
+        void AddWarning(string warning)
+        {
+            if (warningSet.Add(warning))
+                allWarnings.Add(warning);
+        }
+
+        if (buildIncomplete)
+        {
+            AddWarning(
+                "Build is not completed; this evidence plan is a point-in-time snapshot and may change.");
+        }
+        foreach (var warning in planResult.Warnings)
+            AddWarning(warning);
+
+        var warningTotal = allWarnings.Count;
+        var warnings = allWarnings
+            .Take(AzdoEvidencePlan.MaxWarnings)
+            .ToList();
+
+        return new AzdoEvidencePlan
+        {
+            BuildId = build.Id,
+            Build = provenance,
+            BuildIncomplete = buildIncomplete,
+            MatchStrategy = planResult.MatchStrategy,
+            JobResultsFilter = options.JobResults,
+            ArtifactPattern = options.ArtifactPattern,
+            ArtifactJobPrefix = options.ArtifactJobPrefix,
+            StripAttemptPrefix = options.StripAttemptPrefix,
+            Entries = planResult.Entries,
+            Complete = planResult.Complete,
+            IncompleteReasons = planResult.IncompleteReasons,
+            Warnings = warnings,
+            WarningTotal = warningTotal,
+            WarningsTruncated = warningTotal > warnings.Count,
+            Truncated = planResult.Truncated,
+            TotalEntries = planResult.Truncated ? planResult.Total : null,
+            Note = planResult.Note,
+            GeneratedAt = DateTimeOffset.UtcNow
+        };
+    }
 }

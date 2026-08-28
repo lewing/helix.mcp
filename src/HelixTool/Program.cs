@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
+using System.Globalization;
 using ConsoleAppFramework;
 using HelixTool;
 using HelixTool.Core;
@@ -1920,5 +1921,189 @@ public class AzdoCommands
             false => "no",
             _ => "unknown"
         };
+
+    private static string QuoteUntrusted(string? value)
+    {
+        if (value is null)
+            return "(none)";
+
+        // JSON string escaping keeps untrusted values on one line and neutralizes terminal controls.
+        return JsonSerializer.Serialize(value);
+    }
+
+    private static string FormatInvariant<T>(T value) where T : IFormattable
+        => value.ToString(null, CultureInfo.InvariantCulture);
+
+    private static void PrintEvidencePlan(AzdoEvidencePlan plan)
+    {
+        Console.WriteLine($"Evidence plan for build #{FormatInvariant(plan.BuildId)}");
+        Console.WriteLine($"  Build number:      {QuoteUntrusted(plan.Build.BuildNumber)}");
+        Console.WriteLine($"  Definition:        {QuoteUntrusted(plan.Build.DefinitionName)} ({(plan.Build.DefinitionId.HasValue ? FormatInvariant(plan.Build.DefinitionId.Value) : "none")})");
+        Console.WriteLine($"  Status/result:     {QuoteUntrusted(plan.Build.Status)} / {QuoteUntrusted(plan.Build.Result)}");
+        Console.WriteLine($"  Source branch:     {QuoteUntrusted(plan.Build.SourceBranch)}");
+        Console.WriteLine($"  Source version:    {QuoteUntrusted(plan.Build.SourceVersion)}");
+        Console.WriteLine($"  Finish time:       {(plan.Build.FinishTime.HasValue ? plan.Build.FinishTime.Value.ToString("O", CultureInfo.InvariantCulture) : "none")}");
+        Console.WriteLine($"  URL:               {QuoteUntrusted(plan.Build.WebUrl)}");
+        Console.WriteLine($"  Organization:      {QuoteUntrusted(plan.Build.Org)}");
+        Console.WriteLine($"  Project:           {QuoteUntrusted(plan.Build.Project)}");
+        Console.WriteLine($"  Build incomplete:  {(plan.BuildIncomplete ? "yes" : "no")}");
+        Console.WriteLine($"  Match strategy:    {QuoteUntrusted(plan.MatchStrategy)}");
+        Console.WriteLine($"  Job results:       {string.Join(", ", plan.JobResultsFilter.Select(QuoteUntrusted))}");
+        Console.WriteLine($"  Artifact pattern:  {QuoteUntrusted(plan.ArtifactPattern)}");
+        Console.WriteLine($"  Artifact prefix:   {QuoteUntrusted(plan.ArtifactJobPrefix)}");
+        Console.WriteLine($"  Strip attempts:    {(plan.StripAttemptPrefix ? "yes" : "no")}");
+        Console.WriteLine($"  Entries:           {FormatInvariant(plan.Entries.Count)} of {FormatInvariant(plan.TotalEntries ?? plan.Entries.Count)}");
+        Console.WriteLine($"  Complete:          {(plan.Complete ? "yes" : "no")}");
+        Console.WriteLine($"  Truncated:         {(plan.Truncated ? "yes" : "no")}");
+
+        if (plan.Build.PrNumber is not null)
+        {
+            Console.WriteLine($"  PR number:         {QuoteUntrusted(plan.Build.PrNumber)}");
+            Console.WriteLine($"  PR source SHA:     {QuoteUntrusted(plan.Build.PrSourceSha)}");
+            Console.WriteLine($"  PR source branch:  {QuoteUntrusted(plan.Build.PrSourceBranch)}");
+            Console.WriteLine($"  PR provider:       {QuoteUntrusted(plan.Build.PrProviderId)}");
+            Console.WriteLine($"  PR fork/draft:     {FormatNullableBoolean(plan.Build.PrIsFork)} / {FormatNullableBoolean(plan.Build.PrDraft)}");
+        }
+
+        foreach (var entry in plan.Entries)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"  [{QuoteUntrusted(entry.Status)}] Job {QuoteUntrusted(entry.JobName)} ({QuoteUntrusted(entry.JobId)})");
+            Console.WriteLine($"    Result:           {QuoteUntrusted(entry.JobResult)}");
+            Console.WriteLine($"    Order/attempt:    {(entry.JobOrder.HasValue ? FormatInvariant(entry.JobOrder.Value) : "none")} / {(entry.JobAttempt.HasValue ? FormatInvariant(entry.JobAttempt.Value) : "none")}");
+            Console.WriteLine($"    Matched by:       {QuoteUntrusted(entry.MatchedBy)}");
+            Console.WriteLine($"    Candidates:       {FormatInvariant(entry.Candidates.Count)} of {FormatInvariant(entry.CandidateTotal)}{(entry.CandidatesTruncated ? " (truncated)" : "")}");
+            if (entry.CandidateNote is not null)
+                Console.WriteLine($"    Candidate note:   {QuoteUntrusted(entry.CandidateNote)}");
+
+            foreach (var candidate in entry.Candidates)
+            {
+                Console.WriteLine($"      {FormatInvariant(candidate.Rank)}. {QuoteUntrusted(candidate.ArtifactName)} (artifact #{FormatInvariant(candidate.ArtifactId)})");
+                Console.WriteLine($"         Source:      {QuoteUntrusted(candidate.Source)}");
+                Console.WriteLine($"         Attempt:     {(candidate.Attempt.HasValue ? FormatInvariant(candidate.Attempt.Value) : "none")}");
+                Console.WriteLine($"         Type:        {QuoteUntrusted(candidate.ResourceType)}");
+                Console.WriteLine($"         Size bytes:  {(candidate.SizeBytes.HasValue ? FormatInvariant(candidate.SizeBytes.Value) : "none")}");
+                Console.WriteLine($"         Download:    {QuoteUntrusted(candidate.DownloadUrl)}");
+            }
+        }
+
+        if (plan.IncompleteReasons.Count > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine("Incomplete reasons:");
+            foreach (var reason in plan.IncompleteReasons)
+                Console.WriteLine($"  - {QuoteUntrusted(reason)}");
+        }
+
+        if (plan.Warnings.Count > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine(plan.WarningsTruncated
+                ? $"Warnings (showing {FormatInvariant(plan.Warnings.Count)} of {FormatInvariant(plan.WarningTotal)}; truncated):"
+                : "Warnings:");
+            foreach (var warning in plan.Warnings)
+                Console.WriteLine($"  - {QuoteUntrusted(warning)}");
+        }
+
+        if (plan.Note is not null)
+            Console.WriteLine($"Note: {QuoteUntrusted(plan.Note)}");
+
+        Console.WriteLine($"Generated at: {plan.GeneratedAt:O}");
+    }
+
+    private static string FormatNullableBoolean(bool? value)
+        => value switch
+        {
+            true => "yes",
+            false => "no",
+            null => "unknown"
+        };
+
+    /// <summary>
+    /// Plan CI evidence collection for a build: maps failed/canceled Job records to their artifact candidates.
+    /// Nothing is downloaded. Exits 0 when the plan is complete, 2 when incomplete (ambiguous/missing),
+    /// 1 on hard errors.
+    /// </summary>
+    /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
+    /// <param name="artifactPattern">Glob pattern for artifact names (e.g. 'Logs_Build_*'). Default: all.</param>
+    /// <param name="artifactJobPrefix">Prefix stripped from artifact names before matching (e.g. 'Logs_Build_').</param>
+    /// <param name="keepAttemptPrefix">Keep 'AttemptN_' in artifact names instead of stripping it. Default: strip and record the attempt number.</param>
+    /// <param name="match">Matching strategy: 'auto' (default), 'source-id', 'normalized-exact', 'exact'.</param>
+    /// <param name="jobResults">Comma-separated job results to target. Default: 'failed,canceled'.</param>
+    /// <param name="json">Output as structured JSON.</param>
+    [McpEquivalent("azdo_evidence_plan")]
+    [Command("azdo evidence plan")]
+    public async Task EvidencePlan(
+        [Argument] string buildId,
+        string artifactPattern = "*",
+        string? artifactJobPrefix = null,
+        bool keepAttemptPrefix = false,
+        string match = "auto",
+        string jobResults = "failed,canceled",
+        bool json = false,
+        bool schema = false)
+    {
+        if (Commands.TryPrintSchema<AzdoEvidencePlan>(schema))
+            return;
+
+        // Validate match
+        if (!AzdoEvidenceMatchStrategy.AllValues.Contains(match, StringComparer.OrdinalIgnoreCase))
+        {
+            Console.Error.WriteLine(
+                $"Invalid --match {QuoteUntrusted(match)}. Must be one of: {string.Join(", ", AzdoEvidenceMatchStrategy.AllValues)}.");
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        // Parse and validate jobResults
+        var resultList = jobResults
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(r => r.Trim())
+            .Where(r => r.Length > 0)
+            .ToList();
+        if (resultList.Count == 0)
+            resultList = ["failed", "canceled"];
+
+        var validResults = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "failed", "canceled", "abandoned", "skipped", "succeededWithIssues", "succeeded", "none" };
+        var bad = resultList.FirstOrDefault(r => !validResults.Contains(r));
+        if (bad is not null)
+        {
+            Console.Error.WriteLine(
+                $"Invalid --job-results value {QuoteUntrusted(bad)}. Must be one of: {string.Join(", ", validResults.OrderBy(v => v, StringComparer.Ordinal))}.");
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        var options = new AzdoEvidencePlanOptions
+        {
+            ArtifactPattern = artifactPattern,
+            ArtifactJobPrefix = artifactJobPrefix,
+            StripAttemptPrefix = !keepAttemptPrefix,
+            Match = match,
+            JobResults = resultList
+        };
+
+        AzdoEvidencePlan plan;
+        try
+        {
+            plan = await _svc.GetEvidencePlanAsync(buildId, options);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Console.Error.WriteLine($"Error: {QuoteUntrusted(ex.Message)}");
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        if (json)
+            Console.WriteLine(JsonSerializer.Serialize(plan, s_jsonOptions));
+        else
+            PrintEvidencePlan(plan);
+
+        // Exit 2 for incomplete plans (ambiguous/missing/truncated); 0 for complete
+        if (!plan.Complete)
+            Environment.ExitCode = 2;
+    }
 
 }
