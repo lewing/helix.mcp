@@ -350,11 +350,12 @@ public class OfflineHelixApiClientTests
     }
 
     [Fact]
-    public async Task ListJobNamesByBuildAsync_ThrowsWithEvalModeMessage()
+    public async Task ListJobsByBuildAsync_ThrowsWithEvalModeMessage()
     {
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => _sut.ListJobNamesByBuildAsync("source", "123"));
+            () => _sut.ListJobsByBuildAsync("source", "123"));
         Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("snapshot", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 }
 

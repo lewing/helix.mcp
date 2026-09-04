@@ -1411,3 +1411,12 @@ author: Scribe (session merger)
 status: decided
 ---
 
+### 2026-09-04T15:38:22.971-05:00: Queue-monitor implementation outcome (authoritative correction)
+
+**By:** Ripley, Lambert, Kane, Ash, Dallas
+
+**What:** This supersedes the roadmap's stale “implementation not started” state and any design implying that completed Helix jobs have known outcomes. Ripley implemented metadata projection, optional fields, original leg names, lineage annotation without count filtering, monitor warning/tree parsing, and issue-only fallback rows; Lambert added tests; Kane corrected guidance and changelog. After Dallas rejected treating all primary jobs as failed and omitting active monitor issues, Lambert revised the primary result to `FailedHelixJobs = 0`, `OutcomeUnknownHelixJobs = N`, preserving `Strategy = "helix"`. Completion timestamps never establish outcome. A single timeline enrichment request returns all issue-bearing Tasks as build-level `timelineIssues`, with no topology, name, or GUID gate. Omitted `timelineIssues` plus a warning `Note` means enrichment was unavailable; `[]` means it was queried and no issues existed. After Dallas rejected unhandled expected JSON/offline errors, Ash added narrow `JsonException`/`InvalidOperationException` handling and regression coverage while preserving caller cancellation. Dallas's final Sol review approved the current diff.
+
+**Why:** Primary Helix discovery and build-level timeline diagnostics are complementary. Unknown outcome must not be converted into failure, while monitor issues must remain visible even after successful Helix discovery. Serialization distinguishes unavailable enrichment from a successful empty query.
+
+**Validation and state:** Final targeted validation passed 117 tests under `DOTNET_ROLL_FORWARD=Major` because local runtime 11 runs tests targeting 10; parent verified a clean final diff check. The earlier full suite (1,943 passed, 8 existing skips) predates the final enrichment corrections and is not claimed as final full-suite validation. All source, tests, and docs remain uncommitted, with no PR. Count filtering and parallel scans remain deferred. Sol/no Opus is a session-only model directive.

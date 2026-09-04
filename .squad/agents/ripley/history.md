@@ -473,3 +473,25 @@ Completed audit of helix.mcp's Helix client integration against arcade's queue-m
 
 **Status:** COMPLETED  
 **Outcome:** Five defects confirmed; implementation roadmap staged with D1–D6 approved
+
+## 2026-09-04: R4 shim deletion + Source-threading fix (completed)
+
+Executed the final merge gate from `dallas-queue-monitor-design-review.md`: deleted
+`ListJobNamesByBuildAsync` from all four sites (`IHelixApiClient.cs`, `HelixApiClient.cs`,
+`OfflineHelixApiClient.cs`, `CachingHelixApiClient.cs`) after confirming via Lambert's
+migration-gate message and a tree-wide grep that no production or test caller referenced it.
+While verifying against §8's targeted test filter, found and fixed a genuine gap (not a test
+bug): `GetHelixJobsAsync` computed the Helix `source` string for its primary attempt but
+discarded it when falling through to `GetHelixJobsViaTimelineAsync` on 0 results, so the
+timeline-fallback result always reported `Source: null`. Threaded `source` through as an
+optional parameter so it survives the fallback when it was actually computed, staying null
+(and omitted from the wire result) only when genuinely unknown. Also observed intermittent
+NSubstitute `ThreadLocalContext` failures in Lambert's `GetHelixJobsOrchestrationTests` before
+this fix (nested substitute built inside another substitute's `.Returns()` argument — a test
+mock-setup anti-pattern, not production code); flagged to her via
+`.squad/decisions/inbox/ripley-r4-shim-deleted.md` rather than touching the test file myself.
+
+**Status:** COMPLETED
+**Outcome:** R4 gate satisfied (shim fully removed, zero references remain); `Source` now
+correctly populated on both Helix-path and timeline-fallback results; build 0/0, targeted
+suite 117/117 ×3, full suite 1943/0/8-skipped. No test files opened or edited.

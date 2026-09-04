@@ -30,6 +30,8 @@ public sealed class OfflineHelixApiClient : IHelixApiClient
     public Task<Stream> GetFileAsync(string fileName, string workItemName, string jobId, CancellationToken ct = default)
         => throw Blocked();
 
-    public Task<IReadOnlyList<string>> ListJobNamesByBuildAsync(string source, string buildId, int count = 100_000, CancellationToken ct = default)
+    /// <inheritdoc />
+    public Task<IReadOnlyList<IHelixJobSummary>> ListJobsByBuildAsync(
+        string source, string buildId, int count = 100_000, CancellationToken ct = default)
         => throw Blocked();
 }

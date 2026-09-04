@@ -2,6 +2,7 @@
 
 using HelixTool.Core.AzDO;
 using NSubstitute;
+using System.Text.Json;
 using Xunit;
 
 namespace HelixTool.Tests.AzDO;
@@ -278,5 +279,213 @@ public class AzdoHelixJobsTests
         var canonicalResult = await _svc.GetHelixJobsAsync("42", filter: "pending");
 
         Assert.Equal(canonicalResult.TotalHelixJobs, aliasResult.TotalHelixJobs);
+    }
+
+    [Theory]
+    [InlineData("failed")]
+    [InlineData("issues")]
+    [InlineData("all")]
+    public async Task GetHelixJobsAsync_IssueWithoutJobId_IsPreservedAsBoundedMessage(string filter)
+    {
+        var timeline = CreateTestTimeline(
+            CreateRecord("job1", "Tests", "Job", result: "failed"),
+            CreateRecord("task1", "Monitor Helix Jobs", "Task", result: "failed", parentId: "job1",
+                issues: [new AzdoIssue { Type = "error", Message = "Queue monitor failed before publishing a Helix job." }]));
+        SetupTimeline(timeline);
+
+        var result = await _svc.GetHelixJobsAsync("42", filter: filter);
+
+        var job = Assert.Single(result.Jobs);
+        Assert.Equal(string.Empty, job.HelixJobId);
+        Assert.Equal(["Queue monitor failed before publishing a Helix job."], job.Messages);
+        Assert.Empty(job.FailedWorkItems);
+    }
+
+    [Fact]
+    public async Task GetHelixJobsAsync_IssueMessages_AreTrimmedAndCapped()
+    {
+        var issues = Enumerable.Range(1, 25)
+            .Select(index => new AzdoIssue
+            {
+                Type = "error",
+                Message = $"  issue-{index:D2}-" + new string('x', 600)
+            })
+            .ToList();
+        SetupTimeline(CreateTestTimeline(
+            CreateRecord("task1", "Monitor Helix Jobs", "Task", result: "failed", issues: issues)));
+
+        var result = await _svc.GetHelixJobsAsync("42", filter: "issues");
+
+        var messages = Assert.Single(result.Jobs).Messages;
+        Assert.NotNull(messages);
+        Assert.Equal(21, messages.Count);
+        Assert.All(messages.Take(20), message =>
+        {
+            Assert.Equal(500, message.Length);
+            Assert.False(char.IsWhiteSpace(message[0]));
+        });
+        Assert.Equal("… 5 more issue(s) omitted", messages[20]);
+
+        var timelineMessages = Assert.Single(result.TimelineIssues!).Messages;
+        Assert.Equal(messages, timelineMessages);
+    }
+
+    [Fact]
+    public async Task GetHelixJobsAsync_MonitorWarnings_ParseMultipleJobsWithoutConsoleUrls()
+    {
+        const string firstGuid = "47edfeae-1111-2222-3333-444444444444";
+        const string secondGuid = "57edfeae-1111-2222-3333-444444444444";
+        var message = $"""
+            Work item 'A.dll' in job 'Windows_NT Build_Release - Windows.10.Amd64.Open ({firstGuid})' failed (Failed).
+            Console: no console link available
+            Work item 'B.dll' in job '{secondGuid}' failed (BadExit).
+            Console: no console link available
+            """;
+        SetupTimeline(CreateTestTimeline(
+            CreateRecord("task1", "Any Helix Task", "Task", result: "failed",
+                issues: [new AzdoIssue { Type = "warning", Message = message }])));
+
+        var result = await _svc.GetHelixJobsAsync("42", filter: "failed");
+
+        Assert.Equal(2, result.TotalHelixJobs);
+        Assert.Equal(["A.dll"], Assert.Single(result.Jobs, job => job.HelixJobId == firstGuid).FailedWorkItems);
+        Assert.Equal(["B.dll"], Assert.Single(result.Jobs, job => job.HelixJobId == secondGuid).FailedWorkItems);
+    }
+
+    [Fact]
+    public async Task GetHelixJobsAsync_MonitorWarning_UsesConsoleUrlAsGuidFallback()
+    {
+        const string jobGuid = "67edfeae-1111-2222-3333-444444444444";
+        var message = $"""
+            Work item 'Fallback.dll' in job 'Label without a guid' failed (Failed).
+            Console: https://helix.dot.net/api/2019-06-17/jobs/{jobGuid}/workitems/Fallback.dll/console
+            """;
+        SetupTimeline(CreateTestTimeline(
+            CreateRecord("task1", "Send to Helix", "Task", result: "failed",
+                issues: [new AzdoIssue { Type = "warning", Message = message }])));
+
+        var job = Assert.Single((await _svc.GetHelixJobsAsync("42", filter: "failed")).Jobs);
+
+        Assert.Equal(jobGuid, job.HelixJobId);
+        Assert.Equal(["Fallback.dll"], job.FailedWorkItems);
+    }
+
+    [Fact]
+    public async Task GetHelixJobsAsync_MonitorFailureTree_ParsesMultipleJobsAndIgnoresConsoleLines()
+    {
+        const string firstGuid = "77edfeae-1111-2222-3333-444444444444";
+        const string secondGuid = "87edfeae-1111-2222-3333-444444444444";
+        var message = $"""
+            Failed work item information:
+            Test results: two failures
+            ├─ A.dll (Job: Label - Queue ({firstGuid})) (Failed)
+            │  └─ Console: no console link available
+            └─ B.dll (Job: Other Label - Queue ({secondGuid})) (BadExit)
+               └─ Console: no console link available
+            """;
+        SetupTimeline(CreateTestTimeline(
+            CreateRecord("task1", "Send to Helix", "Task", result: "failed",
+                issues: [new AzdoIssue { Type = "error", Message = message }])));
+
+        var result = await _svc.GetHelixJobsAsync("42", filter: "failed");
+
+        Assert.Equal(2, result.TotalHelixJobs);
+        Assert.Equal(["A.dll"], Assert.Single(result.Jobs, job => job.HelixJobId == firstGuid).FailedWorkItems);
+        Assert.Equal(["B.dll"], Assert.Single(result.Jobs, job => job.HelixJobId == secondGuid).FailedWorkItems);
+        Assert.DoesNotContain(result.Jobs.SelectMany(job => job.FailedWorkItems),
+            item => item.Contains("Console", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task GetHelixJobsAsync_MonitorWarningAndTree_DeduplicateWorkItemCaseInsensitively()
+    {
+        const string jobGuid = "97edfeae-1111-2222-3333-444444444444";
+        var message = $"""
+            Work item 'Duplicate.dll' in job 'Label ({jobGuid})' failed (Failed).
+            Console: no console link available
+            Failed work item information:
+            └─ duplicate.DLL (Job: Label ({jobGuid})) (Failed)
+               └─ Console: no console link available
+            """;
+        SetupTimeline(CreateTestTimeline(
+            CreateRecord("task1", "Send to Helix", "Task", result: "failed",
+                issues: [new AzdoIssue { Type = "error", Message = message }])));
+
+        var job = Assert.Single((await _svc.GetHelixJobsAsync("42", filter: "failed")).Jobs);
+
+        Assert.Single(job.FailedWorkItems);
+        Assert.Equal("Duplicate.dll", job.FailedWorkItems[0], ignoreCase: true);
+    }
+
+    [Fact]
+    public async Task GetHelixJobsAsync_LegacyFailures_DeduplicateWorkItemCaseInsensitively()
+    {
+        const string jobGuid = "a7edfeae-1111-2222-3333-444444444444";
+        SetupTimeline(CreateTestTimeline(
+            CreateRecord("task1", "Send to Helix", "Task", result: "failed",
+                issues:
+                [
+                    new AzdoIssue { Type = "error", Message = $"Work item Legacy.dll in job {jobGuid} has failed" },
+                    new AzdoIssue { Type = "error", Message = $"Work item legacy.DLL in job {jobGuid} has failed" }
+                ])));
+
+        var job = Assert.Single((await _svc.GetHelixJobsAsync("42", filter: "failed")).Jobs);
+
+        Assert.Single(job.FailedWorkItems);
+        Assert.Equal("Legacy.dll", job.FailedWorkItems[0], ignoreCase: true);
+    }
+
+    [Theory]
+    [InlineData("failed", true)]
+    [InlineData("running", true)]
+    [InlineData("failed", false)]
+    [InlineData("running", false)]
+    public async Task GetHelixJobsAsync_RunningWithErrors_SeparatesStateFromOutcome(
+        string filter, bool includeGuid)
+    {
+        const string jobGuid = "b7edfeae-1111-2222-3333-444444444444";
+        var guidEvidence = includeGuid
+            ? $"https://helix.dot.net/api/2019-06-17/jobs/{jobGuid}/details"
+            : "queue monitor has not published the job id";
+        SetupTimeline(CreateTestTimeline(
+            CreateRecord("task1", "Monitor Helix Jobs", "Task", state: "inProgress", result: null,
+                issues:
+                [
+                    new AzdoIssue { Type = "error", Message = guidEvidence },
+                    new AzdoIssue { Type = "ERROR", Message = "second error" },
+                    new AzdoIssue { Type = "Warning", Message = "warning" }
+                ])));
+
+        var result = await _svc.GetHelixJobsAsync("42", filter: filter);
+
+        var job = Assert.Single(result.Jobs);
+        Assert.Equal(includeGuid ? jobGuid : string.Empty, job.HelixJobId);
+        Assert.Equal("running", job.State);
+        Assert.Equal("unknown", job.Result);
+        Assert.Equal(2, job.TaskErrorCount);
+        Assert.Equal(1, job.TaskWarningCount);
+        Assert.Contains("still in progress", result.Note, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(includeGuid ? null : 3, job.Messages?.Count);
+    }
+
+    [Fact]
+    public async Task GetHelixJobsAsync_TimelineDefaults_AreOmittedFromJson()
+    {
+        const string jobGuid = "c7edfeae-1111-2222-3333-444444444444";
+        SetupTimeline(CreateTestTimeline(
+            CreateRecord("task1", "Send to Helix", "Task", result: "succeeded",
+                issues: [new AzdoIssue { Message = $"https://helix.dot.net/jobs/{jobGuid}/details" }])));
+
+        var job = Assert.Single((await _svc.GetHelixJobsAsync("42", filter: "all")).Jobs);
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(job));
+
+        Assert.False(json.RootElement.TryGetProperty("superseded", out _));
+        Assert.False(json.RootElement.TryGetProperty("taskErrorCount", out _));
+        Assert.False(json.RootElement.TryGetProperty("taskWarningCount", out _));
+        Assert.False(json.RootElement.TryGetProperty("messages", out _));
+        Assert.True(json.RootElement.TryGetProperty("HelixJobId", out _));
+        Assert.True(json.RootElement.TryGetProperty("ParentJobName", out _));
+        Assert.True(json.RootElement.TryGetProperty("Result", out _));
+        Assert.True(json.RootElement.TryGetProperty("FailedWorkItems", out _));
     }
 }

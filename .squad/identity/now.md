@@ -1,31 +1,22 @@
 ---
-updated_at: 2026-09-04T14:50:50.914-05:00
-focus_area: Helix queue-monitor compatibility roadmap accepted with corrections
-status: investigation_complete
-investigation: Multi-agent analysis of queue-monitor topology adoption and implementation defects
+updated_at: 2026-09-04T15:38:22.971-05:00
+focus_area: Helix queue-monitor compatibility implementation completed and approved
+status: implementation_complete_uncommitted
+investigation: Final implementation and review of queue-monitor topology support
 ---
 
 # What We're Focused On
 
-**Investigation:** Helix queue-monitor compatibility roadmap.
+**Status:** The implementation slice is complete, locally verified, and approved by Dallas's final Sol review. Source, tests, and documentation remain uncommitted; there is no PR.
 
-**Status:** Investigation complete; implementation not yet started.
+**Implemented:** Ripley restored Helix submission metadata projection, optional output fields, original leg names, lineage annotation without count filtering, monitor warning/tree parsing, and issue-only fallback rows. Lambert added coverage. Kane corrected tool guidance and the changelog.
 
-**Outcome:** Three agents (Ash, Ripley, Dallas) converged on identical finding: queue-monitor support is a projection bug, not a capabilities gap. The Helix API client already fetches `JobSummary` metadata but discards it with `.Select(j => j.Name)`. Restoring the projection costs zero additional HTTP calls.
+**Final design correction:** Successful Helix discovery remains the primary strategy even when every job outcome is unknown: `FailedHelixJobs = 0`, `OutcomeUnknownHelixJobs = N`, and completion timestamps do not infer outcomes. One timeline enrichment request returns every issue-bearing Task as build-level `timelineIssues`, without topology, task-name, or GUID gates. Omitted `timelineIssues` means enrichment was unavailable and `Note` warns; `[]` means enrichment ran and found no issues.
 
-**Verdict:** APPROVE WITH CORRECTIONS
-- **Approved NOW (D1–D4, D6):** Four concrete defects fixed, one enhancement (parallelize discovery), one documentation correction
-- **Approved LATER (D5a/D5b):** Expose lineage metadata now; filter superseded jobs gated on evidence
-- **Rejected:** Seven new-tool proposals (existing tools compose to same capability)
+**Resilience:** Ash narrowly handles expected JSON/offline enrichment failures (`JsonException`, `InvalidOperationException`) while propagating caller cancellation; regression coverage is included.
 
-**Implementation Roadmap**
-- **Phase 1 (now):** D1 (widen projection), D2 (emit build-wide errors), D3 (parse monitor format), D4 (doc fix), D5a (expose lineage), D6 (parallelize discovery)
-- **Phase 2 (later):** D5b (filter superseded, gated on D5a evidence)
+**Validation:** Final targeted suite: 117 passed with `DOTNET_ROLL_FORWARD=Major` (local runtime 11, tests target 10). An earlier pre-correction full suite passed 1,943 with 8 existing skips; it is not final-suite validation. Parent confirmed the final diff check was clean.
 
-**Ownership:** Ripley owns D1–D3, D5a, D5b, D6; Kane owns D4.
+**Deferred:** Superseded-job count filtering and parallel discovery scans.
 
-**Material Correction:** Ripley's initial P4 dedup algorithm (group by attempt, max) was incorrect. Arcade uses lineage-leaf rule (`PreviousHelixJobName` tracking), which is the corrected form; Ripley retains ownership with correction. Sequencing insight: annotate (D5a) before filtering (D5b).
-
-**Key Architectural Finding:** `HelixApiClient.ListJobNamesByBuildAsync` response already contains `QueueId`, `Properties` (PhaseName, JobDisplayName, JobAttempt, PreviousHelixJobName, BuildId), `Created`, `Finished`, `InitialWorkItemCount`, `FailureReason`. Zero additional HTTP cost to restore.
-
-**Reference:** `.squad/decisions.md` (merged queue-monitor decision), `.squad/orchestration-log/` (per-agent logs), `.squad/log/2026-09-04-helix-queue-monitor-investigation.md` (session summary).
+**Session directive:** Sol/no Opus applies only to this session.

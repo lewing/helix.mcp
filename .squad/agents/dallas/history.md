@@ -670,3 +670,74 @@ Completed architectural review of Ash's requirements and Ripley's audit. Verifie
 
 - **Ripley:** D1, D2, D3, D5a, D5b, D6 (primary owner of queue-monitor fixes)
 - **Kane:** D4 (documentation correction)
+
+## 2026-09-04: Pre-work Design Review — queue-monitor compatibility slice 1 (completed)
+
+Ran the read-only Design Review ceremony for the first implementation slice. Brief recorded at
+`.squad/decisions/inbox/dallas-queue-monitor-design-review.md`. No production file or test
+touched; worktree clean, build 0/0 before and after.
+
+**Scope decided:** D1, D2, D3 (+ new D3b), D4, D5a. D6 pushed to slice 2 (unrelated subsystem,
+drags `ProgressOverStatelessHttpTests` in). D5b still gated on D5a evidence.
+
+**Two accepted premises corrected on primary-source evidence** (fetched `dotnet/arcade@main`
+verbatim rather than trusting the prior summary):
+- D3's "detect by task name `Monitor Helix Jobs`" is **struck**. `helix-job-monitor.yml` names
+  both the Job and the Task `Monitor Helix Jobs`, so the existing `Name.Contains("helix")`
+  predicate already finds them — and a name gate is precisely the "branch on monitor detected"
+  my own compatibility rule #1 forbids. Parsers apply unconditionally.
+- D3's "extract the GUID from the console URL" is **demoted to fallback**. `HelixJobInfo.cs:149`
+  puts the GUID in `DisplayName` (`"{label} - {queue} ({guid})"`, or bare `{guid}`), and
+  `MonitorState.cs:656` can emit the literal `"no console link available"`. DisplayName first.
+
+**Found a second monitor format nobody had named** (`StatusReporter.cs:334-354`): an aggregated
+`Failed work item information:` tree, emitted as `LogError`, carrying `// DO NOT CHANGE THIS
+LINE - it's matched by Build Analysis`. Added as D3b — same function, same test file, zero new
+surface, and it is the format arcade has explicitly pinned. Leaving the most stable signal
+unparsed would have been the worse call.
+
+**Reframed what D3 actually fixes.** The GUID is usually already recovered today (the console
+URL matches `HelixJobIdRegex`). What is lost is the **work-item → job association**, because
+`FailedWorkItemRegex` requires the literal `has failed`. Naming the defect precisely changed
+the tests I demanded.
+
+**Rulings worth remembering:**
+- D2's open question ("reuse `FailedWorkItems`, or add a field?") — *this review was the review
+  the decision deferred to*. Verdict: reusing it is semantically wrong, because clients feed
+  that list to `helix_search(jobId, workItem)`; raw AzDO prose there produces a predictable
+  misuse. Added bounded `Messages` (≤20 × ≤500 chars, only on empty-GUID rows).
+- Added `Strategy` beyond the accepted decision, and justified it as **correctness, not
+  convenience**: D1 gives `Result` two vocabularies across the two paths, so having introduced
+  the ambiguity we are obliged to ship the discriminator.
+- **Declined to narrow D1's `Result`** even though the new `State` field makes it redundant on
+  the Helix path. Re-litigating an accepted criterion for tidiness, after Lambert holds it,
+  costs more than one redundant field. Guard rail instead: `Result` is never a pass/fail verdict
+  there, and `Note` must say so.
+- "Running with errors" pinned as `State=="running" && Result=="unknown" && (TaskErrorCount>0 ||
+  TaskWarningCount>0)`. Counts deliberately unchanged (rule #4) — the obligation that creates is
+  **disclosure in `Note`**, not silence.
+- Counts named `TaskErrorCount`/`TaskWarningCount` on purpose: N rows from one task all carry
+  the same value, and the prefix is what stops someone summing them.
+
+**Process lesson — the shim removed the only real ordering conflict.** Renaming
+`ListJobNamesByBuildAsync` would red the test project the moment R1 landed, forcing either
+Ripley into tests or Lambert into a wait. Keeping it as an undecorated delegating shim (not
+`[Obsolete]` — that breaks the 0-warning gate that is itself a merge criterion) buys full
+three-way parallelism for the price of one mandatory deletion step, R4. I made R4 a merge gate
+so the shim cannot quietly become permanent.
+
+**Two new standing compatibility rules** (now #5 and #6): no new *positional* record parameters
+on wire types, because `azdo_helix_jobs` generates its output schema from the record and
+positional params generate as required; and Newtonsoft stops at `HelixApiClient` — no
+`JObject`/`JToken` may cross `IHelixApiClient`.
+
+**Deliberately left broken:** the `filter="all"` wart at `AzdoService.cs:918` (issue-free helix
+tasks skipped even under `all`). Real, pre-existing, and fixing it moves `TotalHelixJobs` without
+evidence. Recorded in the brief so it is a known wart rather than a future rediscovery.
+
+**Did not convene Ripley/Lambert/Kane as subagents.** Everything was answerable from local source
+plus arcade; they would have re-read the same files. Recorded the omission as deliberate.
+
+**Status:** COMPLETED
+**Outcome:** Design accepted; R1/L1/K1 may begin. Eight named reject-on-sight conditions recorded
+for my own merge review.
