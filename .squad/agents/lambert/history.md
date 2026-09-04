@@ -8,6 +8,15 @@
 
 ---
 
+## 2026-08-01 Through 2026-08-31: Summary
+
+Completed integration test work for strict-mode implementation. Confirmed tools/list schema reduction, validated StructuredContent emission, and established test file patterns for future MCP work. All PR reviews passed; tests stable. No blocking issues.
+
+---
+
+## Recent Work
+
+
 ## 2026-07-20: Tiered outputSchema Recommendation — PEER REVIEW
 
 **Context:** Dallas refined "flatten all" → tiered (FLATTEN 10 / KEEP 3 / LEAVE 12).

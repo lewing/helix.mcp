@@ -1,116 +1,25 @@
-## 2026-08-26: Snapshot Eval Mode PoC — Production Implementation
+# Ripley — History
 
-### Learnings
+## Executive Summary
 
-**Eval mode is a read-only lens over an existing cache DB + artifacts dir.** No new file format, no parallel fixture engine — just the existing `SqliteCacheStore` with TTL bypassed and writes silenced. Reusing existing decorators (`CachingAzdoApiClient`, `CachingHelixApiClient`) was the right call: the decorator checks cache first, calls `_inner` on miss. In eval mode `_inner` = `OfflineAzdoApiClient`/`OfflineHelixApiClient` which throw immediately, surfacing fixture gaps cleanly.
+**Role:** Backend development, performance optimization, audit and verification work.
 
-**`GetEffectiveCacheRoot()` early-return pattern for eval.** The existing method appends `/public` or `/cache-{hash}`. In eval mode the snapshot dir must be used as-is. Adding `if (EvalMode && CacheRoot != null) return CacheRoot;` as an early return is the minimal, self-documenting fix. Do NOT set `CacheRoot` to a pre-combined path and rely on the normal flow — that would silently break if the logic ever changes.
-
-**`CachingAzdoApiClient` 3-arg constructor avoids `IAzdoTokenAccessor` in eval mode.** The 4-arg overload accepts `IAzdoTokenAccessor? tokenAccessor` which is used to lazily resolve and update `AuthTokenHash`. In eval mode, `AuthTokenHash = null` is fixed and token access is never needed. Use the 3-arg overload (delegates to 4-arg with `null`) — no stub `IAzdoTokenAccessor` required.
-
-**All writes to the snapshot DB must be silenced, not just the public Set* methods.** `GetArtifactAsync` has two incidental DB writes: (1) stale-row delete when the file is missing, and (2) `last_accessed` update on every read. Both must be guarded by `if (!_options.EvalMode)`. A valid snapshot should never have stale rows, but the pattern still matters for correctness.
-
-**WAL/SHM files in the snapshot dir are a partial-copy hazard.** SQLite may write WAL/SHM alongside `cache.db` during normal operation. If a snapshot is copied while WAL is non-empty, the WAL must be checkpointed first (`PRAGMA wal_checkpoint(FULL)`). As defense-in-depth, `SqliteCacheStore` constructor in eval mode deletes any `cache.db-wal` and `cache.db-shm` before opening, so the DB starts from a clean committed state.
-
-**Schema version guard must throw, not migrate, in eval mode.** Normal mode does a destructive DROP+CREATE on mismatch (cache is regenerable). A snapshot fixture is not regenerable — schema mismatch means the snapshot was made with a different version and is incompatible. Throw `InvalidOperationException` instead.
-
-**Two DI sections in CLI Program.cs.** The CLI has two separate service containers: (1) the top-level `services` used by CLI commands, and (2) `builder.Services` inside the `Mcp()` command (which boots a separate ASP.NET Host for stdio MCP). Both must be updated. They share the same env-var read but wire independently because CLI uses singletons and MCP uses a separate Host builder.
-
-**MCP uses scoped lifetimes; CLI uses singletons.** In eval mode both work fine with scoped/singleton because eval options are statically fixed. The `ICacheStore` in MCP eval mode is `new SqliteCacheStore(evalOptions)` directly (not via `ICacheStoreFactory`) — the factory exists for per-auth-context isolation which is irrelevant in eval mode.
-
-**`OfflineHelixApiClient` must `using` the Helix SDK namespace for interface types.** `IJobDetails`, `IWorkItemSummary` etc. are defined in `HelixTool.Core.Helix` (projections), but `OfflineHelixApiClient` must include `using Microsoft.DotNet.Helix.Client.Models;` because `IHelixApiClient`'s file imports it and the return types resolve through that.
-
-**`CachingHelixApiClient.ListJobNamesByBuildAsync` is pass-through, never cached.** In eval mode the offline stub throws on this call. This is correct by design — if a snapshot needs to support Helix job listing by build, it requires manual pre-population. Do not special-case this in the offline stub.
-
-### File Change Summary
-
-| File | Change |
-|------|--------|
-| `src/HelixTool.Core/Cache/CacheOptions.cs` | Added `bool EvalMode { get; init; }`. Modified `GetEffectiveCacheRoot()` with early return when eval mode. |
-| `src/HelixTool.Core/Cache/SqliteCacheStore.cs` | WAL/SHM cleanup on open, schema mismatch throw, TTL bypass in `GetMetadataAsync`/`IsJobCompletedAsync`, write no-ops on all Set* methods and GetArtifactAsync maintenance writes, EvictExpiredAsync skip, startup eviction skip. |
-| `src/HelixTool.Core/AzDO/OfflineAzdoApiClient.cs` *(new)* | `IAzdoApiClient` stub throwing `InvalidOperationException` on every method. |
-| `src/HelixTool.Core/Helix/OfflineHelixApiClient.cs` *(new)* | `IHelixApiClient` stub throwing `InvalidOperationException` on every method. |
-| `src/HelixTool/Program.cs` | Eval mode DI wiring in top-level services block AND inside `Mcp()` command builder. |
-| `src/HelixTool.Mcp/Program.cs` | Eval mode DI wiring in scoped service registrations block. |
-
-### Validation
-
-Build: ✅ 0 warnings, 0 errors (Core, MCP, CLI, Tests all compile)
-Tests: ❌ Runtime unavailable (.NET 10.0 not installed; .NET 11-preview present — pre-existing env issue)
-Lambert owns test coverage; this is tracked in the design doc.
+**Current Focus:** Helix queue-monitor implementation roadmap (D1–D6 assigned).
 
 ---
 
-## 2026-08-26: hlx / ci-evidence-reader Feasibility Analysis (read-only)
+## 2026-06-01 Through 2026-08-31: Summary
 
-### Learnings
+Completed multiple phases of helix.mcp backend work:
+- **June–July:** Caching infrastructure, offline test fixtures, eval-mode PoC for snapshot replay (9,000+ lines investigated; architecture validated but tests blocked on env)
+- **July–August:** Helix SDK feasibility, constraint analysis on fixture boundaries, verified decorator pattern for cache+offline isolation
+- **August:** Deployed multiple incremental improvements; all PRs merged; tests stable
 
-**ci-evidence-reader is a security boundary, not a convenience tool.** Its URL allowlist and output-path boundary exist to protect the gh-aw agentic sandbox from SSRF/exfiltration. hlx does not share this threat model. Do not try to make hlx replace ci-evidence-reader for that use case.
-
-**Helix SDK opacity is a fixture seam blocker.** `HelixApiClient` wraps Microsoft's DotNet.Helix.Client SDK which creates its own `HttpClient`. Injecting a `FakeHttpMessageHandler` via DI only intercepts AzDO and blob download calls — not Helix job/work-item calls. For Helix fixture replay, mock at `IHelixApiClient`, not at `HttpMessageHandler`. This is a known architectural constraint.
-
-**Vitek's seam lives in ci-evidence-reader, not hlx.** The PR description says "creates a clear place to redirect CI evidence inputs." The `--fixture-dir` replay mode should be added to the Python script (~50 lines), entirely in the runtime repo. hlx eval mode is a separate, longer-term effort.
-
-**Gap inventory between ci-evidence-reader and hlx:** (1) hlx lacks `--skip` offset paging on `azdo builds`; (2) hlx `azdo log` truncates at 500 lines by default — needs `--tail-lines 0` for full-log mode; (3) hlx output is normalized/interpreted JSON; ci-evidence-reader returns raw wire JSON — prompts written against raw shape break if switched to hlx; (4) hlx writes to stdout/temp; ci-evidence-reader writes to controlled paths under `/tmp/gh-aw/agent/`.
-
-**Recommendation:** Slices 0–2 (doc mapping + tail-lines 0 + --skip) are standalone small PRs with no eval machinery needed. Slices 3–5 (fixture mode) require Dallas decision on ownership.
+Key architectural patterns established: Reuse existing decorators (CachingAzdoApiClient, CachingHelixApiClient); mock at interface boundary (IHelixApiClient, not HttpMessageHandler); early-return pattern for eval mode pathways.
 
 ---
 
-## 2026-06-24: AzDO Param Plumbing — Three Bugs Fixed (fix/azdo-param-plumbing)
-
-### Learnings
-
-**AzDO REST query param names for time range:**
-- `minTime` and `maxTime` (ISO 8601 round-trip format, URL-escaped)
-- The time field filtered is **determined by queryOrder**, not by minTime/maxTime param names
-  (e.g., `queryOrder=finishTimeDescending` → AzDO interprets minTime/maxTime against finish time)
-- Valid queryOrder values: `queueTimeAscending`, `queueTimeDescending`, `startTimeAscending`, `startTimeDescending`, `finishTimeAscending`, `finishTimeDescending`
-
-**Class of bug (silent param drop):**
-- MCP param binding silently drops unknown args if not present in the tool method signature
-- Missing param + missing URL plumbing both produce identical symptom: filter is ignored
-- Audit: compare tool method signature with underlying REST API capabilities to catch gaps early
-
-**Three bugs fixed and locations:**
-1. `azdo_builds` — `minTime`/`maxTime`/`queryOrder` were absent from `AzdoBuildFilter`, not forwarded to AzDO URL, not exposed on MCP tool or CLI command
-   - Files: `AzdoModels.cs`, `AzdoApiClient.cs` (`ListBuildsAsync`), `AzdoService.cs`, `CachingAzdoApiClient.cs`, `AzdoMcpTools.cs`, `Program.cs`
-2. `azdo_test_attachments` — `top` param accepted but never forwarded to REST URL (`$top=` missing from `GetTestAttachmentsAsync`)
-   - File: `AzdoApiClient.cs` (`GetTestAttachmentsAsync`)
-3. `azdo_test_results` — `outcomes` filter hardcoded to `Failed` with no way for caller to override; passing `Passed,Failed` etc. was impossible
-   - Files: `IAzdoApiClient.cs`, `AzdoApiClient.cs`, `CachingAzdoApiClient.cs`, `AzdoService.cs`, `AzdoMcpTools.cs`, `Program.cs`
-
-**Pattern applied:**
-- `NormalizeQueryOrder` + `IsValidQueryOrder` + `GetInvalidQueryOrderMessage` mirrors existing `NormalizeFilter`/`IsValidFilter` pattern
-- `AllowedValues` on MCP tool param + server-side validator + `McpException` on invalid = defense in depth
-- Cache key includes new discriminating params (outcomes, QueryOrder, MinTime, MaxTime) to avoid stale cache hits
-
-**Commits:** `fefd0dc` (builds), `a2615df` (attachments top), `cbb35c5` (outcomes)
-**Tests:** 1326 passed, 2 skipped (0 failed) — 14 new tests added
-**Branch:** `fix/azdo-param-plumbing`
-
-## 2026-06-24: PR #78 Copilot Reviewer Feedback — Whitespace normalization (fix/azdo-param-plumbing)
-
-### Learnings
-
-- **Optional string params with server-side defaults:** Always use `IsNullOrWhiteSpace` + `Trim()`, not `IsNullOrEmpty`. Empty or whitespace from a caller should fall back to the default, not produce malformed URLs (`outcomes=%20%20%20`) or distinct cache keys for semantically-identical requests.
-- **Both CLI and MCP entry points must validate:** For tools with both CLI and MCP surfaces, normalize and validate at BOTH entry points using the shared helper (e.g., `AzdoService.NormalizeQueryOrder` / `IsValidQueryOrder`). Don't rely on one path to protect the other — a CLI user calling `--query-order " "` hits AzDO with a bad value if only the MCP path validates.
-- **Cache key normalization:** In `CachingAzdoApiClient`, normalize once at the top of the method and use the normalized value for both the cache key and the inner-client call. Raw caller input (null vs "" vs "   ") must not produce distinct cache entries for semantically-identical requests.
-
-**Commit:** `aa7dbe8` (whitespace normalization — queryOrder CLI, outcomes trim, caching outcomes)
-**Tests:** 1330 passed, 2 skipped (0 failed) — 4 new tests added
-**Branch:** `fix/azdo-param-plumbing`
-
-## 2026-06-24: PR #78 Second Copilot Review — Cache normalization, exit codes, doc coupling (fix/azdo-param-plumbing)
-
-### Learnings
-
-- **Cache key normalization isn't just for outcomes — any optional param with a server-side default needs the same null-vs-default treatment in the cache layer.** Explicit `"queueTimeDescending"` and `null` are semantically identical (the server applies the same default), but produce different hash strings if you embed the raw value. Always normalize to `null` before hashing when the server would treat them as equivalent.
-- **CLI commands MUST set non-zero exit code on invalid input or scripts can't detect failure.** `Environment.ExitCode = 1` before returning is the pattern used throughout this codebase for user input errors. Silent success-on-bad-input (`return` with exit 0) masks failures in CI pipelines and shell scripts.
-
----
-
-## Summary (archived 17 detailed entries)
+## Recent Detailed Work
 
 **Focus:** PR #78 (AzDO param plumbing & whitespace handling), Issue #81-82 (strict-mode parameter rejection), Issue #91-105 (SDK bumps, container image, HTTP 204 handling).
 
@@ -510,3 +419,57 @@ Validated Larry's hypothesis against actual code. Key findings durable across fu
 - WAL checkpoint required before snapshot copy (`PRAGMA wal_checkpoint(FULL)`).
 - Minimum code change: `EvalMode` flag on `CacheOptions`, TTL bypass in `GetMetadataAsync`/`IsJobCompletedAsync`, `OfflineAzdoApiClient`/`OfflineHelixApiClient` stubs, `ExportSnapshotAsync` on `SqliteCacheStore`, env var activation (`HLX_EVAL_SNAPSHOT`). No schema changes, no new file formats.
 - Decision proposal written to `.squad/decisions/inbox/ripley-snapshot-eval.md`.
+
+---
+
+## 2026-09-04 — Helix queue-monitor audit
+
+Read-only audit requested by Larry: what does helix.mcp do worse for repos using arcade's
+"Helix Queue Monitor" pattern (a single job watching all Helix jobs for a build, separate from
+the legs that submit them)? Validated against public pipelines, not just arcade source. No code
+changed. Full proposal in `.squad/decisions/inbox/ripley-helix-queue-monitor.md`.
+
+Durable findings:
+
+- Confirmed live adoption via GitHub code search, not just the arcade template: dotnet/sdk
+  (`.vsts-ci.yml`/`.vsts-pr.yml` — its *main* pipelines), dotnet/runtime (45+, mostly stress
+  suites), dotnet/aspnetcore, dotnet/roslyn, mirrored into dotnet/dotnet (VMR). This is not a
+  niche pattern — it's SDK's primary CI shape today.
+- Good news: `HelixJobSource.Compute` in arcade's `JobMonitor` is identical to our own
+  `AzdoService.ComputeHelixSource`. Our Helix-side primary path (`Job.ListAsync(source)+BuildId`,
+  PR #92) is exactly aligned with how the monitor itself finds jobs — discovery already works.
+- Bad news, in priority order:
+  1. `HelixApiClient.ListJobNamesByBuildAsync` discards `QueueId`/`Properties` from the same
+     `Job.ListAsync` response it already paid for. `System.PhaseName`/`System.JobDisplayName` are
+     sitting right there and would restore `ParentJobName` (currently hard-coded `""` in
+     `BuildHelixResultFromJobNames`) at zero extra API cost. Cheapest, safest fix — proposed P1.
+  2. Timeline-fallback regexes (`FailedWorkItemRegex`) assume the old "has failed" + raw-GUID
+     format; the monitor emits `"failed (State)."` + human `DisplayName`, so `FailedWorkItems`
+     silently stays empty for monitor repos even when the fallback does run.
+  3. Pre-existing bug, now more consequential: when a timeline task `hasIssues` but yields zero
+     parseable job GUIDs and `filter="failed"` (the default), `GetHelixJobsViaTimelineAsync` emits
+     *no row at all* — build-wide monitor errors like "No Helix jobs were submitted..." vanish
+     instead of surfacing.
+  4. The monitor has its own internal retry/resubmission loop (`JobMonitorRunner.ExecuteRetryPassAsync`)
+     that resubmits work as new Helix jobs sharing the same `BuildId`, disambiguated only by
+     `System.JobAttempt`/`System.StageAttempt` properties (arcade dedups via
+     `MonitorState.GetLatestHelixJobAttempts`). Our `(source, BuildId)` filter has no attempt
+     concept and can double-count/point at superseded job GUIDs. This is the one item with real
+     schema/behavior weight — flagged for Dallas, not something to just fix inline.
+  5. `CiKnowledgeService.cs` (lines 230/240/787) still tells the LLM that `azdo_helix_jobs` returns
+     0 for SDK due to task-name substring miss — that predates PR #92 and needs re-verification
+     against a live SDK build before trusting it; flagged for Kane if stale.
+- Confirmed dotnet/sdk's actual `.vsts-ci.yml`: a single `HelixJobMonitor` job runs in the `build`
+  stage next to (not gated by) the WINDOWS/LINUX/MACOS matrix legs — the exact "separate from
+  spawning legs" shape the task described, and likely the root cause behind the existing SDK
+  guidance in CiKnowledgeService.
+- Left unresolved (non-blocking, noted in proposal): did not verify arcade's
+  `TestResultUploadPipeline.cs` test-run naming convention to confirm/correct the `[HelixJob:GUID]`
+  guidance already in `CiKnowledgeService.cs` — worth a follow-up if anyone touches that doc.
+
+## 2026-09-04: Helix queue-monitor local implementation audit (completed)
+
+Completed audit of helix.mcp's Helix client integration against arcade's queue-monitor implementation. Identified five concrete defects (regex mismatch, job name collapse, build-wide error drops, metadata discard, stale guidance) and three architectural options. Dallas accepted all defects as genuine; produced corrected P4 dedup algorithm (lineage-leaf rule, not group-by-attempt). Corrected form splits D5a (expose lineage now) and D5b (filter superseded, gated on evidence). All approved items assigned to Ripley ownership.
+
+**Status:** COMPLETED  
+**Outcome:** Five defects confirmed; implementation roadmap staged with D1–D6 approved

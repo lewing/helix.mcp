@@ -5216,3 +5216,1420 @@ This is what someone lands on from Google or a direct link, and it should immedi
 | 4 | README.md (MCP Config section) | Add "same commands available as `hlx` if MCP not working" | 1 sentence |
 | 5 | SKILL.md frontmatter | Widen USE FOR to include "MCP not configured or fails to start" | phrase edit |
 | 6 | docs/cli-reference.md (line 1) | Add "works without any MCP server" to opening sentence | phrase edit |
+# Decision: ModelContextProtocol C# SDK 1.4.0 → 2.2.0 Migration — APPROVED
+
+**Date:** 2026-08-20  
+**Status:** ✅ **APPROVED** — Ready for PR creation  
+**Final verdict by:** Dallas (Lead Architect)  
+**Agents:** Ash (analysis), Ripley (implementation + B1–B3 fix), Lambert (T1–T4 + F1/F3), Kane (F2)
+
+---
+
+## Executive Summary
+
+The ModelContextProtocol C# SDK is upgrading from v1.4.0 to v2.2.0 (released 2026-08-13). This is a major version migration requiring dependency bump + one-line session-mode configuration. All blocking findings (F1, F2, F3) are resolved. Tests (T1–T4) implemented and passing. Migration is low-risk; no tool refactoring required.
+
+---
+
+## Timeline & Key Decisions
+
+### Phase 1 Approved (Dallas Architecture Review, Final Review, Re-Review)
+
+**Approved changes:**
+1. `Directory.Packages.props`: bump `ModelContextProtocol` + `ModelContextProtocol.AspNetCore` to 2.2.0 (locked in sync)
+2. `src/HelixTool.Mcp/Program.cs`: add explicit `SessionMode = HttpServerSessionMode.Stateless` in `.WithHttpTransport()` options
+3. `src/HelixTool.Mcp.Tools/AzDO/AzdoMcpTools.cs`: add `LimitedResultsSchema<T>` record + `OutputSchemaType` annotations on six tools (B1 fix by Ripley)
+4. New test files (5 total, T1–T4 + F1/F3/G7 gates): T1 blocking; T2/T3/T4 supporting gates
+5. Cleanup: `.gitignore` additions, XML-doc URL rewrites (F2 by Kane), auth-scoped test isolation (F3 by Lambert)
+
+**Rejected (NOT in phase 1):**
+- Ash's Option A (hybrid session mode): explicitly rejected — stateless is already the correct mode
+- Phase-2 stateless refactor: no stateful tool code exists; close this thread
+
+---
+
+## Key Findings & Resolutions
+
+### F1 — Session-mode test hermetic defect (RESOLVED by Lambert)
+
+**Problem:** `HttpTransportSessionModeTests.cs` was non-deterministic: failed when `HLX_API_KEY` env var was set.
+
+**Root cause:** Test used `WebApplicationFactory<Program>`, which boots the real `ApiKeyMiddleware` reading the ambient environment variable at pipeline-build time. No `X-Api-Key` header sent → 401 auth rejection before transport even runs.
+
+**Fix:** `AttachApiKeyIfConfigured()` helper reads the *same* `HLX_API_KEY` variable through *same* production constant `ApiKeyMiddleware.EnvVarName`, applies *same* predicate, attaches header when needed. `HlxApiKeyEnvCollection` serializes xUnit test execution to eliminate cross-class parallelism races. Both worlds (key set/unset) now green.
+
+**Verification:** Full suite 1,570 tests (1,568 passed, 2 pre-existing skips / 0 failed) — identical in both env worlds.
+
+### F2 — Scratch artifacts & licensing (RESOLVED by Kane)
+
+**Problem:** `.squad/artifacts/upstream-StatelessServerTests.cs` (642-line third-party copy with no license header) and `.squad/evidence/b2-{red,green}.txt` (generated test logs) were about to be committed.
+
+**Fix:**
+- Deleted both directories entirely
+- Added `.squad/artifacts/` and `.squad/evidence/` to `.gitignore`
+- Rewrote two test file XML-doc references from local paths to stable upstream GitHub URLs (`https://github.com/modelcontextprotocol/csharp-sdk/blob/v2.2.0/tests/ModelContextProtocol.AspNetCore.Tests/StatelessServerTests.cs`)
+- Kept `.squad/skills/mcp-sdk-major-upgrade/SKILL.md` (first-party, durable knowledge)
+- Corrected `AzdoMcpTools.cs` XML-doc misnomer: "paginated" → "capped/truncating"
+
+**Verification:** `git status` confirms no untracked paths under deleted dirs; grep confirms no dangling references.
+
+### F3 / G7 — HTTP auth + per-request token/cache isolation (RESOLVED by Lambert)
+
+**Problem:** No gate verified that auth gating + per-request scoping survive sessionless HTTP mode.
+
+**Fix:** New `ApiKeyScopedRequestIsolationTests.cs` using real `WebApplicationFactory<Program>` (not mocked host). Four facts:
+1. Missing `X-Api-Key` header → 401
+2. Incorrect key → 401
+3. Correct key → proceeds
+4. Two consecutive requests with different `Authorization: Bearer` tokens resolve independent tokens + cache partitions (verified via recording factories for `IHelixApiClientFactory`/`ICacheStoreFactory`)
+
+**Verification:** Identical 4-pass results with `HLX_API_KEY` unset and set (ambient).
+
+---
+
+## Validation Gates (All Passing)
+
+| Gate | Owner | Status | Notes |
+|------|-------|--------|-------|
+| **G1** Clean build | Ripley | ✅ | 0 warnings, 0 errors |
+| **G2** Full suite | Lambert | ✅ | 1,568 passed / 2 pre-existing skipped / 0 failed (1,570 total) |
+| **G3** Progress over stateless HTTP (T1, blocking) | Lambert | ✅ | Progress notifications survive SSE stream end-to-end |
+| **G4** tools/list wire parity | Lambert | ✅ | 30,366 bytes (v1.4.0) → 29,163 bytes (v2.2.0); delta explained (six minimal schemas 408→102 bytes [−306], removed task-support metadata [−897], −1,203 bytes total, −3.96%, approximately −301 tokens) |
+| **G5** GET/DELETE contract | Lambert | ✅ | Asserts 405 on stateless endpoint; API key auth gates tested |
+| **G6** Stdio smoke | Ripley | ✅ | hlx mcp over stdio; tools/list + live call succeed |
+| **G7** HTTP smoke (F3 gate) | Lambert | ✅ | Two-request auth + token/cache scoping verified |
+
+---
+
+## Test Summary (T1–T4)
+
+### T1 — Progress notifications over stateless HTTP (BLOCKING)
+- Hosts real `HelixMcpTools` over `TestHost` with `SessionMode.Stateless`
+- Real `McpClient` over `HttpClientTransport`; passes `progressToken` in request meta
+- Asserts ≥1 `notifications/progress` arrives, with values matching `ProgressUpdate` → `ProgressNotificationValue` adapter mapping
+- **Result:** ✅ PASS
+
+### T2 — Structured-content return-type guard
+- Real `McpServerTool` schema generation over tool discovery
+- Discovery across structured tool classes (≥20 methods in `AzdoMcpTools`, `HelixMcpTools`, `CiKnowledgeTool` with `UseStructuredContent = true`)
+- Six `LimitedResults<T>` tools pinned to exactly `{"type":"object"}` schema
+- Current and down-level wire assertions prove natural unwrapped `structuredContent` behavior
+- Anti-vacuity coverage prevents future silent regression
+- **Result:** ✅ PASS
+
+### T3 — Session mode effective-value regression guard
+- Effective-value regression guard: asserts `HttpServerTransportOptions.SessionMode` resolves to `HttpServerSessionMode.Stateless`
+- Catches changes to `Stateful`/`StatefulForInitializeClients` and future default changes
+- Cannot distinguish deletion while SDK 2.2 itself defaults to `Stateless`, hence explicit source configuration remains the reviewability rule
+- **Result:** ✅ PASS (both test constructs + mutation-verified on Program.cs line flip)
+
+### T4 — GET/DELETE return 405 under stateless
+- Contract test on MCP endpoint asserting GET / DELETE yield `HttpStatusCode.MethodNotAllowed` (405)
+- Documents endpoint surface change for readers
+- **Result:** ✅ PASS
+
+---
+
+## Migration Plan (Dallas)
+
+### Why Stateless is Correct
+- Our entire server is already per-request-scoped (token accessor, cache store, API clients all `AddScoped`)
+- We hold no cross-request server state
+- We issue no server→client requests (progress is request-bound, injected parameter)
+- Stateless mode removes session affinity requirement for load-balanced deployments
+- SDK 2.x flipped the default from stateful → stateless; we are explicitly declaring the intention
+
+### Rollback Plan
+Revert `Directory.Packages.props` to **v1.4.1** (2026-07-09, the 1.x servicing release) + revert `Program.cs` hunk. Two-file revert; all other changes are independent.
+
+### Effort Estimate
+- Ripley: 0.5–1 day (dependency bump + smoke tests G6/G7)
+- Lambert: 0.5 day (test gates T1–T4, G2–G5)
+- Kane: 0.25 day (artifact cleanup F2)
+- Total: ~1.25 days
+
+---
+
+## Key Learnings
+
+1. **Session mode is the critical change.** SDK 2.x flipped the default; without explicit source declaration, reviewers cannot see the intent and default-change regressions are invisible.
+2. **Hybrid mode adds legacy session debt unnecessarily.** Stateless is already our architecture; adopting hybrid would re-introduce session affinity for load-balanced deployments, on day one of a deprecated API.
+3. **Wire-format claims require evidence.** Dallas's initial concern about "silent breaking changes to 6 tools" was real in schema structure but not in wire payloads to legacy clients. B1 fix is still correct; frame it as schema clarity improvement, not legacy regression repair.
+4. **Auth + scoping under stateless requires proof.** T1 (progress) and F3 (per-request token/cache isolation) are the blocking facts that justify the mode choice; do not assume existing unit tests catch them.
+
+---
+---
+date: 2026-07-28
+author: ripley
+status: decided
+---
+
+# Decision: Add `workItem` parameter to `helix_find_files`
+
+## Problem
+
+A calling model passed `workItem` to `helix_find_files` and received a hard schema-rejection error from strict-mode parameter validation:
+
+> Unknown parameter 'workItem' for tool 'helix_find_files'. Did you mean: maxItems?
+
+All sibling tools (`helix_files`, `helix_logs`, `helix_search`, `helix_download`, `helix_work_item`, `helix_parse_uploaded_trx`) accept `workItem`. `helix_find_files` was the sole exception.
+
+## Decision
+
+Add `workItem` as an optional parameter to `helix_find_files`. When supplied:
+- Skip `ListWorkItemsAsync` (which pages through all work items in the job)
+- Call `ListWorkItemFilesAsync` directly on the named work item
+- Return a `FindFilesResults` with `TotalWorkItems = 1`, `Truncated = false`
+
+This is equivalent to `helix_files` + client-side glob filter, implemented at the service layer for proper error handling.
+
+## Rationale
+
+- Consistency: models learn the jobId/workItem pattern from one sibling and apply it to all. Breaking consistency is a usability defect, not a feature.
+- Performance: single-work-item fast path avoids listing all work items in the job.
+- No breaking change: `workItem` is optional with `null` default; existing callers unaffected.
+
+## Scope
+
+- `src/HelixTool.Core/Helix/HelixService.cs` — `FindFilesAsync` signature + single-item fast path
+- `src/HelixTool.Mcp.Tools/Helix/HelixMcpTools.cs` — MCP tool: added `workItem`, URL extraction, updated description
+- `FindBinlogsAsync` internal caller updated to use named `cancellationToken:` arg
+
+## Other inconsistencies checked
+
+No other schema inconsistencies found. `helix_status` and `helix_batch_status` are intentionally job-scoped and do not need `workItem`.
+
+---
+date: 2026-07-28T16:18:09-05:00
+author: lambert
+status: proposed
+---
+
+# Decision: Schema Consistency Tests for Work-Item-Scoped Helix Tools
+
+## Problem
+
+A hard schema-rejection error (`Unknown parameter 'workItem' for tool 'helix_find_files'`) reached production because there was no automated gate catching when a new tool in the Helix family omitted a parameter that all its siblings had. The parameter validation layer did exactly what it should — it rejected the unknown param — but the gap in the schema itself was never caught before ship.
+
+The existing `McpServerToolParameters_HaveDiscoverableDescriptions` test in `McpToolDescriptionTests.cs` guards descriptions but not cross-sibling parameter consistency.
+
+## Decision: Explicit Enumeration Test in McpToolDescriptionTests
+
+Add a `[Theory]` test (`WorkItemScopedHelixTools_HaveOptionalWorkItemParameter`) that enumerates every Helix MCP tool expected to have an optional `workItem` parameter:
+
+```
+helix_logs, helix_files, helix_download, helix_find_files,
+helix_work_item, helix_search, helix_parse_uploaded_trx
+```
+
+The test uses reflection to assert each tool has a `workItem` parameter that is optional (nullable string with null default).
+
+## Rationale
+
+- **Explicit enumeration > heuristic derivation.** The description-based approach (look for "work item" in the description) doesn't work reliably: `helix_find_files` says "Search work items" (plural), while the tools that had it say "for a Helix work item" (singular). The explicit list is the ground truth.
+- **Fails loudly on regression.** If a new tool is added to this family without `workItem`, the test fails with a message that names the tool and its actual parameter list.
+- **Self-documents the invariant.** The test and its inline comments are the canonical answer to "which Helix tools need workItem?"
+
+## Alternatives Rejected
+
+- **Heuristic over description text:** Unreliable (see above).
+- **Single `[Fact]` over all tools:** No — `[Theory]` is better so each tool gets its own pass/fail row in the test runner.
+
+## Consequences
+
+- Any future Helix tool in the work-item-scoped family must be added to the `[InlineData]` list, or the test will error with "tool not found."
+- The test is green today (Ripley's fix already landed) and must stay green.
+
+## Companion Tests Added
+
+- `HelixMcpToolsTests.FindFiles_WithWorkItem_ScansOnlyNamedWorkItem` — behavioral: when `workItem` is provided, only that item is queried; `ListWorkItemsAsync` is not called.
+- `HelixMcpToolsTests.FindFiles_WithWorkItem_DoesNotReturnOtherWorkItems` — behavioral: results contain only the requested work item.
+- Two pre-existing tests fixed to use named args (`pattern: "*.trx"`, `pattern: "*"`) after Ripley's parameter ordering change.
+
+# Review: helix_find_files workItem parameter addition
+
+**Date:** 2026-07-28T16:18:09-05:00
+**Reviewer:** Dallas (Lead)
+**Artifacts:** Ripley (implementation), Lambert (tests)
+**Verdict:** ✅ APPROVE
+
+---
+
+## 1. Parameter Ordering — Acceptable
+
+**MCP tool level (`FindFiles`):** `workItem` is placed after `jobId` and before `pattern`. This matches the sibling convention exactly — `Download`, `Logs`, `Files`, `Search`, and `ParseUploadedTrx` all place `workItem` as the second parameter after `jobId`. MCP parameters bind by name (JSON schema), not positionally, so the wire protocol is unaffected. The two test callsites updated to named arguments (`pattern: "*.trx"`) are the only C# callers outside tests. No package is published; this is not external API surface.
+
+**Service level (`FindFilesAsync`):** `workItem` is appended after `progress` and before `cancellationToken` — the lowest-disruption position. The only internal caller change is `FindBinlogsAsync` switching `cancellationToken` from positional to named, which Ripley handled correctly. `Program.cs` passes 3 positional args and is unaffected.
+
+No source-compat concern. Ordering follows established convention.
+
+## 2. Fast Path Correctness — Sound
+
+- **Glob matching:** Fast path uses the same `MatchesPattern(f.Name, pattern)` as the scan path. ✓
+- **Error handling:** A nonexistent work item will hit `ListWorkItemFilesAsync` → HTTP 404 → caught by the existing `catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)` block → surfaces as `HelixException`. Same behavior as the scan path hitting a missing job. ✓
+- **`maxItems` interaction:** Silently ignored when `workItem` is set. The tool description says "instead of scanning up to maxItems work items," which is clear. The MCP tool sets `ScannedItems = 1` in the response, so callers see the actual scope. Acceptable.
+- **`Truncated` flag:** Fast path returns `Truncated: false`, `TotalWorkItems: 1` — correct since there is no truncation when targeting a single item. ✓
+
+## 3. Tool Description — Clear and Consistent
+
+The updated description adds: "When workItem is supplied, scopes the search to that single work item (equivalent to helix_files + glob filter) instead of scanning up to maxItems work items."
+
+The `workItem` parameter description — "Helix work item name; optional only when jobId is a full Helix work item URL" — is character-for-character identical to sibling tools (`helix_logs`, `helix_files`, `helix_search`, etc.). ✓
+
+The URL-extraction fallback (`HelixIdResolver.TryResolveJobAndWorkItem`) matches the pattern in all sibling tools. ✓
+
+## 4. Test Quality — Adequate with Caveats
+
+**Schema consistency test (`WorkItemScopedHelixTools_HaveOptionalWorkItemParameter`):**
+Uses `[InlineData]` with a hardcoded list of 7 tool names. This means a future work-item-scoped tool added without `workItem` will NOT be caught unless someone remembers to add it to the list. However, auto-detection of "work-item-scoped" tools is non-trivial (no attribute or marker distinguishes them), so a hardcoded list is a pragmatic choice. The `GetMcpToolMethods()` discovery mechanism is sound for the tools it covers.
+
+**Behavioral tests:** Correct in their assertions — they verify `ListWorkItemsAsync` is NOT called and only the named work item is scanned. However, both tests use reflection-based invocation unnecessarily complex for this scenario. Named arguments (`FindFiles(ValidJobId, workItem: "target-wi", pattern: "*.trx")`) would be simpler and more readable.
+
+**Stale comments:** Test doc-comments say "RED until Ripley adds the optional workItem parameter" — but the parameter already exists. These are harmless but noisy.
+
+## Non-Blocking Follow-Ups
+
+1. **Lambert:** Simplify the two behavioral tests to use direct named-argument calls instead of reflection. The reflection was needed when writing tests anticipatorily (before the param existed), but now that it's landed, direct calls are clearer.
+2. **Lambert:** Remove or update the "RED until Ripley's fix" comments — the fix has landed.
+3. **Future consideration:** If a new work-item-scoped tool is added, the `[Theory]` list in `McpToolDescriptionTests` must be updated manually. Consider adding a code comment near the `[InlineData]` block reminding future authors to extend the list.
+
+# PR #117 Reviewer Fixes — Decisions & Patterns
+
+**Date:** 2026-07-28  
+**Author:** Ripley  
+**Branch:** lewing-fix-find-files-workitem-param  
+**Commit:** 6d95624
+
+---
+
+## Decision: Use `IsNullOrWhiteSpace` as the canonical "absent" predicate for optional string tool params
+
+**Context:** `HelixMcpTools.FindFiles` used `IsNullOrEmpty`; `HelixService.FindFilesAsync` used `IsNullOrWhiteSpace`. A whitespace-only `workItem` was treated differently by each layer — the MCP layer skipped URL extraction while the service treated it as absent and ran a full scan. The `scannedItems` metadata then reported `1` (MCP path said "scoped") while the service returned results for all items.
+
+**Decision:** Standardize on `IsNullOrWhiteSpace` at every layer boundary that guards an optional user-supplied string. A whitespace-only name is never a valid work item identifier.
+
+**Scope:** All Helix MCP tool methods that check `workItem` before URL extraction or branching logic.
+
+---
+
+## Decision: Use `GetWorkItemFilesAsync` (not `_api.ListWorkItemFilesAsync`) in single-item fast paths
+
+**Context:** `FindFilesAsync`'s single-item fast path called `_api.ListWorkItemFilesAsync` directly. The outer catch blocks map HTTP 404 → "Job 'X' not found", so a missing work item produced the wrong error message.
+
+**Decision:** When a method-level sibling (`GetWorkItemFilesAsync`) already encapsulates the right error context for a resource, call the sibling instead of the raw API client. This keeps error messages accurate without duplicating catch logic.
+
+**Scope:** Any future fast-path additions in `HelixService` that operate on a single work item within a method otherwise scoped to jobs.
+
+---
+
+## Pattern: Schema consistency guard is discovery-based, not enumeration-based
+
+**Context:** The skill I authored described a `[Theory]`/`[InlineData]` pattern for the schema-consistency test. Lambert implemented a `[Fact]` with reflection-based discovery (`HelixJobIdTools_HaveWorkItemOrAreExplicitlyJobScoped`) that automatically catches new tools and requires explicit opt-out for job-scoped tools.
+
+**Preferred pattern:** Discovery-based `[Fact]` with an `intentionallyJobScopedTools` exclusion set. New work-item-scoped tools require zero test changes. New job-scoped tools require one line in the exclusion set with a justification comment.
+
+**Recommendation to Dallas:** Consider applying this same discovery-based guard pattern to other cross-cutting invariants (e.g., all tools with `jobId` must have a `Description` attribute, all tools using `CancellationToken` must not expose it in the MCP schema).
+# Decision: Reflection contract tests must assert parameter shape, not just presence
+
+**Date:** 2026-07-28  
+**Author:** Lambert  
+**Context:** PR #117 — helix_find_files workItem parameter, follow-up review comment
+
+## Decision
+
+When a reflection-based guard asserts that a parameter exists, it must also assert the **full behavioral shape** of that parameter:
+
+1. **Name** — parameter named as expected
+2. **Type** — `ParameterType == typeof(T)` for the expected CLR type
+3. **Optionality and default** — `HasDefaultValue && DefaultValue is null` for an optional-with-null-default pattern
+
+Asserting only the name allows wrong-type or required parameters to slip through while still violating the MCP schema contract.
+
+## Rationale
+
+The original guard in `HelixJobIdTools_HaveWorkItemOrAreExplicitlyJobScoped` only checked `p.Name == "workItem"`. A future author declaring `string workItem` (required), `int workItem`, or `string workItem = "default"` would pass the guard while producing an inconsistent MCP schema — exactly the bug class PR #117 was preventing.
+
+## Applied in
+
+`src/HelixTool.Tests/McpToolDescriptionTests.cs` — `HelixJobIdTools_HaveWorkItemOrAreExplicitlyJobScoped`, committed on branch `lewing-fix-find-files-workitem-param`.
+
+## Generalization
+
+Any schema-consistency guard that uses reflection to check a parameter convention should validate the complete contract: name + type + optionality. This applies equally to future guards for other cross-tool conventions (e.g., `filter`, `top`, `org`).
+
+---
+
+# Vally Integration Research: Findings & Design Options
+
+**Researcher**: Ash (Product Analyst)  
+**Date**: 2026-08-26  
+**Requested by**: Larry Ewing  
+**Status**: DRAFT – Ready for Dallas architecture review  
+
+---
+
+## Executive Summary
+
+Vally is Microsoft's deterministic evaluation platform for AI projects. PR #132753 (dotnet/runtime) creates **ci-evidence-reader**, a Python helper that validates and fetches CI evidence (AzDO builds, Helix test logs). This helper is explicitly positioned as a **precursor to Vally integration** for deterministic CI failure scenario evaluation.
+
+**Key Finding**: helix.mcp and ci-evidence-reader can integrate with Vally as:
+1. **Executor wrapper** (helix.mcp commands emit Vally trajectory events), OR
+2. **Evidence provider** (ci-evidence-reader feeds structured fixtures to Vally graders), OR
+3. **Hybrid** (helix.mcp + hlx CLI as Vally tool provider, ci-evidence-reader as fixture source)
+
+The smallest proof-of-concept: **Wrap one helix.mcp command (e.g., `azdo_timeline`) as a Vally executor stub, emit trajectory events, and feed a sample AzDO build response as a Vally stimulus. Demonstrate pass/fail grading.**
+
+---
+
+## Part 1: What Vally Is (Documented)
+
+### Platform Definition
+**Vally** = Extensible deterministic evaluation framework for AI systems.
+- **Source**: https://microsoft.github.io/vally/ (landing page)
+- **Architecture**: Five-stage pipeline
+
+### The Vally Pipeline (Documented Facts)
+
+1. **Stimulus**: 
+   - Input: Prompt + optional grader config + constraints (e.g., "evaluate response within 2 seconds")
+   - Role: Test case definition
+   - Source: https://microsoft.github.io/vally/concepts/how-it-works/ ("Stage 1: Stimulus")
+
+2. **Executor**: 
+   - Input: Stimulus + agent/executor implementation
+   - Role: Runs the agent; captures events
+   - Contract: Swappable via custom executor interface (Copilot SDK built-in; other runtimes provide custom)
+   - Event types captured: `tool_call`, `tool_result`, `token_usage`, `turn_start`, `turn_end`, `assistant_message`, `user_message`, `skill_activation`, `reasoning`, `error`, `cost_unavailable`, custom
+   - Source: https://microsoft.github.io/vally/concepts/how-it-works/ ("Stage 2: Executor")
+
+3. **Trajectory**: 
+   - Output: Flat array of typed events + computed metrics
+   - Metrics: `tokenUsage`, `toolCallCount`, `skillActivationCount`, `turnCount`, `wallTimeMs`, `errorCount`
+   - Role: Complete record of execution
+   - Source: https://microsoft.github.io/vally/concepts/how-it-works/ ("Stage 3: Trajectory")
+
+4. **Graders**: 
+   - Input: Trajectory
+   - Role: Evaluate aspects (correctness, cost, speed, etc.)
+   - Customization: Full custom grader support with taxonomy metadata (determinism, cost, scope)
+   - Source: https://microsoft.github.io/vally/concepts/how-it-works/ ("Stage 4: Graders")
+
+5. **Score**: 
+   - Output: Aggregated result with weighted metrics, pass@k, failure analysis
+   - Source: https://microsoft.github.io/vally/concepts/how-it-works/ ("Stage 5: Score")
+
+### Results API (Documented)
+Vally exposes REST API (`vally serve`) for querying runs and comparing outcomes:
+- **Endpoints**:
+  - `GET /api/runs` (list evaluation runs)
+  - `GET /api/outcomes` (query outcomes; filterable by grader, status, build)
+  - `GET /api/compare` (multi-run comparison)
+  - `GET /api/tools` (analyze tool invocations)
+- **Response structure**: Outcomes include trajectory events, grader results, metrics, timestamps
+- **Source**: https://microsoft.github.io/vally/reference/results-api/
+
+---
+
+## Part 2: CI Evidence Reader (PR #132753)
+
+### What It Is (Documented)
+**ci-evidence-reader**: Standalone Python helper (640 LOC) that validates and fetches CI evidence.
+- **Source**: https://github.com/dotnet/runtime/pull/132753 (files: `.github/workflows/ci-evidence-reader`, tests in `.github/workflows/tests/test_ci_evidence_reader.py`)
+- **Motivation** (quoted from PR description): *"It also creates a clear place to later redirect CI evidence inputs for deterministic evals"*
+
+### Command Surface (Documented)
+```
+ci-evidence-reader <command> <args> --output <path>
+```
+
+**Commands**:
+1. `azdo-builds --definition ID --top 25 --skip N` (N ∈ {0,10,20,30,40})
+   - Returns: JSON array of build records (id, status, result, reason, queueTime, startTime, finishTime, sourceVersion, etc.)
+   - Max response: 16 MB
+
+2. `azdo-timeline --build-id ID`
+   - Returns: JSON array of timeline records (id, type, name, state, startTime, finishTime, issues, log)
+   - Max response: 16 MB
+
+3. `azdo-log --build-id ID --log-id ID`
+   - Returns: Plain text log (max 64 MB)
+
+4. `helix-work-items --job-id JOBID`
+   - Returns: JSON array of work items (name, state, exitCode, duration, machines, files)
+
+5. `helix-console --job-id JOBID --work-item "NAME"`
+   - Returns: Plain text console output
+
+### Security & Validation (Documented)
+- URL validation: Hostname, path, and query parameters whitelisted (regex patterns)
+- Parameter bounds: skip ∈ [0,40], timeout 30s, response size limits
+- No credentials embedded; uses SYSTEM environment (SYSTEM_ACCESSTOKEN for AzDO, HELIX_API_ACCESS_TOKEN for Helix)
+- **Source**: ci-evidence-reader lines 80–150 (URL validation logic), test suite (20 tests validating these constraints)
+
+### Deployment (Documented)
+Installed via GitHub Actions workflow:
+```yaml
+- name: Get CI tools
+  run: |
+    mkdir -p $RUNNER_TEMP/gh-aw/ci-evidence-tools/bin
+    cp ci-evidence-reader $RUNNER_TEMP/gh-aw/ci-evidence-tools/bin/
+```
+- **Source**: ci-failure-scan.md (updated workflow documentation in PR #132753)
+
+---
+
+## Part 3: Current helix.mcp Architecture
+
+### Layers (Inspected Source)
+
+1. **MCP Tool Layer** (`AzdoMcpTools.cs`, `HelixMcpTools.cs`)
+   - Semantic tools: `azdo_timeline`, `azdo_builds`, `helix_status`, etc.
+   - Return: JSON-serialized results
+   - No recording, no mocking
+
+2. **Service Layer** (`AzdoService.cs`, `HelixService.cs`)
+   - Orchestrates multi-step workflows (build fetch → timeline extract → filter by status)
+   - Calls: AzdoApiClient → HTTP requests
+   - No trajectory emission
+
+3. **HTTP Client Layer** (`AzdoApiClient.cs`)
+   - System.Net.Http.HttpClient with token auth (Basic auth via IAzdoTokenAccessor)
+   - CachingAzdoApiClient wraps with LRU cache
+   - Direct HTTPS to dev.azure.com and helix.dot.net (live requests)
+
+### Key Observation (Integration Point)
+- **No custom executors, tool providers, mocks, or HTTP replay** currently present
+- **Security baseline exists**: URL whitelisting and parameter validation in AzdoSecurityTests.cs
+- **MCP tool surface maps directly to ci-evidence-reader commands**:
+  - `azdo_builds()` ↔ `ci-evidence-reader azdo-builds`
+  - `azdo_timeline()` ↔ `ci-evidence-reader azdo-timeline`
+  - `helix_status()` + `helix_files()` ↔ `ci-evidence-reader helix-work-items`
+
+---
+
+## Part 4: How PR #132753 Intends Integration (Inference + Evidence)
+
+### Inference (Grounded in Code & Comments)
+1. **ci-failure-scan.md** (updated in PR) adds new section: *"Data sources: Use ci-evidence-reader for deterministic, reproducible evidence collection"*
+   - This signals a **shift from ad-hoc curl → structured data source**
+   
+2. **PR comment** (motivation): *"creates a clear place to later redirect CI evidence inputs for deterministic evals"*
+   - **"Deterministic evals"** is Vally terminology (deterministic = reproducible, cacheable, comparable)
+   
+3. **ci-evidence-reader returns structured JSON**, not logs
+   - Suitable as Vally stimulus or fixture input (not raw HTML or stream)
+
+### Documented Contract
+- ci-evidence-reader validates all requests *before* HTTP (pre-flight security)
+- Returns bounded JSON (max 16 MB for structured, 64 MB for logs)
+- Supports parameter pagination (skip={0,10,20,30,40})
+- **Implication**: Safe to replay in Vally evals without live API calls
+
+---
+
+## Part 5: Integration Design Options
+
+### Option A: Executor Wrapper (helix.mcp as Vally Executor)
+
+**Concept**: Wrap helix.mcp's MCP tools as a Vally custom executor that emits trajectory events.
+
+**Architecture**:
+```
+Vally Stimulus (AzDO build ID)
+    ↓
+Custom Executor (thin wrapper around helix.mcp)
+    ├→ [EMIT: stimulus_received event]
+    ├→ Call: helix.mcp.AzdoMcpTools.Builds() [via CLI or SDK]
+    │   └→ Internal: AzdoApiClient → HTTPS → dev.azure.com
+    ├→ [EMIT: tool_call event (name="azdo_builds", params={definition: ID, top: 25})]
+    ├→ [EMIT: tool_result event (output=JSON response, metrics={responseBytes, duration})]
+    └→ Return: Trajectory with events → Vally Grader
+```
+
+**Vally Config (Pseudocode)**:
+```json
+{
+  "name": "evaluate-azdo-build-fetch",
+  "stimulus": {
+    "prompt": "Fetch AzDO build #12345 and extract timeline records",
+    "definition_id": "12345",
+    "top": 25
+  },
+  "executor": {
+    "type": "custom",
+    "implementation": "HelixMcpExecutor",
+    "config": {
+      "command_surface": "helix.mcp",
+      "tool": "azdo_builds",
+      "wrapper": "trajectory-emitter"
+    }
+  },
+  "graders": [
+    {
+      "name": "response-structure",
+      "evaluate": "trajectory",
+      "assertions": [
+        "tool_result.output contains 'id' and 'status' fields",
+        "response_size < 16777216",
+        "wall_time_ms < 5000"
+      ]
+    }
+  ]
+}
+```
+
+**Pseudocode Executor** (C#):
+```csharp
+public class HelixMcpExecutor : IVallyExecutor
+{
+    private readonly IAzdoMcpTools _tools;
+    private readonly IEventEmitter _emitter;
+
+    public async Task<Trajectory> Execute(Stimulus stimulus)
+    {
+        _emitter.Emit(new Event { Type = "stimulus_received", Content = stimulus });
+        
+        var sw = Stopwatch.StartNew();
+        _emitter.Emit(new ToolCallEvent { 
+            Name = "azdo_builds",
+            Params = new { definition = stimulus.definition_id, top = 25 }
+        });
+
+        var result = await _tools.Builds(stimulus.definition_id, top: 25);
+        
+        sw.Stop();
+        _emitter.Emit(new ToolResultEvent { 
+            Output = JsonConvert.SerializeObject(result),
+            Metrics = new { duration_ms = sw.ElapsedMilliseconds, bytes = JsonConvert.SerializeObject(result).Length }
+        });
+
+        return _emitter.BuildTrajectory();
+    }
+}
+```
+
+**Advantages**:
+- Reuses existing helix.mcp codebase (no rewrite)
+- Vally gets full trajectory trace of API calls
+- Live API calls (not mocked, but Vally can cache results)
+
+**Disadvantages**:
+- Requires Vally custom executor SDK (not yet integrated into helix.mcp)
+- Still live to AzDO; not truly deterministic replay
+
+---
+
+### Option B: Evidence Provider (ci-evidence-reader as Fixture Source)
+
+**Concept**: ci-evidence-reader runs *outside* Vally as a pre-flight data source, outputs JSON fixtures that Vally graders consume.
+
+**Architecture**:
+```
+CI Evidence Reader (pre-flight)
+    └→ azdo-builds --definition 12345 --top 25
+        └→ FILE: /tmp/azdo-builds-12345.json (fixture)
+
+Vally Stimulus
+    ├─ Fixture file: /tmp/azdo-builds-12345.json
+    └─ Prompt: "Analyze the build results in the provided fixture"
+
+Vally Executor (mock/replay)
+    ├→ Load fixture: JSON from disk
+    ├→ [EMIT: tool_call event]
+    ├→ [EMIT: tool_result event (output=fixture)]
+    └→ Return: Trajectory → Vally Grader (deterministic, no live calls)
+```
+
+**Vally Config (Pseudocode)**:
+```json
+{
+  "name": "evaluate-build-analysis-on-fixture",
+  "fixtures": [
+    {
+      "name": "azdo-build-12345",
+      "source": "ci-evidence-reader azdo-builds --definition 12345 --top 25 --output /tmp/azdo-fixture.json",
+      "format": "json"
+    }
+  ],
+  "stimulus": {
+    "prompt": "Analyze the provided AzDO build output. Identify failures.",
+    "fixture_ref": "azdo-build-12345"
+  },
+  "executor": {
+    "type": "mock",
+    "implementation": "FixtureReplayer",
+    "config": {
+      "fixture_path": "/tmp/azdo-fixture.json",
+      "tool_mocks": [
+        { "tool": "azdo_timeline", "response_file": "/tmp/azdo-fixture.json" }
+      ]
+    }
+  },
+  "graders": [
+    {
+      "name": "failure-detection",
+      "evaluate": "trajectory.tool_result.output",
+      "assertions": [
+        "output contains failures field",
+        "identified_failures > 0"
+      ]
+    }
+  ]
+}
+```
+
+**Pseudocode Fixture Replayer** (C#):
+```csharp
+public class FixtureReplayer : IVallyExecutor
+{
+    private readonly string _fixturePath;
+    private readonly IEventEmitter _emitter;
+
+    public async Task<Trajectory> Execute(Stimulus stimulus)
+    {
+        _emitter.Emit(new Event { Type = "fixture_loaded", Path = _fixturePath });
+        
+        var fixture = File.ReadAllText(_fixturePath);
+        var sw = Stopwatch.StartNew();
+        
+        _emitter.Emit(new ToolCallEvent { 
+            Name = "azdo_timeline",
+            Params = new { source = "fixture" }
+        });
+
+        await Task.Delay(0); // No actual HTTP call
+        
+        sw.Stop();
+        _emitter.Emit(new ToolResultEvent { 
+            Output = fixture,
+            Metrics = new { duration_ms = sw.ElapsedMilliseconds, cached = true }
+        });
+
+        return _emitter.BuildTrajectory();
+    }
+}
+```
+
+**Advantages**:
+- **Truly deterministic**: No live API calls, 100% reproducible
+- ci-evidence-reader runs once, output cached for many evals
+- Graders work on stable, bounded data
+- Decouples evidence collection (ci-evidence-reader) from evaluation (Vally)
+
+**Disadvantages**:
+- Fixture stale-ness: Doesn't reflect live CI state
+- Manual fixture generation workflow (pre-flight step)
+
+---
+
+### Option C: Hybrid (Tool Provider + Executor Bridge)
+
+**Concept**: helix.mcp exposes hlx commands as Vally tool provider. ci-evidence-reader supplies fixtures *and* live fallback.
+
+**Architecture**:
+```
+Vally Executor
+    ├→ Tool Provider: helix.mcp (registers tools: azdo_builds, azdo_timeline, helix_status)
+    │   ├─ Config option: "use_fixtures" = true
+    │   │   └─ Fall back to ci-evidence-reader if fixture not found
+    │   └─ Config option: "mock_http" = true
+    │       └─ Intercept HTTP, replay from cache
+    └─ Trajectory: Full record of tool calls + fallback paths
+
+Grader:
+    └─ Evaluates trajectory (real or mocked calls indistinguishable)
+```
+
+**Vally Config (Pseudocode)**:
+```json
+{
+  "name": "evaluate-build-analysis-hybrid",
+  "executor": {
+    "type": "custom",
+    "implementation": "HelixMcpBridge",
+    "config": {
+      "tool_provider": "helix.mcp",
+      "determinism": {
+        "use_fixtures": true,
+        "fixture_source": "ci-evidence-reader",
+        "fallback_to_live": false,
+        "http_mock": {
+          "enabled": true,
+          "cache_dir": "/tmp/vally-http-cache"
+        }
+      }
+    }
+  },
+  "stimulus": {
+    "prompt": "Fetch AzDO build and analyze",
+    "build_id": "12345"
+  },
+  "graders": [
+    {
+      "name": "build-fetch-correctness",
+      "evaluate": "trajectory",
+      "assertions": [
+        "any(evt.type == 'tool_call' and evt.name == 'azdo_builds')",
+        "tool_result.output.builds is not null"
+      ]
+    }
+  ]
+}
+```
+
+**Pseudocode Executor Bridge** (C#):
+```csharp
+public class HelixMcpBridge : IVallyExecutor
+{
+    private readonly HelixMcpToolProvider _toolProvider;
+    private readonly HttpClientMock _httpMock;
+    private readonly IEventEmitter _emitter;
+
+    public async Task<Trajectory> Execute(Stimulus stimulus)
+    {
+        if (_config.DeterminismUseFixtures)
+        {
+            _httpMock.EnableFixtures("/tmp/vally-http-cache");
+            _httpMock.OnMissingFixture = _config.FallbackToLive 
+                ? HttpMockFallbackBehavior.FetchLive 
+                : HttpMockFallbackBehavior.Throw;
+        }
+
+        var tools = _toolProvider.GetTools();
+        var result = await tools["azdo_builds"].Invoke(new { definition = stimulus.build_id });
+        
+        _emitter.Emit(new ToolCallEvent { /* ... */ });
+        _emitter.Emit(new ToolResultEvent { /* ... */ });
+
+        return _emitter.BuildTrajectory();
+    }
+}
+```
+
+**Advantages**:
+- **Flexible determinism**: Fixtures by default, live fallback for exploration
+- Reuses all helix.mcp tool surface
+- Supports gradual adoption (start mocked, add live validation later)
+- Instrument HTTP layer once, benefits all tools
+
+**Disadvantages**:
+- Most complex option (fixture management + HTTP mock + tool provider)
+- Requires changes to AzdoApiClient (add interception hook)
+
+---
+
+## Part 6: Hand-Rolled Python & hlx CLI
+
+### Current State (Documented)
+- **ci-evidence-reader**: 640 LOC Python script (validation, HTTP requests, JSON formatting)
+- **ci-failure-scan.md workflow**: Uses ci-evidence-reader + shell script to parse results
+- **helix.mcp**: C# MCP tools + service layer; no Python
+
+### Could hlx CLI Replace ci-evidence-reader? (Inference)
+
+**Possible, with caveats:**
+
+1. **hlx CLI as tool provider** (Option C):
+   ```bash
+   hlx azdo-builds --definition 12345 --output json --mock-file /path/to/fixture.json
+   ```
+   - Reuses helix.mcp codebase (no duplication)
+   - Single source of truth for API clients
+   - Requires: Export MCP tools as CLI commands (wrapper layer)
+
+2. **Risks**:
+   - ci-evidence-reader is *standalone* Python (no dependencies); hlx requires .NET runtime
+   - Workflow actions prefer lightweight Python; large binaries add overhead
+   - ci-evidence-reader URL validation is *pre-flight* security; hlx validation is runtime
+
+3. **Recommendation**:
+   - Keep ci-evidence-reader as **fixture provider** (pre-flight, lightweight)
+   - Evolve hlx CLI to **test executor** (runs evals, references ci-evidence-reader fixtures)
+   - *Do not* replace ci-evidence-reader with hlx CLI; they solve different problems
+
+---
+
+## Part 7: Proof-of-Concept Recommendation
+
+### Smallest Viable Demo for Vitek
+
+**Goal**: Demonstrate that helix.mcp + Vally integration is viable and worth engineering time.
+
+**Scope**:
+1. Wrap **one MCP tool** (`azdo_timeline`) as a Vally custom executor
+2. Create a **small stimulus** (AzDO build ID)
+3. Emit **basic trajectory events** (tool_call, tool_result)
+4. Define **one simple grader** (validates response structure)
+5. Run via **Vally CLI** and show results
+
+**Pseudocode PoC Executor** (C#, ~100 LOC):
+```csharp
+public class HelixMcpVallyExecutor : IVallyExecutor
+{
+    private readonly AzdoMcpTools _tools;
+    private readonly EventRecorder _recorder;
+
+    public async Task<Trajectory> Execute(Stimulus stimulus)
+    {
+        _recorder.Start();
+
+        // 1. Record stimulus reception
+        _recorder.Emit(new SystemEvent { Message = "Stimulus received", Timestamp = DateTime.UtcNow });
+
+        // 2. Call helix.mcp tool
+        var sw = Stopwatch.StartNew();
+        _recorder.Emit(new ToolCallEvent 
+        { 
+            Tool = "azdo_timeline", 
+            Input = new { build_id = stimulus.BuildId } 
+        });
+
+        var result = await _tools.Timeline(stimulus.BuildId);
+
+        sw.Stop();
+        _recorder.Emit(new ToolResultEvent 
+        { 
+            Tool = "azdo_timeline",
+            Output = result,
+            Duration = sw.ElapsedMilliseconds
+        });
+
+        // 3. Return trajectory
+        return _recorder.BuildTrajectory();
+    }
+}
+```
+
+**Vally Config (JSON)**:
+```json
+{
+  "name": "poc-azdo-timeline-fetch",
+  "description": "PoC: Evaluate helix.mcp azdo_timeline tool through Vally",
+  "stimulus": {
+    "build_id": "12345",
+    "request_type": "timeline"
+  },
+  "executor": {
+    "type": "custom",
+    "class": "HelixMcpVallyExecutor",
+    "config": {
+      "tool_provider": "helix.mcp",
+      "mcp_tool": "azdo_timeline"
+    }
+  },
+  "graders": [
+    {
+      "name": "response-schema",
+      "description": "Validate timeline response has required fields",
+      "evaluate_trajectory": true,
+      "assertions": [
+        "exists(trajectory.tool_result.output.records)",
+        "count(trajectory.tool_result.output.records) > 0",
+        "all(trajectory.tool_result.output.records, rec => rec.has('id', 'type', 'state'))"
+      ]
+    }
+  ]
+}
+```
+
+**Demo Workflow**:
+```bash
+# 1. Build PoC executor wrapper
+dotnet build Helix.Mcp.Vally.PoC.csproj
+
+# 2. Run Vally evaluation
+vally run --config poc-azdo-timeline-fetch.json --output poc-results.json
+
+# 3. View results
+vally serve --results-dir . &
+# Open http://localhost:8080/api/runs
+# Show trajectory events, grader assertions, pass/fail score
+```
+
+**Deliverables**:
+- `HelixMcpVallyExecutor.cs` (~100 LOC, no dependencies beyond helix.mcp + Vally SDK)
+- `poc-azdo-timeline-fetch.json` (Vally config)
+- Demo script + screenshot of Vally results UI
+- ~4-hour engineering effort (proof-of-concept, not production)
+
+**Why This PoC**:
+- Minimal scope (one tool, one grader)
+- Demonstrates full Vally pipeline: Stimulus → Executor → Trajectory → Grader → Score
+- Proves helix.mcp can be instrumented for Vally without major refactor
+- Grounds next phase (Option A/B/C) in real integration patterns
+
+---
+
+## Part 8: Gaps & Unknowns
+
+### Documented Limitations
+1. **Vally's custom executor interface** not fully detailed in public docs
+   - Reference says "see Writing Custom Executors guide" (URL not verified)
+   - Assumed to follow SDK contract (similar to Copilot SDK's executor pattern)
+
+2. **HTTP replay/mocking in Vally** not documented
+   - Vally's trajectory captures events, but HTTP-level replay not mentioned
+   - Assumed: Custom executor can intercept HTTP (wrap HttpClient)
+
+3. **Grader access to external evidence**
+   - Graders documented as evaluating trajectory only
+   - Can custom graders access fixture files or only trajectory events?
+
+### Recommendations for Next Phase
+- **Verify** Vally's custom executor interface (obtain full SDK documentation)
+- **Test** HTTP interception pattern (can we wrap AzdoApiClient.GetAsync for Vally?)
+- **Validate** fixture file formats (JSON size limits, compatibility with Vally stimulus schema)
+- **Align** with Vitek on PoC scope and success criteria before engineering
+
+---
+
+## Durable Findings Summary
+
+| Finding | Fact/Inference | Source |
+|---------|---|--------|
+| Vally is a deterministic eval platform with 5-stage pipeline | **Fact** | https://microsoft.github.io/vally/concepts/how-it-works/ |
+| ci-evidence-reader is a precursor to Vally integration | **Inference** (supported by PR motivation) | PR #132753 comment: *"creates a clear place to later redirect CI evidence inputs for deterministic evals"* |
+| ci-evidence-reader returns structured JSON with bounded size | **Fact** | ci-evidence-reader code: max 16 MB JSON, 64 MB logs |
+| helix.mcp tool surface maps 1:1 to ci-evidence-reader commands | **Fact** | AzdoMcpTools.cs vs ci-evidence-reader command registry |
+| Three viable integration patterns exist | **Inference** | Grounded in Vally pipeline model + helix.mcp architecture |
+| Smallest PoC: wrap one tool, emit trajectory, define one grader | **Recommendation** | ~4-hour effort, demonstrates full pipeline |
+
+---
+
+## Recommendations for Dallas (Architecture)
+
+1. **Prioritize PoC** (Option A executor wrapper) for Vitek demo (~4 hours)
+2. **Design HTTP interception layer** (Option C hybrid) for future use (mid-term, ~2-week effort)
+3. **Keep ci-evidence-reader lightweight** (don't port to hlx CLI; use as fixture provider)
+4. **Document assumptions** about Vally custom executor interface before full engineering
+
+---
+
+**NEXT STEPS FOR ASH**:
+- [ ] Update `.squad/agents/ash/history.md` with durable learnings
+- [ ] File this doc to `.squad/decisions/inbox/ash-vally-research.md` ✅
+- [ ] Await Dallas decision on PoC scope before detailed design
+
+
+---
+
+# CI Evidence History: Addendum to Vally Research
+
+**Researcher**: Ash (Product Analyst)  
+**Date**: 2026-08-26  
+**Requested by**: Larry Ewing  
+**Type**: Research addendum — extends `ash-vally-research.md`  
+**Status**: FINAL — ready for Dallas and Vitek discussion
+
+---
+
+## Executive Summary (Addendum)
+
+Primary-source archaeology of PR #132753, its predecessor PRs, and all live review threads reveals three corrections to the earlier Vally research:
+
+1. **ci-evidence-reader's primary goal is deterministic eval replay, not security.** Security is a co-benefit; the PR motivation is explicitly "a clear place to later redirect CI evidence inputs for deterministic evals."
+2. **The Vally eval stimulus prompts still use raw `curl` directly** — PR #132753 does not touch them. The eval and the live workflow are separate execution paths; `ci-evidence-reader` covers only the gh-aw sandboxed agent.
+3. **Vitek's only stated objection to hlx was the "mocking" concern** — not auth, not tool shape, not deployment complexity. This is a solvable, concrete problem, not a general rejection.
+
+The recommended next move is a narrow conversation offer: **"We can make hlx mock-capable. Here's a design sketch. Does that unblock you?"**
+
+---
+
+## Part 1: Chronology of Changes (Primary Sources)
+
+All commit SHAs and PR numbers are verified via GitHub API. Each key claim is linked.
+
+### 2026-05-06 — PR #127824: `ci-failure-scan` introduced with direct `curl`
+
+**Author**: kotlarmilos  
+**Source**: https://github.com/dotnet/runtime/pull/127824  
+**Merged**: 2026-05-06
+
+Replaced `mobile-scan.md` with `ci-failure-scan.md`. The agent was granted `curl:*` in the gh-aw tool allowlist. The "Environment constraints" section taught the agent to pre-bind AzDO URLs to shell variables before calling curl (because the tool-approver blocked inline query strings).
+
+Vitek's review comments on this PR were about KBE flow and outcome logic, not curl access. He approved with no objection to the direct HTTP pattern. No network-access concerns were raised.
+
+**Key review thread** (verified via GraphQL):
+- Copilot-reviewer flagged that the inline `curl -s 'https://api.github.com/...?...'` example contradicted the pre-bind guidance. Vitek and kotlarmilos had no curl-specific back-and-forth; Vitek approved.
+
+---
+
+### 2026-07-13 — PR #130087: Vally eval infrastructure added
+
+**Author**: kotlarmilos  
+**Source**: https://github.com/dotnet/runtime/pull/130087  
+**Merged**: 2026-07-13
+
+Added `.github/workflows/evals/` directory with three eval specs (`ci-failure-scan.eval.yaml`, `ci-failure-fix.eval.yaml`, `ci-failure-scan-feedback.eval.yaml`), `.vally.yaml` configuration, and `ci-eval.yml` trigger workflow. This is the first appearance of Vally in dotnet/runtime.
+
+**Architecture of eval stimulus** (verified against blob `8c10f9cbada284ac23fb812b0a355168976901a1`):  
+The eval `ci-failure-scan.eval.yaml` directly tells the agent:
+```
+curl -fsSL "https://dev.azure.com/dnceng-public/public/_apis/build/builds?definitions=154&..."
+```
+This is a **live, non-deterministic** eval — the agent fetches real data and the graders check format + tool-call evidence. The eval does not run in gh-aw; it runs in Vally's Copilot SDK executor, which has no allowlist constraint.
+
+**From the `evals/README.md`** (verified against blob `6c4fbe6bef40aeef8bc9b8ed6b8c5886b183f803`):
+> "Live runs are non-deterministic and depend on what is failing at eval time."
+> "These are format and behavior gates, not full ground-truth measurements. The second stage, a collector that scrapes the real failures and KBEs that actually exist and scores workflow output against them, is deferred."
+
+**What this tells us**: As of July 2026, deterministic replay was an **explicitly deferred** goal. Vitek was aware of the gap.
+
+---
+
+### 2026-08-19 — PR #132131: Vally tooling upgraded 0.7 → 0.14
+
+**Author**: vitek-karas  
+**Source**: https://github.com/dotnet/runtime/pull/132131  
+**Merged**: 2026-08-19
+
+Upgraded `@microsoft/vally-cli` from 0.7.0 to 0.14.0. Moved LLM judge criteria into stimulus rubrics, adapted to new schema. Validated with three live saved trajectories. **No changes to eval stimulus prompts** — curl access still in the eval.
+
+**Significance**: Vitek was personally maintaining and upgrading the eval tooling. He is actively invested, not passively aware.
+
+---
+
+### 2026-08-25 — PR #132753: `ci-evidence-reader` introduced, `curl` removed from agent
+
+**Author**: vitek-karas  
+**Source**: https://github.com/dotnet/runtime/pull/132753  
+**Status**: OPEN as of 2026-08-26
+
+#### What changed
+
+1. **New file**: `.github/workflows/ci-evidence-reader` — standalone Python script (640 LOC) that:
+   - Validates URLs against a hardcoded allowlist (dnceng-public AzDO `/_apis/build/`, helix.dot.net `/api/jobs/`, blob storage for console logs only)
+   - Enforces exact query parameter sets per endpoint (builds: exactly `definitions`, `branchName`, `statusFilter`, `resultFilter`, `$top`, `$skip`, `api-version`)
+   - Restricts `$top=25` and `$skip` to `{0,10,20,30,40}` only
+   - Validates redirect targets (family-preserving, no cross-host redirects)
+   - Sets size limits (16 MB JSON, 64 MB logs) and 30-second timeout
+   - Writes only to paths under `/tmp/gh-aw/agent/`
+
+2. **Changed**: `ci-failure-scan.md` — removed `curl` from bash allowlist, added `ci-evidence-reader:*`. Updated all `curl` invocations to `ci-evidence-reader` subcommands. Replaced the "Environment constraints" curl pre-bind workaround guidance with a single paragraph describing the helper's guarantees.
+
+3. **Changed**: `ci-failure-scan.lock.yml` — recompiled with gh-aw v0.86.2, replacing `--allow-tool 'shell(curl:*)'` with `--allow-tool 'shell(ci-evidence-reader:*)'`.
+
+4. **New file**: `.github/workflows/tests/test_ci_evidence_reader.py` — 20 unit tests covering URL validation, output path guards, and redirect blocking.
+
+5. **NOT changed**: `evals/ci-failure-scan.eval.yaml` — eval stimulus still uses `curl` directly.
+
+#### PR motivation (verbatim from PR body)
+
+> "It also creates a clear place to later redirect CI evidence inputs for deterministic evals, without changing the commands the scan uses."
+
+The phrase "without changing the commands the scan uses" is the architectural key: the agent calls `ci-evidence-reader <subcommand>`, and a future deterministic variant would be a drop-in replacement that reads fixtures from disk instead of the network.
+
+---
+
+### 2026-08-25 — PR #132753 Review Thread (All Three Comments, Primary Source)
+
+**Source**: GraphQL `reviewThreads` on PR #132753, verified 2026-08-26  
+**Thread URL**: https://github.com/dotnet/runtime/pull/132753#discussion_r3855146866  
+**File**: `.github/workflows/ci-failure-scan.md`, line 401
+
+**Comment 1 — Jeremy Koritzinsky (jkoritzinsky), 2026-08-25T16:37:52Z**:
+> "Can the Helix reads use the hlx MCP server?"
+
+**Comment 2 — Vitek Karas (vitek-karas), 2026-08-26T11:02:48Z**:
+> "Probably - but it would require quite a bit of changes to the agent, since the MCP tools are different shape/process than what the agent does today. I would also need to test it if it will work without auth, technically it should, but I didn't try to deploy it into actions.
+> Finally it makes the 'mocking' for deterministic evals a bit more difficult/complex.
+> Using the MCP would likely mean less new code, but it would also mean a bigger change to the agent itself. I would not combine the two changes even though they're related."
+
+**Comment 3 — Larry Ewing (lewing), 2026-08-26T17:40:19Z**:
+> "hlx only requires auth when it is required by the endpoint. I don't need to block the work here but I'm happy to build in features to support evals and add url filtering to hlx, lets chat about what would be useful."
+
+---
+
+## Part 2: Annotated Analysis of Vitek's Objections
+
+Vitek raised exactly **four concerns** about hlx (two explicit, two implied). Each is analyzed against the primary source:
+
+### Concern 1: "quite a bit of changes to the agent"
+**Vitek's phrasing**: "It would require quite a bit of changes to the agent, since the MCP tools are different shape/process than what the agent does today."
+
+**Analysis**: This is correct and factual. ci-failure-scan.md currently uses `bash:` tool calls with CLI commands. Adopting hlx as an MCP server would require the agent to shift from `bash: ci-evidence-reader azdo-builds ...` to MCP tool invocations. The gh-aw sandbox must also be configured to launch the MCP server process, which is a different integration path than dropping a binary in PATH.
+
+**Classification**: **FACTUAL CONCERN, NOT A BLOCKER.** Vitek acknowledges he "would not combine the two changes" but treats them as related. He is not saying hlx is unsuitable — only that it is a separate PR with bigger scope than this one.
+
+### Concern 2: "test it if it will work without auth"
+**Vitek's phrasing**: "I would also need to test it if it will work without auth, technically it should, but I didn't try to deploy it into actions."
+
+**Analysis**: dnceng-public AzDO and helix.dot.net are public endpoints that return data without auth. lewing confirmed this directly: "hlx only requires auth when it is required by the endpoint." Vitek himself says "technically it should."
+
+**Classification**: **NOT A REAL OBJECTION — Vitek answered his own question.** The uncertainty is about deployment testing, not auth architecture.
+
+### Concern 3 (primary blocker): "mocking for deterministic evals a bit more difficult/complex"
+**Vitek's phrasing**: "Finally it makes the 'mocking' for deterministic evals a bit more difficult/complex."
+
+**Analysis**: This is the only substantive architectural concern. The key insight is what makes ci-evidence-reader easy to mock:
+
+With ci-evidence-reader (CLI binary):
+- A "mock" variant is a drop-in Python script with the same `argparse` interface that reads from fixture files instead of fetching URLs.
+- Vally eval can swap `ci-evidence-reader` for `ci-evidence-reader-mock` by changing one environment variable or PATH prefix.
+- No changes to the agent or the eval spec.
+
+With hlx as MCP server:
+- A "mock" requires either: (a) a separate MCP server process that responds with fixture data, or (b) HTTP interceptors at the network layer.
+- Vally would need to be configured to launch the mock MCP server instead of the real one — a more complex eval environment change.
+- The agent instructions would need to stay the same (using MCP tool names), so the mock and real servers must expose identical tool schemas.
+
+**Verdict**: Both approaches are mockable; hlx is slightly harder because it adds a process-management layer. But it is not fundamentally more complex — a mock hlx MCP server is a well-defined concept.
+
+**Classification**: **REAL ARCHITECTURAL CONCERN, SOLVABLE.** The concern is about mock complexity, not mock impossibility. The gap is that no one has shown Vitek what a mock hlx looks like.
+
+### Concern 4 (implied): "bigger change to the agent itself"
+**Analysis**: Vitek prefers incremental changes. PR #132753 is explicitly designed to be narrow: change the transport, preserve the command interface, enable future swap. This preference for incrementalism is consistent across his entire review history on ci-failure-scan (PR #127824 review: multiple comments about keeping things simple and iterating).
+
+**Classification**: **PREFERENCE, NOT A TECHNICAL OBJECTION.** Consistent with his review style.
+
+---
+
+## Part 3: Corrections to Earlier Research
+
+### Correction 1: Security is a co-benefit, not the primary driver
+
+**Prior claim (ash-vally-research.md)**: ci-evidence-reader is framed primarily as a security layer (URL validation, allowlisting).
+
+**Corrected understanding**: The PR motivation states the primary driver is "a clear place to later redirect CI evidence inputs for deterministic evals." Security hardening is real and valuable, but it is secondary. Vitek built ci-evidence-reader because he needs a swappable evidence layer — mock vs. live — not primarily because curl was a security risk.
+
+**Evidence**: The PR title is "Replace CI scan curl access"; the body says eval-readiness first, then lists security benefits. The existing curl usage was allowed and working; this PR is preparation for the next eval phase.
+
+### Correction 2: Executor wrapper (Option A) does not match Vitek's design pattern
+
+**Prior claim**: Option A (wrap helix.mcp tools as Vally custom executor, emit trajectory events) was framed as a viable first path.
+
+**Corrected understanding**: Vitek's design is **command-level mocking**, not executor-level wrapping. The eval already runs under Copilot SDK (a real executor); what Vitek needs is for the *tool calls inside the agent run* to be swappable. His chosen pattern is "drop-in binary replacement" (ci-evidence-reader → ci-evidence-reader-mock), not "custom executor with mock network layer."
+
+**Implication for hlx**: If hlx were to support Vitek's pattern, it would need to support running as a **mock-capable MCP server** — responding from fixture files instead of live APIs — while exposing the same tool schema.
+
+### Correction 3: The eval stimulus still uses `curl` — PR #132753 does not fix the eval
+
+**Prior research did not address this**: The eval (`ci-failure-scan.eval.yaml`) has `curl` hardcoded in the stimulus prompt (the text sent to the agent during Vally grading). PR #132753 changes the live workflow prompt but not the eval spec. The eval still works because it runs outside gh-aw and has no allowlist.
+
+**Implication**: The "eval determinism" goal Vitek stated in PR #132753 is **not yet achieved** — ci-evidence-reader is only Step 1 (create a stable command interface in the live workflow). Step 2 (create a mock variant, update the eval to use it) is future work that PR #132753 deliberately defers.
+
+### Correction 4: The mocking concern is about eval environment setup, not auth or tool shape
+
+**Prior claim**: Vitek's objections were framed as primarily about "quite a bit of changes to the agent."
+
+**Corrected understanding**: The deepest concern is "mocking for deterministic evals." The agent-change concern is real but acknowledged as solvable ("Using the MCP would likely mean less new code"). The mocking concern gets its own sentence as the final word before "I would not combine the two changes." It is the **terminating concern** — the one he chose to end on.
+
+---
+
+## Part 4: What the evals/README Says About Stage 2
+
+From the `evals/README.md` (blob `6c4fbe6bef40aeef8bc9b8ed6b8c5886b183f803`, verified):
+
+> "These are format and behavior gates, not full ground-truth measurements. The second stage, a collector that scrapes the real failures and KBEs that actually exist and scores workflow output against them, is deferred."
+
+**Interpretation**: The deferred "second stage" is what Vitek means by "deterministic evals." Stage 1 evals (current) are live-run format/behavior gates. Stage 2 would use recorded/fixture data to test the workflow against known inputs with known correct outputs. ci-evidence-reader's swappable-binary design is the infrastructure precursor for Stage 2.
+
+---
+
+## Part 5: Reassessment of Earlier hlx Integration Options
+
+### Option A — Executor Wrapper
+**Prior assessment**: "Viable first path"  
+**Revised assessment**: **Does not address Vitek's actual need.** Vitek doesn't need a new executor — he has the Copilot SDK executor working. He needs the *tool calls inside* the agent to be interceptable. Executor wrapping doesn't get there.
+
+**Keep/discard**: Discard as primary path. Retain as potential observability add-on if Dallas wants trajectory instrumentation from hlx.
+
+### Option B — Evidence Provider (ci-evidence-reader as fixture source)
+**Prior assessment**: "Pure replay, no live calls"  
+**Revised assessment**: **This is exactly what Vitek is building.** ci-evidence-reader → ci-evidence-reader-mock is Option B. The question is whether hlx can fill this role.
+
+**hlx as Option B**: hlx could be a mock-capable MCP server that, in eval mode, reads fixtures from disk. This would require:
+1. A `--fixtures-dir` flag or environment variable
+2. Each tool reads from a fixture file matching a naming convention instead of calling the live API
+3. The eval spec launches the mock hlx server, points to recorded fixtures
+
+This is directly equivalent to the ci-evidence-reader mock binary concept, but at the MCP level. It is marginally more complex to set up in Vally (process launch config vs. PATH swap) but not fundamentally harder.
+
+**Verdict for B**: **Viable, but Vitek doesn't know it.** No one has shown him a mock hlx design.
+
+### Option C — Hybrid (hlx + HTTP mock layer + fixtures)
+**Prior assessment**: "Flexible, complex"  
+**Revised assessment**: **Over-engineered for this use case.** Vitek wants minimal changes. A full HTTP mock layer adds unnecessary complexity. Discard.
+
+### Option D — URL-filtered hlx (lewing's stated offer)
+**New option identified from the review thread**.  
+lewing offered to "add url filtering to hlx." This means adding the same allowlist enforcement ci-evidence-reader has — restricting to dnceng-public AzDO and helix.dot.net. This would make hlx a security-equivalent replacement for curl (same as ci-evidence-reader) without the mocking capability.
+
+**Assessment**: Addresses Vitek's agent-change path (no new binary needed) but **does not address the mocking concern**. Security parity + no mock ≠ what Vitek needs for Stage 2 evals.
+
+**Revised recommendation for lewing**: Offer not just URL filtering but **fixture-replay mode** — a flag that makes hlx read from pre-recorded response files instead of fetching live. This is the one offer that directly addresses Vitek's terminating concern.
+
+---
+
+## Part 6: Participant Summary and Attribution
+
+| Person | Role | Stated Position | Source URL |
+|--------|------|-----------------|------------|
+| **vitek-karas** | dotnet/runtime member, eval maintainer | Built ci-evidence-reader as Step 1 toward deterministic evals. Open to hlx but wants mocking solved first. Won't combine changes. | https://github.com/dotnet/runtime/pull/132753#discussion_r3862089918 |
+| **jkoritzinsky** | dotnet/runtime member | Suggested hlx as alternative — genuinely curious, not prescriptive. | https://github.com/dotnet/runtime/pull/132753#discussion_r3855146866 |
+| **lewing** | helix.mcp owner | Offered URL filtering + eval feature support. Explicitly said "let's chat." | https://github.com/dotnet/runtime/pull/132753#discussion_r3865244032 |
+| **kotlarmilos** | ci-failure-scan original author | Built the scan workflow and Vally eval infrastructure. Acknowledged live evals are "format/behavior gates, not ground-truth." | https://github.com/dotnet/runtime/pull/130087 |
+
+---
+
+## Part 7: Recommended Conversation Starter for Vitek
+
+Based on **stated goals** (not inference):
+
+Vitek needs hlx to be **mock-capable** — responding from fixture files instead of live APIs — so that the Vally Stage 2 "ground truth" eval can be deterministic. He did not say "impossible with hlx." He said "more difficult/complex."
+
+**The single most useful offer**: 
+
+> "We're building fixture-replay mode into hlx — a flag that makes the MCP server respond from pre-recorded files instead of calling live APIs. You'd point the Vally eval at `hlx --fixtures-dir ./evals/fixtures/`, record once, replay deterministically forever. Same tool schema, no agent changes after the initial switch. Does that address the mocking concern?"
+
+**Why this is the right framing**:
+1. It directly addresses the **terminating concern** Vitek raised (mocking).
+2. It proposes a **specific mechanism** (fixtures dir), not a vague promise.
+3. It confirms **no agent changes** after the switch (Vitek's incrementalism preference).
+4. It sidesteps the auth question (already resolved by lewing's comment).
+5. It gives Vitek something concrete to respond to — either "yes, that's what I need" or "the problem is actually X."
+
+**What NOT to open with**:
+- "hlx has URL filtering" — addresses security parity, not mocking
+- "hlx works without auth" — Vitek already said this
+- "fewer agent changes" — Vitek said more code reduction is true but not his concern
+- Abstract design options — Vitek prefers concrete, narrow, deferral-friendly proposals
+
+---
+
+## Part 8: Gaps and Open Questions
+
+| Question | Status | Notes |
+|----------|--------|-------|
+| What does "redirect CI evidence inputs" mean concretely? (env var? PATH? different binary?) | **Open inference** | PR #132753 says "without changing the commands"; most likely PATH-based swap. Not documented yet. |
+| When is Stage 2 eval planned? | **Open** | evals/README says "deferred"; no issue or milestone found. |
+| Does Vitek know lewing offered to chat? | **Factual** | lewing's comment is public at the PR thread. Vitek has not replied yet (as of 2026-08-26T17:40). |
+| What fixtures would a mock ci-evidence-reader need? | **Open inference** | Likely: one `builds_*.json`, one `timeline_*.json`, one `logs/*.log` per pipeline under test. |
+| Does hlx currently support `--fixtures-dir` or equivalent? | **Open** | Not visible from current helix.mcp codebase scan. Would need to be added. |
+| Would ci-failure-fix and ci-failure-scan-feedback also need mocking? | **Open inference** | Both evals exist; both use live data today. If Stage 2 extends to all three, all three need mock coverage. |
+
+---
+
+## Stable URLs
+
+- PR #132753 (Replace CI scan curl access): https://github.com/dotnet/runtime/pull/132753  
+- PR #132753 review thread (jkoritzinsky/vitek/lewing): https://github.com/dotnet/runtime/pull/132753#discussion_r3855146866  
+- PR #130087 (Vally eval infrastructure): https://github.com/dotnet/runtime/pull/130087  
+- PR #132131 (Vally 0.14 upgrade): https://github.com/dotnet/runtime/pull/132131  
+- PR #127824 (ci-failure-scan introduction): https://github.com/dotnet/runtime/pull/127824  
+- evals/README.md (PR #132753 commit): https://github.com/dotnet/runtime/blob/fcc3c838624e767d70070ba4db5b23a45d22129b/.github/workflows/evals/README.md  
+- ci-failure-scan.eval.yaml (main): https://github.com/dotnet/runtime/blob/main/.github/workflows/evals/ci-failure-scan.eval.yaml  
+- ci-evidence-reader (PR #132753 commit): https://github.com/dotnet/runtime/blob/fcc3c838624e767d70070ba4db5b23a45d22129b/.github/workflows/ci-evidence-reader  
+
+---
+
+# Decision Proposal: hlx as eval backend for dotnet/runtime ci-failure-scan
+
+**Date:** 2026-08-26
+**Author:** Dallas (Lead)
+**Status:** Discussion
+**Relates to:** dotnet/runtime PR #132753
+
+## Context
+
+Vitek's PR replaces raw `curl` calls in dotnet/runtime's `ci-failure-scan` (a gh-aw agentic workflow) with a purpose-built Python `ci-evidence-reader`. The reader is ~640 lines of hardened Python that:
+
+1. **URL allowlisting** — regex-validates every URL against a fixed set of AzDO build API paths and Helix endpoints. Only dnceng-public/public, helix.dot.net, and helix*.blob.core.windows.net are reachable.
+2. **Redirect validation** — follows redirects only if the target passes the same allowlist ("family" boundaries).
+3. **Response size caps** — 16 MB for JSON, 64 MB for logs.
+4. **Output sandboxing** — writes only to `/tmp/gh-aw/agent/`, with symlink/TOCTOU protection, suffix enforcement (.json/.log/.txt).
+5. **Deterministic eval seam** — the PR body says the design "creates a clear place to later redirect CI evidence inputs for deterministic evals." The fixed command surface (azdo-builds, azdo-timeline, azdo-log, helix-work-items, helix-console) could be pointed at canned local files instead of live APIs.
+6. **No auth** — public endpoints only, matching the no-auth posture of hlx for public CI.
+
+The scan's `--allow-tool` list replaces `shell(curl:*)` with `shell(ci-evidence-reader:*)`, removing general HTTP access from the sandboxed agent.
+
+## What hlx already provides that ci-evidence-reader reimplements
+
+| Capability | ci-evidence-reader | hlx |
+|---|---|---|
+| AzDO build listing | `azdo-builds --definition N` | `hlx azdo builds --definition-id N` |
+| AzDO timeline | `azdo-timeline --build-id N` | `hlx azdo timeline N` |
+| AzDO log content | `azdo-log --build-id N --log-id M` | `hlx azdo log N M` |
+| Helix work items | `helix-work-items --job-id ID` | `hlx status ID all` |
+| Helix console log | `helix-console --job-id ID --work-item W` | `hlx logs ID W` |
+| Caching | None | SQLite cross-process cache with smart TTLs |
+| Pattern search | None (agent does it post-download) | `hlx search-log`, `hlx azdo search-log` — search in-place, return matches only |
+| Token budget | None | Tail limits, failure-first defaults, structured summaries |
+
+## Three viable approaches
+
+### A. hlx CLI as drop-in replacement for ci-evidence-reader
+
+Replace the Python script with `hlx` CLI commands. The scan's `--allow-tool` becomes `shell(hlx:*)`.
+
+**Pros:**
+- Eliminates 640 lines of Python from dotnet/runtime.
+- Gets caching, pattern search, token-efficient output for free.
+- hlx is already published on NuGet (`dnx lewing.helix.mcp`), installable via `dotnet tool install`.
+
+**Cons:**
+- **Requires .NET 10 SDK on the gh-aw runner** — unclear if available; Python is guaranteed.
+- **Loses the eval seam** — hlx always talks to live APIs. Without a replay/mock mode, deterministic evals require a separate solution.
+- **Loses URL allowlisting** — hlx can talk to any AzDO org or Helix endpoint. The scan's security model depends on allowlisting the tool to only dnceng-public. The gh-aw `--allow-tool shell(hlx:*)` permits any hlx subcommand.
+- **Breaking dependency** — dotnet/runtime takes a runtime dependency on an external NuGet package for its CI workflows. Vitek's team may not accept this.
+- **Adoption friction** — touching the ci-failure-scan workflow requires Vitek's team to review, test, and maintain a new tool dependency.
+
+**Verdict:** Too much friction, loses security invariants. Not recommended as-is.
+
+### B. hlx gains an `--eval` / `--replay` mode; ci-evidence-reader delegates to hlx
+
+hlx adds a mode where it reads evidence from local files (or a fixture directory) instead of making HTTP calls. ci-evidence-reader remains the narrow security gateway but can optionally invoke `hlx` for its richer output processing (search, summarization) when available.
+
+**Pros:**
+- Keeps Vitek's security invariants intact (ci-evidence-reader is the allowlisted gateway).
+- hlx's eval mode enables deterministic testing of the scan without live APIs.
+- The scan gets hlx's search/summarization when hlx is installed, gracefully degrades to raw JSON when it's not.
+
+**Cons:**
+- Two tools in the chain adds complexity.
+- hlx eval mode is new work (needs design: fixture directory layout, file naming convention, feed-from-stdin vs. feed-from-directory).
+- Still needs .NET 10 on the runner for the hlx side.
+
+**Verdict:** Architecturally clean but complex to ship. Good long-term target.
+
+### C. hlx publishes a "ci-evidence" subcommand with built-in allowlisting and eval support (Recommended)
+
+Add `hlx ci-evidence` (or similar) that:
+1. Accepts the same command surface as ci-evidence-reader (azdo-builds, azdo-timeline, etc.)
+2. Enforces the same URL/endpoint allowlisting that Vitek's Python does.
+3. Adds an `--evidence-dir` flag that reads from local fixture files instead of hitting APIs (the eval seam).
+4. Outputs to the same sandboxed paths, or to stdout for pipe-friendliness.
+5. Ships as a self-contained single-file binary (no .NET SDK needed on runner) or as a container sidecar.
+
+**Pros:**
+- Single tool, one dependency, same security model.
+- Vitek gets eval testing without writing Python test infrastructure.
+- hlx's caching and search still available.
+- Can ship the binary as a GitHub release artifact (no NuGet/dotnet dependency on runner).
+- If published as a container, trivially integrable with gh-aw's container model.
+
+**Cons:**
+- Requires design coordination with Vitek on the exact command surface.
+- hlx currently doesn't have an allowlisting layer — needs new code.
+- Self-contained publish increases binary size (~30-40 MB).
+
+**Verdict:** Best balance of adoption friction, security, and eval support. Recommended.
+
+## Recommendation
+
+**Approach C** — but staged:
+
+1. **Phase 1 (now):** Open a discussion with Vitek. Share this analysis. Understand his eval testing vision — does he want to replay full API responses, or does he need something lighter (e.g., just asserting the command dispatch table is correct)?
+2. **Phase 2:** Add `hlx ci-evidence` with the allowlisted command surface and `--evidence-dir` replay mode. Ship as both NuGet tool and self-contained binary.
+3. **Phase 3:** Vitek's team evaluates replacing ci-evidence-reader with `hlx ci-evidence` in a follow-up PR.
+
+## Open questions for Vitek
+
+1. **Eval fixture format** — What shape do you want the deterministic test inputs to take? Full HTTP response bodies saved as files? Or a higher-level fixture (e.g., a directory tree with `builds.json`, `timeline/{buildId}.json`, `logs/{buildId}/{logId}.log`)?
+2. **.NET 10 availability** — Is the .NET 10 SDK available on gh-aw runners? If not, a self-contained binary or container sidecar is required.
+3. **Security model** — Would you accept a compiled binary with built-in allowlisting as equivalent to the Python script's allowlisting? Or does the review model require the allowlist to be in-repo readable Python?
+4. **Scope of "Vally"** — The user mentioned "eval testing mode instead of hand-rolled Python for Vally." Is Vally a validation/eval harness? Understanding its scope helps us design the right fixture interface.
+5. **Output format** — ci-evidence-reader writes raw API responses. Would structured/summarized output (hlx's strength) be useful to the scan, or does it need raw JSON for its own parsing?
+
+---
+
