@@ -4,13 +4,13 @@
 
 **Role:** Decision lead on MCP schema reduction, parameter aliasing, parameter plumbing, and strict-mode architecture.
 
-**Current Focus:** Helix queue-monitor roadmap adjudication (verdict issued; implementation deferred).
+**Current Focus:** PR #132 implementation is complete, final internal review is approved, and external review is in progress.
 
 ---
 
 ## 2026-06-01 Through 2026-08-31: Summary
 
-Completed four major decision cycles:
+Completed five major decision cycles:
 
 1. **Parameter Plumbing (June):** Fixed three azdo_* parameter bugs (minTime/maxTime/queryOrder missing, top not forwarded, outcomes hardcoded). PR #78 merged; 14 new tests; all 1337 tests pass.
 

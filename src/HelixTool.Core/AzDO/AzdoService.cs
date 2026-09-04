@@ -1146,6 +1146,8 @@ public class AzdoService
         }
 
         int failedCount = jobs.Count(j => !j.Result.Equals("succeeded", StringComparison.OrdinalIgnoreCase));
+        int outcomeUnknownCount = jobs.Count(j =>
+            j.Result.Equals("unknown", StringComparison.OrdinalIgnoreCase));
 
         string? note = null;
         if (jobs.Any(job => job.State == "running"))
@@ -1160,6 +1162,7 @@ public class AzdoService
             Note = note,
             Source = source,
             Strategy = "timeline",
+            OutcomeUnknownHelixJobs = outcomeUnknownCount,
             TimelineIssues = BuildTimelineIssues(timeline)
         };
     }
@@ -1239,7 +1242,14 @@ public class AzdoService
             .Select(message =>
             {
                 var trimmed = message!.Trim();
-                return trimmed.Length <= 500 ? trimmed : trimmed[..500];
+                if (trimmed.Length <= 500)
+                    return trimmed;
+
+                var length = char.IsHighSurrogate(trimmed[499])
+                    && char.IsLowSurrogate(trimmed[500])
+                    ? 499
+                    : 500;
+                return trimmed[..length];
             })
             .ToList() ?? [];
 

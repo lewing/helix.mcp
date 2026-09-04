@@ -331,6 +331,37 @@ public class AzdoHelixJobsTests
     }
 
     [Fact]
+    public async Task GetHelixJobsAsync_IssueMessages_DoNotSplitSurrogatePairs()
+    {
+        var splitEmoji = new string('a', 499) + "😀tail";
+        var containedEmoji = new string('b', 498) + "😀tail";
+        var ascii = new string('c', 600);
+        SetupTimeline(CreateTestTimeline(
+            CreateRecord("task1", "Monitor Helix Jobs", "Task", result: "failed", issues:
+            [
+                new AzdoIssue { Type = "error", Message = splitEmoji },
+                new AzdoIssue { Type = "error", Message = containedEmoji },
+                new AzdoIssue { Type = "error", Message = ascii }
+            ])));
+
+        var result = await _svc.GetHelixJobsAsync("42", filter: "issues");
+
+        var expected = new[]
+        {
+            new string('a', 499),
+            new string('b', 498) + "😀",
+            new string('c', 500)
+        };
+        Assert.Equal(expected, Assert.Single(result.Jobs).Messages);
+        Assert.Equal(expected, Assert.Single(result.TimelineIssues!).Messages);
+
+        var roundTrip = JsonSerializer.Deserialize<HelixJobsFromBuildResult>(
+            JsonSerializer.Serialize(result));
+        Assert.Equal(expected, Assert.Single(roundTrip!.Jobs).Messages);
+        Assert.Equal(expected, Assert.Single(roundTrip.TimelineIssues!).Messages);
+    }
+
+    [Fact]
     public async Task GetHelixJobsAsync_MonitorWarnings_ParseMultipleJobsWithoutConsoleUrls()
     {
         const string firstGuid = "47edfeae-1111-2222-3333-444444444444";
@@ -468,6 +499,31 @@ public class AzdoHelixJobsTests
         Assert.Equal(includeGuid ? null : 3, job.Messages?.Count);
     }
 
+    [Theory]
+    [InlineData("running", 3, 2)]
+    [InlineData("pending", 1, 1)]
+    [InlineData("all", 5, 3)]
+    public async Task GetHelixJobsAsync_OutcomeUnknownCount_UsesReturnedTimelineRows(
+        string filter, int expectedTotal, int expectedUnknown)
+    {
+        SetupTimeline(CreateTestTimeline(
+            CreateRecord("task1", "Monitor Helix One", "Task", state: "inProgress", result: null,
+                issues: [new AzdoIssue { Type = "error", Message = "still running" }]),
+            CreateRecord("task2", "Monitor Helix Two", "Task", state: "inProgress", result: "UnKnOwN",
+                issues: [new AzdoIssue { Type = "warning", Message = "mixed case unknown" }]),
+            CreateRecord("task3", "Monitor Helix Three", "Task", state: "inProgress", result: "failed",
+                issues: [new AzdoIssue { Type = "error", Message = "known failure" }]),
+            CreateRecord("task4", "Monitor Helix Four", "Task", state: "pending", result: null,
+                issues: [new AzdoIssue { Type = "warning", Message = "not started" }]),
+            CreateRecord("task5", "Monitor Helix Five", "Task", state: "completed", result: "succeeded",
+                issues: [new AzdoIssue { Type = "warning", Message = "known success" }])));
+
+        var result = await _svc.GetHelixJobsAsync("42", filter: filter);
+
+        Assert.Equal(expectedTotal, result.TotalHelixJobs);
+        Assert.Equal(expectedUnknown, result.OutcomeUnknownHelixJobs);
+    }
+
     [Fact]
     public async Task GetHelixJobsAsync_TimelineDefaults_AreOmittedFromJson()
     {
@@ -476,8 +532,10 @@ public class AzdoHelixJobsTests
             CreateRecord("task1", "Send to Helix", "Task", result: "succeeded",
                 issues: [new AzdoIssue { Message = $"https://helix.dot.net/jobs/{jobGuid}/details" }])));
 
-        var job = Assert.Single((await _svc.GetHelixJobsAsync("42", filter: "all")).Jobs);
+        var result = await _svc.GetHelixJobsAsync("42", filter: "all");
+        var job = Assert.Single(result.Jobs);
         using var json = JsonDocument.Parse(JsonSerializer.Serialize(job));
+        using var resultJson = JsonDocument.Parse(JsonSerializer.Serialize(result));
 
         Assert.False(json.RootElement.TryGetProperty("superseded", out _));
         Assert.False(json.RootElement.TryGetProperty("taskErrorCount", out _));
@@ -487,5 +545,7 @@ public class AzdoHelixJobsTests
         Assert.True(json.RootElement.TryGetProperty("ParentJobName", out _));
         Assert.True(json.RootElement.TryGetProperty("Result", out _));
         Assert.True(json.RootElement.TryGetProperty("FailedWorkItems", out _));
+        Assert.Equal(0, result.OutcomeUnknownHelixJobs);
+        Assert.False(resultJson.RootElement.TryGetProperty("outcomeUnknownHelixJobs", out _));
     }
 }
