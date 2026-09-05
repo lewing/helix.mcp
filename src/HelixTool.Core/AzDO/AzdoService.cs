@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using HelixTool.Core.Helix;
 
@@ -768,6 +769,18 @@ public class AzdoService
         @"Work item (.+?) in job ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) has failed",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly Regex MonitorFailedWorkItemRegex = new(
+        @"Work item '(?<wi>[^']+)' in job '(?<job>[^']*)' failed \((?<state>[^)]*)\)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex MonitorFailureTreeLineRegex = new(
+        @"^\s*(?:├─|└─)\s*(?<wi>.*?) \(Job: (?<rest>.*)\) \((?<state>[^)]*)\)\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex JobGuidInTextRegex = new(
+        @"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     /// <summary>
     /// Compute the Helix source string for a build, mirroring arcade's
     /// <c>HelixJobSource.Compute</c> (JobMonitor/HelixJobSource.cs).
@@ -816,29 +829,86 @@ public class AzdoService
         // ── Primary path: Helix-side Job.ListAsync(source) + BuildId filter ─────────────
         // Available when IHelixApiClient is injected (production). Unit tests use the
         // timeline-only constructor and skip this block.
+        string? source = null;
         if (_helixApi != null)
         {
             var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
             var build = await _client.GetBuildAsync(org, project, buildId, ct);
             if (build != null)
             {
-                var source = ComputeHelixSource(build);
+                source = ComputeHelixSource(build);
+                IReadOnlyList<IHelixJobSummary>? jobSummaries = null;
                 try
                 {
-                    var jobNames = await _helixApi.ListJobNamesByBuildAsync(
+                    jobSummaries = await _helixApi.ListJobsByBuildAsync(
                         source, buildId.ToString(), count: 100_000, ct: ct);
-
-                    if (jobNames.Count > 0)
-                        return BuildHelixResultFromJobNames(buildIdOrUrl, jobNames, filter);
-
-                    // 0 results: fall through to timeline scraping.
-                    // Typical causes: in-progress build (jobs not yet submitted), very old
-                    // jobs aged out of the Helix query window, or BuildId property missing.
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     // Helix API unreachable or auth failure — fall through to timeline.
                 }
+
+                if (jobSummaries is { Count: > 0 })
+                {
+                    var result = BuildHelixResultFromJobSummaries(
+                        buildIdOrUrl, source, jobSummaries, filter);
+                    AzdoTimeline? timeline;
+                    try
+                    {
+                        timeline = await _client.GetTimelineAsync(
+                            org, project, buildId, ct);
+                    }
+                    catch (HttpRequestException ex) when (!ct.IsCancellationRequested)
+                    {
+                        return result with
+                        {
+                            Note = AppendNote(result.Note,
+                                $"AzDO timeline issue evidence is unavailable: {ex.Message}")
+                        };
+                    }
+                    catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
+                    {
+                        return result with
+                        {
+                            Note = AppendNote(result.Note,
+                                $"AzDO timeline issue evidence is unavailable: {ex.Message}")
+                        };
+                    }
+                    catch (JsonException ex) when (!ct.IsCancellationRequested)
+                    {
+                        return result with
+                        {
+                            Note = AppendNote(result.Note,
+                                $"AzDO timeline issue evidence is unavailable: {ex.Message}")
+                        };
+                    }
+                    catch (InvalidOperationException ex) when (!ct.IsCancellationRequested)
+                    {
+                        return result with
+                        {
+                            Note = AppendNote(result.Note,
+                                $"AzDO timeline issue evidence is unavailable: {ex.Message}")
+                        };
+                    }
+
+                    if (timeline is null)
+                    {
+                        return result with
+                        {
+                            Note = AppendNote(result.Note,
+                                "AzDO timeline issue evidence is unavailable.")
+                        };
+                    }
+
+                    return result with
+                    {
+                        TimelineIssues = BuildTimelineIssues(timeline)
+                    };
+                }
+
+                // 0 results: fall through to timeline scraping.
+                // Typical causes: in-progress build (jobs not yet submitted), very old
+                // jobs aged out of the Helix query window, or BuildId property missing.
             }
         }
 
@@ -846,37 +916,76 @@ public class AzdoService
         // Used when Helix query is unavailable, returns 0 results, or throws.
         // Fragile for repos that don't name their Helix dispatch task with "helix"
         // (e.g. dotnet/sdk uses "🟣 Run TestBuild Tests").
-        return await GetHelixJobsViaTimelineAsync(buildIdOrUrl, filter, ct);
+        // `source` carries over from the primary attempt above when one was made, so the
+        // wire result still reports the computed Helix source even on the fallback path.
+        return await GetHelixJobsViaTimelineAsync(buildIdOrUrl, filter, ct, source);
     }
 
-    /// <summary>Project a list of Helix job name GUIDs into a <see cref="HelixJobsFromBuildResult"/>.</summary>
-    private static HelixJobsFromBuildResult BuildHelixResultFromJobNames(
-        string buildIdOrUrl, IReadOnlyList<string> jobNames, string filter)
+    /// <summary>Project Helix job summaries into a build-level result.</summary>
+    private static HelixJobsFromBuildResult BuildHelixResultFromJobSummaries(
+        string buildIdOrUrl,
+        string source,
+        IReadOnlyList<IHelixJobSummary> jobSummaries,
+        string filter)
     {
-        // With the Helix-side path we have job GUIDs but not AzDO task-level result or
-        // failed work item lists (those require per-job status calls). ParentJobName and
-        // FailedWorkItems are left empty; Result is "unknown".
-        // The filter parameter is accepted for API compatibility but cannot be applied to
-        // the Helix-side result without expensive per-job calls.
-        var jobs = jobNames
-            .Select(name => new HelixJobFromBuild(
-                HelixJobId: name,
-                ParentJobName: "",
-                Result: "unknown",
-                FailedWorkItems: []))
+        var supersededNames = jobSummaries
+            .Select(job => job.PreviousHelixJobName)
+            .Where(name => !string.IsNullOrEmpty(name))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var jobs = jobSummaries
+            .Select(job =>
+            {
+                var isCompleted = !string.IsNullOrEmpty(job.Finished);
+                return new HelixJobFromBuild(
+                    HelixJobId: job.Name,
+                    ParentJobName: ResolveParentJobName(job),
+                    Result: isCompleted ? "completed" : "running",
+                    FailedWorkItems: [])
+                {
+                    State = isCompleted ? "completed" : "running",
+                    QueueId = job.QueueId,
+                    WorkItemCount = job.InitialWorkItemCount,
+                    Superseded = supersededNames.Contains(job.Name)
+                };
+            })
             .ToList();
 
-        string? note = null;
+        var notes = new List<string>
+        {
+            "Helix-side Result reports completion state, not pass/fail outcome."
+        };
         if (!string.Equals(filter, "all", StringComparison.OrdinalIgnoreCase))
-            note = $"filter='{filter}' is not applied on the Helix-side path; all {jobs.Count} job(s) for this build are returned. " +
-                   "Use helix_status on individual job IDs to determine pass/fail.";
+            notes.Add($"filter='{filter}' is not applied on the Helix-side path; all {jobs.Count} job(s) for this build are returned. Use helix_status on individual job IDs to determine pass/fail.");
+        if (jobs.Any(job => job.State == "running"))
+            notes.Add("The build is still in progress; Helix job outcomes remain unknown.");
 
         return new HelixJobsFromBuildResult(
             BuildId: buildIdOrUrl,
             TotalHelixJobs: jobs.Count,
             FailedHelixJobs: 0,
             Jobs: jobs)
-        { Note = note };
+        {
+            Note = string.Join(" ", notes),
+            Source = source,
+            Strategy = "helix",
+            OutcomeUnknownHelixJobs = jobs.Count
+        };
+    }
+
+    private static string ResolveParentJobName(IHelixJobSummary job)
+    {
+        if (!string.IsNullOrEmpty(job.PhaseName))
+            return job.PhaseName;
+        if (!string.IsNullOrEmpty(job.JobDisplayName))
+            return job.JobDisplayName;
+        if (!string.IsNullOrEmpty(job.JobName)
+            && !string.Equals(job.JobName, "__default", StringComparison.Ordinal))
+        {
+            return job.JobName;
+        }
+
+        return "";
     }
 
     /// <summary>
@@ -884,14 +993,23 @@ public class AzdoService
     /// timeline records whose name contains "helix". Fragile for repos that use non-standard
     /// task names (e.g. dotnet/sdk).
     /// </summary>
+    /// <param name="source">
+    /// Helix source string already computed by the caller (<see cref="ComputeHelixSource"/>),
+    /// when the primary Helix-side path was attempted first and returned 0 results. Null when
+    /// no <see cref="IHelixApiClient"/> was available or the build could not be resolved —
+    /// in that case the source is genuinely unknown and the field stays absent from the wire
+    /// result (<c>JsonIgnore(WhenWritingNull)</c>).
+    /// </param>
     private async Task<HelixJobsFromBuildResult> GetHelixJobsViaTimelineAsync(
-        string buildIdOrUrl, string filter, CancellationToken ct)
+        string buildIdOrUrl, string filter, CancellationToken ct, string? source = null)
     {
         var timeline = await GetTimelineAsync(buildIdOrUrl, ct);
         if (timeline is null)
             return new HelixJobsFromBuildResult(buildIdOrUrl, 0, 0, [])
             {
-                Note = $"No timeline available for build {buildIdOrUrl} — Helix jobs cannot be discovered via the timeline. The build may still be initializing, was canceled before any leg reported, or has no timeline data."
+                Note = $"No timeline available for build {buildIdOrUrl} — Helix jobs cannot be discovered via the timeline. The build may still be initializing, was canceled before any leg reported, or has no timeline data.",
+                Source = source,
+                Strategy = "timeline"
             };
 
         var recordById = timeline.Records
@@ -936,19 +1054,41 @@ public class AzdoService
                         jobIds.Add(jobId);
                     }
 
-                    // Extract failed work item names and associate with their job
-                    var wiMatch = FailedWorkItemRegex.Match(issue.Message);
-                    if (wiMatch.Success)
+                    // Extract failed work item names and associate with their own job.
+                    foreach (Match wiMatch in FailedWorkItemRegex.Matches(issue.Message))
                     {
                         var workItemName = wiMatch.Groups[1].Value;
                         var jobId = wiMatch.Groups[2].Value;
                         jobIds.Add(jobId);
-                        if (!failedWorkItems.TryGetValue(jobId, out var items))
+                        AddFailedWorkItem(failedWorkItems, jobId, workItemName);
+                    }
+
+                    foreach (Match wiMatch in MonitorFailedWorkItemRegex.Matches(issue.Message))
+                    {
+                        var jobId = RecoverMonitorJobId(
+                            wiMatch.Groups["job"].Value, issue.Message);
+                        if (jobId is not null)
                         {
-                            items = [];
-                            failedWorkItems[jobId] = items;
+                            jobIds.Add(jobId);
+                            AddFailedWorkItem(
+                                failedWorkItems, jobId, wiMatch.Groups["wi"].Value);
                         }
-                        items.Add(workItemName);
+                    }
+
+                    foreach (var line in issue.Message.Split('\n'))
+                    {
+                        var treeMatch = MonitorFailureTreeLineRegex.Match(line);
+                        if (!treeMatch.Success)
+                            continue;
+
+                        var jobId = RecoverMonitorJobId(
+                            treeMatch.Groups["rest"].Value, issue.Message);
+                        if (jobId is not null)
+                        {
+                            jobIds.Add(jobId);
+                            AddFailedWorkItem(
+                                failedWorkItems, jobId, treeMatch.Groups["wi"].Value);
+                        }
                     }
                 }
             }
@@ -959,14 +1099,25 @@ public class AzdoService
                 parentName = parent.Name ?? "";
 
             string taskResult = task.Result ?? "unknown";
+            string? taskState = NormalizeTaskState(task.State);
+            int taskErrorCount = task.Issues?.Count(issue =>
+                string.Equals(issue.Type, "error", StringComparison.OrdinalIgnoreCase)) ?? 0;
+            int taskWarningCount = task.Issues?.Count(issue =>
+                string.Equals(issue.Type, "warning", StringComparison.OrdinalIgnoreCase)) ?? 0;
 
-            if (jobIds.Count == 0 && !preserveIssuesGate)
+            if (jobIds.Count == 0)
             {
                 jobs.Add(new HelixJobFromBuild(
                     HelixJobId: string.Empty,
                     ParentJobName: parentName,
                     Result: taskResult,
-                    FailedWorkItems: []));
+                    FailedWorkItems: [])
+                {
+                    State = taskState,
+                    TaskErrorCount = taskErrorCount,
+                    TaskWarningCount = taskWarningCount,
+                    Messages = BuildIssueMessages(task.Issues)
+                });
                 continue;
             }
 
@@ -977,7 +1128,12 @@ public class AzdoService
                     HelixJobId: jobId,
                     ParentJobName: parentName,
                     Result: taskResult,
-                    FailedWorkItems: items ?? []));
+                    FailedWorkItems: items ?? [])
+                {
+                    State = taskState,
+                    TaskErrorCount = taskErrorCount,
+                    TaskWarningCount = taskWarningCount
+                });
             }
         }
 
@@ -990,12 +1146,137 @@ public class AzdoService
         }
 
         int failedCount = jobs.Count(j => !j.Result.Equals("succeeded", StringComparison.OrdinalIgnoreCase));
+        int outcomeUnknownCount = jobs.Count(j =>
+            j.Result.Equals("unknown", StringComparison.OrdinalIgnoreCase));
+
+        string? note = null;
+        if (jobs.Any(job => job.State == "running"))
+            note = "The build is still in progress; FailedHelixJobs includes not-yet-complete rows.";
 
         return new HelixJobsFromBuildResult(
             BuildId: buildIdOrUrl,
             TotalHelixJobs: jobs.Count,
             FailedHelixJobs: failedCount,
-            Jobs: jobs);
+            Jobs: jobs)
+        {
+            Note = note,
+            Source = source,
+            Strategy = "timeline",
+            OutcomeUnknownHelixJobs = outcomeUnknownCount,
+            TimelineIssues = BuildTimelineIssues(timeline)
+        };
+    }
+
+    private static List<HelixTimelineIssue> BuildTimelineIssues(AzdoTimeline timeline)
+    {
+        var recordById = timeline.Records
+            .Where(record => record.Id is not null)
+            .ToDictionary(record => record.Id!, StringComparer.OrdinalIgnoreCase);
+
+        return timeline.Records
+            .Where(record =>
+                string.Equals(record.Type, "Task", StringComparison.OrdinalIgnoreCase)
+                && record.Issues is { Count: > 0 })
+            .Select(record =>
+            {
+                var parentJobName = "";
+                if (record.ParentId is not null
+                    && recordById.TryGetValue(record.ParentId, out var parent)
+                    && string.Equals(parent.Type, "Job", StringComparison.OrdinalIgnoreCase))
+                {
+                    parentJobName = parent.Name ?? "";
+                }
+
+                return new HelixTimelineIssue(
+                    RecordId: record.Id ?? "",
+                    TaskName: record.Name ?? "",
+                    ParentJobName: parentJobName,
+                    State: NormalizeTaskState(record.State),
+                    Result: record.Result ?? "unknown",
+                    ErrorCount: record.Issues!.Count(issue =>
+                        string.Equals(issue.Type, "error", StringComparison.OrdinalIgnoreCase)),
+                    WarningCount: record.Issues!.Count(issue =>
+                        string.Equals(issue.Type, "warning", StringComparison.OrdinalIgnoreCase)),
+                    Messages: BuildIssueMessages(record.Issues) ?? []);
+            })
+            .ToList();
+    }
+
+    private static string AppendNote(string? note, string addition) =>
+        string.IsNullOrWhiteSpace(note) ? addition : $"{note} {addition}";
+
+    private static string? RecoverMonitorJobId(string jobText, string message)
+    {
+        var directMatch = JobGuidInTextRegex.Match(jobText);
+        if (directMatch.Success)
+            return directMatch.Value;
+
+        var messageJobIds = HelixJobIdRegex.Matches(message)
+            .Select(match => match.Groups[1].Value)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(2)
+            .ToList();
+        return messageJobIds.Count == 1 ? messageJobIds[0] : null;
+    }
+
+    private static void AddFailedWorkItem(
+        Dictionary<string, List<string>> failedWorkItems,
+        string jobId,
+        string workItemName)
+    {
+        if (!failedWorkItems.TryGetValue(jobId, out var items))
+        {
+            items = [];
+            failedWorkItems[jobId] = items;
+        }
+
+        if (!items.Contains(workItemName, StringComparer.OrdinalIgnoreCase))
+            items.Add(workItemName);
+    }
+
+    private static List<string>? BuildIssueMessages(IReadOnlyList<AzdoIssue>? issues)
+    {
+        var messages = issues?
+            .Select(issue => issue.Message)
+            .Where(message => message is not null)
+            .Select(message =>
+            {
+                var trimmed = message!.Trim();
+                if (trimmed.Length <= 500)
+                    return trimmed;
+
+                var length = char.IsHighSurrogate(trimmed[499])
+                    && char.IsLowSurrogate(trimmed[500])
+                    ? 499
+                    : 500;
+                return trimmed[..length];
+            })
+            .ToList() ?? [];
+
+        if (messages.Count == 0)
+            return null;
+
+        const int limit = 20;
+        if (messages.Count <= limit)
+            return messages;
+
+        var omitted = messages.Count - limit;
+        var bounded = messages.Take(limit).ToList();
+        bounded.Add($"… {omitted} more issue(s) omitted");
+        return bounded;
+    }
+
+    private static string? NormalizeTaskState(string? state)
+    {
+        if (state is null)
+            return null;
+        if (state.Equals("inProgress", StringComparison.OrdinalIgnoreCase))
+            return "running";
+        if (state.Equals("completed", StringComparison.OrdinalIgnoreCase))
+            return "completed";
+        if (state.Equals("pending", StringComparison.OrdinalIgnoreCase))
+            return "pending";
+        return state.ToLowerInvariant();
     }
 
     // Valid filters for AzDO timeline Job records; "none" selects an unset (null) result.

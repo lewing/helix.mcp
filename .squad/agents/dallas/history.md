@@ -4,134 +4,30 @@
 
 **Role:** Decision lead on MCP schema reduction, parameter aliasing, parameter plumbing, and strict-mode architecture.
 
-**Recent Focus (2026-06-24 through 2026-07-20):**
-- Refined blanket "flatten all outputSchema" → tiered approach (FLATTEN 10 / KEEP 3 / LEAVE 12)
-- Authorized PR #78 (azdo param plumbing: minTime/maxTime/queryOrder, top, outcomes)
-- Designed CallToolFilter layer for unknown-param rejection (Issue #81) vs SDK-layer strict mode
-- Triaged Issue #81/#82 sequencing (correctness before cleanup)
+**Current Focus:** PR #132 implementation is complete, final internal review is approved, and external review is in progress.
 
 ---
 
-## 2026-07-20: Tiered outputSchema Recommendation (REFINED)
+## 2026-06-01 Through 2026-08-31: Summary
 
-**Challenge:** User questioned blanket "flatten all 20 tools" — which genuinely warrant richer schema?
+Completed five major decision cycles:
 
-**Method:** Read result DTOs; assess each tool on: (1) output chained downstream, (2) shape ambiguous, (3) drives decision.
+1. **Parameter Plumbing (June):** Fixed three azdo_* parameter bugs (minTime/maxTime/queryOrder missing, top not forwarded, outcomes hardcoded). PR #78 merged; 14 new tests; all 1337 tests pass.
 
-**Recommendation:**
-- **FLATTEN 10:** helix_status, azdo_build, helix_parse_uploaded_trx, azdo_search_timeline, helix_batch_status, helix_work_item, helix_search, helix_find_files, helix_files, helix_download (5,541 bytes, 18% savings)
-- **KEEP 3:** azdo_timeline (log.id disambiguation), azdo_helix_jobs (HelixJobId bridge), azdo_build_analysis (known/unmatched discrimination) (2,212 bytes retained)
-- **LEAVE 12:** Already minimal or degenerate (68-byte LimitedResults, string-only returns, azdo_search_log)
-- **Optional enrich:** 2 field descriptions (~90 bytes)
+2. **Numeric Alias Coercion (June):** Implemented CoerceToStringElement in CallToolFilter to handle numeric build_id values. Gap fixed; Ripley + Lambert execution.
 
-**Net savings:** ~5,450 bytes (18% vs. 28% blanket). Retains extraction-critical guidance on 3 chaining junctions.
+3. **Parameter Alias Layer (June):** Established canonical parameter names to reduce agent confusion (buildIdOrUrl, not build_id/buildUrl).
 
-**Decision filed:** `.squad/decisions/decisions.md` (merged from inbox 2026-07-20)
+4. **Tiered outputSchema Reduction (July):** Refined "flatten all" → targeted approach (FLATTEN 10 / KEEP 3 / LEAVE 12). Net savings ~5,450 bytes (18% reduction). Dallas decision filed; work approved pending implementation.
 
----
+5. **Strict-Mode Architecture (July):** Triaged Issue #81/#82 sequencing; designed CallToolFilter layer for unknown-param rejection. Correctness prioritized before cleanup.
 
-## 2026-06-24: Param Plumbing & Alias Coercion
-
-### PR #78 — Three AzDO Bugs Fixed
-1. **azdo_builds:** minTime/maxTime/queryOrder missing from filter + URL
-2. **azdo_test_attachments:** top param not forwarded to REST URL
-3. **azdo_test_results:** outcomes hardcoded (no override)
-
-Four Copilot review rounds; 14 new tests added; all 1337 tests pass.
-
-### PR #75 — Numeric Alias Coercion (Gap fix)
-**Finding:** Numeric `build_id` values (JSON numbers) fail string parameter binding.
-**Fix:** Implement `CoerceToStringElement()` in CallToolFilter. Ripley + Lambert executed.
+All decisions archived to decisions.md. No lockouts issued; steady progress on parameter safety and schema reduction.
 
 ---
 
-## 2026-06-01: Parameter Alias Layer Decision
+## Recent Detailed Work
 
-**Problem:** Agents passed `build_id`/`buildUrl` instead of canonical `buildIdOrUrl`.
-
-**Layer choice:** CallToolFilter in McpServerOptionsExtensions (pre-binding), not per-tool attributes or method signatures.
-
-**Rationale:** Key-normalization problem, not value problem. MCP SDK 1.3.0 has no tool-level alias surface.
-
-**Pattern:** Flat global alias map (OrdinalIgnoreCase); insertion order significant; combine with binding-error filter.
-
-**Calibration:** Drift telemetry must be built in from day one (Debug-level logging).
-
----
-
-## Issue #81/#82 Framing (2026-06-24)
-
-**Sequencing heuristic:** User-visible correctness (#81 Stage A) before architectural cleanup (#82).
-
-**Stage A/B coexistence:** Both UnmappedMemberHandling.Disallow (SDK layer) and CallToolFilter "did you mean" (pipeline layer) can coexist; Stage B makes Stage A redundant for our tools. Document the choice in PR, don't silently remove.
-
-**Pre-work scope rule:** When enabling enforcement gate, grep telemetry/issue history for known-tolerated variants before flipping switch. Example: `result` → `resultFilter` alias landed in Stage A PR, not as follow-up.
-
----
-
-## Previous Work Archive
-
-See `.squad/agents/dallas/history-archive-2026-06-01.md` for:
-- Issue #61 (silent MCP failures, exception centralization)
-- PR #66 (external contributor review, null-coercion pattern)
-- Issue #74 (schema measurement, 28.26 KB baseline, conditional NO)
-- MCP 1.4.0 bump safety analysis
-
----
-
-## Key Decisions Referenced
-
-- **Issue #74:** Conditional NO on active trimming (28.26 KB, <1% session budget). Lever 1 available (~8.9 KB zero-risk).
-- **Issue #81/#82:** Stage A (strict unknown-param) correct; Stage A/B can coexist; centralize normalization (cleanup after correctness).
-- **PR #78:** Param plumbing shipped; auth + cache remain; 14 new tests added.
-- **Lever 1 (Tiered outputSchema):** Ready for go/no-go; ~5,450 bytes savings with extraction guidance preserved.
-
----
-
-## 2026-07-20: Progressive Disclosure Analysis
-
-### Finding: SDK supports dynamic ToolCollection (v1.4.0)
-- `ToolCollection` property on server supports Add/Remove at runtime
-- SDK auto-sends `notifications/tools/list_changed` to clients
-- Mechanism exists in protocol and SDK — feasible technically
-
-### Finding: No natural trigger in MCP protocol
-- No client gesture / context hint flows server-side mid-session
-- Server has no visibility into what the model is doing
-- Only triggers available: (a) tool A was called → reveal tool B, (b) timer/config
-
-### Tool Bucketing (25 tools, ~29 KB total)
-**CORE (always needed, 8 tools, ~12.8 KB):**
-azdo_build (1531), azdo_builds (2103), azdo_timeline (2099), azdo_helix_jobs (1425), azdo_search_log (2027), helix_status (1771), azdo_build_analysis (est ~1200), helix_ci_guide (479)
-
-**WORKFLOW-GATED (need build/job in hand, 11 tools, ~12.5 KB):**
-azdo_log, azdo_changes, azdo_test_runs, azdo_test_results, azdo_search_timeline, azdo_artifacts, helix_logs, helix_files, helix_work_item, helix_search, helix_find_files
-
-**NICHE (narrow scenarios, 6 tools, ~4.6 KB):**
-helix_parse_uploaded_trx (1703, self-identifies "Niche"), helix_batch_status, helix_download, azdo_test_attachments, helix_auth_status (330), azdo_auth_status (330)
-
-### Mechanism Feasibility
-1. **Dynamic list + list_changed:** FEASIBLE in SDK 1.4.0. But trigger problem is real — after azdo_builds/helix_status called, reveal drill-down tools. Complexity: moderate (state machine per session).
-2. **Meta/gateway tool:** FEASIBLE but anti-pattern for models. Worse tool-use accuracy. Not recommended.
-3. **Resources vs Tools:** CiKnowledgeResource ALREADY exists alongside helix_ci_guide tool. Resources are NOT in tools/list — they're in resources/list. Moving guide to resource-only saves 479 bytes but loses tool-call discoverability. Marginal.
-4. **Config-based profiles:** FEASIBLE, simplest. Operator picks "minimal" (8 core) or "full" (25). Static at startup. No runtime complexity.
-
-### Verdict
-Progressive disclosure is NOT worth pursuing as a primary lever here.
-- Maximum reclaim from hiding NICHE bucket: ~4.6 KB (16% of total)
-- Maximum reclaim from hiding WORKFLOW-GATED: ~12.5 KB (43%)
-- But WORKFLOW-GATED tools are what models need to SEE to plan multi-step investigations — hiding them degrades planning quality
-- The trigger problem means you'd reveal tools AFTER the model already decided it needed them (chicken-and-egg)
-- flatten-10/keep-3 outputSchema lever saves ~5.5 KB with ZERO ergonomic cost and no runtime complexity
-- Combined: flatten + description trim could reach ~8-9 KB savings without progressive disclosure
-
-### Recommendation
-1. Ship flatten-10/keep-3 (outputSchema tiering) — already designed, zero-risk
-2. If further cuts needed: config-based "minimal" profile (option 4) for operators who only need AzDO OR only Helix
-3. Do NOT pursue runtime dynamic disclosure — complexity/trigger problem outweighs marginal byte gain
-4. Progressive disclosure and outputSchema flatten compose (orthogonal) but overlap in motivation — flatten is strictly better ROI
-
----
 
 ## Learnings
 
@@ -706,3 +602,142 @@ All 53 tests in `SnapshotExportTests.cs` passed, followed by 100 isolated repeti
 writer/checkpointer stress test, with zero failures or skips under `DOTNET_ROLL_FORWARD=Major`.
 Existing export invariants are unchanged and no production file changed. Frost's exporter remains
 accepted and frozen; the local gate is cleared for the full suite and fresh Ubuntu/Windows CI.
+
+---
+
+## 2026-09-04 — Helix queue monitor: combined review and roadmap
+
+**Verdict:** **ACCEPT WITH CORRECTIONS** on Ash's requirements analysis and Ripley's backend
+audit. Four fixes land now (D1–D4), two items defer (D5b, D6), six are rejected. Recorded in
+`.squad/decisions/inbox/dallas-helix-queue-monitor-roadmap.md`.
+
+The reframing that drove every decision: queue monitor did not create a capability gap, it
+exposed a **projection gap**. Reflecting over `Microsoft.DotNet.Helix.Client`
+`11.0.0-beta.26325.102` showed `JobSummary` — the type `Job.ListAsync` already returns —
+carries `QueueId`, `Properties`, `Created`, `Finished`, `InitialWorkItemCount`, and
+`FailureReason`. `HelixApiClient.ListJobNamesByBuildAsync` discards all of it via
+`.Select(j => j.Name)`. Restoring that projection satisfies Ripley P1, most of Ash US-Q2, the
+real need behind US-Q3, and the seed of US-Q7 at **zero additional HTTP cost**. Every accepted
+item is a fix; every rejected item is a new feature. That split was not imposed, it fell out.
+
+**Material correction — Ripley P4 is wrong as specified.** Ripley proposed grouping by
+`(logical name | PhaseName, QueueId)` and keeping max `System.JobAttempt`, attributing it to
+arcade's `GetLatestHelixJobAttempts`. Arcade (`MonitorState.cs:593-601`) actually uses a
+**lineage-leaf rule**: superseded iff another job's `PreviousHelixJobName` points at it;
+attempt numbers only order, never select. Ripley's key would silently *delete* legitimate
+concurrent jobs — arcade's own `LogicalJobName` docs say one AzDO job can submit several Helix
+jobs to the same queue. Undercounting is a worse failure than the overcounting it targeted.
+Ripley cited the right primitive in §1 and failed to carry it into the recommendation, so the
+correction is mechanical and Ripley keeps ownership; no lockout.
+
+**Sequencing principle worth reusing:** annotate before filtering. D5a exposes `Superseded`
+as a free additive field and changes no counts; D5b (actually filtering) stays unapproved
+until D5a surfaces a real build proving duplicates occur. Changing a user-visible count on an
+unproven hypothesis is precisely what Ripley was right to escalate, and the answer was "prove
+it with the cheap version first," not "yes" or "no."
+
+**Rejection pattern in Ash's proposal:** four of six opportunities proposed new MCP tools for
+capabilities the server already composes. US-Q1 and US-Q6 are fully served by
+`azdo_timeline`/`azdo_search_timeline`/`azdo_search_log` — the last already accepts a null
+`logId` and scans all ranked steps. US-Q4 is a heuristic wrapper whose `confidence` field we
+cannot calibrate, and D1 removes the reason to branch on topology at all. US-Q3's need was
+real but met by an additive `Source` field, not a tool. Also caught two factual slips: the
+find-files default is 30 not 50, and "<5s for 500+ jobs" conflates submission-level
+aggregation (free) with result-level pass/fail (N calls, unachievable). No lockout on Ash —
+requirements analysis is supposed to surface candidates review rejects — but reviving US-Q1,
+US-Q4, or US-Q6 now requires a concrete failing investigation transcript.
+
+Verified true against local code: the monitor's `failed ({State}).` format can never match
+`FailedWorkItemRegex` (`AzdoService.cs:767`); `ParentJobName` collapses to `HelixJobMonitor`
+(`:957-959`); build-wide prose errors vanish under `filter="failed"` (`:963` guard);
+`CiKnowledgeService.cs:229/787` still describes the fallback as the whole tool, which is wrong
+independent of dotnet/sdk behavior — so D4 does not block on a live build.
+
+Compatibility rule I want held: **no behavior may branch on "monitor detected."** D1 helps both
+topologies because the same submitter stamps the same properties either way, and D5's leaf rule
+is a provable no-op on legacy. If an implementer needs a topology flag, the design went wrong.
+
+No production code or tests written. The reflection probe was deleted and the worktree is clean.
+
+## 2026-09-04: Helix queue-monitor design review and roadmap adjudication (completed)
+
+Completed architectural review of Ash's requirements and Ripley's audit. Verified all claims against local code (HelixApiClient projection bug) and arcade source (lineage-leaf dedup rule). Adjudicated parallel proposals into ranked roadmap: six items approved (D1–D6: four fixes, one enhancement, one doc), two items deferred to later gate (D5b), seven new-tool proposals rejected. Key finding: existing tools compose to same capability; JobSummary metadata restoration is mechanical fix with zero additional HTTP cost.
+
+**Status:** COMPLETED  
+**Outcome:** Roadmap verdict ACCEPT WITH CORRECTIONS; D1–D6 ready for implementation planning; D5b gated on D5a evidence
+
+## Ownership Assignment
+
+- **Ripley:** D1, D2, D3, D5a, D5b, D6 (primary owner of queue-monitor fixes)
+- **Kane:** D4 (documentation correction)
+
+## 2026-09-04: Pre-work Design Review — queue-monitor compatibility slice 1 (completed)
+
+Ran the read-only Design Review ceremony for the first implementation slice. Brief recorded at
+`.squad/decisions/inbox/dallas-queue-monitor-design-review.md`. No production file or test
+touched; worktree clean, build 0/0 before and after.
+
+**Scope decided:** D1, D2, D3 (+ new D3b), D4, D5a. D6 pushed to slice 2 (unrelated subsystem,
+drags `ProgressOverStatelessHttpTests` in). D5b still gated on D5a evidence.
+
+**Two accepted premises corrected on primary-source evidence** (fetched `dotnet/arcade@main`
+verbatim rather than trusting the prior summary):
+- D3's "detect by task name `Monitor Helix Jobs`" is **struck**. `helix-job-monitor.yml` names
+  both the Job and the Task `Monitor Helix Jobs`, so the existing `Name.Contains("helix")`
+  predicate already finds them — and a name gate is precisely the "branch on monitor detected"
+  my own compatibility rule #1 forbids. Parsers apply unconditionally.
+- D3's "extract the GUID from the console URL" is **demoted to fallback**. `HelixJobInfo.cs:149`
+  puts the GUID in `DisplayName` (`"{label} - {queue} ({guid})"`, or bare `{guid}`), and
+  `MonitorState.cs:656` can emit the literal `"no console link available"`. DisplayName first.
+
+**Found a second monitor format nobody had named** (`StatusReporter.cs:334-354`): an aggregated
+`Failed work item information:` tree, emitted as `LogError`, carrying `// DO NOT CHANGE THIS
+LINE - it's matched by Build Analysis`. Added as D3b — same function, same test file, zero new
+surface, and it is the format arcade has explicitly pinned. Leaving the most stable signal
+unparsed would have been the worse call.
+
+**Reframed what D3 actually fixes.** The GUID is usually already recovered today (the console
+URL matches `HelixJobIdRegex`). What is lost is the **work-item → job association**, because
+`FailedWorkItemRegex` requires the literal `has failed`. Naming the defect precisely changed
+the tests I demanded.
+
+**Rulings worth remembering:**
+- D2's open question ("reuse `FailedWorkItems`, or add a field?") — *this review was the review
+  the decision deferred to*. Verdict: reusing it is semantically wrong, because clients feed
+  that list to `helix_search(jobId, workItem)`; raw AzDO prose there produces a predictable
+  misuse. Added bounded `Messages` (≤20 × ≤500 chars, only on empty-GUID rows).
+- Added `Strategy` beyond the accepted decision, and justified it as **correctness, not
+  convenience**: D1 gives `Result` two vocabularies across the two paths, so having introduced
+  the ambiguity we are obliged to ship the discriminator.
+- **Declined to narrow D1's `Result`** even though the new `State` field makes it redundant on
+  the Helix path. Re-litigating an accepted criterion for tidiness, after Lambert holds it,
+  costs more than one redundant field. Guard rail instead: `Result` is never a pass/fail verdict
+  there, and `Note` must say so.
+- "Running with errors" pinned as `State=="running" && Result=="unknown" && (TaskErrorCount>0 ||
+  TaskWarningCount>0)`. Counts deliberately unchanged (rule #4) — the obligation that creates is
+  **disclosure in `Note`**, not silence.
+- Counts named `TaskErrorCount`/`TaskWarningCount` on purpose: N rows from one task all carry
+  the same value, and the prefix is what stops someone summing them.
+
+**Process lesson — the shim removed the only real ordering conflict.** Renaming
+`ListJobNamesByBuildAsync` would red the test project the moment R1 landed, forcing either
+Ripley into tests or Lambert into a wait. Keeping it as an undecorated delegating shim (not
+`[Obsolete]` — that breaks the 0-warning gate that is itself a merge criterion) buys full
+three-way parallelism for the price of one mandatory deletion step, R4. I made R4 a merge gate
+so the shim cannot quietly become permanent.
+
+**Two new standing compatibility rules** (now #5 and #6): no new *positional* record parameters
+on wire types, because `azdo_helix_jobs` generates its output schema from the record and
+positional params generate as required; and Newtonsoft stops at `HelixApiClient` — no
+`JObject`/`JToken` may cross `IHelixApiClient`.
+
+**Deliberately left broken:** the `filter="all"` wart at `AzdoService.cs:918` (issue-free helix
+tasks skipped even under `all`). Real, pre-existing, and fixing it moves `TotalHelixJobs` without
+evidence. Recorded in the brief so it is a known wart rather than a future rediscovery.
+
+**Did not convene Ripley/Lambert/Kane as subagents.** Everything was answerable from local source
+plus arcade; they would have re-read the same files. Recorded the omission as deliberate.
+
+**Status:** COMPLETED
+**Outcome:** Design accepted; R1/L1/K1 may begin. Eight named reject-on-sight conditions recorded
+for my own merge review.

@@ -166,11 +166,10 @@ public sealed class CachingHelixApiClient : IHelixApiClient
     }
 
     /// <inheritdoc />
-    /// <remarks>Not cached — source-scoped queries span many jobs; the TTL policy is unclear.
-    /// Callers get fresh results on every call.</remarks>
-    public Task<IReadOnlyList<string>> ListJobNamesByBuildAsync(
+    /// <remarks>Not cached — source-scoped queries span many jobs; callers get fresh results.</remarks>
+    public Task<IReadOnlyList<IHelixJobSummary>> ListJobsByBuildAsync(
         string source, string buildId, int count = 100_000, CancellationToken ct = default)
-        => _inner.ListJobNamesByBuildAsync(source, buildId, count, ct);
+        => _inner.ListJobsByBuildAsync(source, buildId, count, ct);
 
     private async Task<bool> IsJobCompletedAsync(string jobId, CancellationToken ct)
     {

@@ -227,7 +227,7 @@ public sealed class CiKnowledgeService
                 "helix_parse_uploaded_trx ALWAYS fails — SDK never uploads TRX to Helix",
                 "SDK uses build-as-test pattern — many 'test failures' are actually build errors exercising the SDK",
                 "Helix task name is '🟣 Run TestBuild Tests' (with emoji!) — searching for 'Send to Helix' returns nothing",
-                "azdo_helix_jobs returns 0 jobs for SDK builds — the tool detects Helix by scanning timeline Tasks whose name contains the substring 'helix' (case-insensitive); '🟣 Run TestBuild Tests' contains no such substring, so detection returns 0 even when Helix ran; extract Helix job GUIDs from azdo_test_runs output instead (look for [HelixJob:GUID] in the test run names)",
+                "azdo_helix_jobs primarily queries Helix jobs by the build's computed source and BuildId property. Its AzDO timeline fallback matches Task names containing 'helix' (case-insensitive), so that fallback returns 0 for SDK's '🟣 Run TestBuild Tests'; if the primary query is unavailable or empty and the fallback misses, [HelixJob:GUID] tokens in azdo_test_runs names are a secondary workaround",
                 "azdo_test_runs metadata shows failedTests=0 even with hundreds of crashed work items — always drill into azdo_test_results",
                 "Crashed work items produce synthetic results: testCaseTitle='X.dll Work Item', errorMessage='The Helix Work Item failed'",
                 "'  Failed' pattern is unreliable for SDK — use 'Failed' and 'Error' instead since crashes dominate",
@@ -237,7 +237,7 @@ public sealed class CiKnowledgeService
                 "azdo_search_timeline(buildIdOrUrl, 'error') → find failed steps (compact output, preferred for large builds)",
                 "azdo_timeline(buildIdOrUrl, filter='failed') → full timeline when you need complete record details",
                 "Classify: '🟣 Build' failed → SDK build break; '🟣 Run TestBuild Tests' failed → test/infra failure; all tests skipped → upstream build failure",
-                "Extract Helix job GUIDs from azdo_test_runs output ([HelixJob:GUID] in run names) — azdo_helix_jobs DOES NOT work for SDK because its task name ('🟣 Run TestBuild Tests') contains no 'helix' substring (the detection rule); then: helix_status(jobId) → exit codes — 130/-4 = infra, 1 = real test failure",
+                "Start with azdo_helix_jobs: its primary Helix-side source + BuildId lookup is independent of SDK's task name. Only the timeline fallback misses '🟣 Run TestBuild Tests' because that name lacks 'helix'; when the primary query is unavailable or empty and the fallback misses, use [HelixJob:GUID] tokens in azdo_test_runs names as a secondary workaround, then helix_status(jobId) → exit codes — 130/-4 = infra, 1 = real test failure",
                 "azdo_test_runs(buildIdOrUrl) → get test run IDs",
                 "azdo_test_results(buildIdOrUrl, runId) → check for real vs synthetic (WorkItemExecution = crash, not assertion failure)",
                 "helix_search(jobId, workItem, 'Failed') → console error details",
@@ -784,7 +784,9 @@ public sealed class CiKnowledgeService
         lines.Add("- `helix_parse_uploaded_trx` works ONLY for: CoreCLR tests (XUnitWrapperGenerator) and XHarness device tests.");
         lines.Add("- Everything else: use `azdo_test_runs` + `azdo_test_results`.");
         lines.Add("- `azdo_test_attachments` returns empty arrays across ALL dotnet repos — skip it entirely.");
-        lines.Add("- **⚠️ `azdo_helix_jobs` finds Helix jobs by scanning timeline Task records whose name contains the substring 'helix' (case-insensitive).** If a repo's Helix dispatch task lacks that substring (sdk: '🟣 Run TestBuild Tests'), the tool returns 0 jobs even when Helix ran. Extract Helix job GUIDs from `azdo_test_runs` output instead — they appear as `[HelixJob:GUID]` in the run name string.");
+        lines.Add("- **Use `azdo_helix_jobs` to map an AzDO build to Helix jobs.** It primarily queries Helix `Job.ListAsync(source)` and filters by the `BuildId` property; only its fallback scans AzDO timeline `Task` names containing `helix` (case-insensitive). The SDK name `🟣 Run TestBuild Tests` limits that fallback, not the whole tool. If the primary query is unavailable or empty and the fallback misses, `[HelixJob:GUID]` tokens in `azdo_test_runs` names are a secondary workaround.");
+        lines.Add("- **Interpret a primary `strategy='helix'` response as discovery, not outcome data.** Every returned job has an unknown pass/fail outcome: `FailedHelixJobs` is 0 and `outcomeUnknownHelixJobs` equals `TotalHelixJobs`. `result` reports `completed` or `running`, while the independent `state` field reports lifecycle state. The requested filter is not applied on this path. `superseded` only annotates retry predecessors and does not remove them or alter counts.");
+        lines.Add("- **Primary discovery also returns build-level `timelineIssues` while keeping `strategy='helix'`.** One AzDO timeline request collects every issue-bearing `Task`, without topology or name filtering. Each entry includes record ID, task and parent-job names, state, result, error/warning counts, and bounded messages. A missing `timelineIssues` field plus `note` means timeline evidence was unavailable; `timelineIssues: []` means it was fetched and had no issues. Thus a running task with an unknown result can already expose errors. A successful primary lookup makes three upstream requests total (build, Helix job list, timeline), with no per-job detail calls.");
 
         return string.Join('\n', lines);
     }
@@ -928,8 +930,8 @@ public sealed class CiKnowledgeService
             4. Search for `'error MSB'` for MSBuild errors, `'error NU'` for NuGet errors
 
             ## In-Progress Builds
-            In-progress builds may already have failed jobs — AzDO jobs complete independently.
-            Always check `azdo_search_timeline(buildIdOrUrl, 'error')` or `azdo_timeline(buildIdOrUrl, filter='failed')` even for builds that haven't finished.
+            An active monitor task can have `state: inProgress`, no result yet, and already-emitted issues; do not wait for the build to complete or the leg to turn red.
+            Use `azdo_timeline(buildIdOrUrl, filter='issues')` to inspect streamed issues, `filter='running'` for active records, and ranked `azdo_search_log` to search available logs.
 
             ## Failure Classification
             Given a failed Helix work item's exit code and console log, classify:

@@ -1,5 +1,6 @@
 using Microsoft.DotNet.Helix.Client;
 using Microsoft.DotNet.Helix.Client.Models;
+using Newtonsoft.Json.Linq;
 
 namespace HelixTool.Core.Helix;
 
@@ -58,17 +59,16 @@ public sealed class HelixApiClient : IHelixApiClient
         => _api.WorkItem.GetFileAsync(fileName, workItemName, jobId, cancellationToken: ct);
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<string>> ListJobNamesByBuildAsync(
+    public async Task<IReadOnlyList<IHelixJobSummary>> ListJobsByBuildAsync(
         string source, string buildId, int count = 100_000, CancellationToken ct = default)
     {
         // count: 100_000 cap mirrors the arcade HelixService reference implementation.
         // In practice a single AzDO build submits ~1k–5k Helix jobs; the cap is generous.
         var jobs = await _api.Job.ListAsync(source: source, count: count, cancellationToken: ct);
         return jobs
-            .Where(j => j.Properties is Newtonsoft.Json.Linq.JObject props
-                && props.TryGetValue("BuildId", out var id)
-                && id.ToString() == buildId)
-            .Select(j => j.Name)
+            .Select(j => new JobSummaryAdapter(j))
+            .Where(j => j.HasBuildId(buildId))
+            .Select(j => (IHelixJobSummary)j)
             .ToList();
     }
 
@@ -84,6 +84,31 @@ public sealed class HelixApiClient : IHelixApiClient
         public string? Created => details.Created;
         public string? Finished => details.Finished;
         public string? DockerTag => details.DockerTag;
+    }
+
+    private sealed class JobSummaryAdapter(JobSummary summary) : IHelixJobSummary
+    {
+        private JObject? Properties => summary.Properties as JObject;
+
+        public string Name => summary.Name;
+        public string? QueueId => summary.QueueId;
+        public string? Source => summary.Source;
+        public string? Created => summary.Created;
+        public string? Finished => summary.Finished;
+        public int? InitialWorkItemCount => summary.InitialWorkItemCount;
+        public string? FailureReason => summary.FailureReason.ToString();
+        public string? PhaseName => GetProperty("System.PhaseName");
+        public string? JobDisplayName => GetProperty("System.JobDisplayName");
+        public string? JobName => GetProperty("System.JobName");
+        public string? PreviousHelixJobName => GetProperty("PreviousHelixJobName");
+
+        public bool HasBuildId(string buildId) =>
+            string.Equals(GetProperty("BuildId"), buildId, StringComparison.Ordinal);
+
+        private string? GetProperty(string name) =>
+            Properties?.TryGetValue(name, out var value) == true
+                ? value.Type == JTokenType.Null ? null : value.ToString()
+                : null;
     }
 
     private sealed class WorkItemSummaryAdapter(WorkItemSummary summary) : IWorkItemSummary

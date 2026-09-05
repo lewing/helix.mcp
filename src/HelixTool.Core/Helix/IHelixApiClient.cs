@@ -30,16 +30,44 @@ public interface IHelixApiClient
     Task<Stream> GetFileAsync(string fileName, string workItemName, string jobId, CancellationToken ct = default);
 
     /// <summary>
-    /// List Helix job names (GUIDs) submitted under the given source string whose <c>BuildId</c>
-    /// property matches <paramref name="buildId"/>. Uses <c>Job.ListAsync(source, count)</c>
-    /// from the Helix SDK — the canonical Helix-side lookup for AzDO build → Helix jobs.
+    /// List Helix jobs submitted under the given source whose <c>BuildId</c> property matches
+    /// <paramref name="buildId"/>, retaining metadata needed to attribute the originating leg.
+    /// Uses <c>Job.ListAsync(source, count)</c> from the Helix SDK — the canonical Helix-side
+    /// lookup for AzDO build → Helix jobs.
     /// </summary>
     /// <param name="source">Helix source prefix: "{pr|official|ci}/{teamProject}/{repo}/{branch}".</param>
     /// <param name="buildId">AzDO build ID as a string; matched against the "BuildId" job property.</param>
     /// <param name="count">Maximum jobs to retrieve from Helix (cap: 100 000 per arcade reference impl).</param>
     /// <param name="ct">Cancellation token.</param>
-    Task<IReadOnlyList<string>> ListJobNamesByBuildAsync(
+    Task<IReadOnlyList<IHelixJobSummary>> ListJobsByBuildAsync(
         string source, string buildId, int count = 100_000, CancellationToken ct = default);
+}
+
+/// <summary>Newtonsoft-free projection of a Helix SDK job summary.</summary>
+public interface IHelixJobSummary
+{
+    /// <summary>Helix job GUID.</summary>
+    string Name { get; }
+    /// <summary>Queue identifier selected for the job.</summary>
+    string? QueueId { get; }
+    /// <summary>Helix source string under which the job was submitted.</summary>
+    string? Source { get; }
+    /// <summary>Job creation timestamp.</summary>
+    string? Created { get; }
+    /// <summary>Job completion timestamp, or null while running.</summary>
+    string? Finished { get; }
+    /// <summary>Initial number of work items in the job.</summary>
+    int? InitialWorkItemCount { get; }
+    /// <summary>Failure reason reported by the Helix SDK.</summary>
+    string? FailureReason { get; }
+    /// <summary>Raw <c>System.PhaseName</c> job property.</summary>
+    string? PhaseName { get; }
+    /// <summary>Raw <c>System.JobDisplayName</c> job property.</summary>
+    string? JobDisplayName { get; }
+    /// <summary>Raw <c>System.JobName</c> job property.</summary>
+    string? JobName { get; }
+    /// <summary>Raw <c>PreviousHelixJobName</c> lineage property.</summary>
+    string? PreviousHelixJobName { get; }
 }
 
 /// <summary>Mockable projection of Helix SDK JobDetails.</summary>

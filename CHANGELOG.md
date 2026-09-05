@@ -8,6 +8,22 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+### `azdo_helix_jobs` — queue-monitor-compatible job discovery
+
+`azdo_helix_jobs` now preserves Helix job summaries instead of reducing them to GUIDs. Its primary strategy queries Helix by the build's computed source and filters `Job.ListAsync(source)` results by the `BuildId` property; the existing AzDO timeline task-name scan remains the fallback.
+
+The four existing job fields remain required. Additive optional fields expose `state`, `queueId`, `workItemCount`, `superseded`, `taskErrorCount`, `taskWarningCount`, and issue `messages` for fallback rows that have issues but no parseable Helix job ID. Messages preserve timeline order, are limited to 20 entries of 500 characters, and add an omitted-count marker when needed. Result-level `source` and `strategy` (`helix` or `timeline`) identify the lookup and interpretation. On the primary `helix` path, `result` reports only `completed` or `running`, and the independent `state` field reports lifecycle state.
+
+Queue-monitor warning and aggregate-tree messages now yield job GUIDs and failed work-item names, preferring the GUID embedded in the job display name and using its console URL only as fallback. Issue-bearing timeline tasks without a GUID are retained rather than silently dropped. Retry predecessors are marked `superseded` within the returned set; counts are not filtered by this annotation.
+
+Primary Helix summaries do not contain pass/fail outcomes. Consequently, primary responses set `FailedHelixJobs` to 0 and set the new `outcomeUnknownHelixJobs` count to `TotalHelixJobs`; a non-`all` filter is documented but not applied. Determining individual outcomes still requires an explicit later `helix_status` call.
+
+A successful primary lookup is enriched by one AzDO timeline request while retaining `strategy: "helix"`. Its build-level `timelineIssues` includes every issue-bearing `Task`, without task-name or topology filtering. Each entry identifies the record, task, parent job, state, result, error and warning counts, and bounded messages. Omitted `timelineIssues` plus a `note` means timeline evidence was unavailable; `timelineIssues: []` means the timeline was fetched and contained no issues. This exposes errors on active tasks whose state is running and whose result is still unknown.
+
+The successful primary path therefore makes three upstream requests—build, Helix job list, and timeline—not zero additional calls. It makes no per-job detail requests. Existing timeline `issues`/`running` filters and ranked log search remain available for deeper investigation before the build completes or the leg turns red.
+
+The dotnet/sdk task name `🟣 Run TestBuild Tests` still limits only timeline fallback discovery because it lacks `helix`; it does not disable the primary Helix-side lookup. `[HelixJob:GUID]` tokens in test-run names remain a secondary workaround when the primary lookup is unavailable or empty and fallback misses.
+
 ### `azdo_evidence_plan` — Failed job → evidence artifact planner (MCP + CLI)
 
 New read-only tool for planning which artifacts correspond to failed or canceled jobs in an AzDO build. Maps jobs to evidence via two strategies:

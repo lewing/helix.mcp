@@ -440,7 +440,54 @@ public sealed record HelixJobFromBuild(
     string HelixJobId,
     string ParentJobName,
     string Result,
-    List<string> FailedWorkItems);
+    List<string> FailedWorkItems)
+{
+    /// <summary>Path-independent execution state: running, pending, or completed.</summary>
+    [JsonPropertyName("state")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? State { get; init; }
+
+    /// <summary>Helix queue identifier when supplied by the Helix-side projection.</summary>
+    [JsonPropertyName("queueId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? QueueId { get; init; }
+
+    /// <summary>Initial work-item count reported by Helix.</summary>
+    [JsonPropertyName("workItemCount")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? WorkItemCount { get; init; }
+
+    /// <summary>Whether another returned Helix job identifies this job as its predecessor.</summary>
+    [JsonPropertyName("superseded")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Superseded { get; init; }
+
+    /// <summary>Number of error issues on the AzDO task that produced this row.</summary>
+    [JsonPropertyName("taskErrorCount")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int TaskErrorCount { get; init; }
+
+    /// <summary>Number of warning issues on the AzDO task that produced this row.</summary>
+    [JsonPropertyName("taskWarningCount")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int TaskWarningCount { get; init; }
+
+    /// <summary>Bounded AzDO issue evidence for an issue-only row with no Helix job ID.</summary>
+    [JsonPropertyName("messages")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? Messages { get; init; }
+}
+
+/// <summary>Issue evidence from an AzDO timeline task record.</summary>
+public sealed record HelixTimelineIssue(
+    [property: JsonPropertyName("recordId")] string RecordId,
+    [property: JsonPropertyName("taskName")] string TaskName,
+    [property: JsonPropertyName("parentJobName")] string ParentJobName,
+    [property: JsonPropertyName("state")] string? State,
+    [property: JsonPropertyName("result")] string Result,
+    [property: JsonPropertyName("errorCount")] int ErrorCount,
+    [property: JsonPropertyName("warningCount")] int WarningCount,
+    [property: JsonPropertyName("messages")] List<string> Messages);
 
 /// <summary>Result of extracting Helix jobs from a build timeline.</summary>
 public sealed record HelixJobsFromBuildResult(
@@ -456,6 +503,29 @@ public sealed record HelixJobsFromBuildResult(
     [JsonPropertyName("note")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Note { get; init; }
+
+    /// <summary>Computed Helix source string used by the primary lookup.</summary>
+    [JsonPropertyName("source")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Source { get; init; }
+
+    /// <summary>Discovery path used for this result: helix or timeline.</summary>
+    [JsonPropertyName("strategy")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Strategy { get; init; }
+
+    /// <summary>Jobs whose pass/fail outcome is unavailable from the selected discovery source.</summary>
+    [JsonPropertyName("outcomeUnknownHelixJobs")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int OutcomeUnknownHelixJobs { get; init; }
+
+    /// <summary>
+    /// Issue-bearing AzDO task records. Null means timeline evidence was unavailable;
+    /// an empty list means the timeline was fetched and contained no issue-bearing tasks.
+    /// </summary>
+    [JsonPropertyName("timelineIssues")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<HelixTimelineIssue>? TimelineIssues { get; init; }
 }
 
 /// <summary>A single timeline record matching a search pattern.</summary>
