@@ -8,6 +8,8 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+- Fixed Helix source computation for GitHub builds whose repository name is blank by falling back to the repository ID.
+
 ## [v0.10.0] — 2026-09-08
 
 ### `azdo_helix_jobs` — queue-monitor-compatible job discovery

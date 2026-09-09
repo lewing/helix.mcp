@@ -799,7 +799,14 @@ public class AzdoService
     internal static string ComputeHelixSource(AzdoBuild build)
     {
         var teamProject = build.Project?.Name ?? "";
-        var repository  = build.Repository?.Name ?? "";
+        var repository = build.Repository switch
+        {
+            { Name: { } name } when !string.IsNullOrWhiteSpace(name) => name,
+            { Type: { } type, Id: { } id }
+                when string.Equals(type, "GitHub", StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrWhiteSpace(id) => id,
+            _ => "",
+        };
         var sourceBranch = build.SourceBranch ?? "";
 
         string prefix;
