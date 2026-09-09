@@ -741,3 +741,42 @@ plus arcade; they would have re-read the same files. Recorded the omission as de
 **Status:** COMPLETED
 **Outcome:** Design accepted; R1/L1/K1 may begin. Eight named reject-on-sight conditions recorded
 for my own merge review.
+
+## 2026-09-08: v0.10.0 release-preparation commit (completed)
+
+Performed mechanical release prep per `.squad/skills/release-cut/SKILL.md`, staying on
+worktree branch `lewing-release-v0-10-0` (task instructed not to switch/push/tag). Confirmed
+the only three authoritative version surfaces are `src/HelixTool/HelixTool.csproj`
+`<Version>`, and `src/HelixTool/.mcp/server.json` top-level `version` + `packages[0].version`
+— `publish.yml`'s `validate-version` step checks exactly these three against the pushed tag.
+No other release-version surface exists in the repo (grepped for `0.9.1` outside
+`.squad/release-notes/` and `CHANGELOG.md`).
+
+Bumped all three 0.9.1 → 0.10.0. Promoted CHANGELOG's `[Unreleased]` to
+`## [v0.10.0] — 2026-09-08` (dated from CURRENT_DATETIME, not release-notes convention which
+would need a separate `.squad/release-notes/v0.10.0.md` — that file was not requested by this
+task and was intentionally not created, since the task scope was CHANGELOG promotion only) and
+added a fresh empty `[Unreleased]` above it, matching the pattern the v0.9.1 commit (6eb3905)
+and v0.9.0 gap-fix established.
+
+Validation: `dotnet build -c Release --no-incremental` (0 Warning(s), 0 Error(s));
+`DOTNET_ROLL_FORWARD=Major dotnet test -c Release --no-build` (1954 passed, 8 skipped
+pre-existing, 0 failed, matches prior session's noted local-runtime-11-vs-target-10 mismatch
+workaround); `dotnet pack src/HelixTool -c Release -o src/HelixTool/nupkg
+/p:Version=0.10.0` produced `lewing.helix.mcp.0.10.0.nupkg`. Unzipped and inspected: nuspec
+`<version>0.10.0</version>`, bundled `.mcp/server.json` also at 0.10.0, `DotnetToolSettings.xml`
+present, `packageTypes` includes both `DotnetTool` and `McpServer`. Deleted the nupkg output
+directory after inspection — not part of the release-prep commit.
+
+Diff reviewed before commit: exactly 3 files, 5 insertions/3 deletions — the two version bumps
+plus the two-line CHANGELOG heading insertion. No unreleased-content text was altered, no
+unrelated worktree changes swept in.
+
+Committed as `00c18d2` on `lewing-release-v0-10-0`. Did NOT tag, push, or open a PR — per this
+task's explicit instruction, those happen only after this commit is reviewed and merged to
+main by Larry. Post-merge command is unchanged from the skill: tag the merged main-tip commit
+with `git tag -a v0.10.0 -m "Release v0.10.0"` then `git push origin v0.10.0`, which triggers
+`publish.yml` (validates versions, packs, creates GitHub Release, pushes to NuGet).
+
+**Status:** COMPLETED
+**Outcome:** Release-prep commit `00c18d2` ready for review/merge; no tag pushed.

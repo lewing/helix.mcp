@@ -8,6 +8,8 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+## [v0.10.0] — 2026-09-08
+
 ### `azdo_helix_jobs` — queue-monitor-compatible job discovery
 
 `azdo_helix_jobs` now preserves Helix job summaries instead of reducing them to GUIDs. Its primary strategy queries Helix by the build's computed source and filters `Job.ListAsync(source)` results by the `BuildId` property; the existing AzDO timeline task-name scan remains the fallback.
