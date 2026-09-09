@@ -8,7 +8,12 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
-- Fixed Helix source computation for GitHub builds whose repository name is blank by falling back to the repository ID.
+## [v0.10.1] — 2026-09-09
+
+### `azdo_helix_jobs` — active queue-monitor evidence and GitHub source fallback
+
+- Active queue-monitor tasks expose errors and warnings through build-level `timelineIssues` before the monitor finishes, while job metadata retains queue, state, work-item count, retry lineage, task error/warning counts, and bounded messages (#132).
+- Fixed source-based Helix job discovery for GitHub-backed Azure DevOps builds whose repository name is blank. Source computation now falls back to the GitHub repository ID (for example, `dotnet/runtime`) without treating opaque non-GitHub repository IDs as source names (#135).
 
 ## [v0.10.0] — 2026-09-08
 
