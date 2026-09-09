@@ -22,11 +22,20 @@ public class ComputeHelixSourceTests
         string? reason = null,
         string? project = null,
         string? repository = null,
+        string? repositoryId = null,
+        string? repositoryType = null,
         string? sourceBranch = null) => new()
     {
         Reason = reason,
         Project = project is null ? null : new AzdoTeamProjectRef { Name = project },
-        Repository = repository is null ? null : new AzdoBuildRepository { Name = repository },
+        Repository = repository is null && repositoryId is null && repositoryType is null
+            ? null
+            : new AzdoBuildRepository
+            {
+                Name = repository,
+                Id = repositoryId,
+                Type = repositoryType,
+            },
         SourceBranch = sourceBranch,
     };
 
@@ -54,6 +63,60 @@ public class ComputeHelixSourceTests
         var source = AzdoService.ComputeHelixSource(build);
 
         Assert.StartsWith("pr/", source);
+    }
+
+    [Theory]
+    [InlineData("GitHub", "pullRequest", "pr")]
+    [InlineData("github", "individualCI", "ci")]
+    [InlineData("GITHUB", "batchedCI", "ci")]
+    public void ComputeHelixSource_BlankGitHubName_UsesRepositoryId(
+        string repositoryType, string reason, string prefix)
+    {
+        var build = MakeBuild(
+            reason: reason,
+            project: "public",
+            repository: " ",
+            repositoryId: "dotnet/runtime",
+            repositoryType: repositoryType,
+            sourceBranch: "refs/heads/main");
+
+        var source = AzdoService.ComputeHelixSource(build);
+
+        Assert.Equal($"{prefix}/public/dotnet/runtime/refs/heads/main", source);
+    }
+
+    [Fact]
+    public void ComputeHelixSource_NonblankName_WinsOverGitHubRepositoryId()
+    {
+        var build = MakeBuild(
+            reason: "pullRequest",
+            project: "public",
+            repository: "dotnet/runtime",
+            repositoryId: "wrong/repository",
+            repositoryType: "GitHub",
+            sourceBranch: "refs/pull/123/merge");
+
+        var source = AzdoService.ComputeHelixSource(build);
+
+        Assert.Equal("pr/public/dotnet/runtime/refs/pull/123/merge", source);
+    }
+
+    [Theory]
+    [InlineData("TfsGit")]
+    [InlineData(null)]
+    public void ComputeHelixSource_BlankNonGitHubName_DoesNotUseRepositoryId(string? repositoryType)
+    {
+        var build = MakeBuild(
+            reason: "individualCI",
+            project: "public",
+            repository: "",
+            repositoryId: "dotnet/runtime",
+            repositoryType: repositoryType,
+            sourceBranch: "refs/heads/main");
+
+        var source = AzdoService.ComputeHelixSource(build);
+
+        Assert.Equal("ci/public//refs/heads/main", source);
     }
 
     // ── official prefix (internal project) ──────────────────────────────────
@@ -287,6 +350,48 @@ public class GetHelixJobsOrchestrationTests
             .GetTimelineAsync("dnceng-public", "public", BuildId, Arg.Any<CancellationToken>());
         Assert.Equal(2, _azdo.ReceivedCalls().Count());
         Assert.Single(_helix.ReceivedCalls());
+    }
+
+    [Fact]
+    public async Task GetHelixJobsAsync_BlankGitHubName_UsesIdForPrimaryLookupWithoutTimelineFallback()
+    {
+        var primaryJobGuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        var fallbackJobGuid = "11111111-2222-3333-4444-555555555555";
+        var primarySummary = Summary(primaryJobGuid);
+        var build = TestBuild with
+        {
+            Reason = "pullRequest",
+            Repository = new AzdoBuildRepository
+            {
+                Name = " ",
+                Id = "dotnet/runtime",
+                Type = "gItHuB",
+            },
+            SourceBranch = "refs/pull/123/merge",
+        };
+        _azdo.GetBuildAsync("dnceng-public", "public", BuildId, Arg.Any<CancellationToken>())
+             .Returns(build);
+        _helix.ListJobsByBuildAsync(
+                "pr/public/dotnet/runtime/refs/pull/123/merge",
+                BuildIdStr,
+                100_000,
+                Arg.Any<CancellationToken>())
+              .Returns(Task.FromResult<IReadOnlyList<IHelixJobSummary>>([primarySummary]));
+        _azdo.GetTimelineAsync("dnceng-public", "public", BuildId, Arg.Any<CancellationToken>())
+             .Returns(TimelineWithOneJob(fallbackJobGuid));
+
+        var result = await _svc.GetHelixJobsAsync(BuildIdStr, filter: "all");
+
+        Assert.Equal("helix", result.Strategy);
+        Assert.Equal("pr/public/dotnet/runtime/refs/pull/123/merge", result.Source);
+        Assert.Single(result.Jobs);
+        Assert.Equal(primaryJobGuid, result.Jobs[0].HelixJobId);
+        Assert.DoesNotContain(result.Jobs, job => job.HelixJobId == fallbackJobGuid);
+        await _helix.Received(1).ListJobsByBuildAsync(
+            "pr/public/dotnet/runtime/refs/pull/123/merge",
+            BuildIdStr,
+            100_000,
+            Arg.Any<CancellationToken>());
     }
 
     // ── Helix 0-result: falls back to timeline scraping ─────────────────────
