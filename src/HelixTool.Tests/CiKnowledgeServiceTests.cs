@@ -643,6 +643,21 @@ public class CiKnowledgeServiceTests
     }
 
     [Fact]
+    public void GetOverview_DescribesPrimaryHelixFiltering()
+    {
+        var overview = CiKnowledgeService.GetOverview();
+
+        Assert.Contains("filter discovered jobs using AzDO timeline monitor failure evidence", overview);
+        Assert.Contains("`all` returns every discovered job", overview);
+        Assert.Contains("`pending` returns empty because primary summaries cannot distinguish pending", overview);
+        Assert.Contains("`FailedHelixJobs` counts evidence-backed jobs", overview);
+        Assert.Contains("`outcomeUnknownHelixJobs` counts returned jobs without that evidence", overview);
+        Assert.Contains("`failed`/`issues` return no jobs and `note` marks the result inconclusive", overview);
+        Assert.Contains("Monitor evidence can miss test-result-only failures", overview);
+        Assert.DoesNotContain("The requested filter is not applied on this path", overview);
+    }
+
+    [Fact]
     public void GetOverview_ContainsDevdivWarning()
     {
         // Option C: repo-specific routing details belong in the guide body, not the compact MCP description string.

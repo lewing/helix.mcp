@@ -402,6 +402,51 @@ public class AzdoHelixJobsTests
     }
 
     [Fact]
+    public async Task GetHelixJobsAsync_MonitorWarnings_DoNotBorrowSiblingConsoleUrl()
+    {
+        const string jobGuid = "68edfeae-1111-2222-3333-444444444444";
+        var message = $"""
+            Work item 'Unknown.dll' in job 'Label without a guid' failed (Failed).
+            Work item 'Known.dll' in job 'Known label ({jobGuid})' failed (Failed).
+            Console: https://helix.dot.net/api/2019-06-17/jobs/{jobGuid}/workitems/Known.dll/console
+            """;
+        SetupTimeline(CreateTestTimeline(
+            CreateRecord("task1", "Send to Helix", "Task", result: "failed",
+                issues: [new AzdoIssue { Type = "warning", Message = message }])));
+
+        var result = await _svc.GetHelixJobsAsync("42", filter: "failed");
+
+        var job = Assert.Single(result.Jobs);
+        Assert.Equal(jobGuid, job.HelixJobId);
+        Assert.Equal(["Known.dll"], job.FailedWorkItems);
+        Assert.Contains("Unknown.dll", Assert.Single(result.TimelineIssues!).Messages[0]);
+    }
+
+    [Fact]
+    public async Task GetHelixJobsAsync_MonitorFailureTree_UsesOnlyOwnConsoleChild()
+    {
+        const string firstGuid = "69edfeae-1111-2222-3333-444444444444";
+        const string secondGuid = "6aedfeae-1111-2222-3333-444444444444";
+        var message = $"""
+            Failed work item information:
+            ├─ A.dll (Job: Label without a guid) (Failed)
+            │  └─ Console: https://helix.dot.net/api/2019-06-17/jobs/{firstGuid}/workitems/A.dll/console
+            └─ B.dll (Job: Other label without a guid) (Failed)
+               └─ Console: https://helix.dot.net/api/2019-06-17/jobs/{secondGuid}/workitems/B.dll/console
+            """;
+        SetupTimeline(CreateTestTimeline(
+            CreateRecord("task1", "Send to Helix", "Task", result: "failed",
+                issues: [new AzdoIssue { Type = "error", Message = message }])));
+
+        var result = await _svc.GetHelixJobsAsync("42", filter: "failed");
+
+        Assert.Equal(["A.dll"],
+            Assert.Single(result.Jobs, job => job.HelixJobId == firstGuid).FailedWorkItems);
+        Assert.Equal(["B.dll"],
+            Assert.Single(result.Jobs, job => job.HelixJobId == secondGuid).FailedWorkItems);
+    }
+
+    [Fact]
     public async Task GetHelixJobsAsync_MonitorFailureTree_ParsesMultipleJobsAndIgnoresConsoleLines()
     {
         const string firstGuid = "77edfeae-1111-2222-3333-444444444444";

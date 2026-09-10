@@ -314,7 +314,7 @@ public sealed class AzdoMcpTools
      Description("Extract Helix job IDs from an Azure DevOps (AzDO) build. Start with an AzDO build ID/URL, then pass returned Helix job GUIDs to helix_* tools.")]
     public async Task<HelixJobsFromBuildResult> HelixJobs(
         [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
-        [Description("Filter: 'failed' (default), 'all', 'running', 'pending', 'incomplete', or 'issues'."), AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")] string filter = "failed")
+        [Description("Primary Helix filter: 'all' returns every discovered job; 'running' and 'incomplete' return jobs without Finished; 'pending' returns none; 'failed' (default) and 'issues' return jobs with parsed AzDO monitor failure evidence. Timeline fallback retains its task-based filtering."), AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")] string filter = "failed")
     {
         return await McpExceptionHandler.RunServiceCallAsync(
             () => _svc.GetHelixJobsAsync(buildIdOrUrl, filter),
