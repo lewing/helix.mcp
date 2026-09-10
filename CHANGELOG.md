@@ -8,6 +8,10 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+### `azdo_helix_jobs` — primary binding filters
+
+- The primary Helix strategy now binds parsed AzDO queue-monitor failure evidence to matching Helix jobs and applies all documented filters without per-job requests. Failure counts reflect attached evidence, unknown monitor IDs are disclosed but do not create synthetic rows, and unavailable timelines make failure filters explicitly inconclusive while preserving state-based filtering.
+
 ## [v0.10.1] — 2026-09-09
 
 ### `azdo_helix_jobs` — active queue-monitor evidence and GitHub source fallback

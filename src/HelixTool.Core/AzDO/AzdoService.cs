@@ -770,11 +770,7 @@ public class AzdoService
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex MonitorFailedWorkItemRegex = new(
-        @"Work item '(?<wi>[^']+)' in job '(?<job>[^']*)' failed \((?<state>[^)]*)\)",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-    private static readonly Regex MonitorFailureTreeLineRegex = new(
-        @"^\s*(?:├─|└─)\s*(?<wi>.*?) \(Job: (?<rest>.*)\) \((?<state>[^)]*)\)\s*$",
+        @"Work item '(?<wi>[^']+)' in job '(?<job>[^']*)' failed\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex JobGuidInTextRegex = new(
@@ -857,9 +853,8 @@ public class AzdoService
 
                 if (jobSummaries is { Count: > 0 })
                 {
-                    var result = BuildHelixResultFromJobSummaries(
-                        buildIdOrUrl, source, jobSummaries, filter);
                     AzdoTimeline? timeline;
+                    string? timelineUnavailableNote = null;
                     try
                     {
                         timeline = await _client.GetTimelineAsync(
@@ -867,50 +862,43 @@ public class AzdoService
                     }
                     catch (HttpRequestException ex) when (!ct.IsCancellationRequested)
                     {
-                        return result with
-                        {
-                            Note = AppendNote(result.Note,
-                                $"AzDO timeline issue evidence is unavailable: {ex.Message}")
-                        };
+                        timeline = null;
+                        timelineUnavailableNote =
+                            $"AzDO timeline issue evidence is unavailable: {ex.Message}";
                     }
                     catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
                     {
-                        return result with
-                        {
-                            Note = AppendNote(result.Note,
-                                $"AzDO timeline issue evidence is unavailable: {ex.Message}")
-                        };
+                        timeline = null;
+                        timelineUnavailableNote =
+                            $"AzDO timeline issue evidence is unavailable: {ex.Message}";
                     }
                     catch (JsonException ex) when (!ct.IsCancellationRequested)
                     {
-                        return result with
-                        {
-                            Note = AppendNote(result.Note,
-                                $"AzDO timeline issue evidence is unavailable: {ex.Message}")
-                        };
+                        timeline = null;
+                        timelineUnavailableNote =
+                            $"AzDO timeline issue evidence is unavailable: {ex.Message}";
                     }
                     catch (InvalidOperationException ex) when (!ct.IsCancellationRequested)
                     {
-                        return result with
+                        timeline = null;
+                        timelineUnavailableNote =
+                            $"AzDO timeline issue evidence is unavailable: {ex.Message}";
+                    }
+
+                    if (timeline is null && timelineUnavailableNote is null)
+                        timelineUnavailableNote = "AzDO timeline issue evidence is unavailable.";
+
+                    var result = BuildHelixResultFromJobSummaries(
+                        buildIdOrUrl, source, jobSummaries, filter, timeline);
+                    if (timelineUnavailableNote is not null)
+                    {
+                        result = result with
                         {
-                            Note = AppendNote(result.Note,
-                                $"AzDO timeline issue evidence is unavailable: {ex.Message}")
+                            Note = AppendNote(result.Note, timelineUnavailableNote)
                         };
                     }
 
-                    if (timeline is null)
-                    {
-                        return result with
-                        {
-                            Note = AppendNote(result.Note,
-                                "AzDO timeline issue evidence is unavailable.")
-                        };
-                    }
-
-                    return result with
-                    {
-                        TimelineIssues = BuildTimelineIssues(timeline)
-                    };
+                    return result;
                 }
 
                 // 0 results: fall through to timeline scraping.
@@ -933,22 +921,28 @@ public class AzdoService
         string buildIdOrUrl,
         string source,
         IReadOnlyList<IHelixJobSummary> jobSummaries,
-        string filter)
+        string filter,
+        AzdoTimeline? timeline)
     {
         var supersededNames = jobSummaries
             .Select(job => job.PreviousHelixJobName)
             .Where(name => !string.IsNullOrEmpty(name))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        var jobs = jobSummaries
+        var failedWorkItems = timeline is null
+            ? new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+            : ParseMonitorFailureEvidence(timeline);
+
+        var discoveredJobs = jobSummaries
             .Select(job =>
             {
                 var isCompleted = !string.IsNullOrEmpty(job.Finished);
+                failedWorkItems.TryGetValue(job.Name, out var items);
                 return new HelixJobFromBuild(
                     HelixJobId: job.Name,
                     ParentJobName: ResolveParentJobName(job),
                     Result: isCompleted ? "completed" : "running",
-                    FailedWorkItems: [])
+                    FailedWorkItems: items ?? [])
                 {
                     State = isCompleted ? "completed" : "running",
                     QueueId = job.QueueId,
@@ -958,25 +952,63 @@ public class AzdoService
             })
             .ToList();
 
+        var jobs = filter.ToLowerInvariant() switch
+        {
+            "all" => discoveredJobs,
+            "running" or "incomplete" => discoveredJobs
+                .Where(job => job.State == "running")
+                .ToList(),
+            "pending" => [],
+            "failed" or "issues" when timeline is null => [],
+            "failed" or "issues" => discoveredJobs
+                .Where(job => job.FailedWorkItems.Count > 0)
+                .ToList(),
+            _ => throw new ArgumentException(GetInvalidFilterMessage(filter), nameof(filter))
+        };
+
+        var failedCount = jobs.Count(job => job.FailedWorkItems.Count > 0);
         var notes = new List<string>
         {
             "Helix-side Result reports completion state, not pass/fail outcome."
         };
         if (!string.Equals(filter, "all", StringComparison.OrdinalIgnoreCase))
-            notes.Add($"filter='{filter}' is not applied on the Helix-side path; all {jobs.Count} job(s) for this build are returned. Use helix_status on individual job IDs to determine pass/fail.");
+        {
+            notes.Add(
+                $"filter='{filter}' discovered {discoveredJobs.Count} job(s); returned {jobs.Count}.");
+        }
+        if (timeline is null
+            && (filter.Equals("failed", StringComparison.OrdinalIgnoreCase)
+                || filter.Equals("issues", StringComparison.OrdinalIgnoreCase)))
+        {
+            notes.Add(
+                "The requested failure filter is inconclusive because AzDO timeline monitor evidence is unavailable.");
+        }
+        if (timeline is not null)
+        {
+            var discoveredIds = discoveredJobs
+                .Select(job => job.HelixJobId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var ignoredMonitorIds = failedWorkItems.Keys.Count(id => !discoveredIds.Contains(id));
+            if (ignoredMonitorIds > 0)
+            {
+                notes.Add(
+                    $"Ignored failure evidence for {ignoredMonitorIds} monitor job ID(s) not present in the Helix job list.");
+            }
+        }
         if (jobs.Any(job => job.State == "running"))
             notes.Add("The build is still in progress; Helix job outcomes remain unknown.");
 
         return new HelixJobsFromBuildResult(
             BuildId: buildIdOrUrl,
             TotalHelixJobs: jobs.Count,
-            FailedHelixJobs: 0,
+            FailedHelixJobs: failedCount,
             Jobs: jobs)
         {
             Note = string.Join(" ", notes),
             Source = source,
             Strategy = "helix",
-            OutcomeUnknownHelixJobs = jobs.Count
+            OutcomeUnknownHelixJobs = jobs.Count - failedCount,
+            TimelineIssues = timeline is null ? null : BuildTimelineIssues(timeline)
         };
     }
 
@@ -1062,40 +1094,11 @@ public class AzdoService
                     }
 
                     // Extract failed work item names and associate with their own job.
-                    foreach (Match wiMatch in FailedWorkItemRegex.Matches(issue.Message))
+                    foreach (var (jobId, workItemName) in
+                        ParseMonitorFailureEvidence(issue.Message))
                     {
-                        var workItemName = wiMatch.Groups[1].Value;
-                        var jobId = wiMatch.Groups[2].Value;
                         jobIds.Add(jobId);
                         AddFailedWorkItem(failedWorkItems, jobId, workItemName);
-                    }
-
-                    foreach (Match wiMatch in MonitorFailedWorkItemRegex.Matches(issue.Message))
-                    {
-                        var jobId = RecoverMonitorJobId(
-                            wiMatch.Groups["job"].Value, issue.Message);
-                        if (jobId is not null)
-                        {
-                            jobIds.Add(jobId);
-                            AddFailedWorkItem(
-                                failedWorkItems, jobId, wiMatch.Groups["wi"].Value);
-                        }
-                    }
-
-                    foreach (var line in issue.Message.Split('\n'))
-                    {
-                        var treeMatch = MonitorFailureTreeLineRegex.Match(line);
-                        if (!treeMatch.Success)
-                            continue;
-
-                        var jobId = RecoverMonitorJobId(
-                            treeMatch.Groups["rest"].Value, issue.Message);
-                        if (jobId is not null)
-                        {
-                            jobIds.Add(jobId);
-                            AddFailedWorkItem(
-                                failedWorkItems, jobId, treeMatch.Groups["wi"].Value);
-                        }
                     }
                 }
             }
@@ -1212,18 +1215,104 @@ public class AzdoService
     private static string AppendNote(string? note, string addition) =>
         string.IsNullOrWhiteSpace(note) ? addition : $"{note} {addition}";
 
-    private static string? RecoverMonitorJobId(string jobText, string message)
+    private static Dictionary<string, List<string>> ParseMonitorFailureEvidence(
+        AzdoTimeline timeline)
+    {
+        var failedWorkItems =
+            new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var message in timeline.Records
+            .SelectMany(record => record.Issues ?? [])
+            .Select(issue => issue.Message)
+            .Where(message => !string.IsNullOrEmpty(message)))
+        {
+            foreach (var (jobId, workItemName) in
+                ParseMonitorFailureEvidence(message!))
+            {
+                AddFailedWorkItem(failedWorkItems, jobId, workItemName);
+            }
+        }
+
+        return failedWorkItems;
+    }
+
+    private static IEnumerable<(string JobId, string WorkItemName)>
+        ParseMonitorFailureEvidence(string message)
+    {
+        foreach (Match match in FailedWorkItemRegex.Matches(message))
+            yield return (match.Groups[2].Value, match.Groups[1].Value);
+
+        var lines = message.Split('\n');
+        for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
+        {
+            foreach (Match match in MonitorFailedWorkItemRegex.Matches(lines[lineIndex]))
+            {
+                var jobId = RecoverMonitorJobId(
+                    match.Groups["job"].Value, lines, lineIndex);
+                if (jobId is not null)
+                    yield return (jobId, match.Groups["wi"].Value);
+            }
+
+            if (TryParseMonitorFailureTreeLine(
+                lines[lineIndex], out var workItemName, out var jobText))
+            {
+                var jobId = RecoverMonitorJobId(jobText, lines, lineIndex);
+                if (jobId is not null)
+                    yield return (jobId, workItemName);
+            }
+        }
+    }
+
+    private static string? RecoverMonitorJobId(
+        string jobText, string[] lines, int entryLineIndex)
     {
         var directMatch = JobGuidInTextRegex.Match(jobText);
         if (directMatch.Success)
             return directMatch.Value;
 
-        var messageJobIds = HelixJobIdRegex.Matches(message)
+        var consoleBlockLines = lines
+            .Skip(entryLineIndex + 1)
+            .TakeWhile(line => !IsMonitorFailureEntry(line))
+            .SkipWhile(line => !line.Contains("Console:", StringComparison.OrdinalIgnoreCase));
+        var consoleBlock = string.Join('\n', consoleBlockLines);
+        var consoleJobIds = HelixJobIdRegex.Matches(consoleBlock)
             .Select(match => match.Groups[1].Value)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(2)
             .ToList();
-        return messageJobIds.Count == 1 ? messageJobIds[0] : null;
+        return consoleJobIds.Count == 1 ? consoleJobIds[0] : null;
+    }
+
+    private static bool IsMonitorFailureEntry(string line) =>
+        MonitorFailedWorkItemRegex.IsMatch(line)
+        || TryParseMonitorFailureTreeLine(line, out _, out _);
+
+    private static bool TryParseMonitorFailureTreeLine(
+        string line, out string workItemName, out string jobText)
+    {
+        const string jobMarker = " (Job: ";
+        var markerIndex = line.IndexOf(jobMarker, StringComparison.OrdinalIgnoreCase);
+        if (markerIndex < 0)
+        {
+            workItemName = "";
+            jobText = "";
+            return false;
+        }
+
+        workItemName = line[..markerIndex].Trim();
+        if (workItemName.StartsWith("├─", StringComparison.Ordinal)
+            || workItemName.StartsWith("└─", StringComparison.Ordinal))
+        {
+            workItemName = workItemName[2..].Trim();
+        }
+        else
+        {
+            jobText = "";
+            return false;
+        }
+
+        jobText = line[(markerIndex + jobMarker.Length)..];
+        return workItemName.Length > 0;
     }
 
     private static void AddFailedWorkItem(

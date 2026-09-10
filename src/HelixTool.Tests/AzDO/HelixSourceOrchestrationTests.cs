@@ -260,13 +260,92 @@ public class GetHelixJobsOrchestrationTests
         SourceBranch = "refs/heads/main",
     };
 
-    private static IHelixJobSummary Summary(string name, string? finished = null)
+    private static IHelixJobSummary Summary(
+        string name,
+        string? finished = null,
+        string? previousJobName = null)
     {
         var summary = Substitute.For<IHelixJobSummary>();
         summary.Name.Returns(name);
         summary.Finished.Returns(finished);
+        summary.PreviousHelixJobName.Returns(previousJobName);
         return summary;
     }
+
+    private static IReadOnlyList<IHelixJobSummary> Build1590167Summaries()
+    {
+        const string failedJobId = "d170b0c9-c2f8-4b79-878b-f371c7f155f9";
+        var summaries = new List<IHelixJobSummary>
+        {
+            Summary(failedJobId, "2026-09-09T12:00:00Z")
+        };
+        summaries.AddRange(Enumerable.Range(1, 47).Select(index =>
+            Summary(
+                $"00000000-0000-0000-0000-{index:D12}",
+                "2026-09-09T12:00:00Z",
+                index == 1 ? failedJobId : null)));
+        return summaries;
+    }
+
+    private static AzdoTimeline Build1590167Timeline() =>
+        new()
+        {
+            Id = "1590167-timeline",
+            Records =
+            [
+                new AzdoTimelineRecord
+                {
+                    Id = "monitor", Name = "Monitor Helix Jobs", Type = "Task",
+                    State = "completed", Result = "failed",
+                    Issues =
+                    [
+                        new AzdoIssue
+                        {
+                            Type = "error",
+                            Message = """
+                                Work item 'GC-scenarios1' in job 'GC scenarios (d170b0c9-c2f8-4b79-878b-f371c7f155f9)' failed (Failed (AzDO tests)).
+                                Console: no console link available
+                                """
+                        },
+                        new AzdoIssue
+                        {
+                            Type = "warning",
+                            Message = """
+                                Failed work item information:
+                                └─ warning-tree-item (Job: GC scenarios (d170b0c9-c2f8-4b79-878b-f371c7f155f9)) (Failed)
+                                   └─ Console: no console link available
+                                """
+                        }
+                    ]
+                },
+                new AzdoTimelineRecord
+                {
+                    Id = "send", Name = "Send to Helix", Type = "Task",
+                    State = "completed", Result = "succeeded",
+                    Issues =
+                    [
+                        new AzdoIssue
+                        {
+                            Type = "warning",
+                            Message = "Helix job started: https://helix.dot.net/api/2019-06-17/jobs/00000000-0000-0000-0000-000000000002/details"
+                        }
+                    ]
+                },
+                new AzdoTimelineRecord
+                {
+                    Id = "unrelated", Name = "Publish diagnostics", Type = "Task",
+                    State = "completed", Result = "succeeded",
+                    Issues =
+                    [
+                        new AzdoIssue
+                        {
+                            Type = "warning",
+                            Message = "Unrelated timeline warning."
+                        }
+                    ]
+                }
+            ]
+        };
 
     // Timeline that yields one Helix job (for the fallback assertions).
     private static AzdoTimeline TimelineWithOneJob(string jobGuid) =>
@@ -479,18 +558,160 @@ public class GetHelixJobsOrchestrationTests
         Assert.NotNull(result.Note);
         Assert.Contains("filter='failed'", result.Note, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("pass/fail", result.Note, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("still in progress", result.Note, StringComparison.OrdinalIgnoreCase);
 
         Assert.Equal(0, result.FailedHelixJobs);
-        Assert.Equal(1, result.OutcomeUnknownHelixJobs);
-
-        Assert.Equal("running", result.Jobs[0].Result);
-        Assert.Equal("running", result.Jobs[0].State);
-        Assert.Empty(result.Jobs[0].FailedWorkItems);
-        Assert.Empty(result.Jobs[0].ParentJobName);
+        Assert.Equal(0, result.OutcomeUnknownHelixJobs);
+        Assert.Empty(result.Jobs);
 
         await _azdo.Received(1)
             .GetTimelineAsync("dnceng-public", "public", BuildId, Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData("all", 48, 1, 47)]
+    [InlineData("failed", 1, 1, 0)]
+    [InlineData("issues", 1, 1, 0)]
+    [InlineData("running", 0, 0, 0)]
+    [InlineData("incomplete", 0, 0, 0)]
+    [InlineData("pending", 0, 0, 0)]
+    public async Task GetHelixJobsAsync_PrimaryFilters_ModelBuild1590167(
+        string filter,
+        int expectedTotal,
+        int expectedFailed,
+        int expectedUnknown)
+    {
+        const string failedJobId = "d170b0c9-c2f8-4b79-878b-f371c7f155f9";
+        var summaries = Build1590167Summaries();
+        _helix.ListJobsByBuildAsync(
+                Arg.Any<string>(), BuildIdStr, Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(summaries));
+        _azdo.GetTimelineAsync("dnceng-public", "public", BuildId, Arg.Any<CancellationToken>())
+            .Returns(Build1590167Timeline());
+
+        var result = await _svc.GetHelixJobsAsync(BuildIdStr, filter);
+
+        Assert.Equal("helix", result.Strategy);
+        Assert.Equal(expectedTotal, result.TotalHelixJobs);
+        Assert.Equal(expectedFailed, result.FailedHelixJobs);
+        Assert.Equal(expectedUnknown, result.OutcomeUnknownHelixJobs);
+        Assert.Contains(result.TimelineIssues!,
+            issue => issue.Messages.Contains("Unrelated timeline warning."));
+
+        if (filter is "all" or "failed" or "issues")
+        {
+            var failedJob = Assert.Single(result.Jobs,
+                job => job.HelixJobId == failedJobId);
+            Assert.Equal(["GC-scenarios1", "warning-tree-item"], failedJob.FailedWorkItems);
+            Assert.Equal("completed", failedJob.State);
+            Assert.Equal("completed", failedJob.Result);
+            Assert.True(failedJob.Superseded);
+            Assert.Equal(failedJobId,
+                filter == "all" ? result.Jobs[0].HelixJobId : Assert.Single(result.Jobs).HelixJobId);
+        }
+
+        if (filter != "all")
+        {
+            Assert.Contains($"filter='{filter}'", result.Note,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("discovered 48", result.Note,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Contains($"returned {expectedTotal}", result.Note,
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        await _azdo.Received(1).GetBuildAsync(
+            "dnceng-public", "public", BuildId, Arg.Any<CancellationToken>());
+        await _helix.Received(1).ListJobsByBuildAsync(
+            "ci/public/dotnet/runtime/refs/heads/main",
+            BuildIdStr,
+            100_000,
+            Arg.Any<CancellationToken>());
+        await _azdo.Received(1).GetTimelineAsync(
+            "dnceng-public", "public", BuildId, Arg.Any<CancellationToken>());
+        Assert.Equal(2, _azdo.ReceivedCalls().Count());
+        Assert.Single(_helix.ReceivedCalls());
+    }
+
+    [Fact]
+    public async Task GetHelixJobsAsync_PrimaryUnknownMonitorJob_IsIgnoredWithoutSyntheticRow()
+    {
+        const string knownJobId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        const string unknownJobId = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
+        IReadOnlyList<IHelixJobSummary> summaries =
+            [Summary(knownJobId, "2026-09-09T12:00:00Z")];
+        _helix.ListJobsByBuildAsync(
+                Arg.Any<string>(), BuildIdStr, Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(summaries));
+        _azdo.GetTimelineAsync("dnceng-public", "public", BuildId, Arg.Any<CancellationToken>())
+            .Returns(new AzdoTimeline
+            {
+                Records =
+                [
+                    new AzdoTimelineRecord
+                    {
+                        Id = "monitor", Name = "Monitor Helix Jobs", Type = "Task",
+                        Issues =
+                        [
+                            new AzdoIssue
+                            {
+                                Type = "error",
+                                Message = $"Work item 'Unknown.dll' in job 'Unknown ({unknownJobId})' failed (Failed)."
+                            }
+                        ]
+                    }
+                ]
+            });
+
+        var result = await _svc.GetHelixJobsAsync(BuildIdStr, filter: "all");
+
+        var job = Assert.Single(result.Jobs);
+        Assert.Equal(knownJobId, job.HelixJobId);
+        Assert.Empty(job.FailedWorkItems);
+        Assert.Equal(0, result.FailedHelixJobs);
+        Assert.Equal(1, result.OutcomeUnknownHelixJobs);
+        Assert.Contains("Ignored failure evidence for 1 monitor job ID", result.Note,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GetHelixJobsAsync_PrimaryMonitorEntries_DoNotBorrowSiblingConsoleUrl()
+    {
+        const string knownJobId = "abababab-bbbb-cccc-dddd-eeeeeeeeeeee";
+        IReadOnlyList<IHelixJobSummary> summaries =
+            [Summary(knownJobId, "2026-09-09T12:00:00Z")];
+        _helix.ListJobsByBuildAsync(
+                Arg.Any<string>(), BuildIdStr, Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(summaries));
+        _azdo.GetTimelineAsync("dnceng-public", "public", BuildId, Arg.Any<CancellationToken>())
+            .Returns(new AzdoTimeline
+            {
+                Records =
+                [
+                    new AzdoTimelineRecord
+                    {
+                        Id = "monitor", Name = "Monitor Helix Jobs", Type = "Task",
+                        Issues =
+                        [
+                            new AzdoIssue
+                            {
+                                Type = "warning",
+                                Message = $"""
+                                    Work item 'Unknown.dll' in job 'Label without a guid' failed (Failed).
+                                    Work item 'Known.dll' in job 'Known ({knownJobId})' failed (Failed).
+                                    Console: https://helix.dot.net/api/2019-06-17/jobs/{knownJobId}/workitems/Known.dll/console
+                                    """
+                            }
+                        ]
+                    }
+                ]
+            });
+
+        var result = await _svc.GetHelixJobsAsync(BuildIdStr, filter: "failed");
+
+        var job = Assert.Single(result.Jobs);
+        Assert.Equal(knownJobId, job.HelixJobId);
+        Assert.Equal(["Known.dll"], job.FailedWorkItems);
+        Assert.Contains("Unknown.dll", Assert.Single(result.TimelineIssues!).Messages[0]);
     }
 
     [Fact]
@@ -574,7 +795,7 @@ public class GetHelixJobsOrchestrationTests
         _azdo.GetTimelineAsync("dnceng-public", "public", BuildId, Arg.Any<CancellationToken>())
              .ThrowsAsync(new HttpRequestException("timeline offline"));
 
-        var result = await _svc.GetHelixJobsAsync(BuildIdStr);
+        var result = await _svc.GetHelixJobsAsync(BuildIdStr, filter: "all");
 
         Assert.Equal("helix", result.Strategy);
         Assert.Single(result.Jobs);
@@ -597,7 +818,7 @@ public class GetHelixJobsOrchestrationTests
         _azdo.GetTimelineAsync("dnceng-public", "public", BuildId, Arg.Any<CancellationToken>())
              .ThrowsAsync(timelineFailure);
 
-        var result = await _svc.GetHelixJobsAsync(BuildIdStr);
+        var result = await _svc.GetHelixJobsAsync(BuildIdStr, filter: "all");
 
         Assert.Equal("helix", result.Strategy);
         Assert.Single(result.Jobs);
@@ -618,6 +839,46 @@ public class GetHelixJobsOrchestrationTests
         new JsonException("invalid timeline JSON"),
         new InvalidOperationException("Network blocked: eval mode. Cache key not found in snapshot.")
     };
+
+    [Theory]
+    [InlineData("all", 1)]
+    [InlineData("running", 1)]
+    [InlineData("incomplete", 1)]
+    [InlineData("pending", 0)]
+    [InlineData("failed", 0)]
+    [InlineData("issues", 0)]
+    public async Task GetHelixJobsAsync_PrimaryTimelineUnavailable_AppliesConclusiveFilters(
+        string filter,
+        int expectedTotal)
+    {
+        var summary = Summary("12345678-1234-1234-1234-123456789abc");
+        _helix.ListJobsByBuildAsync(
+                Arg.Any<string>(), BuildIdStr, Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<IHelixJobSummary>>([summary]));
+        _azdo.GetTimelineAsync("dnceng-public", "public", BuildId, Arg.Any<CancellationToken>())
+            .ThrowsAsync(new HttpRequestException("timeline offline"));
+
+        var result = await _svc.GetHelixJobsAsync(BuildIdStr, filter);
+
+        Assert.Equal(expectedTotal, result.TotalHelixJobs);
+        Assert.Equal(0, result.FailedHelixJobs);
+        Assert.Equal(expectedTotal, result.OutcomeUnknownHelixJobs);
+        Assert.Null(result.TimelineIssues);
+        Assert.Contains("timeline issue evidence is unavailable", result.Note,
+            StringComparison.OrdinalIgnoreCase);
+        if (filter is "failed" or "issues")
+        {
+            Assert.Empty(result.Jobs);
+            Assert.Contains("inconclusive", result.Note,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        else if (expectedTotal == 1)
+        {
+            var job = Assert.Single(result.Jobs);
+            Assert.Equal("running", job.State);
+            Assert.Equal("running", job.Result);
+        }
+    }
 
     [Fact]
     public async Task GetHelixJobsAsync_PrimaryTimelineCallerCancellation_TakesPrecedenceWithoutRediscovery()
