@@ -328,6 +328,62 @@ List attachments for a test result (screenshots, logs, dumps).
 hlx azdo test-attachments 98765 1234
 ```
 
+## Snapshot Commands
+
+### `hlx snapshot export <destination>`
+
+Export the current cache as an offline eval snapshot. The snapshot preserves cache keys and can be replayed in eval mode (see `HLX_EVAL_SNAPSHOT` below).
+
+```bash
+hlx snapshot export /tmp/my-snapshot
+```
+
+The command prints:
+- Source cache location
+- Destination path
+- Auth-scoped replay limitation (see below)
+- Final summary with destination, database size, artifact count, and usage instructions
+
+**Usage in eval mode:**
+
+```bash
+HLX_EVAL_SNAPSHOT=/tmp/my-snapshot hlx status <jobId>
+HLX_EVAL_SNAPSHOT=/tmp/my-snapshot hlx azdo test-results <buildId> <runId>
+```
+
+**Auth-scoped replay limitation:**
+
+The snapshot preserves all cache keys unchanged. When replayed in eval mode:
+
+- **Environment-keyed entries** (auth via `AZDO_TOKEN`): Reproducible. Set `AZDO_TOKEN` to the same PAT/Entra token and `AZDO_TOKEN_TYPE` to the same classification value for reliable replay.
+- **Anonymous/public entries**: Always reproducible without credentials.
+- **Azure CLI credential partitions** (`AzureCliCredential` or `az` CLI-derived identity): Not reproducible in eval mode because eval mode has an environment-only token accessor. To replay with `az` CLI auth, first export a snapshot using `AZDO_TOKEN` instead of `az login`.
+
+### `hlx snapshot validate <snapshotPath>`
+
+Validate a snapshot directory for use with `HLX_EVAL_SNAPSHOT`. Checks:
+- Single-link SQLite database ownership (no hard-link aliases)
+- Database integrity and schema version
+- SQLite sidecar absence (`-wal`, `-shm`, `-journal` files)
+- Artifact references and file sizes
+
+```bash
+hlx snapshot validate /tmp/my-snapshot
+```
+
+Exit codes:
+- `0` — Snapshot is VALID
+- `1` — Errors found (INVALID)
+
+Output includes:
+- Warnings (if any) — informational issues that don't block usage
+- Errors (if any) — validation failures
+- Metadata entry count
+- Artifact entry count
+- Missing artifact files count
+
+**Intended workflow:** `snapshot export` → `snapshot validate` → offline run with `HLX_EVAL_SNAPSHOT`.
+
 ## Utility Commands
 
 | Command | Description |
@@ -343,6 +399,8 @@ hlx azdo test-attachments 98765 1234
 |----------|---------|
 | `HELIX_ACCESS_TOKEN` | Helix API token (overrides stored credential) |
 | `AZDO_TOKEN` | Azure DevOps PAT (overrides Azure CLI auth) |
+| `AZDO_TOKEN_TYPE` | Classification of the AZDO_TOKEN value. Used to distinguish PAT, JWT, and Entra token types. When replaying snapshots, set to the same value as the export session to ensure auth-scoped key classification is preserved. |
+| `HLX_EVAL_SNAPSHOT` | Path to a snapshot directory (created with `hlx snapshot export`) for offline replay mode. When set, hlx loads the snapshot's cached data instead of making live API calls. Overrides all cache configuration and auth. |
 | `HLX_CACHE_MAX_SIZE_MB` | Max cache size in MB (default: 1024, set to `0` to disable) |
 | `HLX_DISABLE_FILE_SEARCH` | Set to `true` to disable file content search tools |
 | `HLX_API_KEY` | Require API key for HTTP MCP server access |

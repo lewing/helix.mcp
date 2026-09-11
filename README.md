@@ -86,6 +86,18 @@ hlx cache status   # Show cache size, entry count, oldest/newest entries
 hlx cache clear    # Wipe all cached data
 ```
 
+### Offline Snapshots
+
+Export the current cache as a portable snapshot for offline replay, testing, or reproducible scenarios:
+
+```bash
+hlx snapshot export /tmp/my-snapshot         # Create snapshot
+hlx snapshot validate /tmp/my-snapshot       # Verify integrity
+HLX_EVAL_SNAPSHOT=/tmp/my-snapshot hlx status <jobId>  # Use snapshot
+```
+
+Snapshots preserve all cached data and artifact files. When `HLX_EVAL_SNAPSHOT` is set, `hlx` runs entirely offline against the snapshot's SQLite database. See the [CLI reference](docs/cli-reference.md#snapshot-commands) for auth-scoped replay limitations and the complete workflow.
+
 ## MCP Tools
 
 ### Helix Tools (9)
