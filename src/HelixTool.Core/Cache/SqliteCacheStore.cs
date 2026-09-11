@@ -65,7 +65,13 @@ public sealed class SqliteCacheStore : ICacheStore
             // task is retained (not fire-and-forget) so it can be canceled, joined, and its
             // fault observed in Dispose().
             var asOf = DateTimeOffset.UtcNow;
-            StartupMaintenance = Task.Run(() => EvictExpiredAsync(asOf, _maintenanceCts.Token));
+            // Capture the token now, on this thread — not inside the lambda, where the
+            // `.Token` getter would run only once the queued work item actually starts. If
+            // Dispose's bounded join times out and disposes the CTS before that happens,
+            // reading `.Token` late would throw ObjectDisposedException instead of the
+            // canceled token this pass needs to observe.
+            var maintenanceToken = _maintenanceCts.Token;
+            StartupMaintenance = Task.Run(() => EvictExpiredAsync(asOf, maintenanceToken));
         }
     }
 
