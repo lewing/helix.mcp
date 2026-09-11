@@ -510,8 +510,8 @@ public class SqliteCacheStoreConcurrencyTests : IDisposable
 
             store.Dispose();
 
-            // Dispose() cancels then joins before ClearAllPools() — by the time it
-            // returns, no untracked work can still be running.
+            // Dispose() cancels then joins before the scoped ClearPool(poolHandle) —
+            // by the time it returns, no untracked work can still be running.
             Assert.True(maintenance.IsCompleted);
 
             // Deterministic proof the database itself is not held open by anything:

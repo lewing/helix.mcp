@@ -310,8 +310,8 @@ public sealed class SqliteCacheStore : ICacheStore
             // Only reached without cleanup on the success path (published == true), where the
             // primitive above already consumed/renamed tempPath. On any failure path, tempPath
             // still holds the only copy of the new bytes and would otherwise leak — remove it,
-            // narrowly catching just the expected file-system cleanup failures (matches
-            // DeleteArtifactRows' precedent) so an unrelated cleanup error cannot be confused with
+            // narrowly catching just IOException and UnauthorizedAccessException — the expected
+            // file-system cleanup failures — so an unrelated cleanup error cannot be confused with
             // the primary failure, which continues to propagate unmodified out of this finally.
             if (!published)
             {
