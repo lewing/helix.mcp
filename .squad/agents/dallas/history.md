@@ -862,3 +862,30 @@ Recording the omission as deliberate, same as the 2026-09-04 review.
 **Outcome:** Design accepted. R1 (Ripley, `SqliteCacheStore.cs` only), L1 (Lambert, four test
 files), K1 (Kane, CHANGELOG `[Unreleased]` only) may begin. Nine reject-on-sight conditions
 recorded for my merge review.
+
+## 2026-09-11: Pre-fix evidence and regression coverage review — pool scope & artifact source (#130) (completed)
+
+Conducted sync merge-gate review of Ripley's artifact-source FileShare seam and Lambert's pre-fix regression coverage. No production or test file touched; Release build maintained 0 Warning(s)/0 Error(s).
+
+**Ripley's Seam (Artifact-Source FileShare Constant):**
+- Added `private const FileShare ArtifactSourceFileShare = FileShare.Read;` in `SnapshotExporter.cs`
+- Replaced inline `FileShare.Read` literal with constant reference — behavior-neutral naming seam
+- Value unchanged; defers `FileShare.Read | FileShare.Delete` fix to dedicated fix-step commit
+- Allows Lambert's Windows discriminator test to compile now and fail pre-fix
+
+**Lambert's Pre-Fix Regression Coverage (7 new facts):**
+- `SqliteCacheStoreConcurrencyTests`: independent-roots pool-scope discriminator (Windows-only defect observable)
+- `SnapshotExportTests`: concurrent artifact overwrite while exporter holds source handle (Windows share-policy defect observable); concurrent eval-mode validator read (positive regression baseline)
+- `WindowsOnlyFactAttribute`: reusable platform-specific test marker
+- `AzdoEvidenceSurfaceTests`: manual pool-clear cleanup call removal
+- Validation: 187 passed, 7 skipped (Windows-only facts on Unix), 0 failed; full suite baseline maintained (1981 passed, 8 skipped, 0 failed)
+
+**Architecture Verified:**
+- One-PR design: scoped `ClearPool` fix + permissive source-share fix
+- No retries, no serialization; pure deterministic isolation via scope boundary
+- Both defects now observable in pre-fix tests on Windows CI; production fixes will make tests green
+
+**Rework Requested:** None
+
+**Status:** COMPLETED
+**Outcome:** APPROVED with no blocking findings. Seam and pre-fix tests complete and ready to merge. Production fixes themselves land in follow-up commits.
