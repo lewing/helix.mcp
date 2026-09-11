@@ -109,6 +109,33 @@
 
 ---
 
+## Snapshot Export/Validate Discoverability (2026-09-11)
+
+**Task:** Close discoverability gap for snapshotting. The feature existed (SnapshotCommands.cs, SnapshotExporter.cs, SnapshotValidator.cs) but had zero documentation.
+
+**Workflow documented:**
+- **Export:** `hlx snapshot export <destination>` — exports cache to portable SQLite snapshot with artifact files. Prints auth-scoped replay limitation warning and usage instructions with `HLX_EVAL_SNAPSHOT`.
+- **Validate:** `hlx snapshot validate <snapshotPath>` — checks SQLite integrity, schema version, single-link requirement (no hard-link aliases), and artifact references. Exit 0 (valid) or 1 (invalid) with detailed diagnostics.
+- **Replay:** Set `HLX_EVAL_SNAPSHOT=/path/to/snapshot hlx <command>` for offline evaluation (no network calls).
+- **Auth semantics:** Environment-keyed entries (via AZDO_TOKEN) reproducible with matching token+AZDO_TOKEN_TYPE classification. Anonymous/public entries always reproducible. AzureCliCredential/az CLI-derived partitions not reproducible in eval mode.
+
+**Changes:**
+1. **docs/cli-reference.md:** Added "Snapshot Commands" section (two subsections: export, validate) covering parameters, semantics, exit codes, and intended workflow. Moved "Utility Commands" table below. Added `HLX_EVAL_SNAPSHOT` and `AZDO_TOKEN_TYPE` to Environment Variables table with full descriptions.
+2. **CHANGELOG.md:** Added entry under [Unreleased] titled "Snapshot export and validation for offline replay mode" with feature summary, use cases, auth-scoped replay semantics, and snapshot layout details.
+3. **README.md:** Added "Offline Snapshots" subsection under "Cross-Process Caching" with code example and link to full CLI reference. Maintains concise cross-reference pattern.
+
+**Key design decisions:**
+- Exact CLI syntax derived from SnapshotCommands.cs [Command] attributes, not guessed.
+- Auth limitation doc mirrors SnapshotCommands.cs export command's Console.Error.WriteLine blocks (the source of truth for user-facing limitation messaging).
+- Snapshot layout description from SnapshotValidator.cs/SnapshotExporter.cs checks: cache.db requires single-link ownership (no aliases), artifacts/ optional, sidecars forbidden.
+- Exit code table matches implementation: exit 0 = valid, exit 1 = errors.
+- AZDO_TOKEN_TYPE added to environment table as it's foundational to auth-scoped key classification in replay mode.
+- README callout stays concise and defers detailed reference to docs/cli-reference.md (consistent with investigation-path and cross-reference patterns).
+
+**Completeness:** Feature is now discoverable via CLI reference, searchable in README, and properly versioned in unreleased changelog.
+
+---
+
 ## Prior Work Archive
 
 See `.squad/agents/kane/history-archive.md` for detailed work on:
