@@ -1457,18 +1457,27 @@ public class SnapshotExporterTests : IDisposable
     // no Task.Delay/Thread.Sleep/SpinWait, no retry-until-pass.
     // =========================================================================
 
-    [Fact]
-    public async Task SetArtifactAsync_WhileArtifactOpenWithExporterSourceShare_TrulyReplacesContentAndFileSize()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SetArtifactAsync_WhileArtifactOpenByConcurrentHolder_TrulyReplacesContentAndFileSize(
+        bool useExporterSourceShare)
     {
-        // Regression for the exporter's live-source share policy: opens the artifact
-        // with the exact share flags CopyArtifactAsync uses, then overwrites the same
-        // cache key while that handle remains open. Passes on Unix under POSIX
-        // rename/unlink semantics. Expected RED on Windows while
-        // ArtifactSourceFileShare == FileShare.Read: SetArtifactAsync's
-        // File.Move(..., overwrite: true) can fail with a sharing violation there, and
-        // its catch (IOException or UnauthorizedAccessException) silently drops the
-        // write rather than throwing — so the assertions below would observe the
-        // original bytes/size instead of the replacement.
+        // Regression covering both concurrent-holder share modes that can keep the
+        // live artifact file open while SetArtifactAsync replaces it: the exporter's
+        // ArtifactSourceFileShare (Read | Delete) and a normal GetArtifactAsync reader
+        // (ReadWrite | Delete). FileShare.Delete alone only permits the *original*
+        // file to be unlinked/evicted out from under a reader — it does not, by
+        // itself, guarantee that a plain rename-over-existing-destination can still
+        // atomically replace that path while a handle remains open. SetArtifactAsync
+        // therefore selects its publication primitive up front from destination
+        // existence: File.Move(..., overwrite: true) for first writes (destination
+        // absent) and File.Replace for an existing destination — ReplaceFile's own
+        // contract opens the destination with
+        // FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, so it succeeds against
+        // both holder modes exercised here and still swaps the destination's identity
+        // atomically. Passes on Unix under POSIX rename/unlink semantics and on
+        // Windows via that File.Replace primitive.
         var workspace = Workspace("artifact-source-share-replace");
         var opts = new CacheOptions { CacheRoot = Path.Combine(workspace, "cache-home") };
         using var store = new SqliteCacheStore(opts);
@@ -1483,12 +1492,16 @@ public class SnapshotExporterTests : IDisposable
         var artifactPath = Assert.Single(
             Directory.EnumerateFiles(artifactsDir, "*", SearchOption.AllDirectories));
 
+        var holderShare = useExporterSourceShare
+            ? SnapshotExporter.ArtifactSourceFileShare
+            : FileShare.ReadWrite | FileShare.Delete;
+
         var replacement = new byte[] { 0xB, 0xB, 0xB, 0xB, 0xB };
         await using (new FileStream(
             artifactPath,
             FileMode.Open,
             FileAccess.Read,
-            SnapshotExporter.ArtifactSourceFileShare,
+            holderShare,
             bufferSize: 4096,
             FileOptions.None))
         {

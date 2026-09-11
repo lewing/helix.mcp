@@ -280,15 +280,51 @@ public sealed class SqliteCacheStore : ICacheStore
         var tempPath = fullPath + $".tmp.{Guid.NewGuid():N}";
         await using (var fs = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
             await content.CopyToAsync(fs, ct);
+
+        // Choose the publication primitive up front from destination existence — no
+        // exception-driven retry between the two:
+        //   - Absent: File.Move keeps the original atomic create/rename behavior.
+        //   - Present: File.Replace (Win32 ReplaceFile) is required instead. Per its documented
+        //     contract it opens the destination itself with
+        //     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, so — unlike
+        //     File.Move(overwrite: true)'s MoveFileEx/MOVEFILE_REPLACE_EXISTING, which can fail
+        //     with a Windows sharing violation against an open destination even when the opener
+        //     used FileShare.Read|Delete or FileShare.ReadWrite|Delete (SnapshotExporter's and
+        //     GetArtifactAsync's own share flags) — it still succeeds and atomically swaps the
+        //     destination's identity to tempPath's bytes while those readers keep their handle.
+        // Neither call is caught here: a failure must propagate immediately so the method exits
+        // before the file-size read, the cache_artifacts write, and the eviction pass below —
+        // never recording a success row for a publication that didn't happen.
+        var destinationExisted = File.Exists(fullPath);
+        var published = false;
         try
         {
-            File.Move(tempPath, fullPath, overwrite: true);
+            if (destinationExisted)
+                File.Replace(tempPath, fullPath, destinationBackupFileName: null);
+            else
+                File.Move(tempPath, fullPath, overwrite: true);
+            published = true;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        finally
         {
-            // On Windows, Move/overwrite can fail if the target is locked by a concurrent reader.
-            // The temp file has the correct data — just leave it and retry cleanup later.
-            try { File.Delete(tempPath); } catch { /* best effort */ }
+            // Only reached without cleanup on the success path (published == true), where the
+            // primitive above already consumed/renamed tempPath. On any failure path, tempPath
+            // still holds the only copy of the new bytes and would otherwise leak — remove it,
+            // narrowly catching just the expected file-system cleanup failures (matches
+            // DeleteArtifactRows' precedent) so an unrelated cleanup error cannot be confused with
+            // the primary failure, which continues to propagate unmodified out of this finally.
+            if (!published)
+            {
+                try
+                {
+                    File.Delete(tempPath);
+                }
+                catch (Exception cleanupEx) when (cleanupEx is IOException or UnauthorizedAccessException)
+                {
+                    // Best-effort: an orphaned temp file is preferable to masking the real
+                    // publication failure that is already propagating out of this method.
+                }
+            }
         }
 
         var fileSize = new FileInfo(fullPath).Length;
