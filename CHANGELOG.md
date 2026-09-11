@@ -8,6 +8,12 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+### SQLite cache store isolation and snapshot export concurrency (#130)
+
+- **Cache store disposal:** Disposing a SQLite cache store no longer clears unrelated connection-string pools. Scoped pool clearing now affects only the disposing store's pool group, preventing interference with independent cache roots and auth/eval store instances.
+- **Snapshot export:** Snapshot exporter now opens live artifact source files with `FileShare.Read | FileShare.Delete` semantics, permitting concurrent eviction and deletion while the exporter continues reading.
+- **Cache artifact replacement:** `SqliteCacheStore.SetArtifactAsync` now uses atomic file replacement and surfaces operation failures instead of reporting success when replacement fails. Replacement succeeds while readers holding delete-sharing handles keep reading old bytes, then swaps visibility atomically.
+
 ### Startup cache maintenance — tracked and deterministic lifecycle
 
 Cache store now tracks its startup maintenance task and cancels/joins it on disposal. The startup pass captures its time-of-open and evicts only entries already stale at that moment, eliminating a race where entries written after the store opened could be incorrectly deleted (#129).

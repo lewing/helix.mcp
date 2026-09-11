@@ -862,3 +862,56 @@ Recording the omission as deliberate, same as the 2026-09-04 review.
 **Outcome:** Design accepted. R1 (Ripley, `SqliteCacheStore.cs` only), L1 (Lambert, four test
 files), K1 (Kane, CHANGELOG `[Unreleased]` only) may begin. Nine reject-on-sight conditions
 recorded for my merge review.
+
+## 2026-09-11: Pre-fix evidence and regression coverage review — pool scope & artifact source (#130) (completed)
+
+Conducted sync merge-gate review of Ripley's artifact-source FileShare seam and Lambert's pre-fix regression coverage. No production or test file touched; Release build maintained 0 Warning(s)/0 Error(s).
+
+**Ripley's Seam (Artifact-Source FileShare Constant):**
+- Added `private const FileShare ArtifactSourceFileShare = FileShare.Read;` in `SnapshotExporter.cs`
+- Replaced inline `FileShare.Read` literal with constant reference — behavior-neutral naming seam
+- Value unchanged; defers `FileShare.Read | FileShare.Delete` fix to dedicated fix-step commit
+- Allows Lambert's Windows discriminator test to compile now and fail pre-fix
+
+**Lambert's Pre-Fix Regression Coverage (7 new facts):**
+- `SqliteCacheStoreConcurrencyTests`: independent-roots pool-scope discriminator (Windows-only defect observable)
+- `SnapshotExportTests`: concurrent artifact overwrite while exporter holds source handle (Windows share-policy defect observable); concurrent eval-mode validator read (positive regression baseline)
+- `WindowsOnlyFactAttribute`: reusable platform-specific test marker
+- `AzdoEvidenceSurfaceTests`: manual pool-clear cleanup call removal
+- Validation: 187 passed, 7 skipped (Windows-only facts on Unix), 0 failed; full suite baseline maintained (1981 passed, 8 skipped, 0 failed)
+
+**Architecture Verified:**
+- One-PR design: scoped `ClearPool` fix + permissive source-share fix
+- No retries, no serialization; pure deterministic isolation via scope boundary
+- Both defects now observable in pre-fix tests on Windows CI; production fixes will make tests green
+
+**Rework Requested:** None
+
+**Status:** COMPLETED
+**Outcome:** APPROVED with no blocking findings. Seam and pre-fix tests complete and ready to merge. Production fixes themselves land in follow-up commits.
+
+## 2026-09-11: Evidence-driven scope amendment retrospective and final merge verdict (#130)
+
+Monitored Ripley's two-commit production fix and Lambert's regression-test validation. Approved evidence-driven scope amendment and issued final APPROVED verdict with no blocking findings.
+
+**Scope Amendment Retrospective:**
+
+Initial plan called for `MoveFileEx` atomic-move on Windows to solve artifact-replacement file-handle conflicts. R2 (c58340d) changed `SnapshotExporter` source-share to `FileShare.Read | FileShare.Delete`, expecting that alone to solve concurrent-write failures.
+
+Lambert's artifact-replacement test immediately proved this assumption wrong on Windows — test RED post-c58340d. Root-cause analysis identified `File.Move(..., overwrite: true)` itself lacks share-conflict awareness on Windows, even when source is opened with permissive flags.
+
+R3 (10149cf) used `File.Replace` for existing artifacts (atomic, share-aware) and `File.Move` for absent artifacts. This turned Lambert's failing test GREEN, proving the scope amendment correct.
+
+**Verification Summary:**
+- Pool-scope fix: discriminator test RED → GREEN (c58340d)
+- Source-share fix: eval-mode baseline GREEN (c58340d)
+- Artifact-replacement fix: test RED → GREEN (10149cf)
+- All platforms: Ubuntu CI ✓, Windows CI ✓, Squad CI ✓
+- Test counts: 387 targeted pass (including Windows-only facts), 1995 full-suite pass, 9 pre-existing skips, 0 failures
+- Production scope verified: exactly `SqliteCacheStore.cs` + `SnapshotExporter.cs`, no ICacheStore/public API changes
+
+**Key Learning:** Evidence-driven scope amendment validated via test outcomes (red-to-green transitions) rather than assumption about platform semantics. Regression-test-first methodology correctly exposed the hidden `File.Move` defect that implementation-first would have shipped.
+
+**Final Verdict:** APPROVED — no blockers, ready for merge. PR #140 to be marked ready for merge once this bookkeeping commit is pushed (per orchestration protocol).
+
+**Status:** COMPLETED

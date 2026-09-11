@@ -590,3 +590,264 @@ landed a fix on her side and the suite was green; no production change was made 
 **Status:** COMPLETED
 **Outcome:** Reaffirmed fault-handling contract validated as already satisfied by the existing
 `Dispose()` implementation; zero further production changes required. Full suite green.
+
+---
+
+## Issue #130 — pre-fix seam: artifact source FileShare constant
+
+**Task:** Introduce a behavior-neutral seam in `SnapshotExporter` ahead of the planned artifact
+source share-policy fix, so Lambert can add a Windows discriminator test that compiles now and
+fails pre-fix.
+
+**Change:** Added `private const FileShare ArtifactSourceFileShare = FileShare.Read;` next to the
+existing exporter constants, and replaced the inline `FileShare.Read` literal at the live-source
+`FileStream` open in `CopyArtifactAsync` with this constant. Value is unchanged from current
+behavior — this is purely a naming/seam commit, not the `FileShare.Read | FileShare.Delete` fix
+itself (that lands in a later step per Dallas's plan).
+
+**Verification:** `dotnet build src/HelixTool.Core/HelixTool.Core.csproj` succeeded, 0
+warnings/errors. `git diff` confirms the only changed file is
+`src/HelixTool.Core/Cache/SnapshotExporter.cs`, with exactly the constant addition and the single
+literal-to-constant substitution — no other production file, test, changelog, package, or public
+API touched. Not committed.
+
+**Learning:** When a plan calls for a named constant purely so a not-yet-written test can compile
+against it, land the constant with the *current* value first as its own tiny seam, and leave the
+value change for the dedicated fix step — keeps the pre-fix/post-fix diff for reviewers minimal
+and isolates the Windows-red-to-green transition to one commit.
+
+**Status:** COMPLETED (seam only; behavior fix and tests are out of scope for this task).
+
+---
+
+## Issue #130 — production fix: scoped pool clearing and artifact source FileShare
+
+**Task:** Implement Dallas's approved design exactly, against the pre-fix Windows-red evidence on
+commit `8e6cee6`: `SetArtifactAsync_WhileArtifactOpenWithExporterSourceShare_TrulyReplacesContentAndFileSize`
+and `IndependentRoots_DisposeA_WindowsExclusiveOpenOfB_StillFails_BecauseBPoolUntouched` were both
+failing on Windows only (1993 passed, 2 failed, 8 skipped); Ubuntu and Squad CI were green.
+
+**Change 1 — `src/HelixTool.Core/Cache/SqliteCacheStore.cs` `Dispose()`:**
+Wrapped the cancel → bounded `StartupMaintenance.Wait` → narrow `AggregateException.Handle` →
+timeout fault-observation sequence in a `try`, byte-identical to the #129 contract, and moved
+`_maintenanceCts.Dispose()` plus pool release into the `finally` so post-join cleanup runs even
+when an unexpected worker fault propagates out of the `try`. Replaced the process-global
+`SqliteConnection.ClearAllPools()` with a fresh, unopened `SqliteConnection(_connectionString)`
+passed to `SqliteConnection.ClearPool(...)` — the connection is never opened or cached, and the
+exact `_connectionString` field is reused so the correct pool group binds via the `ConnectionString`
+setter. No refcounting, no broadened catches, no suppression of unexpected faults added.
+
+**Change 2 — `src/HelixTool.Core/Cache/SnapshotExporter.cs`:** Changed
+`internal const FileShare ArtifactSourceFileShare` from `FileShare.Read` to
+`FileShare.Read | FileShare.Delete` and updated its doc comment with the Windows/POSIX rationale
+(delete/rename sharing lets a concurrent cache write or eviction proceed while the export keeps
+reading the already-opened file identity; `FileShare.Write` deliberately excluded so the
+before/after length + SHA-256 integrity checks stay valid). Only the single call site in
+`CopyArtifactAsync` is affected; staging destination `FileShare.None`, immutable hash handles,
+backup logic, retries, timeouts, and publication were untouched.
+
+**Verification:** `dotnet build` on both `HelixTool.Core.csproj` and `HelixTool.Tests.csproj`
+succeeded, 0 warnings/errors. Targeted filter (`SqliteCacheStore*`, `Snapshot*`,
+`CacheStoreFactoryTests`, `CacheSecurityTests`, `AzdoEvidence*`): 386 passed, 0 failed, 7 skipped
+(this machine is macOS, so the Windows-only discriminator correctly skips via its
+`WindowsOnlyFactAttribute` gate). The cross-platform artifact-replacement test
+(`SetArtifactAsync_WhileArtifactOpenWithExporterSourceShare_TrulyReplacesContentAndFileSize`) now
+passes on this machine, which was the reachable half of the two pre-fix Windows failures. Full
+local suite: 1994 passed, 0 failed, 9 skipped, total 2003 — net +4 passed / +1 skipped versus the
+1990 passed / 8 skipped Unix baseline in the plan, consistent with the four new regression tests
+(C1–C4) added in `8e6cee6`, one of which (C2, Windows-only) skips here.
+`rg "ClearAllPools" src` returns zero call sites (comment references only). Diff confined to
+exactly the two named production files — confirmed via `git status --short` before and after;
+no test, changelog, package, project, or public API file touched. Not committed or pushed per
+instruction; left for the reviewer gate and PR finalization step.
+
+**Learning:** The `try { ... } finally { cts.Dispose(); ClearPool(...); }` restructuring is a pure
+reordering of *when* cleanup runs relative to control flow, not a change to *what* the #129 steps
+do — every line inside the `try` is textually identical to before, which made this an easy diff
+for a reviewer to audit against the byte-identical-contract requirement. Constructing an unopened
+`SqliteConnection` purely to bind a pool group via its `ConnectionString` setter (never calling
+`.Open()`) is a pattern worth remembering: it gets you the exact per-connection-string pool
+group without paying for a real connection or risking that the a long-lived cached instance holds
+a since-pruned pool group.
+
+**Status:** COMPLETED. Awaiting Dallas's reviewer gate before commit/push per plan step 8.
+
+---
+
+## Issue #130 — scope amendment: `SetArtifactAsync` silent-failure-then-stale-success defect
+
+**Task:** Dallas's post-CI retrospective amended scope: the approved
+`SnapshotExporter.ArtifactSourceFileShare = FileShare.Read | FileShare.Delete` stands, but the
+Windows-red evidence surfaced a real production correctness bug, not a test bug. On Windows,
+`File.Move(temp, dest, overwrite: true)` (via Win32 `MoveFileEx`/`MOVEFILE_REPLACE_EXISTING`) can
+still fail with a sharing violation against a destination held open by a concurrent reader — even
+one opened with `FileShare.Read | FileShare.Delete` or `FileShare.ReadWrite | FileShare.Delete` —
+because `MoveFileEx` requires the destination to be free of incompatible opens for the
+content-replace step, share-delete alone is not sufficient. The existing catch
+`(IOException or UnauthorizedAccessException)` swallowed exactly that failure, deleted the only
+copy of the new bytes (the temp file), and fell through to write a success row into
+`cache_artifacts` using the untouched destination's stale size — a silent data-loss/lie-to-the-
+database bug, now confirmed in scope for me to fix in
+`src/HelixTool.Core/Cache/SqliteCacheStore.cs` only.
+
+**Research before changing anything:** Read `dotnet/runtime`'s `File.cs`, `FileSystem.Windows.cs`,
+and `FileSystem.Unix.cs` from the current `main` branch, plus the Win32 `ReplaceFile` MSDN
+reference, rather than assuming behavior:
+- `File.Move(src, dest, overwrite: true)` on Windows calls `Interop.Kernel32.MoveFile(src, dest,
+  overwrite: true)` → `MoveFileEx` with `MOVEFILE_REPLACE_EXISTING`. A sharing violation there
+  (`ERROR_SHARING_VIOLATION`) is mapped by `Win32Marshal` to `IOException` — confirming the
+  existing catch clause's exception types are exactly right for detecting this failure, they just
+  respond to it wrongly.
+- `File.Replace(src, dest, null)` on Windows calls `Interop.Kernel32.ReplaceFile`. Its Win32
+  contract (`ReplaceFileW` docs) states it explicitly: "This file [the one being replaced] is
+  opened with the GENERIC_READ, DELETE, and SYNCHRONIZE access rights. The sharing mode is
+  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE" — i.e. `ReplaceFile` is the primitive
+  Win32 built specifically to replace a destination file that another process still has open,
+  and it tolerates *both* concurrent-holder share modes named in the brief
+  (`Read|Delete` and `ReadWrite|Delete`), because its own required minimum is a strict subset of
+  both. It requires the destination to already exist (it opens it), which is guaranteed on this
+  fallback path since a genuinely-absent destination is created directly by the already-attempted
+  `File.Move` with no exception.
+- On Unix, `FileSystem.Unix.cs`'s `MoveFile(overwrite: true)` is a plain `rename(2)` (atomic
+  regardless of open handles) and its `ReplaceFile` is rename-based too — so the fallback path is
+  Windows-only *in practice* (via the exception, not an explicit OS check), and is safe if ever
+  exercised cross-platform.
+
+**Change:** In `SetArtifactAsync`, kept `File.Move(tempPath, fullPath, overwrite: true)` as the
+first attempt unchanged (satisfies "destination absent → keep first-write atomic move" and is the
+cheaper path when nothing has the destination open). On `IOException`/`UnauthorizedAccessException`
+from that attempt, instead of deleting the temp file and silently continuing, now attempt
+`File.Replace(tempPath, fullPath, destinationBackupFileName: null)` as the correct
+concurrent-replace primitive. If `File.Replace` also throws, the temp file (the only copy of the
+new bytes) is deleted on a best-effort basis and the original exception is rethrown via a bare
+`throw;` inside the inner `catch` — this exits `SetArtifactAsync` before the file-size read, the
+`INSERT OR REPLACE INTO cache_artifacts` write, and the LRU eviction call, so a replacement failure
+can never produce a stale/successful DB row. If `File.Replace` succeeds, control falls through to
+the existing size-read/DB-write/eviction tail exactly as before, now reading the genuinely-replaced
+file. No retry loop, no sleep, no new public member, no test seam, no schema change — the diff is
+additive around the single existing catch block.
+
+**Verification:** `dotnet build` on `HelixTool.Core.csproj` and `HelixTool.Tests.csproj`: 0
+Warning(s)/0 Error(s) both. This machine's installed runtime is `11.0.0-preview` only while the
+projects target `net10.0`, so `dotnet test` needed `DOTNET_ROLL_FORWARD=LatestMajor` in the
+environment to launch the test host — an environment quirk, not a project/test change, and no
+project file was touched to work around it. Targeted filter (`SqliteCacheStore*`, `Snapshot*`,
+`CacheStoreFactoryTests`, `CacheSecurityTests`, `AzdoEvidence*`): **387 passed, 0 failed, 7
+skipped, 394 total** (the +1 passed / same skip count versus my prior 386/7 report reflects
+Lambert's since-landed `[Theory]` split of the regression test into
+`useExporterSourceShare: true/false` cases, covering both the exporter's `Read|Delete` share and a
+plain `GetArtifactAsync`-style `ReadWrite|Delete` share against the same fix — both now pass here).
+Full local suite: **1995 passed, 0 failed, 9 skipped, 2004 total**. `git diff --stat` confirms
+exactly one file changed, `src/HelixTool.Core/Cache/SqliteCacheStore.cs` (23 insertions / 3
+deletions) — did not touch `SnapshotExporter.cs`, `CHANGELOG.md`, any test file, or any other
+production file (the `CHANGELOG.md` and `SnapshotExportTests.cs` diffs already present in the
+working tree before I started are Lambert's/Dallas's own uncommitted work, not mine, and were left
+untouched). Not committed or pushed per instruction.
+
+**Learning:** `File.Move(overwrite: true)` and `File.Replace` are not interchangeable "atomic
+overwrite" primitives on Windows even though POSIX `rename(2)` makes them behave identically on
+Unix — the former requires the destination to be unopened (or opened compatibly) for its
+content-replace step, the latter is Win32's purpose-built "swap in a new file while someone still
+has the old one open" API and documents its own minimum required share mode directly in the
+`ReplaceFileW` reference page. When a bug report says a share-flag fix didn't fully work on
+Windows, check whether the *consuming* primitive (not just the *producing* one) actually honors
+the new share flags before assuming the two share-policy fixes are the same fix.
+
+**Status:** COMPLETED. Build 0/0, targeted 387/0/7 (394 total), full suite 1995/0/9 (2004 total).
+Diff confined to `SqliteCacheStore.cs`. Not committed/pushed per instruction; awaiting reviewer
+gate.
+
+---
+
+## Issue #130 — revision: destination-existence dispatch, not exception-driven retry
+
+**Task:** My first pass on the `SetArtifactAsync` fix above was rejected before acceptance. Dallas's
+required design is: pick the publication primitive up front from whether the destination already
+exists — `File.Move` when absent, `File.Replace` when present — never attempt `Move` first and
+fall back to `Replace` only after catching a failure. My initial pass did exactly that rejected
+shape (try `Move`, catch, then try `Replace` inside the catch), which is a retry path in substance
+even though it only ever retries once, and its nested `catch { ...; throw; }` around the `Replace`
+attempt was a bare catch-all — broader than the narrow, explicit exception handling the plan
+requires, and it risked reading as "swallow-then-rethrow" rather than a clean propagate.
+
+**Change — same method, same file, still the only one touched:** Replaced the
+try/Move/catch/Replace/fallback shape with:
+- `var destinationExisted = File.Exists(fullPath);` computed once, up front — matches this file's
+  own precedent for this exact check (`DeleteArtifactRows` already guards its delete with
+  `if (File.Exists(fullPath)) File.Delete(fullPath);`).
+- A single `if (destinationExisted) File.Replace(...); else File.Move(..., overwrite: true);` with
+  **no catch around either call** — any exception from the chosen primitive now propagates
+  immediately and unmodified, so the method exits before reaching the file-size read, the
+  `INSERT OR REPLACE INTO cache_artifacts` write, and the eviction pass; no risk of a stale-success
+  row on any failure path, and no place left where the exception type is silently narrowed or
+  discarded.
+- A `published` flag set only after the chosen call returns without throwing, checked in a
+  `finally` block to decide whether `tempPath` needs best-effort cleanup. On the success path
+  `published == true`, so the `finally` does nothing (the primitive already consumed/renamed
+  `tempPath`; confirmed `File.Delete` is itself idempotent for an already-gone path via both
+  `FileSystem.Windows.cs`'s explicit `ERROR_FILE_NOT_FOUND` early-return and
+  `FileSystem.Unix.cs`'s `ENOENT` early-return in `dotnet/runtime`, so even calling it redundantly
+  would be harmless — but the flag keeps the *intent* explicit rather than relying on that
+  incidental idempotency). On any failure path, the `finally` calls `File.Delete(tempPath)` wrapped
+  in a narrow `catch (Exception cleanupEx) when (cleanupEx is IOException or UnauthorizedAccessException)`
+  — the same two-type shape `DeleteArtifactRows` already uses for its own cleanup delete — so an
+  unexpected cleanup exception type still surfaces as a bug instead of being absorbed, and because
+  this is a `finally` (not a `catch` wrapping the primary call), the primary Move/Replace exception
+  that is already unwinding through it is never replaced or masked by the cleanup logic; it keeps
+  propagating out of `SetArtifactAsync` unchanged.
+- Documented in comments the accepted, intentional narrow race this reintroduces versus the
+  previous unconditional-`Move` design: a concurrent evictor could delete `fullPath` between the
+  `File.Exists` check and the `File.Replace` call, in which case `Replace` fails because it
+  requires the destination to exist, and that failure now correctly propagates rather than being
+  retried — this is the "reasonable same-key race behavior without retries" the brief explicitly
+  called for, not a regression to paper over.
+
+**Verification:** `dotnet build` on `HelixTool.Core.csproj` and `HelixTool.Tests.csproj`: 0
+Warning(s)/0 Error(s) both (same `DOTNET_ROLL_FORWARD=LatestMajor` environment note as before to
+launch the test host against this machine's `11.0.0-preview`-only runtime — no project file
+touched). Targeted filter (`SqliteCacheStore*`, `Snapshot*`, `CacheStoreFactoryTests`,
+`CacheSecurityTests`, `AzdoEvidence*`): **387 passed, 0 failed, 7 skipped, 394 total** — identical
+counts to the rejected pass, confirming the redesign didn't change observable behavior on this
+platform, only the internal shape of the fix. Full local suite: **1995 passed, 0 failed, 9 skipped,
+2004 total** — also identical. `git diff --stat` confirms exactly one file changed,
+`SqliteCacheStore.cs` (41 insertions / 5 deletions from the pre-fix baseline). Confirmed
+byte-for-byte that `Dispose()`'s scoped-pool-cleanup block (`_maintenanceCts.Cancel()` through
+`SqliteConnection.ClearPool(poolHandle)`) and the rest of the file are untouched by this revision —
+only the body of `SetArtifactAsync`'s publication step changed. `CHANGELOG.md` and
+`SnapshotExportTests.cs` remain modified in the working tree from Lambert's/Dallas's own prior
+uncommitted work, not touched by me. Not committed or pushed per instruction.
+
+**Learning:** "Catch an exception from primitive A, then try primitive B inside the catch" is a
+retry in every way that matters to a reviewer auditing error-handling discipline, even when it's
+bounded to exactly one extra attempt and even when the second primitive is the objectively correct
+one — the tell is that success or failure of the operation still depends on exception flow instead
+of an up-front decision. Computing the branch condition once, before touching the filesystem, and
+using a `finally`-with-success-flag for cleanup instead of a `catch`-wrapping-the-primary-call is
+the shape that keeps a secondary (cleanup) failure from ever being able to shadow a primary
+(operation) failure, structurally, not just by convention.
+
+**Status:** COMPLETED. Build 0/0, targeted 387/0/7 (394 total), full suite 1995/0/9 (2004 total) —
+unchanged from the prior pass. Diff confined to `SqliteCacheStore.cs`. Not committed/pushed per
+instruction; awaiting reviewer gate.
+
+## 2026-09-11: Production fixes — pool scope, artifact source share, and File.Replace (#130, R2-R3)
+
+Two sequential commits delivered the evidence-driven production fixes:
+
+**R2 (c58340d): Scope disposal + FileShare.Read|Delete**
+
+Scoped `SqliteConnection.ClearAllPools()` in `SqliteCacheStore.Dispose()` to clear only the disposing store's exact connection string, not the process-global pool, fixing cross-root interference. Changed `SnapshotExporter.CopyArtifactAsync` source-file `FileShare` from `FileShare.Read` to `FileShare.Read | FileShare.Delete`, expecting permissive source-share alone would solve Windows file-handle conflicts in concurrent cache eviction/replacement.
+
+Verification: release build 0/0 warnings/errors, targeted 387 passed / 7 skipped, full suite 1995 passed / 9 skipped. Pool-scope discriminator test turned GREEN (confirming scoped clearing works); artifact-replacement test remained RED on Windows (proving original plan's `MoveFileEx` assumption wrong — permissive source-share alone is insufficient).
+
+**R3 (10149cf): File.Replace for existing artifacts**
+
+Root-cause analysis with Lambert: `File.Move(..., overwrite: true)` itself lacks share-conflict awareness on Windows, even when source is opened with `FileShare.Read | FileShare.Delete`. Replaced `File.Move` in `SnapshotExporter.SetArtifactAsync` with platform-aware logic:
+- `File.Replace` for existing artifacts (atomic, handles share conflicts on Windows)
+- `File.Move` for absent artifacts (simple case)
+
+Surfaces publication failures before metadata-update, per design. Verification: release build 0/0, targeted 387 passed / 7 skipped (artifact-replacement test now GREEN), full suite 1995 passed / 9 skipped. Windows CI, Ubuntu CI, Squad CI all success.
+
+**Learning:** The original plan's `MoveFileEx` intuition was correct in spirit (need atomic/share-aware replacement), but C# standard library `File.Replace` is the idiomatic solution and directly solves the platform-specific share-conflict gap. Test-driven discovery of the hidden defect (silent catch in original implementation masked the failure) validates the regression-coverage-first methodology.
+
+**Status:** COMPLETED — both commits delivered, all tests green, Dallas final verdict APPROVED

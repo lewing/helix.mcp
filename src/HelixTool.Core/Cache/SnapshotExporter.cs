@@ -21,6 +21,16 @@ public static class SnapshotExporter
     private const int BusyTimeoutMilliseconds = BusyTimeoutSeconds * 1000;
     private const int MaxLinkResolutions = 64;
 
+    /// <summary>
+    /// Share policy used when opening a live artifact source file in <see cref="CopyArtifactAsync"/>.
+    /// Includes <see cref="FileShare.Delete"/> so a concurrent cache write or eviction on Windows
+    /// can move/delete the artifact's path while the export continues reading the already-opened
+    /// file identity — the same behavior POSIX unlink/rename give for free. Deliberately excludes
+    /// <see cref="FileShare.Write"/>: the exporter's before/after length and SHA-256 checks assume
+    /// the bytes behind this handle cannot change, only that the name can stop pointing at them.
+    /// </summary>
+    internal const FileShare ArtifactSourceFileShare = FileShare.Read | FileShare.Delete;
+
     private static StringComparison ConservativeDenyListPathComparison =>
         OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
         ? StringComparison.OrdinalIgnoreCase
@@ -837,7 +847,7 @@ public static class SnapshotExporter
             sourcePath,
             FileMode.Open,
             FileAccess.Read,
-            FileShare.Read,
+            ArtifactSourceFileShare,
             bufferSize: 81920,
             FileOptions.Asynchronous | FileOptions.SequentialScan))
         {
