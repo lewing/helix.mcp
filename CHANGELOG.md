@@ -8,6 +8,8 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+## [v0.10.2] — 2026-09-11
+
 ### SQLite cache store isolation and snapshot export concurrency (#130)
 
 - **Cache store disposal:** Disposing a SQLite cache store no longer clears unrelated connection-string pools. Scoped pool clearing now affects only the disposing store's pool group, preventing interference with independent cache roots and auth/eval store instances.
