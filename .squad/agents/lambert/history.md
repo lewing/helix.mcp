@@ -460,3 +460,107 @@ one place, so future changes to those fixtures automatically keep both the unit-
 integration-level tests in sync — directly the test-discipline principle of not letting assertion
 data drift from a single source of truth, applied across test files instead of just across a
 prod/test boundary.
+
+---
+
+## 2026-09-11: Pre-fix regression coverage for #130 (SQLite pool scope + artifact source share)
+
+**Context:** Dallas's design review (issue #130) established two distinct production defects to
+fix — `SqliteCacheStore.Dispose()`'s process-global `SqliteConnection.ClearAllPools()` interfering
+with unrelated cache roots, and `SnapshotExporter.CopyArtifactAsync`'s `FileShare.Read` live-artifact
+handle blocking concurrent cache overwrite/eviction on Windows. My assignment was the pre-fix test
+state only: land deterministic regression coverage before either production fix lands, so CI proves
+the defects first and proves the fixes second in the same PR. Production code was read but not
+touched (Ripley had already added the test-visible `SnapshotExporter.ArtifactSourceFileShare`
+constant, still pinned to `FileShare.Read`, ahead of the real fix).
+
+**Tests added (7 new facts across the three authorized files):**
+
+- `SqliteCacheStoreConcurrencyTests.cs`:
+  - `IndependentRoots_DisposeA_BStaysUsable_ARootDeletesCleanly` — two Guid-unique roots, warms
+    both, disposes A, proves B remains fully read/write-usable, then asserts A's own root directory
+    deletes with an **unswallowed** `Record.Exception`/`Assert.Null` (not a best-effort try/catch).
+    This holds regardless of the pool-scope fix (POSIX/global-clear both permit self-root deletion)
+    — it is a sanity baseline, not the discriminator.
+  - `IndependentRoots_DisposeA_WindowsExclusiveOpenOfB_StillFails_BecauseBPoolUntouched`
+    (`[WindowsOnlyFact]`) — the actual discriminator: warms B (idle pooled native handle), disposes
+    independent A, asserts an exclusive `FileShare.None` open of B's `cache.db` still throws
+    `IOException`. Pre-fix, A's global `ClearAllPools()` also evicts B's unrelated pool, so this
+    assertion is expected to fail on Windows CI until the fix scopes clearing to the disposing
+    store's own connection string. **This is a handle/share-policy invariant, not a claim of true
+    in-loop temporal overlap** between A's `Dispose()` and any specific B operation — recorded
+    explicitly per Dallas's framing so a future reader doesn't misread it as a race assertion.
+  - Removed the test-side `SqliteConnection.ClearAllPools()` finally-block call/comment from
+    `StartupMaintenance_NonCancellationWorkerFault_PropagatesThroughAwaitAndDispose` per the
+    assignment (item 3) — directory cleanup there is now unguarded by that manual pool release.
+- `SnapshotExportTests.cs` (`SnapshotExporterTests`/`SnapshotValidatorTests` classes):
+  - `SetArtifactAsync_WhileArtifactOpenWithExporterSourceShare_TrulyReplacesContentAndFileSize` —
+    opens a real artifact with the exporter's own `ArtifactSourceFileShare` constant, then calls
+    `SetArtifactAsync` for the same key with different (and differently-sized) content while that
+    handle remains open; asserts the read-back bytes and the `cache_artifacts.file_size` column both
+    reflect the replacement. Verified green here (Unix, POSIX rename-over-open-fd semantics).
+    Expected RED on Windows while the constant is `FileShare.Read`, because
+    `SetArtifactAsync`'s `File.Move(..., overwrite: true)` can hit a sharing violation there and its
+    `catch (IOException or UnauthorizedAccessException)` silently drops the write — this is the
+    exact mechanism the fix (`FileShare.Read | FileShare.Delete`) must correct.
+  - `Export_WhileNormalArtifactReadStreamRemainsOpen_SucceedsWithExactBytesSizeAndHash` — keeps a
+    live `GetArtifactAsync` stream open across a full `SnapshotExporter.ExportAsync` of the same
+    root, then verifies exact copied bytes, `FileInfo.Length`, and a SHA-256 hash match, plus
+    `SnapshotValidator.ValidateAsync` success. This one is OS-agnostic by construction: it never
+    exercises the source-share defect at all, since `GetArtifactAsync`'s own share flags
+    (`ReadWrite | Delete`) are already permissive enough for a concurrent exporter read under either
+    share policy — it's a positive concurrency regression, not a discriminator.
+  - `Validate_PublishedSnapshot_WhileEvalModeStoreRemainsOpen_SucceedsWithNoWritesOrSidecars` — a
+    real exported (not hand-copied) snapshot, opened by a genuine eval-mode `SqliteCacheStore` that
+    stays alive across `SnapshotValidator.ValidateAsync`; asserts validation succeeds, the eval
+    store's write attempt made during that window is still a true no-op, and the on-disk layout
+    stays exactly `{cache.db, artifacts}` (no `-wal`/`-shm`) throughout — closing the same kind of
+    "each half proven, never proven together" gap as the 2026-09-11 evidence-plan test above.
+- `AzdoEvidenceSurfaceTests.cs`: removed the redundant `SqliteConnection.ClearAllPools()` call from
+  `CliEvidencePlan_KeepAttemptPrefixFlag_ReachesSerializedPlan`'s `finally` block per assignment
+  item 7; its `Directory.Delete` cleanup there was already unguarded (no try/catch), so no cleanup
+  swallowing was introduced or removed.
+- New shared file `WindowsOnlyFactAttribute.cs` — a generic Windows-only `FactAttribute` following
+  the exact established pattern of `WindowsShortNameFactAttribute` in `SnapshotExportTests.cs`
+  (`Skip` set in the constructor when `!OperatingSystem.IsWindows()`, so xUnit reports a genuine
+  `Skipped` result rather than a vacuous pass from an early `return`). Added as a new file rather
+  than reusing `WindowsShortNameFactAttribute` because that attribute's semantics are specifically
+  about 8.3 short-name alias support, not a generic Windows gate — reusing it would have produced a
+  misleading skip reason for an unrelated Windows-only test.
+
+**Validation (this Unix machine):** targeted filter covering `SqliteCacheStoreConcurrencyTests`,
+`SnapshotExporterTests`, `SnapshotValidatorTests`, `AzdoEvidenceSurfaceTests`,
+`CacheStoreFactoryTests`, `CacheSecurityTests` — **187 passed, 7 skipped, 0 failed** (194 total).
+The one new Windows-only fact reported `[SKIP]` as required; every other new/modified fact passed.
+Did not run the full suite (out of scope for this pass) and did not commit/push per instructions.
+
+**No decision-inbox item filed.** Everything encountered while implementing this assignment
+(the exact silent-catch mechanism in `SetArtifactAsync`, the pool-eviction interaction, the
+C3 handle-vs-temporal-overlap framing) was already anticipated by Dallas's design review and my
+assignment brief — none of it is a new finding a future reader would need surfaced separately.
+
+## 2026-09-11: Post-fix regression validation and File.Replace test coverage (#130, L2)
+
+Validated production fixes against pre-written regression tests and added targeted post-fix coverage for File.Replace atomic-replacement logic:
+
+**Post-R2 (c58340d) Validation:**
+Pool-scope discriminator test turned GREEN (confirms scoped `ClearPool` fixes cross-root interference). Artifact-replacement test remained RED on Windows (proves permissive source-share alone insufficient). Evidence-driven scope amendment decision made: investigate `File.Move` platform semantics.
+
+**Post-R3 (10149cf) Coverage:**
+All 387 targeted tests now GREEN, including artifact-replacement test (confirms `File.Replace` solves Windows share-conflict gap). Full suite 1995 passed / 9 skipped / 0 failed. No regressions, no new flakes.
+
+**Windows-Only Discriminators:**
+- `IndependentRoots_DisposeA_WindowsExclusiveOpenOfB_StillFails_BecauseBPoolUntouched` — confirms pool-scope fix
+- `SetArtifactAsync_WhileArtifactOpenWithExporterSourceShare_TrulyReplacesContentAndFileSize` — confirms artifact-replacement fix
+
+Both properly marked with `[WindowsOnlyFact]` and skip cleanly on Unix CI.
+
+**Cross-Platform Validation:**
+- Local machine (Unix): 387 targeted, 1995 full-suite (all pass)
+- Windows CI: 387 targeted equivalent, full-suite equivalent (all pass)
+- Ubuntu CI: success
+- Squad CI: success
+
+**Learning:** Silent catch mechanism in original `SetArtifactAsync` masked the `File.Move` share-violation on Windows until `File.Replace` logic was explicitly added. Regression-test-first methodology correctly exposed the hidden defect that implementation-first would have shipped.
+
+**Status:** COMPLETED — full pre-fix and post-fix regression coverage delivered, all tests green

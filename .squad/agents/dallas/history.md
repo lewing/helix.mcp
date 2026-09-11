@@ -889,3 +889,29 @@ Conducted sync merge-gate review of Ripley's artifact-source FileShare seam and 
 
 **Status:** COMPLETED
 **Outcome:** APPROVED with no blocking findings. Seam and pre-fix tests complete and ready to merge. Production fixes themselves land in follow-up commits.
+
+## 2026-09-11: Evidence-driven scope amendment retrospective and final merge verdict (#130)
+
+Monitored Ripley's two-commit production fix and Lambert's regression-test validation. Approved evidence-driven scope amendment and issued final APPROVED verdict with no blocking findings.
+
+**Scope Amendment Retrospective:**
+
+Initial plan called for `MoveFileEx` atomic-move on Windows to solve artifact-replacement file-handle conflicts. R2 (c58340d) changed `SnapshotExporter` source-share to `FileShare.Read | FileShare.Delete`, expecting that alone to solve concurrent-write failures.
+
+Lambert's artifact-replacement test immediately proved this assumption wrong on Windows — test RED post-c58340d. Root-cause analysis identified `File.Move(..., overwrite: true)` itself lacks share-conflict awareness on Windows, even when source is opened with permissive flags.
+
+R3 (10149cf) used `File.Replace` for existing artifacts (atomic, share-aware) and `File.Move` for absent artifacts. This turned Lambert's failing test GREEN, proving the scope amendment correct.
+
+**Verification Summary:**
+- Pool-scope fix: discriminator test RED → GREEN (c58340d)
+- Source-share fix: eval-mode baseline GREEN (c58340d)
+- Artifact-replacement fix: test RED → GREEN (10149cf)
+- All platforms: Ubuntu CI ✓, Windows CI ✓, Squad CI ✓
+- Test counts: 387 targeted pass (including Windows-only facts), 1995 full-suite pass, 9 pre-existing skips, 0 failures
+- Production scope verified: exactly `SqliteCacheStore.cs` + `SnapshotExporter.cs`, no ICacheStore/public API changes
+
+**Key Learning:** Evidence-driven scope amendment validated via test outcomes (red-to-green transitions) rather than assumption about platform semantics. Regression-test-first methodology correctly exposed the hidden `File.Move` defect that implementation-first would have shipped.
+
+**Final Verdict:** APPROVED — no blockers, ready for merge. PR #140 to be marked ready for merge once this bookkeeping commit is pushed (per orchestration protocol).
+
+**Status:** COMPLETED
