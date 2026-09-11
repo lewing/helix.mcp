@@ -48,6 +48,16 @@ Key architectural patterns established: Reuse existing decorators (CachingAzdoAp
 - `src/HelixTool.Tests/AzDO/AzdoServiceNormalizationTests.cs` — param normalization, cache key stability
 - `src/HelixTool.Tests/AzDO/PaginationContractTests.cs` — pagination spec validation (333 LOC, 13/13 passing)
 
+## 2026-09-11 — Startup cache-eviction lifecycle production implementation & reaffirmation (#129)
+
+**Production Implementation (R1):** Delivered exact implementation of Dallas's accepted design: async startup maintenance with retained handle (`internal Task StartupMaintenance`), construction-time cutoff pinning, strict disposal ordering (cancel → bounded join with `DisposeJoinTimeout=10s` → narrow exception absorption → CTS disposal → ClearAllPools last), and cancellation checkpoints throughout. Production diff is exactly `SqliteCacheStore.cs` (90 insertions, 10 deletions); no API surface changes, no test files touched, no changes to `ICacheStore`/`ICacheStoreFactory`/`EvalModeServices`/`Program.cs`. Build 0 W/0 E; targeted tests 52/52 pass (pre-Lambert); full suite 1981 pass/8 skip/0 fail. All 9 reject-on-sight conditions pass. Implementation note: `AggregateException.Handle` is the correct narrow-catch shape for Task.Wait timeout/fault semantics (not a broadening).
+
+**Fault-Propagation Reaffirmation:** Verified two .NET Task behaviors empirically (AggregateException wrapping, fault observability through ContinueWith). Confirmed existing Dispose() implementation already satisfies the fault-propagation contract: unexpected exceptions still propagate, Dispose() does not launder non-cancellation faults into silence. Production diff unchanged (same 90 insertions, 10 deletions as R1). Targeted tests 60/60 pass; full suite 1989 pass/8 skip/0 fail. Incidental finding (not mine to fix, Lambert already resolved): SnapshotEvalTestHarness BackupDatabase copies WAL mode header flag; test fix was forcing journal_mode=DELETE on seeded copy before baseline assertion.
+
+**Decisions:** `ripley-startup-cache-eviction-implementation.md` (R1 delivery), `ripley-startup-cache-eviction-fault-reaffirmation.md` (fault-propagation verification).
+
+**Orchestration logs:** `.squad/orchestration-log/2026-09-11-1338-ripley-startup-cache-implementation.md`, `.squad/orchestration-log/2026-09-11-1343-ripley-fault-propagation-reaffirmation.md`
+
 ### Current Focus
 
 - **Decision Gate:** Awaiting user go/no-go on MCP schema Lever 1 (minimal outputSchema, ~8.9 KB / 31% savings).
@@ -495,3 +505,88 @@ mock-setup anti-pattern, not production code); flagged to her via
 **Outcome:** R4 gate satisfied (shim fully removed, zero references remain); `Source` now
 correctly populated on both Helix-path and timeline-fallback results; build 0/0, targeted
 suite 117/117 ×3, full suite 1943/0/8-skipped. No test files opened or edited.
+
+## 2026-09-11: Startup cache-eviction lifecycle implementation (#129, R1) (completed)
+
+Implemented Dallas's accepted design exactly, in `SqliteCacheStore.cs` only:
+
+- Constructor now retains `_maintenanceCts` (`CancellationTokenSource`) and an `internal Task
+  StartupMaintenance` (never null — eval mode assigns `Task.CompletedTask` and starts no
+  background work; normal mode captures `DateTimeOffset.UtcNow` at construction and passes it
+  into `Task.Run(() => EvictExpiredAsync(asOf, _maintenanceCts.Token))`).
+- Split `EvictExpiredAsync` into the unchanged public `(CancellationToken ct = default)` overload
+  (still evaluates `UtcNow` at call time) delegating to a new private `(DateTimeOffset asOf,
+  CancellationToken ct)` overload used by both the public API and the startup pass. This is what
+  pins the startup cutoff and keeps `NormalMode_EvictExpired_RemovesExpiredRows` semantics intact.
+- Added `ct.ThrowIfCancellationRequested()` checkpoints before each `DELETE`, before the artifact
+  `SELECT`, and gave `DeleteArtifactRows` a `CancellationToken` parameter checked once per loop
+  iteration (both call sites — expiry and LRU-cap — updated).
+- `Dispose()` rewritten to the exact ordering the brief specifies: `Interlocked.Exchange` on a new
+  `_disposed` field for idempotency → `_maintenanceCts.Cancel()` → bounded
+  `StartupMaintenance.Wait(DisposeJoinTimeout)` (named constant, 10s) → narrow fault absorption via
+  `AggregateException.Handle` allowing only `OperationCanceledException`, `SqliteException`,
+  `IOException` (anything else rethrows) → on timeout, a fault-observing `ContinueWith` so a later
+  exception can never surface as unobserved → `_maintenanceCts.Dispose()` → `ClearAllPools()` last.
+- Confirmed `Task.Wait(TimeSpan)` wraps a canceled/faulted task in `AggregateException` (never
+  throws bare `OperationCanceledException`), so `ex.Handle(predicate)` is the correct narrow-catch
+  shape here — a plain `catch (OperationCanceledException)` block would silently never fire.
+
+**Validation:** build 0 Warning(s)/0 Error(s) (project + full solution, Release). Targeted
+existing suite (`SqliteCacheStore*`, `SnapshotEvalMode*`, `ExpiredSnapshot*`) 52/52 passed before
+Lambert's new coverage landed. Full existing suite 1981 passed / 8 pre-existing skips / 0 failed —
+i.e. nothing in the pre-existing suite regressed even though it wasn't written against the new
+contract yet. Production diff confirmed via `git diff --stat` to be exactly one file,
+`SqliteCacheStore.cs` (90 insertions / 10 deletions). Did not open or edit any test file, did not
+touch `ICacheStore.cs`/`ICacheStoreFactory.cs`/`Program.cs`/`EvalModeServices.cs`.
+
+**Status:** COMPLETED
+**Outcome:** R1 delivered per brief; `StartupMaintenance` is the agreed internal member name for
+Lambert's tests to await; all nine reject-on-sight conditions in §5 checked against the diff and
+none apply.
+
+## 2026-09-11: Startup cache-eviction lifecycle — reaffirmation validation (#129, R1 follow-up) (completed)
+
+Larry reaffirmed a specific requirement on the already-delivered R1 `Dispose()` implementation:
+preserve/propagate unexpected (non-cancellation) worker faults when `StartupMaintenance` completes
+within the bounded join, and on an actual timeout, observe eventual faults without broad
+swallowing — no public API. Rather than assume my existing implementation already satisfied this,
+I verified it empirically with a throwaway scratch console app (outside the repo tree, referencing
+nothing production-internal, deleted before finishing — no test file was opened or edited):
+
+- `Task.Wait(TimeSpan)` never throws a bare exception for a faulted or canceled task — it always
+  wraps in `AggregateException`, for both the canceled and faulted cases. Confirmed
+  `AggregateException.Handle(predicate)` is therefore the correct narrow-catch shape for the
+  brief's three-row table (`OperationCanceledException`/`SqliteException`/`IOException`), not a
+  broadening: `Handle` rethrows a fresh `AggregateException` containing any inner exception the
+  predicate rejects, so an unexpected type (e.g. `InvalidOperationException`) still propagates out
+  of `Dispose()` when the pass completes inside the join window.
+- Confirmed the timeout-path continuation (`ContinueWith(t => _ = t.Exception, ...,
+  OnlyOnFaulted | ExecuteSynchronously)`) only marks the fault "observed" for the
+  process-wide unobserved-task-exception check — it does not consume or suppress the exception for
+  any other consumer. A second, independent `await` on the *same* task instance after that
+  continuation ran still received the original exception unchanged. This is what makes
+  `StartupMaintenance` remain usable by Lambert's tests as a true fault-carrying handle even after
+  `Dispose()` has already touched it on a timeout path.
+- Conclusion: no code change was needed — the `Dispose()` implementation delivered in the initial
+  R1 pass already satisfies the reaffirmed contract exactly as stated. Re-ran the full targeted and
+  full test suites to reconfirm: 60/60 targeted, 1989 passed / 8 pre-existing skips / 0 failed full
+  suite (Lambert's new coverage had landed by this point). Production diff unchanged: exactly
+  `SqliteCacheStore.cs`.
+
+**Incidental finding, not mine to fix:** while investigating an intermittently-observed failure in
+`SqliteCacheStoreEvalModeTests.EvalMode_OpenEvictDispose_DatabaseUnchanged_No(New)WalOrShmSidecars`,
+traced the root cause with the same scratch-app technique (also reproduced against the pre-#129
+original code, proving it predates and is unrelated to this fix): the test harness's
+`SnapshotEvalTestHarness.CreateStableSnapshotAsync` backs up straight from a live WAL-mode source
+into an on-disk destination file via `SqliteConnection.BackupDatabase`, which carries the source's
+WAL flag into the destination file's header even though no live `-wal` exists. Opening that file
+later — even `Mode=ReadOnly` — makes SQLite (re-)establish WAL machinery and (re)create `-wal`/
+`-shm` sidecars, which is exactly what the test's assertions forbid. Production's real
+`SnapshotExporter.ExportAsync` avoids this by staging through an in-memory connection and asserting
+`PRAGMA journal_mode = 'memory'` before serializing to disk, which strips the WAL flag — the test
+harness does not replicate that step. By the time I finished isolating this, Lambert had already
+landed a fix on her side and the suite was green; no production change was made or needed for it.
+
+**Status:** COMPLETED
+**Outcome:** Reaffirmed fault-handling contract validated as already satisfied by the existing
+`Dispose()` implementation; zero further production changes required. Full suite green.
