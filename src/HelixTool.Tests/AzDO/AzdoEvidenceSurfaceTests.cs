@@ -565,7 +565,6 @@ public class AzdoEvidenceSurfaceTests
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
             if (Directory.Exists(cacheRoot))
                 Directory.Delete(cacheRoot, recursive: true);
         }

@@ -21,6 +21,13 @@ public static class SnapshotExporter
     private const int BusyTimeoutMilliseconds = BusyTimeoutSeconds * 1000;
     private const int MaxLinkResolutions = 64;
 
+    /// <summary>
+    /// Share policy used when opening a live artifact source file in <see cref="CopyArtifactAsync"/>.
+    /// Currently matches prior behavior (<see cref="FileShare.Read"/>); the artifact source share
+    /// policy is expected to change in a follow-up fix.
+    /// </summary>
+    internal const FileShare ArtifactSourceFileShare = FileShare.Read;
+
     private static StringComparison ConservativeDenyListPathComparison =>
         OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
         ? StringComparison.OrdinalIgnoreCase
@@ -837,7 +844,7 @@ public static class SnapshotExporter
             sourcePath,
             FileMode.Open,
             FileAccess.Read,
-            FileShare.Read,
+            ArtifactSourceFileShare,
             bufferSize: 81920,
             FileOptions.Asynchronous | FileOptions.SequentialScan))
         {

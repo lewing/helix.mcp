@@ -664,13 +664,120 @@ public class SqliteCacheStoreConcurrencyTests : IDisposable
         }
         finally
         {
-            // Dispose() faulted before reaching ClearAllPools(), so release pooled
-            // native handles here rather than relying on the store's own cleanup —
-            // otherwise a lingering pooled connection can hold the db file open and
-            // make the directory cleanup below flaky on Windows.
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             try { Directory.Delete(dir, recursive: true); } catch { /* cleanup best-effort */ }
             try { File.Delete(outsidePath); } catch { /* never created by production code; best-effort */ }
+        }
+    }
+
+    // =========================================================================
+    // Independent cache roots (lewing/helix.mcp#130)
+    //
+    // Disposing one SqliteCacheStore must not interfere with an unrelated store on a
+    // different cache root. Each test below uses two Guid-unique roots (never the
+    // shared per-class _tempDir/_store) and asserts only observable end-state — no
+    // Task.Delay/Thread.Sleep/SpinWait, no retry-until-pass, no outcome-of-race claim.
+    // =========================================================================
+
+    [Fact]
+    public async Task IndependentRoots_DisposeA_BStaysUsable_ARootDeletesCleanly()
+    {
+        var dirA = Path.Combine(Path.GetTempPath(), $"hlx-independent-a-{Guid.NewGuid():N}");
+        var dirB = Path.Combine(Path.GetTempPath(), $"hlx-independent-b-{Guid.NewGuid():N}");
+        var storeA = new SqliteCacheStore(new CacheOptions { CacheRoot = dirA });
+        var storeB = new SqliteCacheStore(new CacheOptions { CacheRoot = dirB });
+        try
+        {
+            await storeA.StartupMaintenance;
+            await storeB.StartupMaintenance;
+
+            // Warm both stores with real writes/reads before disposing A, so each has
+            // live pooled connections/handles under its own root.
+            await storeA.SetMetadataAsync("job:independent-a:details", "{\"root\":\"a\"}", TimeSpan.FromHours(1));
+            await storeB.SetMetadataAsync("job:independent-b:details", "{\"root\":\"b\"}", TimeSpan.FromHours(1));
+            Assert.Equal("{\"root\":\"a\"}", await storeA.GetMetadataAsync("job:independent-a:details"));
+            Assert.Equal("{\"root\":\"b\"}", await storeB.GetMetadataAsync("job:independent-b:details"));
+
+            storeA.Dispose();
+
+            // B must remain fully usable (read + write) after A's disposal, which is
+            // the direct claim under test: A's cleanup must not reach into B's root.
+            await storeB.SetMetadataAsync("job:independent-b:after", "{\"after\":true}", TimeSpan.FromHours(1));
+            Assert.Equal("{\"after\":true}", await storeB.GetMetadataAsync("job:independent-b:after"));
+
+            var content = new byte[] { 9, 8, 7 };
+            await storeB.SetArtifactAsync("job:independent-b:wi:test:file:after.bin", new MemoryStream(content));
+            using var artifact = await storeB.GetArtifactAsync("job:independent-b:wi:test:file:after.bin");
+            Assert.NotNull(artifact);
+            using var ms = new MemoryStream();
+            await artifact!.CopyToAsync(ms);
+            Assert.Equal(content, ms.ToArray());
+        }
+        finally
+        {
+            storeB.Dispose();
+        }
+
+        // A's own root must be fully deletable now. This is an unswallowed assertion,
+        // not a best-effort try/catch: if anything (this store's own cleanup, or a
+        // cross-store interaction) still holds a handle open under dirA, this throws
+        // and fails the test instead of the failure being silently absorbed.
+        var deleteException = Record.Exception(() => Directory.Delete(dirA, recursive: true));
+        Assert.Null(deleteException);
+        Assert.False(Directory.Exists(dirA));
+
+        // storeB was already disposed above (in the finally block), so this cleanup is
+        // deterministic, not best-effort — no swallowed catch.
+        if (Directory.Exists(dirB))
+            Directory.Delete(dirB, recursive: true);
+    }
+
+    [WindowsOnlyFact]
+    public async Task IndependentRoots_DisposeA_WindowsExclusiveOpenOfB_StillFails_BecauseBPoolUntouched()
+    {
+        // Windows-only discriminator for the process-global ClearAllPools() defect:
+        // on Unix, POSIX unlink/rename semantics mean nothing here is discriminating
+        // (an exclusive open never fails the same way), so this must be skipped there,
+        // not simulated. This is a handle/share-policy invariant, not a claim of true
+        // in-loop temporal overlap between A's Dispose() and any specific B operation.
+        var dirA = Path.Combine(Path.GetTempPath(), $"hlx-independent-win-a-{Guid.NewGuid():N}");
+        var dirB = Path.Combine(Path.GetTempPath(), $"hlx-independent-win-b-{Guid.NewGuid():N}");
+        var optsB = new CacheOptions { CacheRoot = dirB };
+        var storeA = new SqliteCacheStore(new CacheOptions { CacheRoot = dirA });
+        var storeB = new SqliteCacheStore(optsB);
+        try
+        {
+            await storeA.StartupMaintenance;
+            await storeB.StartupMaintenance;
+
+            // Warm B so its ADO.NET connection pool holds an idle native handle: a
+            // completed connection-per-operation call returns the underlying SQLite
+            // connection to the pool rather than closing its OS handle immediately.
+            await storeB.SetMetadataAsync("job:pool-discriminator:details", "{\"ok\":true}", TimeSpan.FromHours(1));
+
+            storeA.Dispose();
+
+            var dbPathB = Path.Combine(optsB.GetEffectiveCacheRoot(), "cache.db");
+            var exclusiveOpenFault = Record.Exception(() =>
+            {
+                using var exclusive = new FileStream(dbPathB, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            });
+
+            // B's idle pooled native connection must still be holding the file: an
+            // exclusive open must fail. Pre-fix, A's process-global ClearAllPools()
+            // also evicts B's unrelated pool, so this exclusive open would instead
+            // unexpectedly succeed.
+            Assert.IsType<IOException>(exclusiveOpenFault);
+        }
+        finally
+        {
+            // storeA was already disposed above (before the exclusive-open probe) and
+            // storeB is disposed here first, so both roots are deterministically
+            // releasable by the time we delete them — no swallowed catch.
+            storeB.Dispose();
+            if (Directory.Exists(dirA))
+                Directory.Delete(dirA, recursive: true);
+            if (Directory.Exists(dirB))
+                Directory.Delete(dirB, recursive: true);
         }
     }
 }

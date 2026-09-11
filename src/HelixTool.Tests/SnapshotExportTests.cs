@@ -1448,6 +1448,110 @@ public class SnapshotExporterTests : IDisposable
         Assert.Contains("size", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    // =========================================================================
+    // Artifact source share policy (lewing/helix.mcp#130)
+    //
+    // CopyArtifactAsync opens the live artifact source with
+    // SnapshotExporter.ArtifactSourceFileShare. These tests exercise real
+    // SqliteCacheStore reads/writes and the exporter's own share constant together —
+    // no Task.Delay/Thread.Sleep/SpinWait, no retry-until-pass.
+    // =========================================================================
+
+    [Fact]
+    public async Task SetArtifactAsync_WhileArtifactOpenWithExporterSourceShare_TrulyReplacesContentAndFileSize()
+    {
+        // Regression for the exporter's live-source share policy: opens the artifact
+        // with the exact share flags CopyArtifactAsync uses, then overwrites the same
+        // cache key while that handle remains open. Passes on Unix under POSIX
+        // rename/unlink semantics. Expected RED on Windows while
+        // ArtifactSourceFileShare == FileShare.Read: SetArtifactAsync's
+        // File.Move(..., overwrite: true) can fail with a sharing violation there, and
+        // its catch (IOException or UnauthorizedAccessException) silently drops the
+        // write rather than throwing — so the assertions below would observe the
+        // original bytes/size instead of the replacement.
+        var workspace = Workspace("artifact-source-share-replace");
+        var opts = new CacheOptions { CacheRoot = Path.Combine(workspace, "cache-home") };
+        using var store = new SqliteCacheStore(opts);
+        await store.StartupMaintenance;
+
+        const string key = "job:artifact-share-replace:wi:test:file:payload.bin";
+        var original = new byte[] { 0xA, 0xA, 0xA, 0xA };
+        await store.SetArtifactAsync(key, new MemoryStream(original));
+
+        var effectiveRoot = opts.GetEffectiveCacheRoot();
+        var artifactsDir = Path.Combine(effectiveRoot, "artifacts");
+        var artifactPath = Assert.Single(
+            Directory.EnumerateFiles(artifactsDir, "*", SearchOption.AllDirectories));
+
+        var replacement = new byte[] { 0xB, 0xB, 0xB, 0xB, 0xB };
+        await using (new FileStream(
+            artifactPath,
+            FileMode.Open,
+            FileAccess.Read,
+            SnapshotExporter.ArtifactSourceFileShare,
+            bufferSize: 4096,
+            FileOptions.None))
+        {
+            await store.SetArtifactAsync(key, new MemoryStream(replacement));
+        }
+
+        using var readBack = await store.GetArtifactAsync(key);
+        Assert.NotNull(readBack);
+        using var ms = new MemoryStream();
+        await readBack!.CopyToAsync(ms);
+        Assert.Equal(replacement, ms.ToArray());
+
+        var dbPath = Path.Combine(effectiveRoot, "cache.db");
+        using var conn = SnapshotTestHelper.OpenConnection(dbPath);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT file_size FROM cache_artifacts WHERE cache_key = @key;";
+        cmd.Parameters.AddWithValue("@key", key);
+        var fileSize = Convert.ToInt64(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
+        Assert.Equal(replacement.Length, fileSize);
+    }
+
+    [Fact]
+    public async Task Export_WhileNormalArtifactReadStreamRemainsOpen_SucceedsWithExactBytesSizeAndHash()
+    {
+        // A live GetArtifactAsync stream (FileShare.ReadWrite | FileShare.Delete) must
+        // never block a concurrent export of the same artifact — this holds
+        // regardless of the ArtifactSourceFileShare fix, since GetArtifactAsync's own
+        // share flags are already permissive enough to admit a concurrent reader.
+        var workspace = Workspace("export-while-read-open");
+        var opts = new CacheOptions { CacheRoot = Path.Combine(workspace, "cache-home") };
+        using var store = new SqliteCacheStore(opts);
+        await store.StartupMaintenance;
+
+        const string key = "job:export-open-read:wi:test:file:payload.bin";
+        var content = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+        await store.SetArtifactAsync(key, new MemoryStream(content));
+        await store.SetMetadataAsync("job:export-open-read:details", "{\"ok\":true}", TimeSpan.FromHours(1));
+
+        var effectiveRoot = opts.GetEffectiveCacheRoot();
+        var destination = Path.Combine(workspace, "snapshot");
+
+        using var openArtifact = await store.GetArtifactAsync(key);
+        Assert.NotNull(openArtifact);
+
+        var result = await SnapshotExporter.ExportAsync(effectiveRoot, destination);
+
+        Assert.Equal(1, result.ArtifactCount);
+        SnapshotTestHelper.AssertFinalLayout(destination);
+
+        var copiedPath = Assert.Single(
+            Directory.EnumerateFiles(Path.Combine(destination, "artifacts"), "*", SearchOption.AllDirectories));
+        var copiedBytes = File.ReadAllBytes(copiedPath);
+
+        Assert.Equal(content, copiedBytes);
+        Assert.Equal(content.Length, new FileInfo(copiedPath).Length);
+        Assert.Equal(
+            Convert.ToHexString(SHA256.HashData(content)),
+            Convert.ToHexString(SHA256.HashData(copiedBytes)));
+
+        var validation = await SnapshotValidator.ValidateAsync(destination);
+        Assert.True(validation.IsValid, string.Join(Environment.NewLine, validation.Errors));
+    }
+
     [Fact]
     public async Task Export_ExistingDestinationAndSentinel_AreUntouched()
     {
@@ -2818,6 +2922,47 @@ public class SnapshotValidatorTests : IDisposable
         Assert.Equal(4, result.MetadataEntries);
         Assert.Equal(3, result.ArtifactEntries);
         Assert.Equal(0, result.MissingArtifactFiles);
+    }
+
+    [Fact]
+    public async Task Validate_PublishedSnapshot_WhileEvalModeStoreRemainsOpen_SucceedsWithNoWritesOrSidecars()
+    {
+        // Closes the gap between two facts that are each already true individually
+        // (validation succeeds on a published snapshot; eval mode never writes) but
+        // had never been proven together: a real, exported (not hand-copied) snapshot,
+        // validated while a genuine eval-mode SqliteCacheStore instance remains open
+        // against it — neither side may weaken the other's guarantees.
+        var workspace = Workspace("validate-eval-open");
+        var source = SnapshotTestHelper.CreateSource(workspace, metadataRows: 2, artifactRows: 1);
+        var destination = Path.Combine(workspace, "snapshot");
+
+        await SnapshotTestHelper.ExportAndAssertAtomicPublicationAsync(source, destination);
+        SnapshotTestHelper.AssertFinalLayout(destination);
+
+        var evalOpts = new CacheOptions { CacheRoot = destination, EvalMode = true };
+        using var evalStore = new SqliteCacheStore(evalOpts);
+        await evalStore.StartupMaintenance;
+
+        // Warm a read and attempt a write through the eval store while it stays open
+        // across the validation call below.
+        Assert.NotNull(await evalStore.GetMetadataAsync("baseline:metadata:0000"));
+        await evalStore.SetMetadataAsync(
+            "job:validate-eval-open:should-not-persist",
+            "{\"nope\":true}",
+            TimeSpan.FromHours(1));
+
+        var result = await SnapshotValidator.ValidateAsync(destination);
+
+        Assert.True(result.IsValid, string.Join(Environment.NewLine, result.Errors));
+        Assert.Empty(result.Errors);
+
+        // The eval store's write attempt must remain a genuine no-op even with an open
+        // eval-mode connection concurrently observed by the validator.
+        Assert.Null(await evalStore.GetMetadataAsync("job:validate-eval-open:should-not-persist"));
+
+        // Neither the eval store staying open nor validation running against it may
+        // introduce -wal/-shm sidecars into the published, otherwise-immutable snapshot.
+        SnapshotTestHelper.AssertFinalLayout(destination);
     }
 
     [Fact]
