@@ -489,4 +489,188 @@ public class SqliteCacheStoreConcurrencyTests : IDisposable
             $"Expected fill byte 'A' or 'B', got '{(char)fillByte}'");
         Assert.All(bytes, b => Assert.Equal(fillByte, b));
     }
+
+    // =========================================================================
+    // Startup maintenance lifecycle (lewing/helix.mcp#129)
+    //
+    // Determinism comes from awaiting the internal `StartupMaintenance` task and from
+    // observable end-state (IsCompleted, database usability) — never from Task.Delay,
+    // Thread.Sleep, SpinWait, or an assertion about which outcome a race produced.
+    // =========================================================================
+
+    [Fact]
+    public async Task Dispose_JoinsStartupMaintenance_DatabaseImmediatelyWritable()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"hlx-dispose-join-{Guid.NewGuid():N}");
+        var opts = new CacheOptions { CacheRoot = dir };
+        try
+        {
+            var store = new SqliteCacheStore(opts);
+            var maintenance = store.StartupMaintenance;
+
+            store.Dispose();
+
+            // Dispose() cancels then joins before ClearAllPools() — by the time it
+            // returns, no untracked work can still be running.
+            Assert.True(maintenance.IsCompleted);
+
+            // Deterministic proof the database itself is not held open by anything:
+            // busy_timeout=0 fails immediately instead of merely waiting out a window.
+            var dbPath = Path.Combine(opts.GetEffectiveCacheRoot(), "cache.db");
+            await using var probe = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}");
+            await probe.OpenAsync();
+            using (var pragma = probe.CreateCommand())
+            {
+                pragma.CommandText = "PRAGMA busy_timeout=0;";
+                pragma.ExecuteNonQuery();
+            }
+            using var write = probe.CreateCommand();
+            write.CommandText = "BEGIN IMMEDIATE; COMMIT;";
+            write.ExecuteNonQuery();
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* cleanup best-effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task Dispose_ImmediatelyAfterConstruction_WithManyPreSeededExpiredArtifacts_IsQuietAndIdempotent()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"hlx-dispose-quiet-{Guid.NewGuid():N}");
+        // ArtifactMaxAge=Zero makes every artifact written by the prior, already-disposed
+        // seeder a startup-maintenance eviction candidate for the store under test, so
+        // its maintenance pass has real file/row deletion work in flight when Dispose()
+        // is called immediately afterward.
+        var opts = new CacheOptions { CacheRoot = dir, ArtifactMaxAge = TimeSpan.Zero };
+        try
+        {
+            using (var seeder = new SqliteCacheStore(opts))
+            {
+                for (var i = 0; i < 50; i++)
+                {
+                    var content = new byte[16];
+                    Array.Fill(content, (byte)'X');
+                    await seeder.SetArtifactAsync($"job:pre-seed-{i}:wi:test:file:item{i}.bin", new MemoryStream(content));
+                }
+                await seeder.StartupMaintenance;
+            }
+
+            var store = new SqliteCacheStore(opts);
+
+            var firstDispose = Record.Exception(() => store.Dispose());
+            Assert.Null(firstDispose);
+
+            // Idempotent: a second Dispose() must also be quiet.
+            var secondDispose = Record.Exception(() => store.Dispose());
+            Assert.Null(secondDispose);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* cleanup best-effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task MultipleStores_SameRoot_AllCompleteStartupMaintenance_DatabaseRemainsUsable()
+    {
+        // Extends the TwoStoreInstances_SameDb_ConcurrentAccess_IsSafe shape to several
+        // concurrently constructed stores. Asserts only that every startup maintenance
+        // pass reaches completion and the database stays usable afterward — never which
+        // store's pass evicted what, which would be an outcome-of-race assertion.
+        var dir = Path.Combine(Path.GetTempPath(), $"hlx-multi-startup-{Guid.NewGuid():N}");
+        var opts = new CacheOptions { CacheRoot = dir };
+        var stores = Enumerable.Range(0, 5).Select(_ => new SqliteCacheStore(opts)).ToArray();
+        try
+        {
+            await Task.WhenAll(stores.Select(s => s.StartupMaintenance));
+
+            Assert.All(stores, s => Assert.True(s.StartupMaintenance.IsCompleted));
+
+            await stores[0].SetMetadataAsync("job:multi-startup:details", "{\"ok\":true}", TimeSpan.FromHours(1));
+            Assert.Equal("{\"ok\":true}", await stores[^1].GetMetadataAsync("job:multi-startup:details"));
+        }
+        finally
+        {
+            foreach (var s in stores)
+                s.Dispose();
+            try { Directory.Delete(dir, recursive: true); } catch { /* cleanup best-effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task StartupMaintenance_NonCancellationWorkerFault_PropagatesThroughAwaitAndDispose()
+    {
+        // §2.5 requires the maintenance body to catch nothing but cancellation, and
+        // Dispose() to absorb only a named, narrow set (OperationCanceledException,
+        // SqliteException, IOException) — anything else, ArgumentException included by
+        // name, must propagate out of Dispose() rather than be laundered into silence.
+        // This is exercised through a real, reachable production path rather than an
+        // injected seam: DeleteArtifactRows only catches IOException around
+        // CacheSecurity.ValidatePathWithinRoot, so a cache_artifacts row whose file_path
+        // has been corrupted to an absolute path outside the artifacts directory makes
+        // that call throw ArgumentException deterministically — no injected hook, no
+        // timing dependency, no assertion about which outcome a race produced. Seeding a
+        // malicious row directly via SQL follows the same pattern already used by
+        // StaleRowCleanup_FileDeletedFromDisk_ReturnsNullAndCleansUp.
+        var dir = Path.Combine(Path.GetTempPath(), $"hlx-fault-{Guid.NewGuid():N}");
+        // ArtifactMaxAge=Zero makes the seeded row a guaranteed eviction candidate for
+        // the next store's startup pass, regardless of scheduling — see
+        // Dispose_ImmediatelyAfterConstruction_WithManyPreSeededExpiredArtifacts above.
+        var opts = new CacheOptions { CacheRoot = dir, ArtifactMaxAge = TimeSpan.Zero };
+        var outsidePath = Path.Combine(Path.GetTempPath(), $"hlx-fault-outside-{Guid.NewGuid():N}.bin");
+        try
+        {
+            // Schema first, via a real writer that never sees the malicious row.
+            using (var seeder = new SqliteCacheStore(opts))
+                await seeder.StartupMaintenance;
+
+            var dbPath = Path.Combine(opts.GetEffectiveCacheRoot(), "cache.db");
+            var now = DateTimeOffset.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+            await using (var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}"))
+            {
+                await conn.OpenAsync();
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = """
+                    INSERT INTO cache_artifacts (cache_key, file_path, file_size, created_at, last_accessed, job_id)
+                    VALUES (@key, @path, @size, @created, @accessed, @jobId);
+                    """;
+                cmd.Parameters.AddWithValue("@key", "job:fault:wi:test:file:escape.bin");
+                cmd.Parameters.AddWithValue("@path", outsidePath); // absolute path — escapes the artifacts root
+                cmd.Parameters.AddWithValue("@size", 0L);
+                cmd.Parameters.AddWithValue("@created", now);
+                cmd.Parameters.AddWithValue("@accessed", now);
+                cmd.Parameters.AddWithValue("@jobId", "fault");
+                cmd.ExecuteNonQuery();
+            }
+
+            var store = new SqliteCacheStore(opts);
+
+            // Observable directly through the internal awaitable: proves the fault is
+            // real production behavior reachable from the corrupted row, not merely
+            // something Dispose() would otherwise mask.
+            var awaited = await Assert.ThrowsAsync<ArgumentException>(() => store.StartupMaintenance);
+            Assert.Contains("outside root", awaited.Message, StringComparison.OrdinalIgnoreCase);
+
+            // Bounded disposal must not hide it: the fault is neither
+            // OperationCanceledException, SqliteException, nor IOException, so it must
+            // propagate out of Dispose() rather than be swallowed.
+            var disposeFault = Record.Exception(() => store.Dispose());
+            Assert.NotNull(disposeFault);
+            var unwrapped = disposeFault as ArgumentException
+                ?? (disposeFault as AggregateException)?.Flatten().InnerExceptions.OfType<ArgumentException>().FirstOrDefault();
+            Assert.NotNull(unwrapped);
+            Assert.Contains("outside root", unwrapped!.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            // Dispose() faulted before reaching ClearAllPools(), so release pooled
+            // native handles here rather than relying on the store's own cleanup —
+            // otherwise a lingering pooled connection can hold the db file open and
+            // make the directory cleanup below flaky on Windows.
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            try { Directory.Delete(dir, recursive: true); } catch { /* cleanup best-effort */ }
+            try { File.Delete(outsidePath); } catch { /* never created by production code; best-effort */ }
+        }
+    }
 }

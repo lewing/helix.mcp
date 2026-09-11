@@ -315,6 +315,106 @@ public class SqliteCacheStoreTests : IDisposable
         Assert.NotNull(artifact);
         artifact!.Dispose();
     }
+
+    // =========================================================================
+    // L-CACHE-9: Startup maintenance lifecycle (lewing/helix.mcp#129)
+    //
+    // These tests assert observable end-state reachable only via the internal,
+    // awaitable `StartupMaintenance` task (InternalsVisibleTo HelixTool.Tests) — never
+    // scheduling. No Task.Delay/Thread.Sleep/SpinWait, and no assertion about which
+    // outcome a disposal race produced.
+    // =========================================================================
+
+    [Fact]
+    public async Task StartupMaintenance_ZeroTtlRowWrittenAfterConstruction_Survives()
+    {
+        // Regression, exact: the startup pass evicts only what was already stale when
+        // the store was constructed. A TimeSpan.Zero row written *after* construction
+        // must never be a candidate, on any platform, regardless of scheduling.
+        const string key = "job:just-written:details";
+        await _store.SetMetadataAsync(key, "{\"fresh\":true}", TimeSpan.Zero);
+
+        await _store.StartupMaintenance;
+
+        // GetMetadataAsync itself re-evaluates the TTL at call time, so a TimeSpan.Zero
+        // row always reads back as expired via the public API — the row's presence in
+        // the table is the only way to observe whether the startup pass deleted it.
+        Assert.True(await MetadataRowExistsAsync(_opts, key));
+    }
+
+    [Fact]
+    public async Task StartupMaintenance_RowExpiredBeforeConstruction_IsRemoved()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"hlx-startup-expired-{Guid.NewGuid():N}");
+        var opts = new CacheOptions { CacheRoot = dir };
+        const string key = "job:already-stale:details";
+        try
+        {
+            using (var seeder = new SqliteCacheStore(opts))
+            {
+                await seeder.SetMetadataAsync(key, "{\"stale\":true}", TimeSpan.FromHours(1));
+                await seeder.StartupMaintenance;
+            }
+
+            // Backdate directly so the row is already expired before the next store's
+            // constructor pins its cutoff — proving §2.2 evicts pre-existing staleness.
+            await BackdateMetadataExpiryAsync(opts, key, expiredBy: TimeSpan.FromHours(1));
+
+            using var store = new SqliteCacheStore(opts);
+            await store.StartupMaintenance;
+
+            Assert.False(await MetadataRowExistsAsync(opts, key));
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* cleanup best-effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task StartupMaintenance_DoesNotWeakenExplicitEviction_ZeroTtlRowStillRemoved()
+    {
+        // Proves the public EvictExpiredAsync(ct) contract is unchanged: even after
+        // startup maintenance has already completed using its pinned construction-time
+        // cutoff, an explicit call still evaluates UtcNow at call time and removes a
+        // just-written TimeSpan.Zero row.
+        await _store.StartupMaintenance;
+
+        const string key = "job:explicit-evict:details";
+        await _store.SetMetadataAsync(key, "{\"stale\":true}", TimeSpan.Zero);
+
+        await _store.EvictExpiredAsync();
+
+        Assert.False(await MetadataRowExistsAsync(_opts, key));
+    }
+
+    private static string MetadataDbPath(CacheOptions opts) => Path.Combine(opts.GetEffectiveCacheRoot(), "cache.db");
+
+    private static async Task<bool> MetadataRowExistsAsync(CacheOptions opts, string cacheKey)
+    {
+        await using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={MetadataDbPath(opts)}");
+        await conn.OpenAsync();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM cache_metadata WHERE cache_key = @key;";
+        cmd.Parameters.AddWithValue("@key", cacheKey);
+        var count = Convert.ToInt64(await cmd.ExecuteScalarAsync(), System.Globalization.CultureInfo.InvariantCulture);
+        return count > 0;
+    }
+
+    private static async Task BackdateMetadataExpiryAsync(CacheOptions opts, string cacheKey, TimeSpan expiredBy)
+    {
+        var expiredAt = (DateTimeOffset.UtcNow - expiredBy).ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        await using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={MetadataDbPath(opts)}");
+        await conn.OpenAsync();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE cache_metadata SET expires_at = @expires WHERE cache_key = @key;";
+        cmd.Parameters.AddWithValue("@expires", expiredAt);
+        cmd.Parameters.AddWithValue("@key", cacheKey);
+        var rows = cmd.ExecuteNonQuery();
+        if (rows != 1)
+            throw new InvalidOperationException(
+                $"Expected to backdate exactly one row for '{cacheKey}', but updated {rows}.");
+    }
 }
 
 // =========================================================================
@@ -596,5 +696,76 @@ public class SqliteCacheStoreEvalModeTests : IDisposable
         using var evalStore = OpenEvalStore();
 
         Assert.NotNull(await evalStore.GetMetadataAsync("job:x:details"));
+    }
+
+    // =========================================================================
+    // Startup maintenance lifecycle (lewing/helix.mcp#129) — eval mode
+    // =========================================================================
+
+    [Fact]
+    public async Task EvalMode_StartupMaintenance_IsAlreadyCompletedOnConstruction()
+    {
+        using var writer = CreateWriterStore();
+        await writer.SetMetadataAsync("job:eval-startup:details", "{}", TimeSpan.FromHours(1));
+        writer.Dispose();
+
+        using var evalStore = OpenEvalStore();
+
+        // Eval mode starts no task at all; the constructor assigns Task.CompletedTask,
+        // so it is already completed the instant the constructor returns.
+        Assert.True(evalStore.StartupMaintenance.IsCompleted);
+    }
+
+    [Fact]
+    public async Task EvalMode_OpenEvictDispose_DatabaseUnchanged_NoWalOrShmSidecars()
+    {
+        // Seed via the snapshot-export path, then force the copy to a clean, non-WAL
+        // journal mode — the "snapshot single-link requirement" from §2.6 that eval mode
+        // must preserve, and what production's in-memory-serialize export path (see
+        // SnapshotExporter.EnsureNoDatabaseSidecars) guarantees for real snapshots.
+        // SqliteConnection.BackupDatabase copies the source's persisted journal_mode
+        // setting into the destination file header, so without this the copy would still
+        // be WAL-tagged: any subsequent connection, even ReadOnly, would then be entitled
+        // to materialize a -wal/-shm pair to correctly honor that header setting — an
+        // SQLite/OS mechanic unrelated to whether this store mutates anything, and not
+        // representative of what a real exported snapshot looks like on disk.
+        const string key = "job:eval-immutable:details";
+        await SeedExpiredSnapshotAsync(writer => writer.SetMetadataAsync(key, "{}", TimeSpan.FromHours(1)));
+
+        var dbPath = DbPath;
+        var walPath = dbPath + "-wal";
+        var shmPath = dbPath + "-shm";
+
+        using (var conn = new Microsoft.Data.Sqlite.SqliteConnection(new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+               {
+                   DataSource = dbPath,
+                   Mode = Microsoft.Data.Sqlite.SqliteOpenMode.ReadWrite,
+                   Pooling = false
+               }.ToString()))
+        {
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "PRAGMA journal_mode=DELETE;";
+            Assert.Equal("delete", (string)cmd.ExecuteScalar()!);
+        }
+
+        Assert.False(File.Exists(walPath), "Precondition: snapshot must start with no -wal sidecar.");
+        Assert.False(File.Exists(shmPath), "Precondition: snapshot must start with no -shm sidecar.");
+
+        var beforeLength = new FileInfo(dbPath).Length;
+        var beforeWrite = File.GetLastWriteTimeUtc(dbPath);
+
+        using (var evalStore = OpenEvalStore())
+        {
+            Assert.True(evalStore.StartupMaintenance.IsCompleted);
+
+            await evalStore.GetMetadataAsync(key);
+            await evalStore.EvictExpiredAsync();
+        }
+
+        Assert.Equal(beforeLength, new FileInfo(dbPath).Length);
+        Assert.Equal(beforeWrite, File.GetLastWriteTimeUtc(dbPath));
+        Assert.False(File.Exists(walPath));
+        Assert.False(File.Exists(shmPath));
     }
 }

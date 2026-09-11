@@ -14,9 +14,21 @@ public sealed class SqliteCacheStore : ICacheStore
     private const int SchemaVersion = 1;
     private const string Iso8601Format = "O";
 
+    /// <summary>Bound on how long <see cref="Dispose"/> waits for startup maintenance to finish.</summary>
+    private static readonly TimeSpan DisposeJoinTimeout = TimeSpan.FromSeconds(10);
+
     private readonly CacheOptions _options;
     private readonly string _connectionString;
     private readonly string _artifactsDir;
+    private readonly CancellationTokenSource _maintenanceCts = new();
+    private int _disposed;
+
+    /// <summary>
+    /// Tracks the startup eviction pass so it can be awaited (tests) or joined (<see cref="Dispose"/>).
+    /// Never null: eval mode assigns <see cref="Task.CompletedTask"/> and starts no background work.
+    /// Internal only — not part of <see cref="ICacheStore"/>.
+    /// </summary>
+    internal Task StartupMaintenance { get; }
 
     public SqliteCacheStore(CacheOptions options)
     {
@@ -37,12 +49,30 @@ public sealed class SqliteCacheStore : ICacheStore
             : $"Data Source={dbPath};Cache=Shared";
 
         if (options.EvalMode)
+        {
             ValidateEvalSchema();
+            // No maintenance in eval mode: nothing to evict, and the snapshot must never
+            // gain a -wal/-shm sidecar or any other write.
+            StartupMaintenance = Task.CompletedTask;
+        }
         else
+        {
             InitializeSchema();
-        // Fire-and-forget eviction on startup (skipped in eval mode)
-        if (!options.EvalMode)
-            _ = Task.Run(() => EvictExpiredAsync());
+            // Pin the eviction cutoff to construction time so the startup pass only ever
+            // removes what was already stale when the store was opened — never a row
+            // written after the constructor returned. Started asynchronously (not
+            // synchronously) so a contended busy_timeout never stalls CLI startup, but the
+            // task is retained (not fire-and-forget) so it can be canceled, joined, and its
+            // fault observed in Dispose().
+            var asOf = DateTimeOffset.UtcNow;
+            // Capture the token now, on this thread — not inside the lambda, where the
+            // `.Token` getter would run only once the queued work item actually starts. If
+            // Dispose's bounded join times out and disposes the CTS before that happens,
+            // reading `.Token` late would throw ObjectDisposedException instead of the
+            // canceled token this pass needs to observe.
+            var maintenanceToken = _maintenanceCts.Token;
+            StartupMaintenance = Task.Run(() => EvictExpiredAsync(asOf, maintenanceToken));
+        }
     }
 
     private SqliteConnection OpenConnection()
@@ -418,17 +448,27 @@ public sealed class SqliteCacheStore : ICacheStore
             _options.MaxSizeBytes));
     }
 
-    public Task EvictExpiredAsync(CancellationToken ct = default)
+    /// <summary>
+    /// Remove expired metadata and old artifact files; LRU-evict if over max size.
+    /// Evaluates the current time at call time — this is the public, on-demand contract and
+    /// is intentionally distinct from the startup pass, which pins its cutoff to construction
+    /// time (see the constructor).
+    /// </summary>
+    public Task EvictExpiredAsync(CancellationToken ct = default) =>
+        EvictExpiredAsync(DateTimeOffset.UtcNow, ct);
+
+    private Task EvictExpiredAsync(DateTimeOffset asOf, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         // Eval mode: never mutate the snapshot.
         if (_options.EvalMode) return Task.CompletedTask;
-        var now = DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture);
-        var cutoff = (DateTimeOffset.UtcNow - _options.ArtifactMaxAge).ToString(Iso8601Format, CultureInfo.InvariantCulture);
+        var now = asOf.ToString(Iso8601Format, CultureInfo.InvariantCulture);
+        var cutoff = (asOf - _options.ArtifactMaxAge).ToString(Iso8601Format, CultureInfo.InvariantCulture);
 
         using var conn = OpenConnection();
 
         // Remove expired metadata
+        ct.ThrowIfCancellationRequested();
         using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = "DELETE FROM cache_metadata WHERE expires_at < @now;";
@@ -437,6 +477,7 @@ public sealed class SqliteCacheStore : ICacheStore
         }
 
         // Remove expired job state
+        ct.ThrowIfCancellationRequested();
         using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = "DELETE FROM cache_job_state WHERE expires_at < @now;";
@@ -445,6 +486,7 @@ public sealed class SqliteCacheStore : ICacheStore
         }
 
         // Remove old artifacts (by last access)
+        ct.ThrowIfCancellationRequested();
         List<(string Key, string Path)> toDelete;
         using (var cmd = conn.CreateCommand())
         {
@@ -457,7 +499,7 @@ public sealed class SqliteCacheStore : ICacheStore
                 toDelete.Add((reader.GetString(0), reader.GetString(1)));
         }
 
-        DeleteArtifactRows(conn, toDelete);
+        DeleteArtifactRows(conn, toDelete, ct);
 
         return Task.CompletedTask;
     }
@@ -496,15 +538,17 @@ public sealed class SqliteCacheStore : ICacheStore
             }
         }
 
-        DeleteArtifactRows(conn, toDelete);
+        DeleteArtifactRows(conn, toDelete, ct);
 
         return Task.CompletedTask;
     }
 
-    private void DeleteArtifactRows(SqliteConnection conn, List<(string Key, string Path)> items)
+    private void DeleteArtifactRows(SqliteConnection conn, List<(string Key, string Path)> items, CancellationToken ct)
     {
         foreach (var (key, relPath) in items)
         {
+            ct.ThrowIfCancellationRequested();
+
             // Delete file
             try
             {
@@ -535,8 +579,50 @@ public sealed class SqliteCacheStore : ICacheStore
 
     public void Dispose()
     {
+        // Idempotency guard — second and later calls return immediately. Required because
+        // fixtures and callers can dispose the same store from overlapping paths.
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
+        // Cancel before waiting — never after.
+        _maintenanceCts.Cancel();
+
+        var completedInTime = false;
+        try
+        {
+            // Join, bounded. Generous against the 5s busy_timeout in OpenConnection, and
+            // still a bound, so a pathological lock cannot hang a CLI exit forever.
+            completedInTime = StartupMaintenance.Wait(DisposeJoinTimeout);
+        }
+        catch (AggregateException ex)
+        {
+            // Narrow, expected set only: cancellation (we asked for it above), SQLite lock
+            // contention / read-only database (cache data is regenerable), and an artifact
+            // file removed externally (already the precedent in DeleteArtifactRows).
+            // Anything else is a real bug and must propagate, not be laundered into silence.
+            ex.Handle(e => e is OperationCanceledException or SqliteException or IOException);
+            completedInTime = true; // Wait() only throws once the task has actually completed.
+        }
+
+        if (!completedInTime)
+        {
+            // The pass did not finish within the bound. Attach a fault-observing
+            // continuation so a later exception can never resurface as an unobserved
+            // TaskScheduler exception; do not block disposal on it any further.
+            StartupMaintenance.ContinueWith(
+                static t => _ = t.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        // Dispose the CTS strictly after the join — disposing it earlier would hand the
+        // still-running pass a disposed token.
+        _maintenanceCts.Dispose();
+
         // No persistent connection to dispose — connections are opened/closed per operation.
-        // Call SqliteConnection.ClearAllPools() to release shared cache resources.
+        // Call SqliteConnection.ClearAllPools() to release shared cache resources. Must run
+        // last: pools must not be cleared while a maintenance connection may still be open.
         SqliteConnection.ClearAllPools();
     }
 }

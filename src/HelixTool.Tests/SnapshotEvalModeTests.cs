@@ -31,6 +31,10 @@ internal static class SnapshotEvalTestHarness
         using (var writer = new SqliteCacheStore(new CacheOptions { CacheRoot = liveCacheRoot }))
         {
             await seedAsync(writer);
+            // Startup maintenance is now tracked and awaitable (lewing/helix.mcp#129); wait
+            // for it explicitly so the backup below never races the writer's own eviction
+            // pass, rather than relying solely on Dispose()'s internal join.
+            await writer.StartupMaintenance;
         }
 
         var liveRoot = Path.Combine(liveCacheRoot, "public");
@@ -49,12 +53,12 @@ internal static class SnapshotEvalTestHarness
             Pooling = false
         }.ToString();
 
-        // SqliteCacheStore's constructor starts an eviction pass that nothing awaits
-        // (`_ = Task.Run(() => EvictExpiredAsync())`) and that Dispose does not cancel,
-        // so it can still hold a write lock or WAL snapshot on the live database after
-        // `writer` has been disposed. A single-shot BackupDatabase may encounter
-        // SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT; guarding against this transient condition
-        // by retrying until the eviction releases the database. Only lock acquisition
+        // Startup maintenance is tracked and joined on Dispose() (lewing/helix.mcp#129), and
+        // this method now also awaits it explicitly above — so it is no longer the source of
+        // contention here. BackupWithRetryAsync is kept regardless: SQLite can still report
+        // SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT from ordinary WAL-checkpoint/connection-pool
+        // release timing around the writer's close, a legitimate transient condition that
+        // has nothing to do with the old fire-and-forget eviction task. Only lock acquisition
         // is retried, so the bytes copied are identical whichever attempt wins, and
         // exhausting the budget rethrows instead of silently producing an incomplete
         // snapshot.

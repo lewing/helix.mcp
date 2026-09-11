@@ -46,6 +46,23 @@ Reviewed Ripley's FindFilesAsync + MCP tool implementation and Lambert's test su
 
 ---
 
+## 2026-09-11 — Startup cache-eviction lifecycle architecture review & merge approval (#129)
+
+**Ceremony:** Dual-gate: pre-implementation design review (read-only, sync) and independent merge reviewer (sync).
+
+**Design Review:** Identified and specified the correct boundary for fixing issue #129 (untracked startup maintenance task). The issue bundled three defects: (1) untracked handle, (2) unordered disposal, (3) late-binding cutoff (the Windows CI failure root cause). Designed a full solution with construction-time cutoff pinning, internal completion handle, strict disposal ordering (cancel → bounded join → fault observation → CTS disposal → pool clear), and deterministic test contract (no timing, no race-outcome assertions, only observable end-state).
+
+Delivered specifications to three agents:
+- **Ripley:** One-file production change (SqliteCacheStore.cs), exact lifecycle per spec
+- **Lambert:** Deterministic coverage across 8 new tests, stale-comment cleanup in 2 existing files
+- **Kane:** Single [Unreleased] CHANGELOG entry
+
+**Merge Review:** Verified production implementation (90 insertions, one file), fault-propagation reaffirmation (no code change, correct semantics), test coverage (8 facts, zero banned patterns), and CHANGELOG accuracy. APPROVED with no blocking findings. Recorded three non-blocking observations for future reference (cleanup tail skipping on faults, lazy token reading, timeout pool semantics).
+
+**Decisions:** `dallas-startup-cache-eviction-lifecycle.md` (design, §2.1–§2.6 with reject-on-sight gate), `ripley-startup-cache-eviction-implementation.md` (R1 delivery report), `ripley-startup-cache-eviction-fault-reaffirmation.md` (reaffirmed fault contract), `lambert-startup-cache-eviction-tests.md` (coverage report), `kane-changelog.md` (documentation status).
+
+**Orchestration logs:** `.squad/orchestration-log/2026-09-11-0000-dallas-startup-cache-lifecycle-review.md`, `.squad/orchestration-log/2026-09-11-1400-dallas-reviewer-verdict.md`
+
 ## 2026-08-20 — MCP C# SDK 1.4.0 → 2.2.0 migration decision
 
 **Verdict:** APPROVED phase-1 (package bump + one explicit config line). REJECTED Ash's
@@ -780,3 +797,68 @@ with `git tag -a v0.10.0 -m "Release v0.10.0"` then `git push origin v0.10.0`, w
 
 **Status:** COMPLETED
 **Outcome:** Release-prep commit `00c18d2` ready for review/merge; no tag pushed.
+
+## 2026-09-11: Pre-implementation design review — startup cache-eviction lifecycle (#129) (completed)
+
+Ran the read-only design review for #129. Brief at
+`.squad/decisions/inbox/dallas-startup-cache-eviction-lifecycle.md`. No production or test file
+touched; Release build 0 Warning(s)/0 Error(s) before and after.
+
+**Reframed the defect, which changed the fix.** The issue title says "track and await", but
+`_ = Task.Run(() => EvictExpiredAsync())` bundles three defects, and tracking only addresses two.
+The third — the pass computes `DateTimeOffset.UtcNow` *when it eventually runs*, not when the
+store was opened — is the one that actually reddened Windows CI on PR #128. A tracked task makes
+that race observable; it does not remove it. So the decision requires the startup pass to pin its
+cutoff at construction time, making "startup maintenance deleted a row written after
+construction" structurally impossible on every platform. The public `EvictExpiredAsync(ct)`
+contract is explicitly left evaluating `UtcNow` at call time, so no existing caller or test moves.
+
+**Durable pattern — pinned as-of timestamp for startup sweeps.** Any maintenance pass scheduled
+at construction should capture its cutoff at construction, not at execution. Otherwise the
+scheduler decides what data is eligible, and no test delay can close that. Generalizes beyond
+this cache.
+
+**Refused to add a test seam, and said why in the brief.** The tempting fix for "prove
+cancellation is honored mid-pass" is a static hook — but a process-global mutable hook forces
+suite serialization, which the issue explicitly forbids. Ruled instead that determinism comes
+from `await store.StartupMaintenance` (internal, riding the existing
+`InternalsVisibleTo HelixTool.Tests` on HelixTool.Core) plus observable end-state: after
+`Dispose()` returns, the task is completed and a fresh connection to the database opens and
+writes immediately. Added an escalation rule so Lambert brings any un-expressible invariant to me
+rather than inventing surface.
+
+**Banned outcome-of-race assertions by name.** "Ran to completion" vs. "was canceled" after a
+construct-then-dispose is genuinely scheduling-dependent — asserting it is the *same* class of
+mistake as the original failing test. Listed as a reject-on-sight condition, because it is the
+kind of test that passes locally and fails on one CI OS.
+
+**Made "minimal public impact" mechanically checkable:** the production diff is exactly one file,
+`SqliteCacheStore.cs`. If `ICacheStore`, `ICacheStoreFactory`, `EvalModeServices`, or `Program.cs`
+needs to move, the design is wrong and Ripley stops. A criterion someone can verify with
+`git diff --stat` beats a criterion they have to interpret.
+
+**Narrow-catch table instead of a prose rule.** The body catches nothing but cancellation
+(detected via `IsCancellationRequested`, per the cancellation-vs-timeout skill, not token
+identity); `Dispose` absorbs exactly `OperationCanceledException`, `SqliteException`,
+`IOException`, each with a named reason, and lets everything else propagate. Enumerating the three
+is enforceable in review; "avoid broad swallowing" is not.
+
+**Declined to overclaim in the CHANGELOG.** The CLI never disposes its `ServiceProvider`
+(`Program.cs:113`), so at process exit the pass is abandoned by the OS rather than joined. Told
+Kane the guarantee is "no untracked work", not "always joined at shutdown", and recorded the
+limitation in the brief so the next reader does not have to rediscover it.
+
+**Put two stale test comments in scope.** `SnapshotEvalModeTests.cs:53-60` and the rationale
+header of `ExpiredSnapshot.cs` both document the fire-and-forget task as current behavior — they
+exist only because of this bug. The workarounds themselves stay (the backup retry still guards
+real cross-process WAL contention), but comments describing a fixed bug as live are the same
+defect class I rejected in the last documentation cycle.
+
+**Did not convene subagents.** Everything was answerable from the cache subsystem plus the two
+test files that already document the bug; Ripley and Lambert would have re-read the same code.
+Recording the omission as deliberate, same as the 2026-09-04 review.
+
+**Status:** COMPLETED
+**Outcome:** Design accepted. R1 (Ripley, `SqliteCacheStore.cs` only), L1 (Lambert, four test
+files), K1 (Kane, CHANGELOG `[Unreleased]` only) may begin. Nine reject-on-sight conditions
+recorded for my merge review.

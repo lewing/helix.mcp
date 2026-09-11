@@ -16,6 +16,58 @@ Completed integration test work for strict-mode implementation. Confirmed tools/
 
 ## Recent Work
 
+## 2026-09-11: Startup cache-eviction lifecycle tests (#129) — Dallas's decision implemented
+
+**Context:** Dallas's read-only design review (`.squad/decisions/inbox/dallas-startup-cache-eviction-lifecycle.md`) specified an internal, awaitable `SqliteCacheStore.StartupMaintenance` task (construction-time cutoff pinning, cancel-then-join disposal ordering) to fix #129. I added the required deterministic test coverage while Ripley's production implementation landed concurrently in the same worktree.
+
+**Tests added (8 new facts across 3 authorized files), all using `await store.StartupMaintenance` / `IsCompleted` — zero `Task.Delay`/`Thread.Sleep`/`SpinWait`/retry loops/`DisableParallelization`:**
+- `SqliteCacheStoreTests.cs`: zero-TTL row written after construction survives (regression exact, #129 inverted into a permanent guard); a row expired before construction is removed by startup maintenance; startup maintenance doesn't weaken the explicit `EvictExpiredAsync()` contract; eval-mode `StartupMaintenance` already completed on construction; eval-mode open/evict/dispose leaves the db byte-identical with no new WAL/SHM sidecars.
+- `SqliteCacheStoreConcurrencyTests.cs`: `Dispose()` joins startup maintenance and the database is immediately writable (proved with `busy_timeout=0` — fail-fast, not merely "eventually succeeds"); immediate + double `Dispose()` is quiet with 50 pre-seeded artifacts mid-eviction; 5 concurrently constructed stores over one root all complete maintenance and leave the db usable (extends `TwoStoreInstances_SameDb_ConcurrentAccess_IsSafe`'s shape, doesn't replace it).
+- Updated the stale fire-and-forget-bug comments in `SnapshotEvalModeTests.cs` (`BackupWithRetryAsync` rationale — kept the retry, it still guards legitimate WAL-checkpoint/pool-release timing) and `ExpiredSnapshot.cs` (rationale header) to describe current, fixed behavior; also added an explicit `await writer.StartupMaintenance;` in `CreateStableSnapshotAsync` now that it's joinable.
+
+**Hard-won lesson — a public API's own TTL filter can mask the very thing you're testing:** `GetMetadataAsync` re-evaluates `expires_at > UtcNow` at *call time*. A `TimeSpan.Zero` row therefore always reads back as "not found" through the public API regardless of whether the startup-maintenance DELETE actually ran — by the time you call `GetMetadataAsync`, real wall-clock time has already made the row look expired to that query. To prove a row survived (or was removed by) startup maintenance, you must check table-row *presence* directly via a raw `SqliteConnection`, not through the store's own TTL-filtered getters. Recorded because it is an easy, silently-wrong pattern: a test using `GetMetadataAsync` here would pass or fail for the wrong reason.
+
+**Hard-won lesson — `SqliteConnection.BackupDatabase` (disk-to-disk) copies the source's persisted `journal_mode` header setting, not just its rows.** Seeding an eval-mode snapshot by backing up a live WAL-mode writer db onto a fresh destination file leaves the destination *tagged* as WAL-journaled in its header, even though no `-wal`/`-shm` sidecar exists yet on disk. The next connection to open it — even `Mode=ReadOnly`, even for a pure read — is then entitled to materialize a `-wal`/`-shm` pair to honor that persisted setting. This is normal SQLite protocol behavior, not a defect in the store under test, and it is *not* what a real exported snapshot looks like on disk: production's `SnapshotExporter` stages through an in-memory (`journal_mode=memory`) connection and writes the serialized bytes directly, then asserts `EnsureNoDatabaseSidecars`. My first pass at the eval-mode "no WAL/SHM sidecar" test used the disk-to-disk backup helper directly and flaked under the full suite; the fix was to explicitly force `PRAGMA journal_mode=DELETE;` on the seeded copy before asserting the "clean snapshot" baseline, rather than assuming the backup path alone produces one. Full 1989-test suite confirmed green across 3 repeated runs after the fix, with the 43 targeted tests also green across 3 repeated runs beforehand.
+
+**Environment note (recurring, not code):** local runtime is .NET 11 preview only; `dotnet test`/`dotnet build` against `net10.0`-targeted projects require `DOTNET_ROLL_FORWARD=Major` (or `LatestMajor`) or the test host refuses to launch. Same quirk previously logged 2026-08 cycle; still applies.
+
+**Validation:** 43 targeted tests (SqliteCacheStoreTests, SqliteCacheStoreConcurrencyTests, SnapshotEvalModeTests) green across 3 consecutive runs; full suite 1989 passed / 8 skipped / 0 failed across 3 consecutive runs, `DOTNET_ROLL_FORWARD=Major`.
+
+### Same-day follow-up: non-cancellation worker-fault propagation through bounded disposal
+
+Creator asked for deterministic coverage that bounded disposal does not hide a non-cancellation
+worker fault — without a new broad/public seam or violating Dallas's no-hook/no-race constraints.
+Found a real, already-reachable path instead of adding one: `DeleteArtifactRows` catches only
+`IOException` around `CacheSecurity.ValidatePathWithinRoot`, which throws `ArgumentException` —
+one of the exact types Dallas's §2.5 names as required to propagate out of `Dispose()` — when a
+`cache_artifacts.file_path` resolves outside the artifacts root. Seeding one malicious row
+directly via SQL (same technique `StaleRowCleanup_FileDeletedFromDisk_ReturnsNullAndCleansUp`
+already uses) with `ArtifactMaxAge=Zero` makes it a guaranteed startup-maintenance eviction
+candidate for the next store — deterministic, no timing, no injected hook.
+
+Added `StartupMaintenance_NonCancellationWorkerFault_PropagatesThroughAwaitAndDispose`
+(`SqliteCacheStoreConcurrencyTests.cs`): asserts the fault is directly observable by awaiting
+`store.StartupMaintenance` (`ArgumentException`, unwrapped by `await`), then asserts the same exception propagates through `Dispose()` via the AggregateException timeout path. No new seam added; path is already reachable (malicious artifact path seeded directly via SQL, paired with ArtifactMaxAge=Zero, guarantees startup-maintenance eviction).
+
+**Cross-agent coordination:** Ripley's production code landed concurrently in same worktree; I validated against Ripley's internal `SqliteCacheStore.StartupMaintenance` task contract while he validated fault propagation separately. No blocking dependencies; full suite green after Lambert's WAL-header fix. See `ripley-startup-cache-eviction-fault-reaffirmation.md` for the incidental BackupDatabase discovery.
+
+**Decision:** `lambert-startup-cache-eviction-tests.md` (full coverage report, hard-won lessons on TTL-filtering and WAL headers, fault-propagation no-seam pattern).
+
+**Orchestration log:** `.squad/orchestration-log/2026-09-11-1355-lambert-startup-cache-tests.md`
+`store.Dispose()` also throws — the `AggregateException.Handle` predicate in Dispose only
+absorbs `OperationCanceledException`/`SqliteException`/`IOException`, so `ArgumentException`
+must resurface. Verified empirically on the first attempt (5 repeated runs green, full suite
+1990 passed / 8 skipped / 0 failed across 3 repeated runs) — the reasoning about which exact
+exception type escapes which catch matched Ripley's actual implementation exactly.
+
+**Note for cleanup hygiene:** when `Dispose()` faults before reaching `ClearAllPools()`, pooled
+native SQLite handles are never released by the store itself. The test's own `finally` calls
+`SqliteConnection.ClearAllPools()` before deleting its temp directory — this is the same public
+driver API production `Dispose()` already calls, not a new seam, but it matters: without it, a
+lingering pooled connection can hold the db file open and make directory cleanup flaky, especially
+on Windows.
+
+---
 
 ## 2026-07-20: Tiered outputSchema Recommendation — PEER REVIEW
 

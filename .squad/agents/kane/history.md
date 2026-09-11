@@ -48,6 +48,14 @@
 - **llmstxt raw string:** Flush-left in Program.cs (no indentation inside """ """ block).
 - **MCP tool table descriptions:** One line each. Detailed param docs in [Description] attributes, not README.
 - **File locations (DO grep before editing):** HelixMcpTools.cs moved to src/HelixTool.Mcp.Tools/ (from src/HelixTool.Core/); AzdoMcpTools.cs same location.
+
+## 2026-09-11 — Startup cache-eviction lifecycle CHANGELOG entry (#129)
+
+**Documentation:** Added single [Unreleased] CHANGELOG entry for #129. Clarified that startup cache maintenance is now tracked and canceled/joined on disposal, and the startup pass no longer removes entries written after the cache was opened. Explicit note: "Maintenance is not always awaited at shutdown" (CLI does not dispose ServiceProvider). No README/cli-reference changes (no public API changes, no command/flag changes). No misleading "always await" claims. Out of scope: broader TTL/LRU documentation (unchanged).
+
+**Decision:** `kane-changelog.md` (documentation status & scope).
+
+**Orchestration log:** `.squad/orchestration-log/2026-09-11-1350-kane-changelog.md`
 - **Folder restructuring (2026-03-10):** 9 Helix files → Core/Helix/; Cache namespace added; shared utils extracted; Helix/AzDO subfolders in Mcp.Tools and Tests (59 files, 1038 tests pass, PR #17).
 
 ---
