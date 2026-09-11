@@ -584,45 +584,58 @@ public sealed class SqliteCacheStore : ICacheStore
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        // Cancel before waiting — never after.
-        _maintenanceCts.Cancel();
-
-        var completedInTime = false;
         try
         {
-            // Join, bounded. Generous against the 5s busy_timeout in OpenConnection, and
-            // still a bound, so a pathological lock cannot hang a CLI exit forever.
-            completedInTime = StartupMaintenance.Wait(DisposeJoinTimeout);
+            // Cancel before waiting — never after.
+            _maintenanceCts.Cancel();
+
+            var completedInTime = false;
+            try
+            {
+                // Join, bounded. Generous against the 5s busy_timeout in OpenConnection, and
+                // still a bound, so a pathological lock cannot hang a CLI exit forever.
+                completedInTime = StartupMaintenance.Wait(DisposeJoinTimeout);
+            }
+            catch (AggregateException ex)
+            {
+                // Narrow, expected set only: cancellation (we asked for it above), SQLite lock
+                // contention / read-only database (cache data is regenerable), and an artifact
+                // file removed externally (already the precedent in DeleteArtifactRows).
+                // Anything else is a real bug and must propagate, not be laundered into silence.
+                ex.Handle(e => e is OperationCanceledException or SqliteException or IOException);
+                completedInTime = true; // Wait() only throws once the task has actually completed.
+            }
+
+            if (!completedInTime)
+            {
+                // The pass did not finish within the bound. Attach a fault-observing
+                // continuation so a later exception can never resurface as an unobserved
+                // TaskScheduler exception; do not block disposal on it any further.
+                StartupMaintenance.ContinueWith(
+                    static t => _ = t.Exception,
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
         }
-        catch (AggregateException ex)
+        finally
         {
-            // Narrow, expected set only: cancellation (we asked for it above), SQLite lock
-            // contention / read-only database (cache data is regenerable), and an artifact
-            // file removed externally (already the precedent in DeleteArtifactRows).
-            // Anything else is a real bug and must propagate, not be laundered into silence.
-            ex.Handle(e => e is OperationCanceledException or SqliteException or IOException);
-            completedInTime = true; // Wait() only throws once the task has actually completed.
+            // Runs even when an unexpected fault above propagates out of Dispose — cleanup
+            // must never be skipped just because the join surfaced a real bug.
+
+            // Dispose the CTS strictly after the join — disposing it earlier would hand the
+            // still-running pass a disposed token.
+            _maintenanceCts.Dispose();
+
+            // No persistent connection to dispose — connections are opened/closed per operation.
+            // Release only this store's own connection-string pool group, never the
+            // process-global pool set: SqliteConnection.ClearAllPools() would drop every other
+            // concurrently live store's warm pool and mark its leased connections non-poolable.
+            // A fresh, unopened SqliteConnection is enough to bind the target pool group — the
+            // group is resolved from the ConnectionString setter, so opening it is unnecessary
+            // and the connection must not be cached beyond this call.
+            using var poolHandle = new SqliteConnection(_connectionString);
+            SqliteConnection.ClearPool(poolHandle);
         }
-
-        if (!completedInTime)
-        {
-            // The pass did not finish within the bound. Attach a fault-observing
-            // continuation so a later exception can never resurface as an unobserved
-            // TaskScheduler exception; do not block disposal on it any further.
-            StartupMaintenance.ContinueWith(
-                static t => _ = t.Exception,
-                CancellationToken.None,
-                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
-        }
-
-        // Dispose the CTS strictly after the join — disposing it earlier would hand the
-        // still-running pass a disposed token.
-        _maintenanceCts.Dispose();
-
-        // No persistent connection to dispose — connections are opened/closed per operation.
-        // Call SqliteConnection.ClearAllPools() to release shared cache resources. Must run
-        // last: pools must not be cleared while a maintenance connection may still be open.
-        SqliteConnection.ClearAllPools();
     }
 }
