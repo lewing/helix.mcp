@@ -8,6 +8,22 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+### Snapshot export and validation for offline replay mode
+
+New `hlx snapshot` commands enable offline evaluation and reproducible test scenarios:
+
+- **`hlx snapshot export <destination>`** — Export the live cache to a portable snapshot directory. Preserves all cache keys and artifact files. Prints auth-scoped replay limitations and usage instructions with `HLX_EVAL_SNAPSHOT`.
+- **`hlx snapshot validate <snapshotPath>`** — Validate a snapshot for use with `HLX_EVAL_SNAPSHOT`. Checks SQLite integrity, schema version, sidecar absence (single-link requirement), and artifact references. Returns exit code 0 (valid) or 1 (invalid) with detailed error/warning diagnostics.
+
+**Replay mode:** Set `HLX_EVAL_SNAPSHOT=/path/to/snapshot` to run `hlx` against exported cache data instead of live APIs. Useful for:
+- Offline investigation (no network required)
+- Reproducible analysis (same snapshot, same results)
+- Test automation (deterministic cache for subprocess testing)
+
+**Auth-scoped replay semantics:** Environment-keyed entries (via `AZDO_TOKEN`) are reproducible with the identical token and `AZDO_TOKEN_TYPE` classification. Anonymous/public entries always replay. AzureCliCredential/az CLI-derived partitions are not reproducible in eval mode; use `AZDO_TOKEN` to export if CLI auth was used.
+
+**Snapshot layout:** Single-directory structure with `cache.db` (SQLite, exactly one hard link) and `artifacts/` (one link per file). Sidecars (`-wal`, `-shm`, `-journal`) must not be present.
+
 ### `azdo_helix_jobs` — primary binding filters
 
 - The primary Helix strategy now binds parsed AzDO queue-monitor failure evidence to matching Helix jobs and applies all documented filters without per-job requests. Failure counts reflect attached evidence, unknown monitor IDs are disclosed but do not create synthetic rows, and unavailable timelines make failure filters explicitly inconclusive while preserving state-based filtering.

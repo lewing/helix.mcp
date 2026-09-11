@@ -556,8 +556,10 @@ public class AzdoEvidenceFixtureTests
     /// <summary>
     /// Representative fixture for build 1569889 (7 failed/canceled jobs, all attempt=2,
     /// each with Attempt1 and Attempt2 artifacts — demonstrating retry ambiguity).
+    /// Internal (not private) so other test files (e.g. snapshot/eval-mode integration tests)
+    /// can reuse this deterministic fixture instead of duplicating it.
     /// </summary>
-    private static (List<AzdoTimelineRecord> Jobs, List<AzdoBuildArtifact> Artifacts) Build1569889Fixture()
+    internal static (List<AzdoTimelineRecord> Jobs, List<AzdoBuildArtifact> Artifacts) Build1569889Fixture()
     {
         var jobNames = new[]
         {

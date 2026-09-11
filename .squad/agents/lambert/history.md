@@ -358,3 +358,53 @@ Methods use `=> throw Blocked()` pattern (throw before returning Task). xUnit's 
 
 **6. Reviewer verdict**
 **APPROVE** — All 1614 tests pass (1612 pass, 2 pre-existing skips). All acceptance criteria are met by the production implementation. No high-confidence correctness defects found in the final code.
+
+---
+
+## 2026-09-11: Closed remaining gap — snapshot-backed evidence planning integration test
+
+**Task:** Prove `AzdoService.GetEvidencePlanAsync` (build+timeline+artifacts -> `AzdoEvidenceMatcher`)
+consumes only snapshot/cache-backed data with network genuinely blocked, and still produces the
+same deterministic mapping/completeness behavior the matcher-level fixture tests already
+established — closing the gap between two suites that each proved half the story:
+`SnapshotEvalModeTests.SnapshotCiEvidenceScenarioTests` (individual cached endpoints served
+offline) and `AzdoEvidenceFixtureTests` (matcher mapping/completeness), but never both together
+through the real `AzdoService` -> `CachingAzdoApiClient`(eval mode) -> `OfflineAzdoApiClient` path.
+
+**What was added:** `src/HelixTool.Tests/AzDO/AzdoEvidencePlanSnapshotEvalModeTests.cs` (3 tests),
+plus a one-line visibility change (`private` -> `internal`) on
+`AzdoEvidenceFixtureTests.Build1569889Fixture()` so the new file could reuse the existing 7-job /
+14-artifact fixture instead of duplicating it. No other production or test files touched.
+
+1. `EvalMode_AutoStrategy_ProducesDeterministicCompleteMapping_FromSnapshotOnly` — success path:
+   seeds a real snapshot (via `SnapshotEvalTestHarness.CreateStableSnapshotAsync`, i.e. an actual
+   writer-store -> `BackupDatabase` snapshot, not a direct file copy) with build/timeline/artifacts
+   cache entries, opens it in eval mode with `OfflineAzdoApiClient` as the network layer, and
+   asserts `plan.Complete == true`, all 7 entries `"mapped"` with a single attempt-2 candidate.
+2. `EvalMode_NormalizedExactStrategy_ProducesDeterministicAmbiguity_FromSnapshotOnly` — same
+   snapshot, `Match = normalized-exact`: all 7 entries become `"ambiguous"` (2 candidates,
+   attempts `[1,2]`), `plan.Complete == false`, `IncompleteReasons.Count == 7`. This is the
+   completeness/ambiguity half of the gate, proven through the real service call path instead of
+   calling `AzdoEvidenceMatcher.BuildPlan` directly.
+3. `EvalMode_MissingArtifactsSnapshotEntry_ThrowsEvalModeError_NeverFallsBackToNetwork` — partial
+   snapshot (artifacts cache entry omitted): `GetEvidencePlanAsync` throws
+   `InvalidOperationException` with an "eval mode" message rather than silently falling back to a
+   live AzDO call. Because `OfflineAzdoApiClient` throws on any call, a *successful* plan in tests
+   1–2 is itself proof no live network call occurred; test 3 proves the cache-miss failure mode is
+   explicit rather than a silent fallback.
+
+**Validation:** Targeted filter (new class + `AzdoEvidenceFixtureTests` + `AzdoEvidenceMatcherTests`
++ `AzdoEvidenceSurfaceTests` + `SnapshotEvalModeTests`) — 187/187 passed. Full suite —
+1981 passed, 8 pre-existing skips (matches the last known full-suite baseline), 0 failures.
+
+**No production defect found.** `AzdoService.GetEvidencePlanAsync` and `CachingAzdoApiClient`
+already compose correctly with eval mode; no production code changed.
+
+**Reusable technique:** When a matcher/algorithm-level fixture (private helper method) already
+encodes the exact deterministic scenario an integration test needs, promote its visibility to
+`internal` (same assembly) rather than re-deriving equivalent fixture data inline. This keeps the
+"13 unmatched" / "7 mapped, all attempt-2" / "7 ambiguous, both attempts" facts defined in exactly
+one place, so future changes to those fixtures automatically keep both the unit- and
+integration-level tests in sync — directly the test-discipline principle of not letting assertion
+data drift from a single source of truth, applied across test files instead of just across a
+prod/test boundary.
