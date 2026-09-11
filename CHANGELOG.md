@@ -8,6 +8,10 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+### Startup cache maintenance — tracked and deterministic lifecycle
+
+Cache store now tracks its startup maintenance task and cancels/joins it on disposal. The startup pass captures its time-of-open and evicts only entries already stale at that moment, eliminating a race where entries written after the store opened could be incorrectly deleted (#129).
+
 ### Snapshot export and validation for offline replay mode
 
 New `hlx snapshot` commands enable offline evaluation and reproducible test scenarios:

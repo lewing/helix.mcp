@@ -1,16 +1,19 @@
 // Deterministic construction of eval-mode snapshots that contain already-expired rows.
 //
-// A non-eval SqliteCacheStore schedules a fire-and-forget EvictExpiredAsync from its
-// constructor. That work item can land at any later point — including after a test has
-// written its rows, and after the writer store has been disposed — so seeding rows with
-// TimeSpan.Zero through a live writer is a race that no fixed delay can close. It surfaced
-// as a windows-latest CI failure (EvalMode_EvictExpired_IsNoOp_ExpiredEntriesRemain) once
-// thread-pool contention pushed the eviction past the guard delay.
+// The eval-mode no-op tests need rows whose expires_at is already in the past by the time
+// the eval store validates the snapshot. Seeding such a row directly through a live writer
+// is not safe even now that startup maintenance is tracked and joined (lewing/helix.mcp#129):
+// the startup pass pins its eviction cutoff at construction time, so a TimeSpan.Zero row
+// written *before* construction is a legitimate target for that writer's own startup pass,
+// and an explicit EvictExpiredAsync() call on that writer would remove it too. Backdating
+// only after the writer is closed, in a private copy no SqliteCacheStore ever opens,
+// sidesteps both.
 //
 // The seeding here is race-free by construction: rows are written through the real writer
-// with a live TTL (so eviction cannot match them whenever it runs), the database is backed
-// up to the snapshot path, and expires_at is backdated only in that copy. No SqliteCacheStore
-// instance ever targets the copy, so no eviction can reach it.
+// with a live TTL (so no eviction pass — startup or explicit — can match them while the
+// writer is open), the database is backed up to the snapshot path, and expires_at is
+// backdated only in that copy. No SqliteCacheStore instance ever targets the copy, so no
+// eviction can reach it.
 
 using System.Globalization;
 using HelixTool.Core.Cache;
