@@ -512,6 +512,17 @@ public class CiKnowledgeServiceTests
     }
 
     [Fact]
+    public void GetGuide_Runtime_DoesNotTreatAzdoEvidenceAsBuildAnalysisMatches()
+    {
+        var guide = CiKnowledgeService.GetGuide("runtime");
+
+        Assert.Contains("completed GitHub Build Analysis check", guide);
+        Assert.Contains("correlate its report to the AzDO build", guide);
+        Assert.Contains("knownIssues=[] and unmatchedFailures do not establish Build Analysis matches or unmatched failures", guide);
+        Assert.Contains("unavailable or incomplete check means match status is unknown, not zero matches", guide);
+    }
+
+    [Fact]
     public void GetGuide_UnknownRepo_ReturnsGeneralGuide()
     {
         var guide = CiKnowledgeService.GetGuide("some-unknown-repo");
@@ -640,6 +651,17 @@ public class CiKnowledgeServiceTests
         Assert.Contains("Most .NET repos do NOT upload test results to Helix", overview);
         Assert.Contains("azdo_test_runs", overview);
         Assert.Contains("failedTests=0 is a lie", overview);
+    }
+
+    [Fact]
+    public void GetOverview_DoesNotTreatAzdoEvidenceAsBuildAnalysisMatches()
+    {
+        var overview = CiKnowledgeService.GetOverview();
+
+        Assert.Contains("completed GitHub Build Analysis check", overview);
+        Assert.Contains("Correlate its report to the AzDO build", overview);
+        Assert.Contains("knownIssues=[]` and `unmatchedFailures` are not Build Analysis conclusions", overview);
+        Assert.Contains("unavailable or incomplete check means match status is unknown, not zero matches", overview);
     }
 
     [Fact]
