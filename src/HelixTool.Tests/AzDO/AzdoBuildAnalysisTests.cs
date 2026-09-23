@@ -1,4 +1,6 @@
+using System.ComponentModel;
 using HelixTool.Core.AzDO;
+using HelixTool.Mcp.Tools;
 using NSubstitute;
 using Xunit;
 
@@ -13,6 +15,25 @@ public class AzdoBuildAnalysisTests
     {
         _client = Substitute.For<IAzdoApiClient>();
         _svc = new AzdoService(_client);
+    }
+
+    [Fact]
+    public void ToolAndResultDescriptions_DistinguishAzdoEvidenceFromBuildAnalysisMatches()
+    {
+        var toolDescription = Attribute.GetCustomAttribute(
+            typeof(AzdoMcpTools).GetMethod(nameof(AzdoMcpTools.BuildAnalysis))!,
+            typeof(DescriptionAttribute)) as DescriptionAttribute;
+        Assert.Contains("does not retrieve Build Analysis matched KBEs", toolDescription!.Description);
+        Assert.Contains("knownIssues=[] does not mean", toolDescription.Description);
+        Assert.Contains("not failures classified as unmatched by Build Analysis", toolDescription.Description);
+
+        var knownIssuesDescription = typeof(BuildAnalysisResult).GetProperty(nameof(BuildAnalysisResult.KnownIssues))!
+            .GetCustomAttributes(typeof(DescriptionAttribute), false).Cast<DescriptionAttribute>().Single();
+        Assert.Contains("An empty list does not mean Build Analysis found no matches", knownIssuesDescription.Description);
+
+        var unmatchedDescription = typeof(BuildAnalysisResult).GetProperty(nameof(BuildAnalysisResult.UnmatchedFailures))!
+            .GetCustomAttributes(typeof(DescriptionAttribute), false).Cast<DescriptionAttribute>().Single();
+        Assert.Contains("not failures classified as unmatched by Build Analysis", unmatchedDescription.Description);
     }
 
     private void SetupBuild(AzdoBuild build, int buildId = 42,
@@ -30,7 +51,7 @@ public class AzdoBuildAnalysisTests
     }
 
     [Fact]
-    public async Task ExtractsKnownIssuesFromBuildTags()
+    public async Task ExtractsIssueUrlsFromBuildTags()
     {
         SetupBuild(new AzdoBuild
         {
@@ -50,7 +71,7 @@ public class AzdoBuildAnalysisTests
     }
 
     [Fact]
-    public async Task ExtractsKnownIssuesFromTimelineIssueMessages()
+    public async Task ExtractsIssueUrlsFromTimelineIssueMessages()
     {
         SetupBuild(new AzdoBuild { Id = 42, Result = "failed" });
         SetupTimeline(new AzdoTimeline
@@ -118,7 +139,7 @@ public class AzdoBuildAnalysisTests
     }
 
     [Fact]
-    public async Task CollectsUnmatchedErrorsFromTimeline()
+    public async Task CollectsTimelineErrorsWithoutIssueUrls()
     {
         SetupBuild(new AzdoBuild { Id = 42, Result = "failed" });
         SetupTimeline(new AzdoTimeline
@@ -145,7 +166,7 @@ public class AzdoBuildAnalysisTests
     }
 
     [Fact]
-    public async Task NoIssuesOrFailures_ReturnsEmptyResult()
+    public async Task NoIssueUrlsOrTimelineErrors_ReturnsEmptyResult()
     {
         SetupBuild(new AzdoBuild { Id = 42, Result = "succeeded" });
         SetupTimeline(new AzdoTimeline { Id = "tl1", Records = [] });

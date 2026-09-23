@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Text.Json.Serialization;
 
 namespace HelixTool.Core.AzDO;
@@ -606,14 +607,20 @@ public sealed class CrossStepSearchResult
     [JsonPropertyName("steps")] public List<StepSearchResult> Steps { get; init; } = [];
 }
 
-/// <summary>Result of Build Analysis known issue extraction from build tags and timeline.</summary>
+/// <summary>GitHub issue URL evidence extracted from AzDO build tags and timeline issues, not Build Analysis match results.</summary>
 public sealed record BuildAnalysisResult
 {
     [JsonPropertyName("buildId")] public string BuildId { get; init; } = "";
     [JsonPropertyName("buildResult")] public string? BuildResult { get; init; }
-    [JsonPropertyName("knownIssues")] public List<KnownIssueMatch> KnownIssues { get; init; } = [];
-    [JsonPropertyName("unmatchedFailures")] public List<string> UnmatchedFailures { get; init; } = [];
-    [JsonPropertyName("analysisSource")] public string? AnalysisSource { get; init; }
+    [JsonPropertyName("knownIssues")]
+    [Description("GitHub issue URLs found in build tags or timeline issue messages; not Build Analysis matched KBEs. An empty list does not mean Build Analysis found no matches.")]
+    public List<KnownIssueMatch> KnownIssues { get; init; } = [];
+    [JsonPropertyName("unmatchedFailures")]
+    [Description("Error messages without a GitHub issue URL on non-succeeded timeline records; not failures classified as unmatched by Build Analysis.")]
+    public List<string> UnmatchedFailures { get; init; } = [];
+    [JsonPropertyName("analysisSource")]
+    [Description("AzDO evidence sources containing GitHub issue URLs (build tags and/or timeline issues); null means no such URLs were found, not that Build Analysis found no matches.")]
+    public string? AnalysisSource { get; init; }
     [JsonPropertyName("truncated")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool Truncated { get; init; }
@@ -622,12 +629,14 @@ public sealed record BuildAnalysisResult
     public string? Note { get; init; }
 }
 
-/// <summary>A known GitHub issue matched to one or more build/test failures by Build Analysis.</summary>
+/// <summary>A GitHub issue URL found in an AzDO build tag or timeline issue message; not a confirmed Build Analysis match.</summary>
 public sealed record KnownIssueMatch
 {
     [JsonPropertyName("issueNumber")] public int IssueNumber { get; init; }
     [JsonPropertyName("repository")] public string Repository { get; init; } = "";
     [JsonPropertyName("issueUrl")] public string IssueUrl { get; init; } = "";
     [JsonPropertyName("issueTitle")] public string? IssueTitle { get; init; }
-    [JsonPropertyName("matchedFailures")] public List<string> MatchedFailures { get; init; } = [];
+    [JsonPropertyName("matchedFailures")]
+    [Description("Timeline record names (or issue messages when unnamed) associated with messages containing this GitHub issue URL; not verified Build Analysis failure matches.")]
+    public List<string> MatchedFailures { get; init; } = [];
 }
