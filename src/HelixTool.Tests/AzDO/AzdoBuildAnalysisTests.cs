@@ -23,9 +23,10 @@ public class AzdoBuildAnalysisTests
         var toolDescription = Attribute.GetCustomAttribute(
             typeof(AzdoMcpTools).GetMethod(nameof(AzdoMcpTools.BuildAnalysis))!,
             typeof(DescriptionAttribute)) as DescriptionAttribute;
-        Assert.Contains("does not retrieve Build Analysis matched KBEs", toolDescription!.Description);
-        Assert.Contains("knownIssues=[] does not mean", toolDescription.Description);
-        Assert.Contains("not failures classified as unmatched by Build Analysis", toolDescription.Description);
+        Assert.Contains("not Build Analysis KBE matches", toolDescription!.Description);
+        Assert.Contains("knownIssues=[] and unmatchedFailures are not BA conclusions", toolDescription.Description);
+        Assert.Contains("helix_ci_guide", toolDescription.Description);
+        Assert.True(toolDescription.Description.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length <= 35);
 
         var knownIssuesDescription = typeof(BuildAnalysisResult).GetProperty(nameof(BuildAnalysisResult.KnownIssues))!
             .GetCustomAttributes(typeof(DescriptionAttribute), false).Cast<DescriptionAttribute>().Single();

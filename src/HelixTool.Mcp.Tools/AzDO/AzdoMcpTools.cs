@@ -323,7 +323,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_build_analysis", Title = "AzDO Build Issue URL Evidence", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
-     Description("Extract GitHub issue URLs from Azure DevOps (AzDO) build tags and timeline issue messages. This does not retrieve Build Analysis matched KBEs/known issues: knownIssues=[] does not mean Build Analysis found no matches. unmatchedFailures contains error messages without GitHub issue URLs from non-succeeded timeline records, not failures classified as unmatched by Build Analysis. Consult an authoritative Build Analysis source for match conclusions.")]
+     Description("Extract GitHub issue URLs from AzDO build tags/timeline, not Build Analysis KBE matches. knownIssues=[] and unmatchedFailures are not BA conclusions; use helix_ci_guide for authoritative check guidance.")]
     public async Task<BuildAnalysisResult> BuildAnalysis(
         [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl)
     {
