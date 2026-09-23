@@ -516,10 +516,11 @@ public class CiKnowledgeServiceTests
     {
         var guide = CiKnowledgeService.GetGuide("runtime");
 
-        Assert.Contains("completed GitHub Build Analysis check", guide);
-        Assert.Contains("correlate its report to the AzDO build", guide);
-        Assert.Contains("knownIssues=[] and unmatchedFailures do not establish Build Analysis matches or unmatched failures", guide);
-        Assert.Contains("unavailable or incomplete check means match status is unknown, not zero matches", guide);
+        Assert.Contains("current GitHub Build Analysis check", guide);
+        Assert.Contains("correlate reported matches to the AzDO build", guide);
+        Assert.Contains("in-progress check may already include matches for completed pipelines", guide);
+        Assert.Contains("absence of a match for an unanalyzed build is unknown, not zero matches", guide);
+        Assert.Contains("knownIssues=[] and unmatchedFailures are not Build Analysis classifications", guide);
     }
 
     [Fact]
@@ -658,10 +659,11 @@ public class CiKnowledgeServiceTests
     {
         var overview = CiKnowledgeService.GetOverview();
 
-        Assert.Contains("completed GitHub Build Analysis check", overview);
-        Assert.Contains("Correlate its report to the AzDO build", overview);
-        Assert.Contains("knownIssues=[]` and `unmatchedFailures` are not Build Analysis conclusions", overview);
-        Assert.Contains("unavailable or incomplete check means match status is unknown, not zero matches", overview);
+        Assert.Contains("current GitHub Build Analysis check", overview);
+        Assert.Contains("Correlate reported matches to the AzDO build", overview);
+        Assert.Contains("in-progress check may already include matches for completed pipelines", overview);
+        Assert.Contains("no match for an unanalyzed build means unknown, not zero matches", overview);
+        Assert.Contains("`knownIssues=[]` and `unmatchedFailures` are not Build Analysis classifications", overview);
     }
 
     [Fact]

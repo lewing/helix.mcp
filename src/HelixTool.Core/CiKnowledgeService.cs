@@ -125,7 +125,7 @@ public sealed class CiKnowledgeService
                 "azdo_test_runs + azdo_test_results is the most reliable path for structured results across all test types",
                 "'  Failed' pattern does NOT work for runtime — runtime uses raw xUnit runner, not dotnet test CLI format",
                 "Check failureCategory in helix_status: Crash/InfrastructureError → infra, not a test bug",
-                "For KBE matches, read the completed GitHub Build Analysis check for the PR and correlate its report to the AzDO build; azdo_build_analysis only extracts issue URLs from AzDO tags/timeline. Its knownIssues=[] and unmatchedFailures do not establish Build Analysis matches or unmatched failures. An unavailable or incomplete check means match status is unknown, not zero matches",
+                "For KBE matches, read the current GitHub Build Analysis check for the PR and correlate reported matches to the AzDO build. An in-progress check may already include matches for completed pipelines; absence of a match for an unanalyzed build is unknown, not zero matches. azdo_build_analysis only extracts issue URLs from AzDO tags/timeline; its knownIssues=[] and unmatchedFailures are not Build Analysis classifications",
             ],
         },
 
@@ -764,7 +764,7 @@ public sealed class CiKnowledgeService
         lines.Add("- **azdo_test_runs + azdo_test_results** is the most reliable path for structured results across all repos.");
         lines.Add("- **⚠️ macios and android are on devdiv, not dnceng-public** — authenticate first (`az login` or `AZDO_TOKEN`), and prefer full devdiv build URLs with `azdo_*` tools because bare build IDs default to dnceng-public.");
         lines.Add("- **failedTests=0 is a lie** — always drill into `azdo_test_results`, don't trust run-level summary counts.");
-        lines.Add("- **Build Analysis KBE matches require the completed GitHub Build Analysis check.** Correlate its report to the AzDO build; `azdo_build_analysis` only extracts issue URLs from tags/timeline. `knownIssues=[]` and `unmatchedFailures` are not Build Analysis conclusions; an unavailable or incomplete check means match status is unknown, not zero matches.");
+        lines.Add("- **Read the current GitHub Build Analysis check for KBE matches.** Correlate reported matches to the AzDO build; an in-progress check may already include matches for completed pipelines, but no match for an unanalyzed build means unknown, not zero matches. `azdo_build_analysis` only extracts issue URLs from tags/timeline; `knownIssues=[]` and `unmatchedFailures` are not Build Analysis classifications.");
         lines.Add("- **Pass `outcomes='Failed'` (default) to `azdo_test_results` to skip NotExecuted noise.** Use `outcomes='NotExecuted,Failed'` to also surface platform-conditional skips that cause total≠passed discrepancies in run summaries.");
         lines.Add("");
         lines.Add("## Three-Layer Diagnostic Model");
