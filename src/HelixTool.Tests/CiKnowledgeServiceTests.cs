@@ -524,6 +524,17 @@ public class CiKnowledgeServiceTests
     }
 
     [Fact]
+    public void GetGuide_Runtime_ChecksMonitorBeforeCallingRunningBuildGreen()
+    {
+        var guide = CiKnowledgeService.GetGuide("runtime");
+
+        Assert.Contains("inspect already-emitted Monitor Helix Jobs timeline issues before calling the lane green", guide);
+        Assert.Contains("upload terminal work-item test results while running", guide);
+        Assert.Contains("does not perform Build Analysis or Build Insights KBE matching", guide);
+        Assert.Contains("absence of monitor issues does not prove all tests passed", guide);
+    }
+
+    [Fact]
     public void GetGuide_UnknownRepo_ReturnsGeneralGuide()
     {
         var guide = CiKnowledgeService.GetGuide("some-unknown-repo");
@@ -531,6 +542,9 @@ public class CiKnowledgeServiceTests
         Assert.Contains("No specific profile found", guide);
         Assert.Contains("helix_search", guide);
         Assert.Contains("azdo_test_runs", guide);
+        Assert.Contains("Check enabled queue-monitor issues before calling an in-progress build green", guide);
+        Assert.Contains("Terminal work-item test results can also appear in `azdo_test_runs` + `azdo_test_results`", guide);
+        Assert.Contains("not Build Analysis or Build Insights KBE matches", guide);
     }
 
     [Fact]
@@ -664,6 +678,17 @@ public class CiKnowledgeServiceTests
         Assert.Contains("in-progress check may already include matches for completed pipelines", overview);
         Assert.Contains("no match for an unanalyzed build means unknown, not zero matches", overview);
         Assert.Contains("`knownIssues=[]` and `unmatchedFailures` are not Build Analysis classifications", overview);
+    }
+
+    [Fact]
+    public void GetOverview_ChecksMonitorBeforeCallingRunningBuildGreen()
+    {
+        var overview = CiKnowledgeService.GetOverview();
+
+        Assert.Contains("Check the queue monitor before calling an in-progress build green", overview);
+        Assert.Contains("can stream failed work-item warnings to AzDO timeline issues and upload terminal work-item test results while its task is running", overview);
+        Assert.Contains("not Build Analysis or Build Insights KBE matches", overview);
+        Assert.Contains("monitor evidence can miss test-result-only failures", overview);
     }
 
     [Fact]
