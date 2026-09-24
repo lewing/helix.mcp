@@ -629,9 +629,8 @@ public class AzdoService
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     /// <summary>
-    /// Extract Build Analysis known issue data from build tags and timeline issue messages.
-    /// Build Analysis (used in dotnet/runtime and other repos) adds tags and timeline annotations
-    /// when test failures match known GitHub issues.
+    /// Extract GitHub issue URLs from AzDO build tags and timeline issue messages.
+    /// These are not authoritative Build Analysis KBE matches or unmatched failure classifications.
     /// </summary>
     public async Task<BuildAnalysisResult> GetBuildAnalysisAsync(string buildIdOrUrl, CancellationToken ct = default)
     {
@@ -647,7 +646,7 @@ public class AzdoService
 
         var timeline = await timelineTask;
 
-        // Collect known issues from build tags (e.g., "Known test failure: <url>")
+        // Collect GitHub issue URLs from build tags (e.g., "Known test failure: <url>")
         var knownByUrl = new Dictionary<string, KnownIssueMatch>(StringComparer.OrdinalIgnoreCase);
         var analysisSources = new List<string>();
 
@@ -676,7 +675,7 @@ public class AzdoService
                 analysisSources.Add("build tags");
         }
 
-        // Scan timeline issue messages for Build Analysis annotations with GitHub issue URLs
+        // Scan timeline issue messages for GitHub issue URLs
         var unmatchedFailures = new List<string>();
 
         if (timeline?.Records is { Count: > 0 })

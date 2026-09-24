@@ -322,8 +322,8 @@ public sealed class AzdoMcpTools
             ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
     }
 
-    [McpServerTool(Name = "azdo_build_analysis", Title = "Build Analysis Known Issues", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
-     Description("Extract Build Analysis known issue matches from an Azure DevOps (AzDO) build ID or URL.")]
+    [McpServerTool(Name = "azdo_build_analysis", Title = "AzDO Build Issue URL Evidence", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
+     Description("Extract GitHub issue URLs from AzDO build tags/timeline, not Build Analysis KBE matches. knownIssues=[] and unmatchedFailures are not BA conclusions; use helix_ci_guide for authoritative check guidance.")]
     public async Task<BuildAnalysisResult> BuildAnalysis(
         [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl)
     {
