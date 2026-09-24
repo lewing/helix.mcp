@@ -517,10 +517,10 @@ public class CiKnowledgeServiceTests
         var guide = CiKnowledgeService.GetGuide("runtime");
 
         Assert.Contains("current GitHub Build Analysis check", guide);
-        Assert.Contains("correlate reported matches to the AzDO build", guide);
+        Assert.Contains("Correlate reported matches to the AzDO build", guide);
         Assert.Contains("in-progress check may already include matches for completed pipelines", guide);
-        Assert.Contains("absence of a match for an unanalyzed build is unknown, not zero matches", guide);
-        Assert.Contains("knownIssues=[] and unmatchedFailures are not Build Analysis classifications", guide);
+        Assert.Contains("no match for an unanalyzed build means unknown, not zero matches", guide);
+        Assert.Contains("`knownIssues=[]` and `unmatchedFailures` are not Build Analysis classifications", guide);
     }
 
     [Fact]
@@ -528,10 +528,10 @@ public class CiKnowledgeServiceTests
     {
         var guide = CiKnowledgeService.GetGuide("runtime");
 
-        Assert.Contains("inspect already-emitted Monitor Helix Jobs timeline issues before calling the lane green", guide);
-        Assert.Contains("upload terminal work-item test results while running", guide);
-        Assert.Contains("does not perform Build Analysis or Build Insights KBE matching", guide);
-        Assert.Contains("absence of monitor issues does not prove all tests passed", guide);
+        Assert.Contains("Check the queue monitor before calling an in-progress build green", guide);
+        Assert.Contains("upload terminal work-item test results while its task is running", guide);
+        Assert.Contains("not Build Analysis or Build Insights KBE matches", guide);
+        Assert.Contains("monitor evidence can miss test-result-only failures", guide);
     }
 
     [Fact]
@@ -542,9 +542,11 @@ public class CiKnowledgeServiceTests
         Assert.Contains("No specific profile found", guide);
         Assert.Contains("helix_search", guide);
         Assert.Contains("azdo_test_runs", guide);
-        Assert.Contains("Check enabled queue-monitor issues before calling an in-progress build green", guide);
+        Assert.Contains("Check the queue monitor before calling an in-progress build green", guide);
         Assert.Contains("Terminal work-item test results can also appear in `azdo_test_runs` + `azdo_test_results`", guide);
         Assert.Contains("not Build Analysis or Build Insights KBE matches", guide);
+        Assert.Contains("current GitHub Build Analysis check", guide);
+        Assert.Contains("no match for an unanalyzed build means unknown, not zero matches", guide);
     }
 
     [Fact]
@@ -578,10 +580,15 @@ public class CiKnowledgeServiceTests
     [InlineData("maui")]
     [InlineData("macios")]
     [InlineData("android")]
-    public void GetGuide_AllRepos_ContainsRecommendedInvestigationOrder(string repo)
+    public void GetGuide_AllRepos_ContainsRecommendedInvestigationOrderAndSharedGuidance(string repo)
     {
         var guide = CiKnowledgeService.GetGuide(repo);
         Assert.Contains("Recommended Investigation Order", guide);
+        Assert.Contains("Check the queue monitor before calling an in-progress build green", guide);
+        Assert.Contains("not Build Analysis or Build Insights KBE matches", guide);
+        Assert.Contains("current GitHub Build Analysis check", guide);
+        Assert.Contains("`knownIssues=[]` and `unmatchedFailures` are not Build Analysis classifications", guide);
+        Assert.Contains("no match for an unanalyzed build means unknown, not zero matches", guide);
     }
 
     [Fact]

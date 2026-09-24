@@ -53,6 +53,9 @@ public sealed record CiRepoProfile
 /// </summary>
 public sealed class CiKnowledgeService
 {
+    private const string MonitorGuidance = "- **Check the queue monitor before calling an in-progress build green.** When enabled, Monitor Helix Jobs can stream failed work-item warnings to AzDO timeline issues and upload terminal work-item test results while its task is running. These are provisional failure evidence, not Build Analysis or Build Insights KBE matches; monitor evidence can miss test-result-only failures.";
+    private const string BuildAnalysisGuidance = "- **Read the current GitHub Build Analysis check for KBE matches.** Correlate reported matches to the AzDO build; an in-progress check may already include matches for completed pipelines, but no match for an unanalyzed build means unknown, not zero matches. `azdo_build_analysis` only extracts issue URLs from tags/timeline; `knownIssues=[]` and `unmatchedFailures` are not Build Analysis classifications.";
+
     private static readonly Dictionary<string, CiRepoProfile> s_profiles = new(StringComparer.OrdinalIgnoreCase)
     {
         ["runtime"] = new CiRepoProfile
@@ -91,7 +94,6 @@ public sealed class CiKnowledgeService
                 "PR builds run minimal test subsets based on changed files — missing test legs are intentional, not broken",
                 "Runtime has 80+ pipeline definitions — the main PR gate is 'runtime' (129), others are outerloop/stress/platform",
                 "Wasm build tests follow SDK pattern — failures are build errors, not xUnit assertions",
-                "For an in-progress build, inspect already-emitted Monitor Helix Jobs timeline issues before calling the lane green. The monitor can stream failed work-item warnings and upload terminal work-item test results while running, but it does not perform Build Analysis or Build Insights KBE matching; absence of monitor issues does not prove all tests passed",
             ],
             RecommendedInvestigationOrder =
             [
@@ -126,7 +128,6 @@ public sealed class CiKnowledgeService
                 "azdo_test_runs + azdo_test_results is the most reliable path for structured results across all test types",
                 "'  Failed' pattern does NOT work for runtime — runtime uses raw xUnit runner, not dotnet test CLI format",
                 "Check failureCategory in helix_status: Crash/InfrastructureError → infra, not a test bug",
-                "For KBE matches, read the current GitHub Build Analysis check for the PR and correlate reported matches to the AzDO build. An in-progress check may already include matches for completed pipelines; absence of a match for an unanalyzed build is unknown, not zero matches. azdo_build_analysis only extracts issue URLs from AzDO tags/timeline; its knownIssues=[] and unmatchedFailures are not Build Analysis classifications",
             ],
         },
 
@@ -765,8 +766,8 @@ public sealed class CiKnowledgeService
         lines.Add("- **azdo_test_runs + azdo_test_results** is the most reliable path for structured results across all repos.");
         lines.Add("- **⚠️ macios and android are on devdiv, not dnceng-public** — authenticate first (`az login` or `AZDO_TOKEN`), and prefer full devdiv build URLs with `azdo_*` tools because bare build IDs default to dnceng-public.");
         lines.Add("- **failedTests=0 is a lie** — always drill into `azdo_test_results`, don't trust run-level summary counts.");
-        lines.Add("- **Check the queue monitor before calling an in-progress build green.** When enabled, Monitor Helix Jobs can stream failed work-item warnings to AzDO timeline issues and upload terminal work-item test results while its task is running. These are provisional failure evidence, not Build Analysis or Build Insights KBE matches; monitor evidence can miss test-result-only failures.");
-        lines.Add("- **Read the current GitHub Build Analysis check for KBE matches.** Correlate reported matches to the AzDO build; an in-progress check may already include matches for completed pipelines, but no match for an unanalyzed build means unknown, not zero matches. `azdo_build_analysis` only extracts issue URLs from tags/timeline; `knownIssues=[]` and `unmatchedFailures` are not Build Analysis classifications.");
+        lines.Add(MonitorGuidance);
+        lines.Add(BuildAnalysisGuidance);
         lines.Add("- **Pass `outcomes='Failed'` (default) to `azdo_test_results` to skip NotExecuted noise.** Use `outcomes='NotExecuted,Failed'` to also surface platform-conditional skips that cause total≠passed discrepancies in run summaries.");
         lines.Add("");
         lines.Add("## Three-Layer Diagnostic Model");
@@ -842,6 +843,9 @@ public sealed class CiKnowledgeService
             lines.Add($"- Console search: use `helix_search` with `{profile.FailureSearchPatterns[0]}` first, then follow the recommended order below.");
         else if (!profile.UsesHelix)
             lines.Add("- Console/build logs: use AzDO timeline/log tools rather than Helix tools.");
+
+        lines.Add(MonitorGuidance);
+        lines.Add(BuildAnalysisGuidance);
 
         // Known gotchas — these are CRITICAL
         if (profile.KnownGotchas.Length > 0)
@@ -937,7 +941,8 @@ public sealed class CiKnowledgeService
             An active monitor task can have `state: inProgress`, no result yet, and already-emitted issues; do not wait for the build to complete or the leg to turn red.
             Use `azdo_timeline(buildIdOrUrl, filter='issues')` to inspect streamed issues, `filter='running'` for active records, and ranked `azdo_search_log` to search available logs.
             Terminal work-item test results can also appear in `azdo_test_runs` + `azdo_test_results` while the monitor is running.
-            Check enabled queue-monitor issues before calling an in-progress build green. They are provisional Helix failure evidence, not Build Analysis or Build Insights KBE matches; missing monitor issues do not prove every test passed.
+            {MonitorGuidance}
+            {BuildAnalysisGuidance}
 
             ## Failure Classification
             Given a failed Helix work item's exit code and console log, classify:
