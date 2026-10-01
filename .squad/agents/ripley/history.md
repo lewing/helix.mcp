@@ -37,3 +37,7 @@ Fixed silent-empty AzDO failures: derive test-run failed count from `unanalyzedT
 ### 2026-09-30 — Windows artifact cache sharing retries
 
 Hardened `SqliteCacheStore` artifact reads/writes against Windows `ReplaceFile` sharing windows: `GetArtifactAsync` now retries sharing/access-denied and transient missing-file opens before returning a cache miss, and `SetArtifactAsync` retries publish sharing/access-denied before deleting the temp file and skipping the cache write. Also guarded `CachingHelixApiClient` so a skipped artifact cache write falls back to the live Helix stream instead of returning null. Validation: `DOTNET_ROLL_FORWARD=Major dotnet test src/HelixTool.Tests/HelixTool.Tests.csproj --no-restore` passed (2016 passed / 9 skipped).
+
+### 2026-09-30 — AzDO test cache compatibility review fixes
+
+Review follow-up for #150: version AzDO test-run/result cache keys when serialized failure-count semantics change, and treat cached empty test-results lists as misses because old releases could persist misleading empties. Regression tests should seed legacy keys explicitly and assert the new versioned key is used; paging tests need a full first page (10,000 items) plus a remainder page or they only test early-exit behavior.

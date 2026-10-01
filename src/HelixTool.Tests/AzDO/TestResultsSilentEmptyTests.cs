@@ -1,4 +1,5 @@
 using System.Net;
+using System.Globalization;
 using System.Text;
 using HelixTool.Core.AzDO;
 using HelixTool.Core.Cache;
@@ -95,24 +96,34 @@ public sealed class TestResultsSilentEmptyTests
     [Fact]
     public async Task GetTestResultsAsync_TopAboveAzdoLimit_NeverSendsTopAbove10000()
     {
-        var handler = new SequenceHttpMessageHandler(_ => JsonResponse("""{"value":[],"count":0}"""));
+        var handler = new SequenceHttpMessageHandler(request =>
+            GetQueryInt(request.RequestUri!, "$skip") == 10_000
+                ? JsonResponse(BuildTestResultsPayload(start: 10_000, count: 1))
+                : JsonResponse(BuildTestResultsPayload(start: 0, count: 10_000)));
         var client = CreateClient(handler);
 
-        await client.GetTestResultsAsync("dnceng-public", "public", runId: 44793916, top: 10001);
+        var results = await client.GetTestResultsAsync("dnceng-public", "public", runId: 44793916, top: 10001);
 
-        Assert.NotEmpty(handler.RequestUris);
+        Assert.Equal(10_001, results.Count);
+        Assert.Equal(2, handler.RequestUris.Count);
+        Assert.Equal(10_000, GetQueryInt(handler.RequestUris[1], "$skip"));
         Assert.All(handler.RequestUris, AssertTopDoesNotExceedAzdoLimit);
     }
 
     [Fact]
     public async Task GetTestRunsAsync_TopAboveAzdoLimit_NeverSendsTopAbove10000()
     {
-        var handler = new SequenceHttpMessageHandler(_ => JsonResponse("""{"value":[],"count":0}"""));
+        var handler = new SequenceHttpMessageHandler(request =>
+            GetQueryInt(request.RequestUri!, "$skip") == 10_000
+                ? JsonResponse(BuildTestRunsPayload(start: 10_000, count: 1))
+                : JsonResponse(BuildTestRunsPayload(start: 0, count: 10_000)));
         var client = CreateClient(handler);
 
-        await client.GetTestRunsAsync("dnceng-public", "public", buildId: 1618757, top: 10001);
+        var runs = await client.GetTestRunsAsync("dnceng-public", "public", buildId: 1618757, top: 10001);
 
-        Assert.NotEmpty(handler.RequestUris);
+        Assert.Equal(10_001, runs.Count);
+        Assert.Equal(2, handler.RequestUris.Count);
+        Assert.Equal(10_000, GetQueryInt(handler.RequestUris[1], "$skip"));
         Assert.All(handler.RequestUris, AssertTopDoesNotExceedAzdoLimit);
     }
 
@@ -212,6 +223,49 @@ public sealed class TestResultsSilentEmptyTests
             Assert.True(int.TryParse(parts[1], out var top), $"Could not parse $top in {uri}");
             Assert.InRange(top, 1, 10_000);
         }
+    }
+
+    private static int? GetQueryInt(Uri uri, string name)
+    {
+        foreach (var parameter in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = parameter.Split('=', 2);
+            if (Uri.UnescapeDataString(parts[0]) != name)
+                continue;
+
+            Assert.True(int.TryParse(parts[1], out var value), $"Could not parse {name} in {uri}");
+            return value;
+        }
+
+        return null;
+    }
+
+    private static string BuildTestResultsPayload(int start, int count)
+    {
+        var builder = new StringBuilder("""{"value":[""");
+        for (var i = 0; i < count; i++)
+        {
+            if (i > 0) builder.Append(',');
+            var id = start + i;
+            builder.Append(CultureInfo.InvariantCulture, $$"""{"id":{{id}},"testCaseTitle":"test {{id}}","outcome":"Failed"}""");
+        }
+
+        builder.Append(CultureInfo.InvariantCulture, $$"""],"count":{{count}}}""");
+        return builder.ToString();
+    }
+
+    private static string BuildTestRunsPayload(int start, int count)
+    {
+        var builder = new StringBuilder("""{"value":[""");
+        for (var i = 0; i < count; i++)
+        {
+            if (i > 0) builder.Append(',');
+            var id = start + i;
+            builder.Append(CultureInfo.InvariantCulture, $$"""{"id":{{id}},"name":"run {{id}}","state":"Completed","totalTests":1,"passedTests":0,"unanalyzedTests":1}""");
+        }
+
+        builder.Append(CultureInfo.InvariantCulture, $$"""],"count":{{count}}}""");
+        return builder.ToString();
     }
 
     private sealed class SequenceHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> responseFactory) : HttpMessageHandler

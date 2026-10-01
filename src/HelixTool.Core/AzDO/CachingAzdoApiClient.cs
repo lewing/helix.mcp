@@ -19,6 +19,9 @@ namespace HelixTool.Core.AzDO;
 /// </summary>
 public sealed class CachingAzdoApiClient : IAzdoApiClient
 {
+    private const string TestRunsCacheKeyPrefix = "testruns:v2";
+    private const string TestResultsCacheKeyPrefix = "testresults:v2";
+
     private static readonly TimeSpan CompletedTtl = TimeSpan.FromHours(4);
     private static readonly TimeSpan InProgressTtl = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan ListTtl = TimeSpan.FromSeconds(30);
@@ -275,14 +278,14 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
         await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
 
-        var key = BuildCacheKey(org, project, $"testruns:{buildId}:{top}");
+        var key = BuildCacheKey(org, project, $"{TestRunsCacheKeyPrefix}:{buildId}:{top}");
         var cached = await _cache.GetMetadataAsync(key, ct);
         var deserialized = TryDeserialize<List<AzdoTestRun>>(cached);
         if (deserialized is not null)
             return deserialized;
 
         var result = await _inner.GetTestRunsAsync(org, project, buildId, top, ct);
-        key = BuildCacheKey(org, project, $"testruns:{buildId}:{top}");
+        key = BuildCacheKey(org, project, $"{TestRunsCacheKeyPrefix}:{buildId}:{top}");
         await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
 
         return result;
@@ -295,16 +298,16 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
 
         var normalizedOutcomes = string.IsNullOrWhiteSpace(outcomes) ? null : outcomes.Trim();
-        var key = BuildCacheKey(org, project, $"testresults:{runId}:{top}:{normalizedOutcomes ?? AzdoBuildFilterDefaults.Outcomes}");
+        var key = BuildCacheKey(org, project, $"{TestResultsCacheKeyPrefix}:{runId}:{top}:{normalizedOutcomes ?? AzdoBuildFilterDefaults.Outcomes}");
         var cached = await _cache.GetMetadataAsync(key, ct);
         var deserialized = TryDeserialize<List<AzdoTestResult>>(cached);
-        if (deserialized is not null)
+        if (deserialized is { Count: > 0 })
             return deserialized;
 
         var result = await _inner.GetTestResultsAsync(org, project, runId, top, normalizedOutcomes, ct);
         if (result.Count > 0)
         {
-            key = BuildCacheKey(org, project, $"testresults:{runId}:{top}:{normalizedOutcomes ?? AzdoBuildFilterDefaults.Outcomes}");
+            key = BuildCacheKey(org, project, $"{TestResultsCacheKeyPrefix}:{runId}:{top}:{normalizedOutcomes ?? AzdoBuildFilterDefaults.Outcomes}");
             await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
         }
 
