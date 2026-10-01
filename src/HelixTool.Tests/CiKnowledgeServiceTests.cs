@@ -672,7 +672,7 @@ public class CiKnowledgeServiceTests
 
         Assert.Contains("Most .NET repos do NOT upload test results to Helix", overview);
         Assert.Contains("azdo_test_runs", overview);
-        Assert.Contains("failedTests=0 is a lie", overview);
+        Assert.Contains("failedTests comes from AzDO unanalyzedTests", overview);
     }
 
     [Fact]

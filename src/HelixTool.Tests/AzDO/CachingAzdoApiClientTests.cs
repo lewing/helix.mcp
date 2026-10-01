@@ -496,7 +496,7 @@ public class CachingAzdoApiClientTests
             .Returns((string?)null);
 
         _inner.GetTestResultsAsync("org", "proj", 77, Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
-            .Returns(new List<AzdoTestResult>());
+            .Returns(new List<AzdoTestResult> { new() { Id = 1, Outcome = "Failed" } });
 
         await _sut.GetTestResultsAsync("org", "proj", 77);
 
@@ -507,13 +507,30 @@ public class CachingAzdoApiClientTests
     }
 
     [Fact]
+    public async Task GetTestResultsAsync_EmptyResults_AreNotCached()
+    {
+        _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((string?)null);
+
+        _inner.GetTestResultsAsync("org", "proj", 77, Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoTestResult>());
+
+        await _sut.GetTestResultsAsync("org", "proj", 77);
+
+        await _cache.DidNotReceive().SetMetadataAsync(
+            Arg.Any<string>(), Arg.Any<string>(),
+            Arg.Any<TimeSpan>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task GetTestResultsAsync_NullAndEmptyOutcomes_ShareCacheKey()
     {
         // First call: cache miss, returns from inner
         _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns((string?)null);
 
-        var results = new List<AzdoTestResult>();
+        var results = new List<AzdoTestResult> { new() { Id = 1, Outcome = "Failed" } };
         _inner.GetTestResultsAsync("org", "proj", 77, Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(results);
 
@@ -541,7 +558,7 @@ public class CachingAzdoApiClientTests
         _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns((string?)null);
 
-        var results = new List<AzdoTestResult>();
+        var results = new List<AzdoTestResult> { new() { Id = 1, Outcome = "Failed" } };
         _inner.GetTestResultsAsync("org", "proj", 77, Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(results);
 

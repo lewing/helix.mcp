@@ -35,7 +35,7 @@ services.AddHttpClient("AzDO", c =>
 {
     c.Timeout = TimeSpan.FromMinutes(5);
     HelixToolUserAgent.Apply(c);
-});
+}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 services.AddSingleton<ICredentialStore, GitCredentialStore>();
 services.AddSingleton<ChainedHelixTokenAccessor>();
 services.AddSingleton<IHelixTokenAccessor>(sp => sp.GetRequiredService<ChainedHelixTokenAccessor>());
@@ -899,7 +899,7 @@ Available as `failureCategory` in JSON and MCP output.
         {
             c.Timeout = TimeSpan.FromMinutes(5);
             HelixToolUserAgent.Apply(c);
-        });
+        }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
         builder.Services.AddSingleton<IHelixTokenAccessor>(_ =>
             new EnvironmentHelixTokenAccessor(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
         builder.Services.AddSingleton<IHelixApiClientFactory, HelixApiClientFactory>();
@@ -1699,6 +1699,10 @@ public class AzdoCommands
                 Console.Write($"Failed: {r.FailedTests}");
             }
             Console.ResetColor();
+            if (r.IncompleteTests > 0)
+                Console.Write($"  Incomplete: {r.IncompleteTests}");
+            if (r.NotApplicableTests > 0)
+                Console.Write($"  NotApplicable: {r.NotApplicableTests}");
             Console.WriteLine();
         }
     }

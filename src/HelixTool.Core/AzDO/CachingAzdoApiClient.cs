@@ -302,8 +302,11 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
             return deserialized;
 
         var result = await _inner.GetTestResultsAsync(org, project, runId, top, normalizedOutcomes, ct);
-        key = BuildCacheKey(org, project, $"testresults:{runId}:{top}:{normalizedOutcomes ?? AzdoBuildFilterDefaults.Outcomes}");
-        await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
+        if (result.Count > 0)
+        {
+            key = BuildCacheKey(org, project, $"testresults:{runId}:{top}:{normalizedOutcomes ?? AzdoBuildFilterDefaults.Outcomes}");
+            await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
+        }
 
         return result;
     }

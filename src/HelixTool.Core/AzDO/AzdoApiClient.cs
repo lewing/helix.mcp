@@ -13,6 +13,8 @@ namespace HelixTool.Core.AzDO;
 public sealed class AzdoApiClient : IAzdoApiClient
 {
     private const int ErrorBodySnippetLimit = 500;
+    private const int MaxTestResultsPerRequest = 10_000;
+    private const int MaxTestRunsPerRequest = 10_000;
     private static readonly JsonSerializerOptions s_jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -132,16 +134,63 @@ public sealed class AzdoApiClient : IAzdoApiClient
     public async Task<IReadOnlyList<AzdoTestRun>> GetTestRunsAsync(string org, string project, int buildId, int? top = null, CancellationToken ct = default)
     {
         var buildUri = Uri.EscapeDataString($"vstfs:///Build/Build/{buildId}");
-        var topParam = top is > 0 ? $"&$top={top}" : "";
-        var url = BuildUrl(org, project, $"test/runs?buildUri={buildUri}{topParam}");
-        return await GetListAsync<AzdoTestRun>(org, project, url, ct);
+        if (top is not > MaxTestRunsPerRequest)
+        {
+            var topParam = top is > 0 ? $"&$top={top}" : "";
+            var url = BuildUrl(org, project, $"test/runs?buildUri={buildUri}{topParam}");
+            return await GetListAsync<AzdoTestRun>(org, project, url, ct);
+        }
+
+        var remaining = top.Value;
+        var skip = 0;
+        var runs = new List<AzdoTestRun>(Math.Min(top.Value, MaxTestRunsPerRequest));
+        while (remaining > 0)
+        {
+            var pageSize = Math.Min(remaining, MaxTestRunsPerRequest);
+            var skipParam = skip > 0 ? $"&$skip={skip}" : "";
+            var url = BuildUrl(org, project, $"test/runs?buildUri={buildUri}&$top={pageSize}{skipParam}");
+            var page = await GetListAsync<AzdoTestRun>(org, project, url, ct).ConfigureAwait(false);
+            runs.AddRange(page);
+
+            if (page.Count < pageSize)
+                break;
+
+            remaining -= pageSize;
+            skip += pageSize;
+        }
+
+        return runs;
     }
 
     public async Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(string org, string project, int runId, int top = 200, string? outcomes = null, CancellationToken ct = default)
     {
         var outcomesParam = string.IsNullOrWhiteSpace(outcomes) ? AzdoBuildFilterDefaults.Outcomes : outcomes.Trim();
-        var url = BuildUrl(org, project, $"test/runs/{runId}/results?$top={top}&outcomes={Uri.EscapeDataString(outcomesParam)}");
-        return await GetListAsync<AzdoTestResult>(org, project, url, ct);
+        var requestedTop = top > 0 ? top : 200;
+        var remaining = requestedTop;
+        var skip = 0;
+        var results = new List<AzdoTestResult>(Math.Min(requestedTop, MaxTestResultsPerRequest));
+
+        while (remaining > 0)
+        {
+            var pageSize = Math.Min(remaining, MaxTestResultsPerRequest);
+            var skipParam = skip > 0 ? $"&$skip={skip}" : "";
+            var url = BuildUrl(org, project, $"test/runs/{runId}/results?$top={pageSize}{skipParam}&outcomes={Uri.EscapeDataString(outcomesParam)}");
+            var page = await GetListAsync<AzdoTestResult>(
+                org,
+                project,
+                url,
+                ct,
+                notFoundMessage: $"Test run {runId} not found in {org}/{project} — it may have been deleted.").ConfigureAwait(false);
+            results.AddRange(page);
+
+            if (page.Count < pageSize)
+                break;
+
+            remaining -= pageSize;
+            skip += pageSize;
+        }
+
+        return results;
     }
 
     public async Task<IReadOnlyList<AzdoBuildArtifact>> GetBuildArtifactsAsync(string org, string project, int buildId, CancellationToken ct = default)
@@ -199,6 +248,7 @@ public sealed class AzdoApiClient : IAzdoApiClient
 
         ThrowOnAuthFailure(response, org, project, credential);
         await ThrowOnUnexpectedError(response, ct).ConfigureAwait(false);
+        ThrowOnNonJsonSuccess(response, org, project, credential);
 
         // Guard against empty-body 2xx (e.g. server returns 200 with Content-Length: 0).
         // Check the header first; if absent, buffer the body to detect an empty response.
@@ -217,19 +267,26 @@ public sealed class AzdoApiClient : IAzdoApiClient
         return await JsonSerializer.DeserializeAsync<T>(stream, s_jsonOptions, ct).ConfigureAwait(false);
     }
 
-    private async Task<IReadOnlyList<T>> GetListAsync<T>(string org, string project, string url, CancellationToken ct)
+    private async Task<IReadOnlyList<T>> GetListAsync<T>(string org, string project, string url, CancellationToken ct, string? notFoundMessage = null)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         var credential = await ApplyAuthAsync(request, ct).ConfigureAwait(false);
 
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
 
-        if (response.StatusCode == HttpStatusCode.NotFound ||
-            response.StatusCode == HttpStatusCode.NoContent)
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            if (notFoundMessage is not null)
+                throw new HttpRequestException(notFoundMessage, inner: null, statusCode: HttpStatusCode.NotFound);
+            return [];
+        }
+
+        if (response.StatusCode == HttpStatusCode.NoContent)
             return [];
 
         ThrowOnAuthFailure(response, org, project, credential);
         await ThrowOnUnexpectedError(response, ct).ConfigureAwait(false);
+        ThrowOnNonJsonSuccess(response, org, project, credential);
 
         var contentLength = response.Content.Headers.ContentLength;
         if (contentLength == 0)
@@ -251,15 +308,40 @@ public sealed class AzdoApiClient : IAzdoApiClient
 
     private void ThrowOnAuthFailure(HttpResponseMessage response, string org, string project, AzdoCredential? credential)
     {
-        if (response.StatusCode is not (HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden))
+        if (response.StatusCode is not (HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden) &&
+            !IsRedirect(response.StatusCode))
             return;
 
+        ThrowAuthenticationRequired(response.StatusCode, org, project, credential);
+    }
+
+    private void ThrowOnNonJsonSuccess(HttpResponseMessage response, string org, string project, AzdoCredential? credential)
+    {
+        if (response.StatusCode == HttpStatusCode.NonAuthoritativeInformation)
+            ThrowAuthenticationRequired(response.StatusCode, org, project, credential);
+
+        var mediaType = response.Content.Headers.ContentType?.MediaType;
+        if (mediaType is null)
+            return;
+
+        if (mediaType.Equals("text/html", StringComparison.OrdinalIgnoreCase))
+            ThrowAuthenticationRequired(response.StatusCode, org, project, credential);
+
+        if (!mediaType.EndsWith("/json", StringComparison.OrdinalIgnoreCase) &&
+            !mediaType.EndsWith("+json", StringComparison.OrdinalIgnoreCase))
+        {
+            ThrowAuthenticationRequired(response.StatusCode, org, project, credential);
+        }
+    }
+
+    private void ThrowAuthenticationRequired(HttpStatusCode statusCode, string org, string project, AzdoCredential? credential)
+    {
         if (credential is not null)
             _tokenAccessor.InvalidateCachedCredential();
 
         var currentAuth = credential?.Source ?? "anonymous (no credentials found)";
         throw new HttpRequestException(
-            $"Can't access {org}/{project} — authentication required ({(int)response.StatusCode}). Authentication failed.\n\n" +
+            $"Can't access {org}/{project} — authentication required ({(int)statusCode}). Authentication failed.\n\n" +
             $"Current auth: {currentAuth}\n\n" +
             "To resolve:\n" +
             "• Run 'az login' (if your Azure identity has access to this org)\n" +
@@ -267,7 +349,13 @@ public sealed class AzdoApiClient : IAzdoApiClient
             "• Set AZDO_TOKEN to an Entra access token: az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv\n" +
             "• If AZDO_TOKEN is being misclassified, set AZDO_TOKEN_TYPE to 'pat' or 'bearer' to override detection",
             inner: null,
-            statusCode: response.StatusCode);
+            statusCode: statusCode);
+    }
+
+    private static bool IsRedirect(HttpStatusCode statusCode)
+    {
+        var code = (int)statusCode;
+        return code is >= 300 and < 400;
     }
 
     private static async Task ThrowOnUnexpectedError(HttpResponseMessage response, CancellationToken ct)
