@@ -312,8 +312,21 @@ public sealed record AzdoTestRun
     [JsonPropertyName("passedTests")]
     public int PassedTests { get; init; }
 
+    [JsonPropertyName("unanalyzedTests")]
+    public int UnanalyzedTests { get; init; }
+
     [JsonPropertyName("failedTests")]
-    public int FailedTests { get; init; }
+    public int FailedTests
+    {
+        get => _failedTests ?? UnanalyzedTests;
+        init => _failedTests = value;
+    }
+
+    [JsonPropertyName("incompleteTests")]
+    public int IncompleteTests { get; init; }
+
+    [JsonPropertyName("notApplicableTests")]
+    public int NotApplicableTests { get; init; }
 
     [JsonPropertyName("startedDate")]
     public DateTimeOffset? StartedDate { get; init; }
@@ -323,6 +336,8 @@ public sealed record AzdoTestRun
 
     [JsonPropertyName("buildConfiguration")]
     public AzdoBuildConfiguration? BuildConfiguration { get; init; }
+
+    private readonly int? _failedTests;
 }
 
 /// <summary>Build configuration reference on a test run.</summary>

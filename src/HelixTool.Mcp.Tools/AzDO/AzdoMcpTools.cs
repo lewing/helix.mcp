@@ -188,7 +188,7 @@ public sealed class AzdoMcpTools
 
     [McpServerTool(Name = "azdo_test_runs", Title = "AzDO Test Runs", ReadOnly = true, Idempotent = true, UseStructuredContent = true,
                    OutputSchemaType = typeof(MinimalObjectSchema)),
-     Description("Get Azure DevOps (AzDO) test run summaries for a build with total/passed/failed counts. ⚠️ Run-level failedTests can be inaccurate — always drill into azdo_test_results to verify.")]
+     Description("Get Azure DevOps (AzDO) test run summaries for a build with total/passed/failed counts. failedTests is derived from AzDO unanalyzedTests (failed results not yet analyzed/triaged); analyzed failures may not be counted, so drill into azdo_test_results when exact failures matter.")]
     public async Task<LimitedResults<AzdoTestRun>> TestRuns(
         [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
         [Description("Maximum results to return")] int top = 50)

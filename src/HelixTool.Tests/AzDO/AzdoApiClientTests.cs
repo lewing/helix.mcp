@@ -455,13 +455,14 @@ public class AzdoApiClientTests
     }
 
     [Fact]
-    public async Task GetTestResultsAsync_404_ReturnsEmptyList()
+    public async Task GetTestResultsAsync_404_ThrowsRunNotFound()
     {
         _handler.StatusCode = HttpStatusCode.NotFound;
 
-        var result = await _client.GetTestResultsAsync("dnceng", "internal", 999);
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(
+            () => _client.GetTestResultsAsync("dnceng", "internal", 999));
 
-        Assert.Empty(result);
+        Assert.Contains("not found", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     // ── HTTP 204 and empty-body handling ────────────────────────────

@@ -25,7 +25,7 @@ builder.Services.AddHttpClient("AzDO", c =>
 {
     c.Timeout = TimeSpan.FromMinutes(5);
     HelixToolUserAgent.Apply(c);
-});
+}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 
 // HttpContext accessor for per-request token resolution
 builder.Services.AddHttpContextAccessor();

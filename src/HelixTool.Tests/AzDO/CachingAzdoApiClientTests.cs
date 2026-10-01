@@ -451,7 +451,7 @@ public class CachingAzdoApiClientTests
         // This is the outcomes equivalent of ListBuildsAsync_NullAndExplicitDefaultQueryOrder_ShareCacheKey.
         _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns((string?)null);
-        var results = new List<AzdoTestResult>();
+        var results = new List<AzdoTestResult> { new() { Id = 1, Outcome = "Failed" } };
         _inner.GetTestResultsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(),
                 Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(results);
@@ -496,7 +496,7 @@ public class CachingAzdoApiClientTests
             .Returns((string?)null);
 
         _inner.GetTestResultsAsync("org", "proj", 77, Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
-            .Returns(new List<AzdoTestResult>());
+            .Returns(new List<AzdoTestResult> { new() { Id = 1, Outcome = "Failed" } });
 
         await _sut.GetTestResultsAsync("org", "proj", 77);
 
@@ -507,13 +507,104 @@ public class CachingAzdoApiClientTests
     }
 
     [Fact]
+    public async Task GetTestResultsAsync_EmptyResults_AreNotCached()
+    {
+        _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns((string?)null);
+
+        _inner.GetTestResultsAsync("org", "proj", 77, Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoTestResult>());
+
+        await _sut.GetTestResultsAsync("org", "proj", 77);
+
+        await _cache.DidNotReceive().SetMetadataAsync(
+            Arg.Any<string>(), Arg.Any<string>(),
+            Arg.Any<TimeSpan>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetTestResultsAsync_EmptyCachedResults_AreTreatedAsCacheMiss()
+    {
+        _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(JsonSerializer.Serialize(new List<AzdoTestResult>()));
+
+        var freshResults = new List<AzdoTestResult> { new() { Id = 1, Outcome = "Failed" } };
+        _inner.GetTestResultsAsync("org", "proj", 77, Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(freshResults);
+
+        var result = await _sut.GetTestResultsAsync("org", "proj", 77);
+
+        Assert.Single(result);
+        await _inner.Received(1).GetTestResultsAsync("org", "proj", 77, Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetTestRunsAsync_IgnoresLegacyUnversionedCachedRuns()
+    {
+        var oldPayload = """
+            [{"id":1,"name":"stale","totalTests":10,"passedTests":10,"failedTests":0}]
+            """;
+        _cache.GetMetadataAsync(
+                Arg.Is<string>(k => k == "azdo:org:proj:testruns:1:"),
+                Arg.Any<CancellationToken>())
+            .Returns(oldPayload);
+        _cache.GetMetadataAsync(
+                Arg.Is<string>(k => k == "azdo:org:proj:testruns:v2:1:"),
+                Arg.Any<CancellationToken>())
+            .Returns((string?)null);
+
+        var freshRuns = new List<AzdoTestRun>
+        {
+            new() { Id = 2, Name = "fresh", TotalTests = 10, PassedTests = 7, UnanalyzedTests = 3 }
+        };
+        _inner.GetTestRunsAsync("org", "proj", 1, Arg.Any<int?>(), Arg.Any<CancellationToken>())
+            .Returns(freshRuns);
+
+        var result = await _sut.GetTestRunsAsync("org", "proj", 1);
+
+        var run = Assert.Single(result);
+        Assert.Equal(2, run.Id);
+        Assert.Equal(3, run.FailedTests);
+        await _inner.Received(1).GetTestRunsAsync("org", "proj", 1, Arg.Any<int?>(), Arg.Any<CancellationToken>());
+        await _cache.DidNotReceive().GetMetadataAsync(
+            Arg.Is<string>(k => k == "azdo:org:proj:testruns:1:"),
+            Arg.Any<CancellationToken>());
+        await _cache.Received(1).SetMetadataAsync(
+            Arg.Is<string>(k => k == "azdo:org:proj:testruns:v2:1:"),
+            Arg.Any<string>(),
+            Arg.Any<TimeSpan>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public void AzdoTestRun_FailedTests_RoundTripsThroughJson()
+    {
+        var serialized = JsonSerializer.Serialize(new AzdoTestRun
+        {
+            Id = 1,
+            TotalTests = 10,
+            PassedTests = 7,
+            UnanalyzedTests = 3
+        });
+
+        Assert.Contains("\"failedTests\":3", serialized);
+
+        var deserialized = JsonSerializer.Deserialize<AzdoTestRun>(serialized);
+
+        Assert.NotNull(deserialized);
+        Assert.Equal(3, deserialized!.UnanalyzedTests);
+        Assert.Equal(3, deserialized.FailedTests);
+    }
+
+    [Fact]
     public async Task GetTestResultsAsync_NullAndEmptyOutcomes_ShareCacheKey()
     {
         // First call: cache miss, returns from inner
         _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns((string?)null);
 
-        var results = new List<AzdoTestResult>();
+        var results = new List<AzdoTestResult> { new() { Id = 1, Outcome = "Failed" } };
         _inner.GetTestResultsAsync("org", "proj", 77, Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(results);
 
@@ -541,7 +632,7 @@ public class CachingAzdoApiClientTests
         _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns((string?)null);
 
-        var results = new List<AzdoTestResult>();
+        var results = new List<AzdoTestResult> { new() { Id = 1, Outcome = "Failed" } };
         _inner.GetTestResultsAsync("org", "proj", 77, Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(results);
 

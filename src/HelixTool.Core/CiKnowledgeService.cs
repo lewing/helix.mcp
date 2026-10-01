@@ -89,7 +89,8 @@ public sealed class CiKnowledgeService
             KnownGotchas =
             [
                 "Helix exit code 0 can coexist with [FAIL] test results — xUnit runner may set _commandExitCode=0 despite failures",
-                "azdo_test_runs metadata shows failedTests=0 while azdo_test_results contains real failures — always drill in",
+                "CoreCLR merged runtime-test runners can exit 100 while the Helix work item is still marked passed — a passing Helix work item does not prove tests passed",
+                "azdo_test_runs failedTests comes from unanalyzedTests (failed results not yet analyzed); use azdo_test_results when exact failures matter",
                 "helix_parse_uploaded_trx works ONLY for CoreCLR tests and XHarness (iOS/Android) — NOT for libraries tests",
                 "PR builds run minimal test subsets based on changed files — missing test legs are intentional, not broken",
                 "Runtime has 80+ pipeline definitions — the main PR gate is 'runtime' (129), others are outerloop/stress/platform",
@@ -765,7 +766,7 @@ public sealed class CiKnowledgeService
         lines.Add("- **Use `helix_search` as the remote-first console path.** The best search pattern varies by repo/test runner; check the repo profile before broad log reads.");
         lines.Add("- **azdo_test_runs + azdo_test_results** is the most reliable path for structured results across all repos.");
         lines.Add("- **⚠️ macios and android are on devdiv, not dnceng-public** — authenticate first (`az login` or `AZDO_TOKEN`), and prefer full devdiv build URLs with `azdo_*` tools because bare build IDs default to dnceng-public.");
-        lines.Add("- **failedTests=0 is a lie** — always drill into `azdo_test_results`, don't trust run-level summary counts.");
+        lines.Add("- **failedTests comes from AzDO unanalyzedTests** — drill into `azdo_test_results` for exact failures, especially after results have been analyzed or triaged.");
         lines.Add(MonitorGuidance);
         lines.Add(BuildAnalysisGuidance);
         lines.Add("- **Pass `outcomes='Failed'` (default) to `azdo_test_results` to skip NotExecuted noise.** Use `outcomes='NotExecuted,Failed'` to also surface platform-conditional skips that cause total≠passed discrepancies in run summaries.");
@@ -941,6 +942,7 @@ public sealed class CiKnowledgeService
             An active monitor task can have `state: inProgress`, no result yet, and already-emitted issues; do not wait for the build to complete or the leg to turn red.
             Use `azdo_timeline(buildIdOrUrl, filter='issues')` to inspect streamed issues, `filter='running'` for active records, and ranked `azdo_search_log` to search available logs.
             Terminal work-item test results can also appear in `azdo_test_runs` + `azdo_test_results` while the monitor is running.
+            For dotnet/runtime CoreCLR merged runtime-test legs, a Helix work item can be marked passed even when the runner exits 100 for inner test failures; use `azdo_test_results` before concluding the tests are clean.
             {MonitorGuidance}
             {BuildAnalysisGuidance}
 

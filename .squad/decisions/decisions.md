@@ -1,11 +1,48 @@
 # Decisions
 
-**Last updated:** 2026-08-26T18:29:40.518-05:00
-**Merge cycle:** 2026-08-26T19:04:54Z (Scribe PR #127 second-review cycle merge)
+**Last updated:** 2026-10-01T00:45:00Z
+**Merge cycle:** 2026-10-01T00:45:00Z (Scribe Issue #149 merge)
 
 ---
 
 ## Active Decisions
+
+### 2026-10-01T00:45:00Z: AzDO Test Results Auth Redirect and Silent Empty Handling (#149)
+
+**By:** Ripley  
+**Status:** IMPLEMENTED — committed as `b47deae` on `lewing-fix-test-results-failures-hidden`
+
+#### Context
+
+The AzDO Test Results endpoint can return a sign-in redirect for anonymous calls. With normal `HttpClient` redirect following, the final response can be HTTP 203 with `text/html`. Because 203 is a 2xx status, treating `IsSuccessStatusCode` as sufficient allowed sign-in pages to deserialize as empty results, hiding failed tests.
+
+#### Decision
+
+AzDO JSON API calls now treat these cases as authentication failures and throw the same actionable auth message as 401/403:
+
+- any 3xx redirect response;
+- HTTP 203 Non-Authoritative Information;
+- successful responses with an explicit non-JSON content type, especially `text/html`.
+
+The CLI/MCP AzDO `HttpClient` disables automatic redirects so sign-in redirects are visible as 3xx, while the response validator still catches followed 203/HTML responses from other construction paths.
+
+#### 404 handling
+
+General `GetAsync`/`GetListAsync` 404 semantics remain unchanged because several existing callers intentionally map missing resources to `null` or `[]`. The test-results call scopes stricter behavior to `test/runs/{runId}/results`: a 404 now throws `Test run N not found ... it may have been deleted` instead of returning an empty list.
+
+#### Cache behavior
+
+Caching remains exception-safe by construction: `CachingAzdoApiClient` only writes after the inner call returns successfully, so auth failures, HTML responses, and scoped test-run 404s propagate without caching silent empties.
+
+Follow-up verification for the observed "Failed returns [] but multi-outcome returns failures" inconsistency:
+
+- `CachingAzdoApiClient` resolves the current AzDO credential before each cache lookup via `EnsureAuthTokenHashAsync`. Anonymous calls use the public key shape `azdo:{org}:{project}:...`; authenticated calls include the auth-context hash as `azdo:{authHash}:{org}:{project}:...`. A pre-auth/public empty entry therefore is not read after authentication resolves.
+- The raw `AzdoApiClient` also updates the same `CacheOptions` auth context when applying credentials, so cache writes after a successful inner call use the resolved credential partition.
+- Auth-like responses now throw before deserialization and before the caching decorator reaches `SetMetadataAsync`, so 302/203/HTML failures are not newly cached under any outcomes key.
+- Empty `azdo_test_results` lists are intentionally no longer cached. This endpoint's empty list means "no matching failures" to users, so a stale or auth-contaminated empty is more dangerous than a repeated API call.
+
+---
+
 
 ### 2026-08-26T19:04:54-05:00: PR #127 Snapshot Export Hardening — Second Review & Approval Gate
 
