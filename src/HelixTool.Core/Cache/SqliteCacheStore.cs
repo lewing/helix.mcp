@@ -13,9 +13,13 @@ public sealed class SqliteCacheStore : ICacheStore
 {
     private const int SchemaVersion = 1;
     private const string Iso8601Format = "O";
+    private const int ErrorSharingViolation = unchecked((int)0x80070020);
+    private const int ErrorAccessDenied = unchecked((int)0x80070005);
+    private const int ArtifactFileRetryCount = 6;
 
     /// <summary>Bound on how long <see cref="Dispose"/> waits for startup maintenance to finish.</summary>
     private static readonly TimeSpan DisposeJoinTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan ArtifactFileRetryDelay = TimeSpan.FromMilliseconds(25);
 
     private readonly CacheOptions _options;
     private readonly string _connectionString;
@@ -221,7 +225,7 @@ public sealed class SqliteCacheStore : ICacheStore
         return Task.CompletedTask;
     }
 
-    public Task<Stream?> GetArtifactAsync(string cacheKey, CancellationToken ct = default)
+    public async Task<Stream?> GetArtifactAsync(string cacheKey, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
         using var conn = OpenConnection();
@@ -230,22 +234,10 @@ public sealed class SqliteCacheStore : ICacheStore
         cmd.Parameters.AddWithValue("@key", cacheKey);
 
         var relPath = cmd.ExecuteScalar() as string;
-        if (relPath == null) return Task.FromResult<Stream?>(null);
+        if (relPath == null) return null;
 
         var fullPath = Path.Combine(_artifactsDir, relPath);
         CacheSecurity.ValidatePathWithinRoot(fullPath, _artifactsDir);
-        if (!File.Exists(fullPath))
-        {
-            // Stale row — remove it (skipped in eval mode to keep snapshot immutable)
-            if (!_options.EvalMode)
-            {
-                using var del = conn.CreateCommand();
-                del.CommandText = "DELETE FROM cache_artifacts WHERE cache_key = @key;";
-                del.Parameters.AddWithValue("@key", cacheKey);
-                del.ExecuteNonQuery();
-            }
-            return Task.FromResult<Stream?>(null);
-        }
 
         // Update last_accessed (skipped in eval mode to keep snapshot immutable)
         if (!_options.EvalMode)
@@ -257,7 +249,29 @@ public sealed class SqliteCacheStore : ICacheStore
             upd.ExecuteNonQuery();
         }
 
-        return Task.FromResult<Stream?>(new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete));
+        for (var attempt = 0; attempt < ArtifactFileRetryCount; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                return new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            }
+            catch (Exception ex) when (IsArtifactOpenRetryable(ex))
+            {
+                if (attempt + 1 == ArtifactFileRetryCount)
+                    break;
+                await Task.Delay(ArtifactFileRetryDelay, ct);
+            }
+        }
+
+        if (!File.Exists(fullPath) && !_options.EvalMode)
+        {
+            using var del = conn.CreateCommand();
+            del.CommandText = "DELETE FROM cache_artifacts WHERE cache_key = @key;";
+            del.Parameters.AddWithValue("@key", cacheKey);
+            del.ExecuteNonQuery();
+        }
+        return null;
     }
 
     public async Task SetArtifactAsync(string cacheKey, Stream content, CancellationToken ct = default)
@@ -281,8 +295,7 @@ public sealed class SqliteCacheStore : ICacheStore
         await using (var fs = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
             await content.CopyToAsync(fs, ct);
 
-        // Choose the publication primitive up front from destination existence — no
-        // exception-driven retry between the two:
+        // Choose the publication primitive up front from destination existence:
         //   - Absent: File.Move keeps the original atomic create/rename behavior.
         //   - Present: File.Replace (Win32 ReplaceFile) is required instead. Per its documented
         //     contract it opens the destination itself with
@@ -292,27 +305,22 @@ public sealed class SqliteCacheStore : ICacheStore
         //     used FileShare.Read|Delete or FileShare.ReadWrite|Delete (SnapshotExporter's and
         //     GetArtifactAsync's own share flags) — it still succeeds and atomically swaps the
         //     destination's identity to tempPath's bytes while those readers keep their handle.
-        // Neither call is caught here: a failure must propagate immediately so the method exits
-        // before the file-size read, the cache_artifacts write, and the eviction pass below —
-        // never recording a success row for a publication that didn't happen.
+        // Win32 can still briefly hold the destination exclusively during another ReplaceFile;
+        // retry that narrow sharing/access-denied window, then treat the write as a cache miss
+        // rather than failing the caller or recording a success row for an unpublished temp file.
         var destinationExisted = File.Exists(fullPath);
         var published = false;
         try
         {
-            if (destinationExisted)
-                File.Replace(tempPath, fullPath, destinationBackupFileName: null);
-            else
-                File.Move(tempPath, fullPath, overwrite: true);
-            published = true;
+            published = await TryPublishArtifactAsync(tempPath, fullPath, destinationExisted, ct);
+            if (!published)
+                return;
         }
         finally
         {
             // Only reached without cleanup on the success path (published == true), where the
-            // primitive above already consumed/renamed tempPath. On any failure path, tempPath
-            // still holds the only copy of the new bytes and would otherwise leak — remove it,
-            // narrowly catching just IOException and UnauthorizedAccessException — the expected
-            // file-system cleanup failures — so an unrelated cleanup error cannot be confused with
-            // the primary failure, which continues to propagate unmodified out of this finally.
+            // primitive above already consumed/renamed tempPath. On any failure or skipped-cache
+            // path, tempPath still holds the only copy of the new bytes and would otherwise leak.
             if (!published)
             {
                 try
@@ -347,6 +355,43 @@ public sealed class SqliteCacheStore : ICacheStore
         // Evict if over cap
         await EvictLruIfOverCapAsync(ct);
     }
+
+    private static async Task<bool> TryPublishArtifactAsync(
+        string tempPath,
+        string fullPath,
+        bool destinationExisted,
+        CancellationToken ct)
+    {
+        for (var attempt = 0; attempt < ArtifactFileRetryCount; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                if (destinationExisted)
+                    File.Replace(tempPath, fullPath, destinationBackupFileName: null);
+                else
+                    File.Move(tempPath, fullPath, overwrite: true);
+                return true;
+            }
+            catch (Exception ex) when (IsArtifactPublishRetryable(ex))
+            {
+                if (attempt + 1 == ArtifactFileRetryCount)
+                    return false;
+                await Task.Delay(ArtifactFileRetryDelay, ct);
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsArtifactOpenRetryable(Exception ex) =>
+        ex is FileNotFoundException or DirectoryNotFoundException || IsArtifactSharingException(ex);
+
+    private static bool IsArtifactPublishRetryable(Exception ex) => IsArtifactSharingException(ex);
+
+    private static bool IsArtifactSharingException(Exception ex) =>
+        ex is IOException ioEx && (ioEx.HResult == ErrorSharingViolation || ioEx.HResult == ErrorAccessDenied) ||
+        ex is UnauthorizedAccessException;
 
     public Task<bool?> IsJobCompletedAsync(string jobId, CancellationToken ct = default)
     {

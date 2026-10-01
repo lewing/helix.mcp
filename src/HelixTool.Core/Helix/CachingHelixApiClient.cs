@@ -146,7 +146,10 @@ public sealed class CachingHelixApiClient : IHelixApiClient
         await _cache.SetArtifactAsync(cacheKey, stream, ct);
         await stream.DisposeAsync();
 
-        return (await _cache.GetArtifactAsync(cacheKey, ct))!;
+        var storedStream = await _cache.GetArtifactAsync(cacheKey, ct);
+        if (storedStream != null)
+            return storedStream;
+        return await _inner.GetConsoleLogAsync(workItemName, jobId, ct);
     }
 
     public async Task<Stream> GetFileAsync(string fileName, string workItemName, string jobId, CancellationToken ct = default)
@@ -162,7 +165,10 @@ public sealed class CachingHelixApiClient : IHelixApiClient
         await _cache.SetArtifactAsync(cacheKey, stream, ct);
         await stream.DisposeAsync();
 
-        return (await _cache.GetArtifactAsync(cacheKey, ct))!;
+        var storedStream = await _cache.GetArtifactAsync(cacheKey, ct);
+        if (storedStream != null)
+            return storedStream;
+        return await _inner.GetFileAsync(fileName, workItemName, jobId, ct);
     }
 
     /// <inheritdoc />
