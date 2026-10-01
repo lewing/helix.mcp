@@ -20,7 +20,7 @@
 
 ## Rules
 
-1. **One file per agent spawn.** Named `{timestamp}-{agent-name}.md`.
+1. **One file per agent spawn.** Named `{timestamp}-{agent-name}.md`. The filename timestamp must be Windows-safe — use `YYYY-MM-DD-HHMM` (e.g. `2026-10-01-0045`), never ISO 8601 with colons (`T00:45:00Z`). Colons break `git checkout` on Windows. The same applies to `.squad/log/` filenames.
 2. **Log BEFORE spawning.** The entry must exist before the agent runs.
 3. **Update outcome AFTER the agent completes.** Fill in the Outcome field.
 4. **Never delete or edit past entries.** Append-only.
