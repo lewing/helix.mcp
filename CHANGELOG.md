@@ -8,6 +8,8 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+## [v0.11.0] — 2026-10-02
+
 ### **Fixed — cache data loss**
 
 - **SQLite NUL metadata encoding:** On v0.10.3 and earlier, cached values containing NUL characters could be stored as zero bytes by the SQLite metadata path. The main known impact was raw AzDO build logs around 6 KB and larger: they are cached as plain text with a NUL-prefixed `\0raw\n` marker, so live calls usually hid the issue by refetching, but offline/eval snapshots could replay empty logs while still validating. Metadata values containing NULs are now encoded losslessly before storage and decoded on read; empty raw-log rows are treated as corrupt (`cache/invalid_response` in eval/offline mode, refetched in live mode), and `hlx snapshot validate` flags empty/corrupt raw AzDO log metadata rows. Clear affected local caches with `hlx cache clear` and re-collect any snapshots produced by v0.10.3 or earlier. Reported by PureWeen (gist).
