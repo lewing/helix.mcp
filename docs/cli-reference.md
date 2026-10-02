@@ -527,7 +527,7 @@ Exit codes:
 | `1` | Hard command or acquisition error, including validation failures, provider errors, auth failures, invalid/corrupt cache entries, malformed provider JSON, and empty provider responses where a JSON object/list was required. |
 | `2` | Evidence-plan only: a bounded plan was written, but `complete == false` because artifact mapping is ambiguous/missing, output was truncated, monitor data was unparseable/unresolved, or Helix-failure paging returned a partial page. |
 
-Known gap: Azure DevOps can return HTTP `200` with an empty body for some nonexistent log IDs. The current contract surfaces empty provider responses as acquisition failures, while the precise classification for those log-ID cases is pending a design decision.
+When a direct build-log body is empty, hlx validates the logId against the build's logs list and timeline record.log.id; if the logId exists in neither, the operation fails with kind=not_found, provider=azdo, operation=get_build_log. If the logId exists, an empty log is a successful result. Empty full logs are not cached.
 
 ## Environment Variables
 

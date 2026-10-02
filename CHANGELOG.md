@@ -13,6 +13,7 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 - **Structured acquisition errors:** CLI JSON hard failures now emit `{ "ok": false, "error": { ... } }`, and MCP tool failures return `isError: true` with the same `structuredContent.error` object. The stable `kind` values are `not_found`, `access_denied`, `rate_limited`, `timeout`, `transport_error`, and `invalid_response`; providers are `azdo`, `helix`, and `cache`.
 - **Caller-owned retry policy:** Errors include operation/resource context plus optional `httpStatus` and `retryAfterSeconds`; callers decide whether to retry, skip, or fail collection. Genuinely empty successful results remain successes.
 - **Evidence-plan paging fail-closed:** Any partial Helix-failure page (`helixFailureTotal > helixFailures.length`, including later offset pages) now reports `complete=false`, `truncated=true`, `helix_failures_truncated`, and CLI exit `2`. Human output uses explicit ranges such as `showing 1-1 of 2`; collectors should fetch/merge remaining pages or request a limit at least as large as `helixFailureTotal`.
+- **Empty AzDO logs reclassified:** When a direct build-log body is empty, hlx validates the logId against build logs metadata; if logId is missing from both the logs list and timeline record.log.id, the operation fails with kind=not_found. Empty full logs are no longer cached as successes. See azdo_log tool documentation.
 - Requested by Vitek Karas; see lewing/helix.mcp#152.
 
 ### Helix-aware evidence plan — arcade queue-monitor parsing

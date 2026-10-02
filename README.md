@@ -140,7 +140,7 @@ Snapshots preserve all cached data and artifact files. When `HLX_EVAL_SNAPSHOT` 
 
 CLI JSON hard failures use `{ "ok": false, "error": { ... } }`; MCP tool failures set `isError: true` and put the same object under `structuredContent.error`. `error.kind` is one of `not_found`, `access_denied`, `rate_limited`, `timeout`, `transport_error`, or `invalid_response`; `provider` is `azdo`, `helix`, or `cache`; fields are `kind`, `provider`, `operation`, `resource`, optional `httpStatus`, optional `retryAfterSeconds`, and `message`.
 
-Exit codes are `0` for success (including genuinely empty successes), `1` for hard command/acquisition errors, and `2` for incomplete evidence plans that still wrote bounded output. Callers own retry/skip policy. Known gap: Azure DevOps can return HTTP `200` with an empty body for some nonexistent log IDs; the exact classification for those cases is pending a design decision. See the [CLI reference](docs/cli-reference.md#errors-and-exit-codes) for examples.
+Exit codes are `0` for success (including genuinely empty successes), `1` for hard command/acquisition errors, and `2` for incomplete evidence plans that still wrote bounded output. Callers own retry/skip policy. When a direct build-log body is empty, hlx validates the logId against the build's logs list and timeline record.log.id; if absent from both, it fails with kind=not_found. Empty full logs are not cached as successes. See the [CLI reference](docs/cli-reference.md#errors-and-exit-codes) for examples.
 
 ## MCP Resources
 
