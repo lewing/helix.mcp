@@ -195,3 +195,17 @@ Cross-agent context from Scribe:
 ## 2026-10-02 — #152 acquisition errors and fail-closed paging docs
 
 **Learning:** For public error contracts, verify JSON property names, enum wire strings, provider values, and exit-code behavior against the exact commit source/tests plus a real CLI run. Evidence-plan paging now treats `helixFailureTotal > helixFailures.length` as partial even on later/final offset pages; never document offset math as the completeness rule.
+
+## 2026-10-02 — Snapshot replay acquisition errors
+
+**Learning:** Snapshot "bundle" docs must describe the existing cache/snapshot path, not a parallel artifact format. Verify replay examples in anonymous mode when possible; Azure CLI-auth cache partitions can make offline replay miss earlier with `not_in_snapshot`. Source-verified wire fields: schema v2 records only `not_found`, `access_denied`, and `invalid_response`; replay adds `source: "snapshot"`, `replayed: true`, and `recordedAt`; true collector gaps use `kind=not_in_snapshot`, `provider=cache`.
+
+### 2026-10-02: PR #153 documentation for snapshot misses (commit 58fd3d0)
+- Documented `not_in_snapshot` acquisition kind and distinction from provider `not_found`
+- Explained negative cache replay workflow in eval mode (source="snapshot", replayed=true)
+- Clarified schema v1/v2 coexistence and validation contract
+- Documented scanner/collect workflow for offline cache population
+- Described empty-log validation and `get_build_log` absence detection
+- All documentation reviews passed by Dallas
+- Full test suite validation: 2175 passed / 9 skipped
+- **Status:** APPROVED as part of PR #153 merge readiness

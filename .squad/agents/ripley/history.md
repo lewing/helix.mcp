@@ -47,3 +47,15 @@ Review follow-up for #150: version AzDO test-run/result cache keys when serializ
 - 2026-10-02: Queue-monitor timeline issues are sufficient for `azdo evidence plan` to represent failed Helix work items without Helix API calls; keep parsed monitor jobs out of artifact `entries[]`, but fail closed with `incompleteDetails[].code` when monitor rows are unparseable, unresolved, or paged/truncated.
 - 2026-10-02: Acquisition errors must be classified at the provider boundary and serialized with an explicit converter; MCP SDK default JSON options can ignore enum converter attributes in `structuredContent`, so use acquisition-owned JSON options for error envelopes. Eval/offline cache misses are now `provider=cache` acquisition errors, not `InvalidOperationException`, and valid HTTP-200 empty logs must remain successful even when the requested log id is surprising.
 - 2026-10-02: Lockout protocol — when Dallas rejects commit X and locks out the author, a different agent (Lambert) must perform revisions. AzDO empty-log 200-response ambiguity specifically: empty body + absent logId in logs-list and timeline records = `not_found` acquisition error; empty body + logId present in either = success. Validation must occur in `AzdoService.GetBuildLogAsync` (service layer), not in raw `AzdoApiClient` (provider layer), and not cached by `CachingAzdoApiClient` until proven. Commit 2794a94 resolved both paging (28beceb rejection) and empty-log (5f11d95 rejection) issues.
+- 2026-10-02: Acquisition errors need defense-in-depth redaction: sanitize URL query/fragment values in `AcquisitionErrorFactory` and again in `HlxAcquisitionException` so manually constructed test/MCP errors cannot leak SAS tokens. CLI-wide acquisition handling belongs in a `ConsoleAppFramework` global filter; direct unit tests that instantiate command classes bypass that filter and must be updated to exercise the generated CLI/filter pipeline or a shared writer explicitly.
+- 2026-10-02: Snapshot replay uses `not_in_snapshot` only for true misses; deterministic live provider failures are negative cache rows keyed exactly like the positive evidence and replay with original provider/kind plus `source=snapshot`, `replayed=true`, `recordedAt`. Public live validation must avoid Azure CLI auth-scoped AzDO cache keys (or provide the same env token in eval), otherwise positive public entries populate an unreplayable auth partition.
+
+### 2026-10-02: PR #153 Copilot code review fixes (commit ae35fd3)
+- Addressed 5 Copilot code-review findings on PR #153
+- Implemented SAS/URL redaction for CLI/MCP serialization
+- Fixed eval cache corrupt-cache misclassification (→ `cache/invalid_response`)
+- Classified Helix service calls at individual API/download boundary
+- Structured `download_helix_file` failure classification
+- Extracted `CliAcquisitionErrorPipeline` seam for improved testability
+- **Dallas verdict:** APPROVED (ae35fd3) — No secret-leak path found
+- Full suite validation passed; Lambert proceeded to snapshot-misses revision

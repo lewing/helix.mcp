@@ -1,7 +1,71 @@
 # Decisions
 
-**Last updated:** 2026-10-01T00:45:00Z
-**Merge cycle:** 2026-10-01T00:45:00Z (Scribe Issue #149 merge)
+**Last updated:** 2026-10-02T14:05:00Z
+**Merge cycle:** 2026-10-02T14:05:00Z (Scribe PR #153 snapshot-misses merge)
+
+---
+
+## Active Decisions
+
+### 2026-10-02T13:20:00Z: PR #153 Copilot Review Fixes and Snapshot Misses — Dallas Review Round 2 — APPROVED
+
+**By:** Dallas (Review Gate)  
+**Status:** APPROVED — Commit b7a97e1 "Harden snapshot negative recording (review round 2)"
+
+#### (a) Copilot review fixes and CLI seam — APPROVE
+
+Ripley's review-fix artifact is acceptable. The SAS/URL redaction now sanitizes structured resources and messages before CLI/MCP serialization; corrupt eval-cache reads are promoted to `cache/invalid_response`; Helix service calls are classified at the individual API/download boundary; `download_helix_file` failures are structured; and Lambert's `CliAcquisitionErrorPipeline` seam is a small production extraction that improves testability without changing the command contract. No remaining secret-leak path found in the serialized acquisition error surface.
+
+#### (b) Snapshot misses and negative replay — REJECTED at b7a97e1, then APPROVED at b7a97e1
+
+Initial implementation was rejected with three required fixes:
+
+1. **Probe failures during negative-recording predicates** — Terminal-state probes inside `catch` blocks could replace the original acquisition error. Required: probes must not change the exception observed by the caller.
+2. **Service-level empty-log recording** — `not_found/get_build_log` was persisted without terminal-build check, risking permanent offline marking of in-progress logs. Required: record only when build is known completed.
+3. **Positive/negative cache conflicts** — Negative rows could outlive their validity and expired negatives were never evicted. Required: atomically prevent conflicts and delete expired negatives before export.
+
+**Round 2 revision (b7a97e1):** Lambert's revision satisfies all three required fixes. Probe failures no longer replace original acquisition errors; terminal-state probes catch failures and rethrow the primary `HlxAcquisitionException` unchanged. Empty-log recording is gated on completed builds. Positive metadata/artifact writes clear same-key negatives; negative writes transact against same-key rows; eviction deletes expired `cache_acquisition_errors` before export. Regression coverage proves all scenarios with no negative rows orphaned.
+
+Validation: Full suite `2175 passed / 0 failed / 9 skipped`, 0 warnings.
+
+#### File Ownership (Locked)
+
+- **Ripley:** Review fixes (frozen at ae35fd3)
+- **Lambert:** Snapshot misses (frozen at b7a97e1)
+
+---
+
+### 2026-10-02T13:45:00Z: Distinguish Snapshot Misses from Replayed Acquisition Failures
+
+**By:** Dallas (Design Lead)  
+**Status:** APPROVED — Implemented as part of PR #153
+
+#### Decision
+
+Add acquisition kind `not_in_snapshot` for true offline/eval cache misses. Keep `provider="cache"` so the acquisition boundary remains the cache/snapshot layer, but make scripts and MCP clients key on `error.kind` instead of using provider as proxy. Offline AzDO/Helix stubs throw `HlxAcquisitionException(kind=not_in_snapshot, source="snapshot")`.
+
+Record deterministic live acquisition failures as negative cache entries in schema-v2 SQLite table `cache_acquisition_errors`. Store original `AcquisitionError` for recordable kinds only: `not_found`, `access_denied`, `invalid_response`. Never record `rate_limited`, `timeout`, `transport_error`, `not_in_snapshot`, cancellation, or non-acquisition exceptions.
+
+Live mode never serves negatives; it always retries. Eval mode looks up positive evidence first, then replays negatives with `source="snapshot"` and `replayed=true`. Use same cache key as positive entry. Positive writes delete same-key negatives.
+
+Schema v1 snapshots remain valid; `snapshot validate` warns instead of failing. Schema v2 validation deserializes errors, checks duplicates, counts rows, and rejects positive/negative key conflicts.
+
+Record `not_found` for build/job-scoped mutable resources only when terminal. `access_denied` and `invalid_response` recordable regardless of progress.
+
+#### Scope (PR #153)
+
+Implement `not_in_snapshot`, negative table/store API, AzDO/Helix cached-endpoint replay, snapshot validation/export compatibility, and empty-log recorder. Defer positive/negative caching for `ListJobsByBuildAsync`, `hlx collect` manifest semantics, and cache-status UX.
+
+---
+
+### 2026-10-02T12:41:55Z: Windows-safe .squad File Names
+
+**By:** Squad Coordinator  
+**Status:** APPROVED — In effect as hard rule
+
+**Rule:** Log and orchestration-log file names must not contain `:` or other Windows-invalid characters (`<>"|?*\`). Use compact UTC timestamps like `2026-10-02T1905Z-{slug}.md`, not `2026-10-02T12:05:00Z-...`.
+
+**Why:** `git checkout` on windows-latest fails with "invalid path" for colon-containing files, breaking the build job. This rule is now enforced in Scribe charter and all file naming.
 
 ---
 

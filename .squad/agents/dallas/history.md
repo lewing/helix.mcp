@@ -69,3 +69,32 @@ Approved pre-fix regression coverage, then accepted an evidence-driven scope ame
 - Approved commit 2794a94 for #152: empty direct AzDO log bodies now validate against logs-list metadata first, timeline log references second, and only then become structured `not_found/get_build_log`; referenced zero-byte logs remain successful `""`.
 - The right cache boundary for this ambiguity is below service validation: never cache zero-length full AzDO log bodies as success, while preserving non-empty full-log and range caching behavior.
 - Live validation matters for AzDO's unusual HTTP-200/zero-byte missing-log shape: `azdo log 1621466 999999 --json` now exits 1 with the stable structured envelope instead of `""`.
+
+### 2026-10-02T12:44:36-05:00 — Snapshot misses and negative replay
+
+- Decided true eval/offline cache misses need a distinct acquisition kind `not_in_snapshot` rather than overloading `not_found provider=cache`; keep provider as `cache` and make scripts/MCP inspect `error.kind`.
+- Negative snapshot replay should preserve the original provider failure (`kind/provider/operation/resource/httpStatus`) and add `source="snapshot"`, `replayed=true`, and `recordedAt`; only `not_found`, `access_denied`, and provider `invalid_response` are recordable.
+- Live mode must never serve negative entries. Positive cache writes delete same-key negatives; eval mode checks positive evidence first, replayed negatives second, and offline-stub `not_in_snapshot` last.
+- Schema v2 should add `cache_acquisition_errors`; v1 snapshots remain valid with a warning and simply cannot replay original provider failures.
+- The empty-log metadata validation path requires a narrow AzDO failure recorder because that `not_found/get_build_log` is classified in `AzdoService`, above `CachingAzdoApiClient`.
+
+### 2026-10-02T13:20:00-05:00 — PR #153 round 2 gate
+
+- Approved Ripley's Copilot review-fix artifact and Lambert's minimal `CliAcquisitionErrorPipeline` seam: redaction, corrupt-cache classification, per-call Helix classification, download classification, and central CLI acquisition filtering looked aligned.
+- Rejected the snapshot-misses/negative-replay artifact on negative-cache side effects: completion probes inside recording predicates must not mask the original endpoint acquisition error; service-level empty-log `not_found` recording must honor terminal-build gating; and schema-v2 maintenance must evict expired negative rows and avoid positive/negative key conflicts before snapshot export.
+- Recommended Lambert revise the rejected Ripley artifact.
+
+### 2026-10-02T13:45:00-05:00 — PR #153 round 2 revision gate
+
+- Approved Lambert's `b7a97e1` revision: AzDO/Helix terminal-state probe failures during negative recording now skip persistence and preserve the original endpoint acquisition error, with regressions asserting the original operation and no negative row.
+- Empty-log `not_found/get_build_log` recording is now terminal-build gated at the service recorder boundary; completed builds persist the negative row, while in-progress or unknown builds rethrow without recording.
+- Negative cache writes now transact away same-key positive metadata/artifact rows, positive writes still clear negatives, and eviction removes expired `cache_acquisition_errors` before export; durable lesson: conflict-free snapshot validity should be proven at the row-mutator boundary plus at least one export/validation path for expiry.
+
+### 2026-10-02: PR #153 design and review gates (snapshot misses + review fixes)
+- **Design lead:** Proposed `not_in_snapshot` acquisition kind, negative cache schema (v2), replay logic, empty-log recorder requirements
+- **Round 1 review:** APPROVED Ripley's review fixes (ae35fd3); identified 3 findings in Lambert's snapshot-misses implementation
+  - Required fixes: probe safety (terminal-state checks), terminal-build gating, negative eviction
+- **Round 2 review:** APPROVED Lambert's hardened revision (b7a97e1) after all 3 findings resolved
+  - Probes no longer replace original errors; terminal-state check gated on completed builds; atomic conflict clearing + expired eviction
+- **Validation:** 2175 passed / 9 skipped, 0 warnings; no secret-leak path in serialized surface
+- **Status:** PR #153 ready for merge with all gate verdicts APPROVED

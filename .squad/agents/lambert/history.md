@@ -75,3 +75,29 @@ Cross-agent context from Scribe:
   - **Commit 28beceb rejection:** paging contract falsely reported non-final pages as complete. Ripley's calculation `offset + shown < total` missed final-page cases. Revised to: any partial page must fail closed with `helixFailuresTruncated=true`, `truncated=true`, `complete=false`, and `incompleteDetails[].code == "helix_failures_truncated"`; only pages where `limit >= total` can be complete. Updated reason text to avoid false "showing first N" claims on later pages.
   - **Commit 5f11d95 rejection:** AzDO HTTP 200 empty-body log ambiguity. Dallas's spec required metadata validation in `AzdoService.GetBuildLogAsync`: after direct fetch returns `""`, validate requested logId in logs-list (already fetched for tail calls) or timeline records; if absent, throw `not_found` acquisition error; if present, return `""`. Prevent cache persistence of zero-length logs until metadata validation proves logId exists.
 - Both revisions validated: 2095 full suite passed / 9 skipped; targeted #152 tests 98/98 passed; live `azdo log 1621466 999999 --json` now exits 1 with `kind=not_found`, `provider=azdo`, `operation=get_build_log`, `resource.logId=999999`.
+
+### 2026-10-02T13:30:00-05:00 — PR #153 acquisition regression follow-up
+
+- Regression coverage should assert the serialized public boundary (`AcquisitionError`, CLI `{ ok:false, error }`, MCP `structuredContent`) for secret-bearing URLs, not just exception fields; SAS token leaks can survive if only service-level messages are checked.
+- Eval/offline corrupt-cache tests are most useful as endpoint theories over every cached API method with `Offline*ApiClient` underneath; the expected discriminator is `provider=cache`, `kind=invalid_response`, so corrupt primary evidence cannot silently degrade into a cache miss/not_found.
+- CLI acquisition error handling needs a central wrapper shared by Helix and AzDO commands. Removing per-command catches without invoking the wrapper causes JSON-capable commands to throw `HlxAcquisitionException` instead of emitting the machine-readable failure envelope.
+
+### 2026-10-02T13:55:00-05:00 — Snapshot miss and replay coverage
+
+- Snapshot-miss tests should assert the wire kind (`"not_in_snapshot"`) and `source="snapshot"` rather than relying on enum names only; that keeps old `NotFound/cache` behavior visibly distinct at CLI/MCP boundaries.
+- Negative replay coverage needs both storage-level and decorator-level assertions: the store can persist rows correctly while `CachingAzdoApiClient`/`CachingHelixApiClient` still skip replay and fall through to `Offline*ApiClient`, producing `not_in_snapshot`.
+- Snapshot schema-v2 validation is brittle around hand-written SQL; a validator query bug (`ORDER BY` term not in result set) can break all exports, so a tiny handcrafted v2 snapshot is a good canary before relying on broader exporter tests.
+
+### 2026-10-02: PR #153 snapshot misses implementation and hardening (commits ae35fd3 → b7a97e1)
+- **Iteration 1 (ae35fd3):** Implemented `not_in_snapshot` acquisition kind, SQLite schema-v2 `cache_acquisition_errors` table, AzDO/Helix replay logic, service-level empty-log recorder, initial test coverage
+- **Dallas rejection:** 3 required fixes identified:
+  1. Terminal-state probes inside `catch` blocks could replace original acquisition error
+  2. Empty-log `not_found` recorded without terminal-build check (risk of permanent offline marking for in-progress logs)
+  3. Negative rows outlive validity; expired negatives never evicted before snapshot export
+- **Iteration 2 (b7a97e1) — Hardened revision:**
+  1. Probe failures now safely caught; original `HlxAcquisitionException` preserved unchanged
+  2. Empty-log `not_found` gated on `IsBuildCompletedAsync`; in-progress builds rethrow without recording
+  3. Atomic positive/negative cache clearing; `EvictExpiredAsync` deletes expired entries before export
+- **Test coverage:** Windows-flaky expired-negative test fixed; all 3 findings covered by regression scenarios
+- **Validation:** Full suite 2175 passed / 0 failed / 9 skipped, 0 warnings
+- **Dallas verdict:** APPROVED (b7a97e1) — Ready for merge
