@@ -10,7 +10,7 @@ public record CacheOptions
     public long MaxSizeBytes { get; init; } = 1L * 1024 * 1024 * 1024;
 
     /// <summary>Cache root directory. Default: platform-appropriate XDG path.</summary>
-    public string? CacheRoot { get; init; }
+    public string? CacheRoot { get; set; }
 
     /// <summary>Artifact expiry (last access). Default: 7 days.</summary>
     public TimeSpan ArtifactMaxAge { get; init; } = TimeSpan.FromDays(7);
