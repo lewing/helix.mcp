@@ -411,7 +411,17 @@ public class HelixService
         var matching = files.Where(f => MatchesPattern(f.Name, pattern)).ToList();
 
         if (matching.Count == 0)
+        {
+            if (!HasGlobWildcard(pattern))
+            {
+                await using var missingProbe = await ClassifyHelixApiAsync(
+                    () => _api.GetFileAsync(pattern, workItem, id, cancellationToken),
+                    "download_helix_file",
+                    HelixAcquisition.Resource(("jobId", id), ("workItem", workItem), ("fileName", pattern)),
+                    cancellationToken);
+            }
             return [];
+        }
 
         var idPrefix = id.Length >= 8 ? id[..8] : id;
         var outDir = Path.Combine(Path.GetTempPath(), $"helix-{idPrefix}-{Guid.NewGuid():N}");
@@ -444,6 +454,9 @@ public class HelixService
 
         return paths;
     }
+
+    private static bool HasGlobWildcard(string pattern)
+        => pattern.IndexOfAny(['*', '?', '[']) >= 0;
 
     /// <summary>Download a file from a direct URL (e.g., blob storage URI) to a temp file.</summary>
     /// <param name="url">Direct file URL to download.</param>

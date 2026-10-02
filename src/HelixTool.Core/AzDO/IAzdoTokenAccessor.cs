@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using Azure.Core;
 using Azure.Identity;
+using HelixTool.Core.Cache;
 
 namespace HelixTool.Core.AzDO;
 
@@ -185,28 +186,38 @@ public interface IAzdoTokenAccessor
 /// </summary>
 internal sealed class EvalModeAzdoTokenAccessor : IAzdoTokenAccessor
 {
+    private readonly CacheOptions _options;
+
+    public EvalModeAzdoTokenAccessor(CacheOptions options)
+    {
+        _options = options;
+    }
+
     public Task<AzdoCredential?> GetAccessTokenAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(AzCliAzdoTokenAccessor.TryGetEnvironmentCredential());
+        return Task.FromResult<AzdoCredential?>(null);
     }
 
     public Task<AzdoAuthStatus> AuthStatusAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(
-            AzCliAzdoTokenAccessor.TryGetEnvironmentAuthStatus()
-            ?? new AzdoAuthStatus
-            {
-                IsAuthenticated = false,
-                Path = "anonymous",
-                Source = "anonymous",
-                LooksExpired = null,
-                Warnings =
-                [
-                    "No AZDO_TOKEN is set. Eval mode remains anonymous and will only replay public cache keys."
-                ]
-            });
+        var partition = string.IsNullOrEmpty(_options.AuthTokenHash)
+            ? "public"
+            : $"cache-{_options.AuthTokenHash}";
+        return Task.FromResult(new AzdoAuthStatus
+        {
+            IsAuthenticated = false,
+            Path = $"snapshot:{partition}",
+            Source = "snapshot",
+            LooksExpired = null,
+            Warnings =
+            [
+                string.IsNullOrEmpty(_options.AuthTokenHash)
+                    ? "Eval mode is replaying the public AzDO cache partition without credentials."
+                    : $"Eval mode is replaying AzDO cache partition {partition} without credential material."
+            ]
+        });
     }
 
     public void InvalidateCachedCredential()

@@ -9,6 +9,7 @@ using HelixTool.Generated;
 using HelixTool.Core.CliSchema;
 using HelixTool.Core.Acquisition;
 using HelixTool.Core.Cache;
+using HelixTool.Core.Collect;
 using HelixTool.Core.Helix;
 using HelixTool.Core.AzDO;
 using HelixTool.Core.Paging;
@@ -47,12 +48,13 @@ var evalSnapshotDir = Environment.GetEnvironmentVariable("HLX_EVAL_SNAPSHOT");
 if (!string.IsNullOrEmpty(evalSnapshotDir))
 {
     var resolvedSnapshot = Path.GetFullPath(evalSnapshotDir);
+    var azdoPartition = EvalSnapshotAzdoPartitionSelector.Select(resolvedSnapshot);
     var evalOptions = new CacheOptions
     {
         CacheRoot = resolvedSnapshot,
         EvalMode = true,
         CacheRootHash = null,
-        AuthTokenHash = null,
+        AuthTokenHash = azdoPartition.AuthTokenHash,
     };
     services.AddEvalModeCore(evalOptions);
     services.AddSingleton(sp => new Lazy<HelixService>(() => sp.GetRequiredService<HelixService>()));
@@ -118,6 +120,7 @@ services.AddSingleton<AzdoService>(sp =>
         sp.GetRequiredService<IHelixApiClient>(),
         sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>(),
         sp.GetRequiredService<CacheOptions>()));
+services.AddSingleton<AzdoBuildCollector>();
 }
 
 ConsoleApp.ServiceProvider = services.BuildServiceProvider();
@@ -127,6 +130,7 @@ app.UseFilter<AcquisitionErrorCliFilter>();
 app.Add<Commands>();
 app.Add<AzdoCommands>();
 app.Add<SnapshotCommands>();
+app.Add<CollectCommands>();
 // When no command is specified: default to MCP server mode if stdin is redirected
 // (e.g. piped or launched by an MCP host), otherwise show help text for interactive use.
 app.Run(args.Length == 0 ? (Console.IsInputRedirected ? ["mcp"] : ["--help"]) : args);
@@ -629,14 +633,20 @@ public class Commands
     /// <param name="workItem">Work item name.</param>
     /// <param name="pattern">File name or glob pattern (e.g., *.binlog).</param>
     /// <param name="url">Direct file URL to download (bypasses jobId/workItem).</param>
+    /// <param name="json">Output downloaded paths as JSON and emit JSON acquisition errors.</param>
     [McpEquivalent("helix_download")]
     [Command("download")]
     public async Task Download([Argument] string? jobId = null, [Argument] string? workItem = null,
-        string pattern = "*", string? url = null)
+        string pattern = "*", string? url = null, bool json = false)
     {
         if (!string.IsNullOrWhiteSpace(url))
         {
             var path = await Svc.DownloadFromUrlAsync(url);
+            if (json)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new[] { path }, s_jsonOptions));
+                return;
+            }
             Console.WriteLine(path);
             return;
         }
@@ -647,9 +657,19 @@ public class Commands
         var paths = await Svc.DownloadFilesAsync(jobId, workItem, pattern);
         if (paths.Count == 0)
         {
-            Console.Error.WriteLine($"No files matching '{pattern}' found.");
+            if (json)
+                Console.WriteLine(JsonSerializer.Serialize(Array.Empty<string>(), s_jsonOptions));
+            else
+                Console.Error.WriteLine($"No files matching '{pattern}' found.");
             return;
         }
+
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(paths, s_jsonOptions));
+            return;
+        }
+
         foreach (var p in paths)
             Console.WriteLine(p);
     }
@@ -1027,12 +1047,13 @@ Available as `failureCategory` in JSON and MCP output.
         if (!string.IsNullOrEmpty(mcpEvalSnapshotDir))
         {
             var resolvedSnapshot = Path.GetFullPath(mcpEvalSnapshotDir);
+            var azdoPartition = EvalSnapshotAzdoPartitionSelector.Select(resolvedSnapshot);
             var evalOptions = new CacheOptions
             {
                 CacheRoot = resolvedSnapshot,
                 EvalMode = true,
                 CacheRootHash = null,
-                AuthTokenHash = null,
+                AuthTokenHash = azdoPartition.AuthTokenHash,
             };
             builder.Services.AddEvalModeCore(evalOptions);
             builder.Services.AddSingleton<AzdoService>(sp =>

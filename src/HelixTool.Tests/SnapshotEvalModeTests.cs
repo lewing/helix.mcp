@@ -664,18 +664,14 @@ public class EvalModeAzdoAuthTests : IDisposable
     {
         Environment.SetEnvironmentVariable("AZDO_TOKEN", _originalToken);
         Environment.SetEnvironmentVariable("AZDO_TOKEN_TYPE", _originalTokenType);
+        Environment.SetEnvironmentVariable(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable, null);
         try { Directory.Delete(_parentDir, recursive: true); } catch { }
     }
 
     [Fact]
-    public async Task EvalAccessor_EnvironmentPat_ReplaysSameAuthScopedCacheKey()
+    public async Task EvalAccessor_SelectedSnapshotPartition_ReplaysAuthScopedCacheKeyWithoutToken()
     {
-        const string token = "eval-replay-pat";
-        Environment.SetEnvironmentVariable("AZDO_TOKEN", token);
-        Environment.SetEnvironmentVariable("AZDO_TOKEN_TYPE", "pat");
-
-        var identity = AzdoCredential.BuildCacheIdentity("env:AZDO_TOKEN:pat", token);
-        var authHash = CacheOptions.ComputeAuthContextHash(identity);
+        var authHash = "abcdef12";
         var authKey = $"azdo:{authHash}:org:proj:build:42";
 
         using (var writer = new SqliteCacheStore(new CacheOptions { CacheRoot = _parentDir }))
@@ -686,7 +682,12 @@ public class EvalModeAzdoAuthTests : IDisposable
                 TimeSpan.FromHours(4));
         }
 
-        var evalOptions = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true };
+        Environment.SetEnvironmentVariable("AZDO_TOKEN", null);
+        Environment.SetEnvironmentVariable("AZDO_TOKEN_TYPE", null);
+        Environment.SetEnvironmentVariable(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable, $"cache-{authHash}");
+
+        var partition = EvalSnapshotAzdoPartitionSelector.Select(_snapshotDir);
+        var evalOptions = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true, AuthTokenHash = partition.AuthTokenHash };
         var services = new ServiceCollection();
         services.AddEvalModeCore(evalOptions);
         using var provider = services.BuildServiceProvider();
@@ -695,7 +696,6 @@ public class EvalModeAzdoAuthTests : IDisposable
             .GetBuildAsync("org", "proj", 42);
 
         Assert.Equal(42, build?.Id);
-        Assert.Equal(identity, evalOptions.AuthCacheIdentity);
         Assert.Equal(authHash, evalOptions.AuthTokenHash);
     }
 
@@ -718,6 +718,7 @@ public class EvalModeAzdoAuthTests : IDisposable
         var status = await provider.GetRequiredService<IAzdoTokenAccessor>().AuthStatusAsync();
         Assert.False(status.IsAuthenticated);
         Assert.Null(evalOptions.AuthTokenHash);
+        Assert.Equal("snapshot:public", status.Path);
 
         var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => provider.GetRequiredService<IAzdoApiClient>().GetBuildAsync("org", "proj", 42));

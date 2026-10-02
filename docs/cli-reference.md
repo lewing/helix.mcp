@@ -492,6 +492,183 @@ hlx azdo test-attachments 98765 1234
 hlx azdo test-attachments 98765 1234 --all
 ```
 
+## Collect Commands
+
+### `hlx collect azdo-build <build-id-or-url> [options]`
+
+Collect deterministic evidence for an Azure DevOps build into the normal hlx cache (or an isolated cache root), optionally export that cache as a replayable snapshot, and write a manifest describing every fetch, skip, recorded failure, and gap.
+
+```bash
+hlx collect azdo-build 12345678 --export /tmp/build-12345678-snapshot
+hlx collect azdo-build "https://dev.azure.com/dnceng-public/public/_build/results?buildId=12345678" --manifest collect.json --json
+```
+
+The command cannot run when `HLX_EVAL_SNAPSHOT` is set. It populates live cache entries first; `--export` then copies those entries into a snapshot and copies the manifest to `manifest/hlx-collect-manifest.json` inside the snapshot.
+
+**Flags and defaults:**
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--cache-dir <dir>` | `null` | Cache base directory to populate. Omit to use the normal hlx cache root. |
+| `--manifest <path>` | `null` | Manifest output path. When omitted, writes `hlx-collect-manifest.json` in the current directory. |
+| `--resume` | `false` | Reuse successful entries from the previous manifest when the referenced cache evidence still exists. |
+| `--export <snapshot-dir>` | `null` | Destination snapshot directory. Must not already exist. |
+| `--json` | `false` | Print the complete manifest JSON to stdout after collection. |
+| `--allow-incomplete` | `false` | Return exit `0` only when incompleteness is limited to policy-allowed skips. |
+| `--max-concurrency <int>` | `6` | Maximum concurrent resource fetches. Must be greater than `0`. |
+| `--retry-count <int>` | `3` | Total attempts per transient acquisition. Must be greater than `0`. |
+| `--retry-kinds <csv>` | `rate_limited,timeout,transport_error` | Acquisition error kinds retried by the collector. Valid values are `not_found`, `access_denied`, `rate_limited`, `timeout`, `transport_error`, `invalid_response`, and `not_in_snapshot`. |
+| `--retry-initial-delay <duration>` | `2s` | Initial retry delay. Accepts `TimeSpan` values or suffixes such as `2s`, `5m`, or `1h`. |
+| `--retry-max-delay <duration>` | `30s` | Maximum retry delay. Accepts the same duration formats as `--retry-initial-delay`. |
+| `--artifact-pattern <glob>` | `*` | Artifact-name glob used by evidence planning. |
+| `--artifact-job-prefix <prefix>` | `null` | Prefix stripped from artifact names before matching. |
+| `--keep-attempt-prefix` | `false` | Keep `AttemptN_` in artifact names instead of stripping it. |
+| `--match <mode>` | `auto` | Evidence match strategy: `auto`, `source-id`, `normalized-exact`, or `exact`. |
+| `--job-results <csv>` | `failed,canceled` | Timeline job results targeted by evidence planning. Empty CSV falls back to `failed,canceled`. |
+| `--log-scope <failed\|all\|none>` | `failed` | `failed` collects logs for failed/non-succeeded timeline records, records with issues, and monitor records referenced by Helix failures; `all` collects every build log; `none` records a policy skip. |
+| `--test-scope <failed\|all\|none>` | `failed` | `failed` collects all test-run summaries, failed test results, and failed-result attachment metadata; `all` collects `Passed,Failed,NotExecuted,Inconclusive,Timeout,Aborted,Error,NotRunnable,NotApplicable`; `none` records a policy skip. |
+| `--helix-scope <suggested\|none>` | `suggested` | `suggested` follows Helix `suggestedFetches[]` from the evidence plan; `none` records a policy skip. |
+| `--download-helix-files <glob>` | `null` | Downloads matching Helix uploaded files by glob after metadata is listed. Bytes stream through `--max-file-bytes` and cumulative `--max-total-bytes` caps before cache writes; over-cap files are deleted, recorded as skipped with `size_limit` or `total_size_limit`, and never cached. In-cap files are cached and replay offline. Unmatched files are recorded as policy-excluded skips. |
+| `--max-file-bytes <long>` | `52428800` | Per-file byte cap for `--download-helix-files`; files over the cap are skipped with `size_limit`. |
+| `--max-total-bytes <long>` | `2147483648` | Total byte cap for `--download-helix-files`; files that would exceed the remaining budget are skipped with `total_size_limit`. |
+| `--schema` | `false` | Print the `CollectManifest` JSON schema and exit. |
+
+**Default collection policy:**
+
+By default, the collector gathers build metadata, the full timeline, artifact metadata matching `--artifact-pattern`, the build logs list, the evidence plan, all Helix failure pages from that plan, full AzDO logs for failed/non-succeeded records, records with issues, and monitor records referenced by Helix failures, all test-run summaries, failed test results and their attachment metadata, and the evidence-plan Helix `suggestedFetches[]` (`helix_work_item`, full `helix_logs`, and `helix_files` metadata). The manifest also records source build fields, auth/replay metadata, cache root, policy, summary counts, and every attempt.
+
+By default, it does not download AzDO artifact ZIP/file bytes, binlogs, dumps, arbitrary Helix uploaded-file bytes, parsed TRX/xUnit derived summaries, search-result precomputations, MCP cursor/window variants, or any live fallback during offline replay. Helix uploaded-file metadata can still be collected through `helix_files`; pass `--download-helix-files <glob>` to cache and replay matching uploaded-file bytes offline.
+
+**Manifest schema:**
+
+The manifest is stable, versioned JSON with top-level fields `schemaVersion`, `kind`, `manifestId`, `hlxVersion`, `generatedAt`, `completedAt`, `command`, `source`, `auth`, `policy`, `cache`, `snapshot`, `complete`, `exitCode`, `incompleteDetails`, `summary`, and `attempts`. `kind` is `hlx.collect.azdo-build`; `schemaVersion` is `1`.
+
+Each `attempts[]` entry has `id`, optional `parentId`, `phase`, `required`, `provider`, `operation`, `resource`, optional `cacheKey`, optional `completeCacheKey`, `startedAt`, `finishedAt`, `durationMs`, `attemptCount`, `outcome`, nullable `bytes`, optional `sha256`, optional `paging`, optional `error`, and optional `skip`. `outcome` is one of:
+
+- `ok` — Fetch/read succeeded for the requested policy.
+- `cached` — `--resume` reused a previous `ok`/`cached` attempt after verifying the cache key still exists.
+- `recorded_failure` — A non-retried provider failure was recorded in negative-cache form and contributes to incompleteness when required.
+- `failed` — A retried/transient acquisition exhausted the retry budget or an acquisition failed without a recordable provider error.
+- `skipped` — The resource was intentionally not fetched by policy or cap.
+
+`paging`, when present, contains `returned`, nullable `total`, `offset`, nullable `limit`, `complete`, `truncated`, and `next`. `skip.kind` is emitted as `policy_excluded`, `not_selected`, `size_limit`, or `total_size_limit` by the current collector. `bytes` is `null` for skips. `error` reuses the `AcquisitionError` shape from [Errors and exit codes](#errors-and-exit-codes): `kind`, `provider`, `operation`, `resource`, optional `httpStatus`, optional `retryAfterSeconds`, optional `source`, optional `replayed`, optional `recordedAt`, and `message`.
+
+`summary` contains `attempted`, `ok`, `cached`, `recordedFailure`, `failed`, `skipped`, and `bytes`. `auth.azdo.cachePartition` is the non-secret replay partition (`public` or `cache-xxxxxxxx`); `auth.azdo.replay` is `public` or `snapshot_partition`; `auth.helix.path` is `anonymous`, `environment`, or `stored-credential`. `snapshot.manifestPath` is `manifest/hlx-collect-manifest.json` when `--export` succeeds; the standalone manifest path is the `--manifest` value or `hlx-collect-manifest.json` in the current directory.
+
+Trimmed real manifest example, generated from public build `1621192` with `--log-scope none --test-scope none --helix-scope none`:
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "hlx.collect.azdo-build",
+  "source": {
+    "provider": "azdo",
+    "org": "dnceng-public",
+    "project": "public",
+    "buildId": 1621192,
+    "definitionName": "runtime",
+    "status": "completed",
+    "result": "failed"
+  },
+  "auth": {
+    "azdo": {
+      "path": "AzureCliCredential",
+      "cachePartition": "cache-7af1ee30",
+      "replay": "snapshot_partition"
+    },
+    "helix": {
+      "path": "anonymous"
+    }
+  },
+  "policy": {
+    "requiredOperations": [
+      "azdo_evidence_plan",
+      "get_build",
+      "get_build_log",
+      "get_timeline",
+      "helix_suggested_fetches",
+      "list_artifacts",
+      "list_build_logs",
+      "list_test_runs"
+    ],
+    "maxConcurrency": 6,
+    "retry": {
+      "maxAttempts": 3,
+      "kinds": ["rate_limited", "timeout", "transport_error"],
+      "initialDelay": "PT2S",
+      "maxDelay": "PT30S"
+    },
+    "logScope": "none",
+    "testScope": "none",
+    "helixScope": "none"
+  },
+  "snapshot": {
+    "exported": false,
+    "validated": false,
+    "validationErrors": [],
+    "validationWarnings": []
+  },
+  "complete": true,
+  "exitCode": 0,
+  "incompleteDetails": [],
+  "summary": {
+    "attempted": 5,
+    "ok": 5,
+    "cached": 0,
+    "recordedFailure": 0,
+    "failed": 0,
+    "skipped": 3,
+    "bytes": 1546817
+  },
+  "attempts": [
+    {
+      "id": "azdo.artifacts",
+      "phase": "azdo_root",
+      "required": true,
+      "provider": "azdo",
+      "operation": "list_artifacts",
+      "resource": { "org": "dnceng-public", "project": "public", "buildId": 1621192 },
+      "outcome": "ok",
+      "bytes": 137998,
+      "paging": {
+        "returned": 117,
+        "total": 117,
+        "offset": 0,
+        "limit": null,
+        "complete": true,
+        "truncated": false,
+        "next": null
+      }
+    },
+    {
+      "id": "azdo.logs",
+      "phase": "azdo_logs",
+      "required": true,
+      "provider": "azdo",
+      "operation": "get_build_log",
+      "outcome": "skipped",
+      "bytes": null,
+      "skip": {
+        "kind": "policy_excluded",
+        "message": "AzDO log collection was disabled by --log-scope none."
+      }
+    }
+  ]
+}
+```
+
+**Exit codes:**
+
+| Code | Meaning |
+|------|---------|
+| `0` | Collection completed and `complete == true`, or `--allow-incomplete` was supplied and every incomplete detail is policy-allowed. |
+| `1` | Command/setup failure: invalid retry kind or delay, invalid policy values, running in eval mode, or snapshot export/validation failure. |
+| `2` | Manifest was written, but required collection is incomplete: required fetch failure, recorded provider failure, unallowed required skip, or incomplete evidence-plan details such as unresolved/truncated Helix failures. |
+
+**Retry behavior:** only `rate_limited`, `timeout`, and `transport_error` are retried by default. `--retry-count` is the total attempt count. `retryAfterSeconds` is honored for rate limits when present; otherwise retries use exponential backoff from `--retry-initial-delay` bounded by `--retry-max-delay` with small jitter. Non-retried acquisition kinds such as `not_found`, `access_denied`, and `invalid_response` become `recorded_failure` attempts.
+
+**Resume behavior:** `--resume` reads the existing manifest at the resolved manifest path. Prior `ok`/`cached` attempts are recorded as `cached` only if the referenced cache key still exists. Prior non-transient provider failures are preserved as `recorded_failure`. Prior transient failures are retried under the current retry policy. Policy changes are reflected in the newly written manifest.
+
 ## Snapshot Commands
 
 ### `hlx snapshot export <destination>`
@@ -520,13 +697,14 @@ In schema v2 snapshots, deterministic acquisition failures recorded during live 
 
 Live mode never serves recorded failures as data. A later successful live fetch for the same cache key deletes the recorded failure. A snapshot miss for a key that was never collected is reported separately as `kind: "not_in_snapshot"`, `provider: "cache"`, `source: "snapshot"`.
 
-**Auth-scoped replay limitation:**
+**AzDO replay partition selection:**
 
-The snapshot preserves all cache keys unchanged. When replayed in eval mode:
+The snapshot preserves AzDO cache keys and replays them without AzDO credentials. Eval mode does not need `AZDO_TOKEN` or `az login`; instead, it selects the non-secret AzDO cache partition embedded in the snapshot:
 
-- **Environment-keyed entries** (auth via `AZDO_TOKEN`): Reproducible. Set `AZDO_TOKEN` to the same PAT/Entra token and `AZDO_TOKEN_TYPE` to the same classification value for reliable replay.
-- **Anonymous/public entries**: Always reproducible without credentials.
-- **Azure CLI credential partitions** (`AzureCliCredential` or `az` CLI-derived identity): Not reproducible in eval mode because eval mode has an environment-only token accessor. To replay with `az` CLI auth, first export a snapshot using `AZDO_TOKEN` instead of `az login`.
+- `public` for anonymous/public AzDO entries.
+- `cache-xxxxxxxx` for entries collected with an authenticated AzDO identity such as `AZDO_TOKEN`, `AzureCliCredential`, or `az` CLI fallback.
+
+Collector exports also record that partition in `manifest/hlx-collect-manifest.json` as `auth.azdo.cachePartition`; authenticated collector snapshots use `auth.azdo.replay: "snapshot_partition"`. If a snapshot contains exactly one AzDO partition, hlx selects it automatically. If it contains multiple AzDO partitions, hlx fails closed until `HLX_EVAL_AZDO_PARTITION=public` or `HLX_EVAL_AZDO_PARTITION=cache-xxxxxxxx` selects one.
 
 ### `hlx snapshot validate <snapshotPath>`
 
@@ -559,34 +737,19 @@ Schema v1 snapshots remain valid, but validation prints a compatibility warning 
 
 ### Scanner workflow
 
-Treat a scanner "bundle" as the existing offline cache snapshot, not a separate artifact format:
+Treat a scanner "bundle" as the existing offline cache snapshot plus the collector manifest, not a separate artifact format. Collect in CI while live credentials and network are available, upload the snapshot, then investigate anywhere without AzDO credentials:
 
-1. Populate the cache by running the needed CLI commands live. Use complete-list commands and full logs when the scanner needs offline replay without later live calls:
+```bash
+hlx collect azdo-build "$BUILD_ID_OR_URL" --export /tmp/my-snapshot
+# upload /tmp/my-snapshot to the scanner/investigation environment
+env -u AZDO_TOKEN HLX_EVAL_SNAPSHOT=/tmp/my-snapshot hlx mcp
+```
 
-   ```bash
-   hlx azdo build "$BUILD_ID" --json
-   hlx azdo timeline "$BUILD_ID" --json
-   hlx azdo changes "$BUILD_ID" --all --json
-   hlx azdo test-runs "$BUILD_ID" --all --json
-   hlx azdo artifacts "$BUILD_ID" --all --json
-   hlx azdo log "$BUILD_ID" "$LOG_ID" --full --json
-   ```
+For `dnx`-based MCP configs, set `HLX_EVAL_SNAPSHOT` in the MCP server environment and use the same command/args as live mode (`dnx --yes lewing.helix.mcp`; MCP mode is the default when no subcommand is given). Offline replay reads only the snapshot cache and selected AzDO partition; it does not require `AZDO_TOKEN` or `az login`.
 
-   Add `hlx azdo test-results "$BUILD_ID" "$RUN_ID" --all --json`, `hlx azdo test-attachments "$RUN_ID" "$RESULT_ID" --all --json`, and Helix drilldown commands surfaced by `azdo evidence plan` for any selected runs/results/work items. The capped MCP defaults are unchanged, but in eval mode they can be served offline from the complete-list keys populated by `--all`.
-2. Export and validate the snapshot:
+Read `/tmp/my-snapshot/manifest/hlx-collect-manifest.json` before launching or evaluating the scanner. `complete: true` means all required resources for the selected policy were fetched or policy-skipped. `complete: false` with `exitCode: 2` means the snapshot is usable but has declared gaps; inspect `incompleteDetails[]` and `attempts[]` to decide whether to upload, retry with `--resume`, change policy, or fail the scan.
 
-   ```bash
-   hlx snapshot export /tmp/my-snapshot
-   hlx snapshot validate /tmp/my-snapshot
-   ```
-
-3. Run the agent offline against the same MCP/CLI surface:
-
-   ```bash
-   HLX_EVAL_SNAPSHOT=/tmp/my-snapshot hlx mcp
-   ```
-
-   For `dnx`-based MCP configs, set the `HLX_EVAL_SNAPSHOT` environment variable and use the same command/args as live mode (`dnx --yes lewing.helix.mcp`; MCP mode is the default when no subcommand is given).
+Offline replay distinguishes provider failures from collector gaps. A provider failure recorded during collection replays with its original `error.kind` plus `source: "snapshot"` and `replayed: true`; retrying offline will return the same recorded failure. A resource that was never collected returns `kind: "not_in_snapshot"`, `provider: "cache"`, which means the manifest/snapshot is missing that key and must be recollected live (or deliberately skipped in policy).
 
 ## Utility Commands
 
@@ -729,8 +892,9 @@ When a direct build-log body is empty, hlx validates the logId against the build
 |----------|---------|
 | `HELIX_ACCESS_TOKEN` | Helix API token (overrides stored credential) |
 | `AZDO_TOKEN` | Azure DevOps PAT (overrides Azure CLI auth) |
-| `AZDO_TOKEN_TYPE` | Classification of the AZDO_TOKEN value. Used to distinguish PAT, JWT, and Entra token types. When replaying snapshots, set to the same value as the export session to ensure auth-scoped key classification is preserved. |
+| `AZDO_TOKEN_TYPE` | Optional `AZDO_TOKEN` classification override. Use `pat` or `bearer` when live AzDO token auto-detection misclassifies the token. Snapshot replay does not require this variable. |
 | `HLX_EVAL_SNAPSHOT` | Path to a snapshot directory (created with `hlx snapshot export`) for offline replay mode. When set, hlx loads the snapshot's cached data instead of making live API calls. Overrides all cache configuration and auth. |
+| `HLX_EVAL_AZDO_PARTITION` | Optional eval-mode AzDO cache partition selector. Use `public` or `cache-xxxxxxxx` when a snapshot contains multiple AzDO partitions, or to override automatic single-partition/manifest selection. |
 | `HLX_CACHE_MAX_SIZE_MB` | Max cache size in MB (default: 1024, set to `0` to disable) |
 | `HLX_DISABLE_FILE_SEARCH` | Set to `true` to disable file content search tools |
 | `HLX_API_KEY` | Require API key for HTTP MCP server access |

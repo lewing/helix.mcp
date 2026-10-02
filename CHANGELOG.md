@@ -8,6 +8,14 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+### `hlx collect azdo-build` scanner snapshots
+
+- **One-command snapshot collection:** Added `hlx collect azdo-build <build-id-or-url>` to collect deterministic AzDO/Helix evidence into the hlx cache, optionally export a replayable snapshot, and write a versioned manifest at `manifest/hlx-collect-manifest.json` inside exported snapshots.
+- **Manifested completeness:** Collector manifests record every fetch attempt, skip, recorded provider failure, retry outcome, policy, auth/replay metadata, summary counts, and exit code so scanners can distinguish complete snapshots from declared gaps and `not_in_snapshot` replay misses.
+- **Helix uploaded-file downloads:** `--download-helix-files <glob>` now downloads matching Helix files with streaming `--max-file-bytes` / `--max-total-bytes` caps; over-cap files are deleted, recorded as `size_limit` / `total_size_limit` skips, never cached, and in-cap files replay offline.
+- **Credential-free snapshot replay:** Collector manifests record the non-secret AzDO cache partition in `auth.azdo.cachePartition` with replay mode `snapshot_partition`; eval mode reuses it automatically without `AZDO_TOKEN` or `az login`, and multi-partition snapshots fail closed unless `HLX_EVAL_AZDO_PARTITION` selects `public` or `cache-xxxxxxxx`.
+- **Offline scanner workflow:** Documented the one-command flow: collect in CI with `hlx collect azdo-build <build> --export <snap>` → upload snapshot → investigate anywhere with `HLX_EVAL_SNAPSHOT=<snap> hlx mcp` and no AzDO credentials.
+
 ### CLI complete-list paging for AzDO scanners (BREAKING)
 
 - **BREAKING — JSON list shape:** `hlx azdo changes`, `azdo test-runs`, `azdo test-results`, `azdo artifacts`, and `azdo test-attachments` now emit a JSON envelope with `{ ok, results, returned, total, offset, limit, complete, truncated, next, cache, note }` instead of a bare JSON array. Migration: read rows from `.results[]`; the old array length is now `.returned`, and the complete selected-list count is `.total`.

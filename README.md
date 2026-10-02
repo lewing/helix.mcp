@@ -97,9 +97,20 @@ hlx snapshot validate /tmp/my-snapshot       # Verify integrity
 HLX_EVAL_SNAPSHOT=/tmp/my-snapshot hlx status <jobId>  # Use snapshot
 ```
 
-Snapshots preserve all cached data and artifact files. When `HLX_EVAL_SNAPSHOT` is set, `hlx` runs entirely offline against the snapshot's SQLite database. For scanner bundles, populate live data with AzDO list commands using `--all` and build logs using `azdo log --full` before export; capped MCP calls can replay from those complete keys offline. See the [CLI reference](docs/cli-reference.md#snapshot-commands) for auth-scoped replay limitations and the complete workflow.
+Snapshots preserve all cached data and artifact files. When `HLX_EVAL_SNAPSHOT` is set, `hlx` runs entirely offline against the snapshot's SQLite database, including the non-secret AzDO cache partition recorded during collection; replay does not need `AZDO_TOKEN` or `az login`. For scanner bundles, prefer collecting in CI with `hlx collect azdo-build --export`, upload the snapshot, and investigate anywhere from the complete keys populated during collection. See the [CLI reference](docs/cli-reference.md#snapshot-commands) for partition selection and the complete workflow.
 
 Schema v2 snapshots also preserve deterministic acquisition failures (`not_found`, `access_denied`, `invalid_response`) recorded during live collection. Offline replay returns the original provider failure with `source: "snapshot"`, `replayed: true`, and `recordedAt`; keys never collected into the snapshot return `kind: "not_in_snapshot"`, `provider: "cache"`.
+
+### Collecting scanner snapshots
+
+Use `hlx collect azdo-build` to populate a deterministic cache, export it, and write a manifest in one step:
+
+```bash
+hlx collect azdo-build "$BUILD_ID_OR_URL" --export /tmp/my-snapshot
+HLX_EVAL_SNAPSHOT=/tmp/my-snapshot hlx mcp
+```
+
+The exported manifest lives at `manifest/hlx-collect-manifest.json`; read it to distinguish complete snapshots from declared gaps before handing the snapshot to an offline scanner. See the [scanner workflow](docs/cli-reference.md#scanner-workflow) and [collect command reference](docs/cli-reference.md#collect-commands).
 
 ## MCP Tools
 
