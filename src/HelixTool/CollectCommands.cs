@@ -50,7 +50,7 @@ public sealed class CollectCommands
     /// <param name="helixScope">Helix scope: suggested or none. Default: suggested.</param>
     /// <param name="downloadHelixFiles">Glob for Helix uploaded files to stream with byte caps; over-cap files are skipped (size_limit/total_size_limit), and in-cap files replay offline.</param>
     /// <param name="maxFileBytes">Maximum bytes per downloaded file. Default: 52428800.</param>
-    /// <param name="maxTotalBytes">Maximum total downloaded bytes for optional Helix file downloads. Default: 2147483648. Clamped down to the remaining cache capacity (cache size cap minus bytes already used by required evidence this run) so optional downloads can never evict required evidence.</param>
+    /// <param name="maxTotalBytes">Maximum total optional Helix file bytes, including resumed files. Default: 2147483648. Required evidence is acquired and verified first; new downloads share the remaining cache capacity after all existing artifacts, so this run's optional writes cannot cause cache-cap eviction. The manifest records the requested limit, not cache-derived headroom.</param>
     [Command("collect azdo-build")]
     public async Task AzdoBuild(
         [Argument] string buildId,

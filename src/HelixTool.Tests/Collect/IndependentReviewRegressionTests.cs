@@ -136,8 +136,18 @@ public sealed partial class IndependentReviewRegressionTests
     [InlineData("console", HttpStatusCode.NotFound, false, "get_helix_console_log")]
     [InlineData("file", HttpStatusCode.Forbidden, false, "download_helix_file")]
     [InlineData("file", HttpStatusCode.NotFound, false, "download_helix_file")]
+    [InlineData("job", HttpStatusCode.Forbidden, true, "get_helix_job")]
+    [InlineData("job", HttpStatusCode.NotFound, true, "get_helix_job")]
+    [InlineData("work-items", HttpStatusCode.Forbidden, true, "list_helix_work_items")]
+    [InlineData("work-items", HttpStatusCode.NotFound, true, "list_helix_work_items")]
+    [InlineData("work-item", HttpStatusCode.Forbidden, true, "get_helix_work_item")]
+    [InlineData("work-item", HttpStatusCode.NotFound, true, "get_helix_work_item")]
     [InlineData("files", HttpStatusCode.Forbidden, true, "list_helix_work_item_files")]
     [InlineData("files", HttpStatusCode.NotFound, true, "list_helix_work_item_files")]
+    [InlineData("console", HttpStatusCode.Forbidden, true, "get_helix_console_log")]
+    [InlineData("console", HttpStatusCode.NotFound, true, "get_helix_console_log")]
+    [InlineData("file", HttpStatusCode.Forbidden, true, "download_helix_file")]
+    [InlineData("file", HttpStatusCode.NotFound, true, "download_helix_file")]
     public async Task RealHelixClient_ClassifiesRecordsAndReplaysProviderFailures_IndepReview2(
         string endpoint, HttpStatusCode status, bool throwHttpException, string operation)
     {
@@ -657,6 +667,7 @@ public sealed partial class IndependentReviewRegressionTests
             [new() { Id = RunId, Name = "Runtime Tests", State = "completed", TotalTests = 15, UnanalyzedTests = 1 }];
         public Dictionary<int, IReadOnlyList<AzdoTestResult>> ResultsByRun { get; } = new();
         public TaskCompletionSource? ResultsGate { get; set; }
+        public string[] HelixWorkItems { get; set; } = [WorkItem];
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -695,7 +706,11 @@ public sealed partial class IndependentReviewRegressionTests
                         {"id":"failed-job","type":"Job","name":"linux tests","state":"completed","result":"failed","log":{"id":11}},
                         {"id":"monitor-job","type":"Job","name":"Monitor Helix Jobs","state":"completed","result":"failed"},
                         {"id":"monitor-task","parentId":"monitor-job","type":"Task","name":"Monitor Helix Jobs","state":"completed","result":"failed","issues":[
-                            {"type":"warning","message":"Work item '{{{WorkItem}}}' in job 'runtime leg - queue ({{{JobId}}})' failed (Finished, exit code -3)."}
+                            {{{string.Join(",", HelixWorkItems.Select(workItem => JsonSerializer.Serialize(new
+                            {
+                                type = "warning",
+                                message = $"Work item '{workItem}' in job 'runtime leg - queue ({JobId})' failed (Finished, exit code -3)."
+                            })))}}}
                         ]}
                     ]}
                     """,

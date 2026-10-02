@@ -678,6 +678,23 @@ Trimmed real manifest example, generated from public build `1621192` with `--log
 
 **Resume behavior:** `--resume` reads the existing manifest at the resolved manifest path. Prior `ok`/`cached` attempts are recorded as `cached` only if the referenced cache key still exists, and final cache verification still runs before export/manifest completion. Prior provider failures are reused as `recorded_failure` only when the matching negative-cache entry still exists and its kind is not selected by the current retry policy; otherwise they are refetched/retried. Policy changes are reflected in the newly written manifest.
 
+**Resuming a run that used an implicit isolated cache:** if the original run was `--export` without `--cache-dir`, the collector populated a fresh, per-run temporary cache directory instead of the normal hlx cache root (see `--cache-dir` above), and that temporary directory is not reused automatically on a later invocation. Supplying `--manifest <path>` alone is not enough to resume it: the manifest only tells `--resume` which prior attempts to consider, while cache evidence is read from whatever `--cache-dir` resolves to on the new run (the normal hlx cache root by default). To resume such a run, pass the original `--cache-dir`, which the prior run recorded in the manifest at `command.options.cacheDir` (and in the isolated-cache message printed to stderr: `No --cache-dir given with --export; collecting into an isolated cache directory: <path>`), together with `--resume --manifest <path-to-prior-manifest> --export <new-destination>`:
+
+```bash
+# Original run: no --cache-dir, so hlx used an isolated temp cache and reported it on stderr
+hlx collect azdo-build 1621192 --export /tmp/snap-v1
+# manifest/hlx-collect-manifest.json inside /tmp/snap-v1 records command.options.cacheDir, e.g.
+#   /tmp/hlx-collect-cache/<guid>
+
+# Resuming: reuse that recorded cache directory explicitly
+hlx collect azdo-build 1621192 \
+  --cache-dir /tmp/hlx-collect-cache/<guid> \
+  --manifest /tmp/snap-v1/manifest/hlx-collect-manifest.json \
+  --resume --export /tmp/snap-v2
+```
+
+If the temporary cache directory was already deleted (for example by OS temp-directory cleanup), no cache evidence remains to resume from, and the collector refetches everything as a fresh run. Runs started with an explicit `--cache-dir` do not have this limitation: pass the same `--cache-dir` again to resume.
+
 ## Snapshot Commands
 
 ### `hlx snapshot export <destination>`
@@ -713,7 +730,15 @@ The snapshot preserves AzDO cache keys and replays them without AzDO credentials
 - `public` for anonymous/public AzDO entries.
 - `cache-xxxxxxxx` for entries collected with an authenticated AzDO identity such as `AZDO_TOKEN`, `AzureCliCredential`, or `az` CLI fallback.
 
-Collector exports also record that partition in `manifest/hlx-collect-manifest.json` as `auth.azdo.cachePartition`; authenticated collector snapshots use `auth.azdo.replay: "snapshot_partition"`. If a snapshot contains exactly one AzDO partition, hlx selects it automatically. If it contains multiple AzDO partitions, hlx fails closed until `HLX_EVAL_AZDO_PARTITION=public` or `HLX_EVAL_AZDO_PARTITION=cache-xxxxxxxx` selects one.
+Collector exports also record that partition in `manifest/hlx-collect-manifest.json` as `auth.azdo.cachePartition`; authenticated collector snapshots use `auth.azdo.replay: "snapshot_partition"`. Selection follows this precedence:
+
+1. `HLX_EVAL_AZDO_PARTITION=public` or `HLX_EVAL_AZDO_PARTITION=cache-xxxxxxxx`, if set. If the snapshot's cache contains any discovered AzDO partitions and the requested one isn't among them, selection fails.
+2. Otherwise, the partition recorded in `manifest/hlx-collect-manifest.json` (`auth.azdo.cachePartition`), if a manifest is present. This is the common case for collector-exported snapshots and needs no environment variable.
+3. Otherwise, if the snapshot's `cache.db` contains exactly one AzDO partition, hlx selects it automatically.
+4. Otherwise, if it contains more than one AzDO partition with no explicit selector or manifest to disambiguate, hlx fails closed until `HLX_EVAL_AZDO_PARTITION` selects one.
+5. Otherwise (no partitions discovered and nothing else matched), hlx defaults to `public`.
+
+`HLX_EVAL_AZDO_PARTITION` is only *required* for case 4: an ambiguous snapshot with multiple AzDO partitions and no recorded manifest selection.
 
 ### `hlx snapshot validate <snapshotPath>`
 

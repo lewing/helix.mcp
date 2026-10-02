@@ -719,15 +719,7 @@ public sealed class AzdoBuildCollector
             .Select(group => group.First())
             .ToList();
 
-        // Optional Helix file downloads must never be able to evict required evidence already
-        // collected in this run via the cache's LRU cap. Reserve the bytes required attempts have
-        // already consumed and clamp the optional download budget to whatever cache capacity
-        // remains, in addition to the user-requested --max-total-bytes.
-        var requiredBytesSoFar = attempts.Where(a => a.Required).Sum(a => a.Bytes ?? 0);
-        var remainingCacheCapacity = Math.Max(0, _cacheOptions.MaxSizeBytes - requiredBytesSoFar);
-        var effectiveMaxTotalBytes = Math.Min(policy.MaxTotalBytes, remainingCacheCapacity);
-        var downloadBudget = new HelixFileDownloadBudget(effectiveMaxTotalBytes);
-
+        var fileLists = new ConcurrentBag<(string JobId, string WorkItem, IReadOnlyList<HelixService.FileEntry> Files)>();
         var helixAttempts = await ForEachCollectAsync(fetches, policy.MaxConcurrency, async (fetch, localAttempts) =>
         {
             var jobId = HelixIdResolver.ResolveJobId(fetch.HelixJobId);
@@ -769,11 +761,29 @@ public sealed class AzdoBuildCollector
                         async token => await _helixService.GetWorkItemFilesAsync(jobId, workItem, token),
                         metadata: true,
                         ct);
-                    await CollectSelectedHelixFilesAsync(localAttempts, priorAttempts, policy, downloadBudget, jobId, workItem, files ?? [], ct);
+                    fileLists.Add((jobId, workItem, files ?? []));
                     break;
             }
         }, ct);
         attempts.AddRange(helixAttempts);
+
+        // Finish every required write and verification before optional streams can publish.
+        // Reserve the entire current artifact footprint, including unrelated/resumed files,
+        // so this run's concurrent optional writes never trigger cache-cap eviction.
+        var verified = await VerifyCollectedEvidenceAsync(attempts, ct);
+        attempts.Clear();
+        attempts.AddRange(verified);
+        var cacheStatus = await _cacheStore.GetStatusAsync(ct);
+        var remainingCacheCapacity = Math.Max(0, _cacheOptions.MaxSizeBytes - cacheStatus.TotalSizeBytes);
+        var downloadBudget = new HelixFileDownloadBudget(policy.MaxTotalBytes, remainingCacheCapacity);
+        var optionalAttempts = await ForEachCollectAsync(
+            fileLists.OrderBy(item => item.JobId, StringComparer.Ordinal)
+                .ThenBy(item => item.WorkItem, StringComparer.Ordinal).ToList(),
+            policy.MaxConcurrency,
+            (item, localAttempts) => CollectSelectedHelixFilesAsync(
+                localAttempts, priorAttempts, policy, downloadBudget, item.JobId, item.WorkItem, item.Files, ct),
+            ct);
+        attempts.AddRange(optionalAttempts);
     }
 
     private async Task CollectSelectedHelixFilesAsync(
@@ -841,8 +851,8 @@ public sealed class AzdoBuildCollector
             await using var cached = await _cacheStore.GetArtifactAsync(cacheKey, ct);
             if (cached is not null)
             {
-                var cachedBytes = prior.Bytes ?? (cached.CanSeek ? cached.Length : 0);
-                if (cachedBytes <= policy.MaxFileBytes && downloadBudget.TryConsume(cachedBytes))
+                var cachedBytes = cached.CanSeek ? cached.Length : prior.Bytes ?? 0;
+                if (cachedBytes <= policy.MaxFileBytes && downloadBudget.TryConsume(cachedBytes, cached: true))
                 {
                     stopwatch.Stop();
                     AppendAttempt(attempts, prior with
@@ -870,7 +880,7 @@ public sealed class AzdoBuildCollector
                     cachedBytes > policy.MaxFileBytes ? "size_limit" : "total_size_limit",
                     cachedBytes > policy.MaxFileBytes
                         ? $"Cached Helix uploaded file '{fileName}' exceeds --max-file-bytes {policy.MaxFileBytes}."
-                        : $"Cached Helix uploaded file '{fileName}' would exceed the effective download budget of {downloadBudget.MaxTotalBytes} bytes (--max-total-bytes {policy.MaxTotalBytes}, clamped to remaining cache capacity)."));
+                        : $"Cached Helix uploaded file '{fileName}' would exceed --max-total-bytes {policy.MaxTotalBytes}."));
                 return;
             }
         }
@@ -907,7 +917,7 @@ public sealed class AzdoBuildCollector
                 started,
                 stopwatch.ElapsedMilliseconds,
                 "total_size_limit",
-                $"Helix uploaded file '{fileName}' was not opened because --max-total-bytes is exhausted."));
+                $"Helix uploaded file '{fileName}' was not opened because --max-total-bytes {policy.MaxTotalBytes} or remaining cache capacity is exhausted."));
             return;
         }
 
@@ -970,7 +980,7 @@ public sealed class AzdoBuildCollector
                                 started,
                                 stopwatch.ElapsedMilliseconds,
                                 "total_size_limit",
-                                $"Helix uploaded file '{fileName}' would exceed the effective download budget of {downloadBudget.MaxTotalBytes} bytes (--max-total-bytes {policy.MaxTotalBytes}, clamped to remaining cache capacity)."));
+                                $"Helix uploaded file '{fileName}' would exceed --max-total-bytes {policy.MaxTotalBytes} or the remaining cache capacity of {downloadBudget.MaxCacheBytes} bytes after required evidence acquisition."));
                             return;
                         }
 
@@ -1877,30 +1887,34 @@ public sealed class AzdoBuildCollector
     private static string XmlConvertDuration(TimeSpan duration)
         => System.Xml.XmlConvert.ToString(duration);
 
-    private sealed class HelixFileDownloadBudget(long maxTotalBytes)
+    private sealed class HelixFileDownloadBudget(long maxTotalBytes, long maxCacheBytes)
     {
         private readonly object _gate = new();
         private long _usedBytes;
+        private long _newBytes;
 
-        public long MaxTotalBytes => maxTotalBytes;
+        public long MaxCacheBytes => maxCacheBytes;
 
         public long Remaining
         {
             get
             {
                 lock (_gate)
-                    return Math.Max(0, maxTotalBytes - _usedBytes);
+                    return Math.Max(0, Math.Min(maxTotalBytes - _usedBytes, maxCacheBytes - _newBytes));
             }
         }
 
-        public bool TryConsume(long bytes)
+        public bool TryConsume(long bytes, bool cached = false)
         {
             lock (_gate)
             {
-                if (_usedBytes + bytes > maxTotalBytes)
+                if (bytes > maxTotalBytes - _usedBytes ||
+                    !cached && bytes > maxCacheBytes - _newBytes)
                     return false;
 
                 _usedBytes += bytes;
+                if (!cached)
+                    _newBytes += bytes;
                 return true;
             }
         }
@@ -1913,6 +1927,7 @@ public sealed class AzdoBuildCollector
             lock (_gate)
             {
                 _usedBytes = Math.Max(0, _usedBytes - bytes);
+                _newBytes = Math.Max(0, _newBytes - bytes);
             }
         }
     }
