@@ -56,7 +56,10 @@ if (!string.IsNullOrEmpty(evalSnapshotDir))
     services.AddEvalModeCore(evalOptions);
     services.AddSingleton(sp => new Lazy<HelixService>(() => sp.GetRequiredService<HelixService>()));
     services.AddSingleton<AzdoService>(sp =>
-        new AzdoService(sp.GetRequiredService<IAzdoApiClient>(), sp.GetRequiredService<IHelixApiClient>()));
+        new AzdoService(
+            sp.GetRequiredService<IAzdoApiClient>(),
+            sp.GetRequiredService<IHelixApiClient>(),
+            sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>()));
 }
 else
 {
@@ -102,22 +105,128 @@ services.AddSingleton<IAzdoApiClient>(sp =>
         sp.GetRequiredService<ICacheStore>(),
         sp.GetRequiredService<CacheOptions>(),
         sp.GetRequiredService<IAzdoTokenAccessor>()));
+services.AddSingleton<IAzdoAcquisitionFailureRecorder>(sp =>
+    new CachingAzdoAcquisitionFailureRecorder(
+        sp.GetRequiredService<ICacheStore>(),
+        sp.GetRequiredService<CacheOptions>()));
 // Inject IHelixApiClient so GetHelixJobsAsync can use the canonical Helix-side Job.ListAsync(source) path (#92)
 services.AddSingleton<AzdoService>(sp =>
     new AzdoService(
         sp.GetRequiredService<IAzdoApiClient>(),
-        sp.GetRequiredService<IHelixApiClient>()));
+        sp.GetRequiredService<IHelixApiClient>(),
+        sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>()));
 }
 
 ConsoleApp.ServiceProvider = services.BuildServiceProvider();
 
 var app = ConsoleApp.Create();
+app.UseFilter<AcquisitionErrorCliFilter>();
 app.Add<Commands>();
 app.Add<AzdoCommands>();
 app.Add<SnapshotCommands>();
 // When no command is specified: default to MCP server mode if stdin is redirected
 // (e.g. piped or launched by an MCP host), otherwise show help text for interactive use.
 app.Run(args.Length == 0 ? (Console.IsInputRedirected ? ["mcp"] : ["--help"]) : args);
+
+internal sealed class AcquisitionErrorCliFilter(ConsoleAppFilter next) : ConsoleAppFilter(next)
+{
+    public override async Task InvokeAsync(ConsoleAppContext context, CancellationToken cancellationToken)
+        => await CliAcquisitionErrorPipeline.InvokeAsync(
+            ct => Next.InvokeAsync(context, ct),
+            context.CommandArguments.ToArray(),
+            cancellationToken);
+}
+
+public static class CliAcquisitionErrorPipeline
+{
+    public static async Task InvokeAsync(
+        Func<CancellationToken, Task> next,
+        IReadOnlyList<string> commandArguments,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await next(cancellationToken);
+        }
+        catch (HlxAcquisitionException ex)
+        {
+            CliAcquisitionErrorWriter.Write(ex, IsJsonRequested(commandArguments));
+            Environment.ExitCode = 1;
+        }
+    }
+
+    private static bool IsJsonRequested(IReadOnlyList<string> arguments)
+    {
+        for (var i = 0; i < arguments.Count; i++)
+        {
+            var argument = arguments[i];
+            if (argument.Equals("--json", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 < arguments.Count && TryParseBoolean(arguments[i + 1], out var explicitValue))
+                    return explicitValue;
+                return true;
+            }
+
+            const string jsonPrefix = "--json=";
+            if (argument.StartsWith(jsonPrefix, StringComparison.OrdinalIgnoreCase)
+                && TryParseBoolean(argument[jsonPrefix.Length..], out var value))
+            {
+                return value;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryParseBoolean(string value, out bool parsed)
+    {
+        if (bool.TryParse(value, out parsed))
+            return true;
+        if (value == "1")
+        {
+            parsed = true;
+            return true;
+        }
+        if (value == "0")
+        {
+            parsed = false;
+            return true;
+        }
+
+        parsed = false;
+        return false;
+    }
+}
+
+internal static class CliAcquisitionErrorWriter
+{
+    private static readonly JsonSerializerOptions s_jsonOptions = new()
+    {
+        WriteIndented = true,
+        Converters = { new AcquisitionErrorKindJsonConverter() }
+    };
+
+    public static void Write(HlxAcquisitionException ex, bool json)
+    {
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(
+                new AcquisitionErrorCliEnvelope(false, ex.Error),
+                s_jsonOptions));
+            return;
+        }
+
+        Console.Error.WriteLine($"Error: {QuoteUntrusted(ex.Error.Message)}");
+    }
+
+    private static string QuoteUntrusted(string? value)
+    {
+        if (value is null)
+            return "(none)";
+
+        return JsonSerializer.Serialize(value);
+    }
+}
 
 /// <summary>
 /// CLI commands for interacting with .NET Helix test infrastructure.
@@ -922,7 +1031,10 @@ Available as `failureCategory` in JSON and MCP output.
             };
             builder.Services.AddEvalModeCore(evalOptions);
             builder.Services.AddSingleton<AzdoService>(sp =>
-                new AzdoService(sp.GetRequiredService<IAzdoApiClient>(), sp.GetRequiredService<IHelixApiClient>()));
+                new AzdoService(
+                    sp.GetRequiredService<IAzdoApiClient>(),
+                    sp.GetRequiredService<IHelixApiClient>(),
+                    sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>()));
         }
         else
         {
@@ -964,11 +1076,16 @@ Available as `failureCategory` in JSON and MCP output.
                 sp.GetRequiredService<ICacheStore>(),
                 sp.GetRequiredService<CacheOptions>(),
                 sp.GetRequiredService<IAzdoTokenAccessor>()));
+        builder.Services.AddSingleton<IAzdoAcquisitionFailureRecorder>(sp =>
+            new CachingAzdoAcquisitionFailureRecorder(
+                sp.GetRequiredService<ICacheStore>(),
+                sp.GetRequiredService<CacheOptions>()));
         // Inject IHelixApiClient so GetHelixJobsAsync can use the canonical Helix-side Job.ListAsync(source) path (#92)
         builder.Services.AddSingleton<AzdoService>(sp =>
             new AzdoService(
                 sp.GetRequiredService<IAzdoApiClient>(),
-                sp.GetRequiredService<IHelixApiClient>()));
+                sp.GetRequiredService<IHelixApiClient>(),
+                sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>()));
         }
 
         builder.Services
@@ -1278,23 +1395,6 @@ public class AzdoCommands
         _tokenAccessor = tokenAccessor;
     }
 
-    private static void PrintAcquisitionError(HlxAcquisitionException ex, bool json)
-    {
-        if (json)
-        {
-            Console.WriteLine(JsonSerializer.Serialize(
-                new AcquisitionErrorCliEnvelope(false, ex.Error),
-                s_jsonOptions));
-        }
-        else
-        {
-            Console.Error.WriteLine($"Error: {QuoteUntrusted(ex.Error.Message)}");
-        }
-
-        Environment.ExitCode = 1;
-    }
-
-
     /// <summary>Show the currently resolved Azure DevOps authentication path without making an AzDO API request.</summary>
     /// <param name="json">Output as structured JSON instead of human-readable text.</param>
     [Command("azdo auth-status")]
@@ -1335,16 +1435,7 @@ public class AzdoCommands
         if (Commands.TryPrintSchema<AzdoBuildSummary>(schema))
             return;
 
-        AzdoBuildSummary summary;
-        try
-        {
-            summary = await _svc.GetBuildSummaryAsync(buildId);
-        }
-        catch (HlxAcquisitionException ex)
-        {
-            PrintAcquisitionError(ex, json);
-            return;
-        }
+        var summary = await _svc.GetBuildSummaryAsync(buildId);
 
         if (json)
         {
@@ -1465,16 +1556,7 @@ public class AzdoCommands
             throw new ArgumentException($"Invalid filter '{filter}'. Must be 'failed' or 'all'.", nameof(filter));
         }
 
-        AzdoTimeline timeline;
-        try
-        {
-            timeline = (await _svc.GetTimelineAsync(buildId))!;
-        }
-        catch (HlxAcquisitionException ex)
-        {
-            PrintAcquisitionError(ex, json);
-            return;
-        }
+        var timeline = (await _svc.GetTimelineAsync(buildId))!;
 
         var records = timeline.Records;
         if (filter.Equals("failed", StringComparison.OrdinalIgnoreCase))
@@ -1551,16 +1633,7 @@ public class AzdoCommands
     [Command("azdo log")]
     public async Task Log([Argument] string buildId, [Argument] int logId, int? tailLines = 500, bool json = false)
     {
-        string? content;
-        try
-        {
-            content = await _svc.GetBuildLogAsync(buildId, logId, tailLines);
-        }
-        catch (HlxAcquisitionException ex)
-        {
-            PrintAcquisitionError(ex, json);
-            return;
-        }
+        var content = await _svc.GetBuildLogAsync(buildId, logId, tailLines);
 
         if (json)
             Console.WriteLine(JsonSerializer.Serialize(content, s_jsonOptions));
@@ -2179,12 +2252,7 @@ public class AzdoCommands
         {
             plan = await _svc.GetEvidencePlanAsync(buildId, options);
         }
-        catch (HlxAcquisitionException ex)
-        {
-            PrintAcquisitionError(ex, json);
-            return;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException and not HlxAcquisitionException)
         {
             Console.Error.WriteLine($"Error: {QuoteUntrusted(ex.Message)}");
             Environment.ExitCode = 1;

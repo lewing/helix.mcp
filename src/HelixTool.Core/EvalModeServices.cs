@@ -60,6 +60,13 @@ public static class EvalModeServices
             lifetime));
 
         services.Add(new ServiceDescriptor(
+            typeof(IAzdoAcquisitionFailureRecorder),
+            sp => new CachingAzdoAcquisitionFailureRecorder(
+                sp.GetRequiredService<ICacheStore>(),
+                evalOptions),
+            lifetime));
+
+        services.Add(new ServiceDescriptor(
             typeof(HelixService),
             sp => new HelixService(
                 sp.GetRequiredService<IHelixApiClient>(),

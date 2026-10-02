@@ -27,7 +27,7 @@ public sealed class AzdoCliAcquisitionErrorTests
                 httpStatus: 404)));
         var commands = new global::AzdoCommands(new AzdoService(api), Substitute.For<IAzdoTokenAccessor>());
 
-        var (stdout, _, exitCode) = await CaptureConsoleAsync(() => commands.Log("12345", 7, json: true));
+        var (stdout, _, exitCode) = await CaptureConsoleAsync(() => commands.Log("12345", 7, json: true), "--json");
 
         Assert.Equal(1, exitCode);
         using var document = JsonDocument.Parse(stdout);
@@ -59,7 +59,7 @@ public sealed class AzdoCliAcquisitionErrorTests
             });
         var commands = new global::AzdoCommands(new AzdoService(api), Substitute.For<IAzdoTokenAccessor>());
 
-        var (stdout, _, exitCode) = await CaptureConsoleAsync(() => commands.Log("12345", 999999, json: true));
+        var (stdout, _, exitCode) = await CaptureConsoleAsync(() => commands.Log("12345", 999999, json: true), "--json");
 
         Assert.Equal(1, exitCode);
         using var document = JsonDocument.Parse(stdout);
@@ -91,7 +91,7 @@ public sealed class AzdoCliAcquisitionErrorTests
                 httpStatus: 200)));
         var commands = new global::AzdoCommands(new AzdoService(api), Substitute.For<IAzdoTokenAccessor>());
 
-        var (stdout, _, exitCode) = await CaptureConsoleAsync(() => commands.Timeline("12345", json: true));
+        var (stdout, _, exitCode) = await CaptureConsoleAsync(() => commands.Timeline("12345", json: true), "--json");
 
         Assert.Equal(1, exitCode);
         using var document = JsonDocument.Parse(stdout);
@@ -104,8 +104,9 @@ public sealed class AzdoCliAcquisitionErrorTests
         Assert.Equal(200, error.GetProperty("httpStatus").GetInt32());
     }
 
-    private static async Task<(string Stdout, string Stderr, int ExitCode)> CaptureConsoleAsync(Func<Task> action)
+    private static async Task<(string Stdout, string Stderr, int ExitCode)> CaptureConsoleAsync(Func<Task> action, params string[] commandArguments)
     {
+        await HelixTool.Tests.TestConsoleCapture.Lock.WaitAsync();
         var originalOut = Console.Out;
         var originalError = Console.Error;
         var originalExitCode = Environment.ExitCode;
@@ -116,7 +117,7 @@ public sealed class AzdoCliAcquisitionErrorTests
             Environment.ExitCode = 0;
             Console.SetOut(stdout);
             Console.SetError(stderr);
-            await action();
+            await global::CliAcquisitionErrorPipeline.InvokeAsync(_ => action(), commandArguments);
             return (stdout.ToString(), stderr.ToString(), Environment.ExitCode);
         }
         finally
@@ -124,6 +125,7 @@ public sealed class AzdoCliAcquisitionErrorTests
             Console.SetOut(originalOut);
             Console.SetError(originalError);
             Environment.ExitCode = originalExitCode;
+            HelixTool.Tests.TestConsoleCapture.Lock.Release();
         }
     }
 }

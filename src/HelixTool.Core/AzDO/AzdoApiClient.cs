@@ -632,11 +632,11 @@ public sealed class AzdoApiClient : IAzdoApiClient
         foreach (var (name, value) in values)
             resource[name] = value;
 
-        return resource;
+        return AcquisitionRedaction.RedactResource(resource);
     }
 
     private static string ResourceDescription(IReadOnlyDictionary<string, object?> resource)
-        => string.Join(", ", resource.Select(kvp => $"{kvp.Key}={kvp.Value}"));
+        => string.Join(", ", AcquisitionRedaction.RedactResource(resource).Select(kvp => $"{kvp.Key}={kvp.Value}"));
 
     private static string SafeSnippet(string body)
     {

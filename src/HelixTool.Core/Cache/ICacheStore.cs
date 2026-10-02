@@ -1,3 +1,5 @@
+using HelixTool.Core.Acquisition;
+
 namespace HelixTool.Core.Cache;
 
 /// <summary>
@@ -17,6 +19,15 @@ public interface ICacheStore : IDisposable
 
     /// <summary>Store an artifact file on disk, tracked by SQLite.</summary>
     Task SetArtifactAsync(string cacheKey, Stream content, CancellationToken ct = default);
+
+    /// <summary>Get a recorded acquisition failure by cache key, or null if missing/expired.</summary>
+    Task<AcquisitionError?> GetAcquisitionErrorAsync(string cacheKey, CancellationToken ct = default);
+
+    /// <summary>Record an acquisition failure with a TTL.</summary>
+    Task SetAcquisitionErrorAsync(string cacheKey, AcquisitionError error, TimeSpan ttl, CancellationToken ct = default);
+
+    /// <summary>Delete a recorded acquisition failure by cache key.</summary>
+    Task DeleteAcquisitionErrorAsync(string cacheKey, CancellationToken ct = default);
 
     /// <summary>Check whether a job is completed (true), running (false), or unknown (null).</summary>
     Task<bool?> IsJobCompletedAsync(string jobId, CancellationToken ct = default);

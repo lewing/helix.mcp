@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Text.Json;
+using HelixTool.Core.Acquisition;
 using Microsoft.Data.Sqlite;
 
 namespace HelixTool.Core.Cache;
@@ -11,7 +13,7 @@ namespace HelixTool.Core.Cache;
 /// </summary>
 public sealed class SqliteCacheStore : ICacheStore
 {
-    private const int SchemaVersion = 1;
+    private const int SchemaVersion = 2;
     private const string Iso8601Format = "O";
     private const int ErrorSharingViolation = unchecked((int)0x80070020);
     private const int ErrorAccessDenied = unchecked((int)0x80070005);
@@ -101,9 +103,9 @@ public sealed class SqliteCacheStore : ICacheStore
 
         cmd.CommandText = "PRAGMA user_version;";
         var version = Convert.ToInt32(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
-        if (version != SchemaVersion)
+        if (version is not (1 or SchemaVersion))
             throw new InvalidOperationException(
-                $"Snapshot schema version mismatch: expected {SchemaVersion}, found {version}. " +
+                $"Snapshot schema version mismatch: expected 1 or {SchemaVersion}, found {version}. " +
                 "The snapshot was created with a different schema version and cannot be used.");
 
         // Verify all expected tables exist — no DDL, purely read.
@@ -118,6 +120,21 @@ public sealed class SqliteCacheStore : ICacheStore
                     $"Snapshot is malformed: expected table '{table}' not found. " +
                     "The snapshot may be incomplete or from an unsupported version.");
         }
+
+        if (version >= SchemaVersion)
+        {
+            foreach (var table in new[] { "cache_acquisition_errors" })
+            {
+                cmd.Parameters.Clear();
+                cmd.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=@t;";
+                cmd.Parameters.AddWithValue("@t", table);
+                var count = Convert.ToInt32(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
+                if (count == 0)
+                    throw new InvalidOperationException(
+                        $"Snapshot is malformed: expected table '{table}' not found. " +
+                        "The snapshot may be incomplete or from an unsupported version.");
+            }
+        }
     }
 
     /// <summary>Normal-mode schema initialization: sets WAL mode, creates tables, stamps version.</summary>
@@ -129,13 +146,14 @@ public sealed class SqliteCacheStore : ICacheStore
         cmd.CommandText = "PRAGMA user_version;";
         var version = Convert.ToInt32(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
 
-        if (version != SchemaVersion && version > 0)
+        if (version > SchemaVersion || version < 0)
         {
             // Destructive migration — cache is regenerable data
             cmd.CommandText = """
                 DROP TABLE IF EXISTS cache_metadata;
                 DROP TABLE IF EXISTS cache_artifacts;
                 DROP TABLE IF EXISTS cache_job_state;
+                DROP TABLE IF EXISTS cache_acquisition_errors;
                 """;
             cmd.ExecuteNonQuery();
         }
@@ -172,6 +190,19 @@ public sealed class SqliteCacheStore : ICacheStore
                 cached_at    TEXT NOT NULL,
                 expires_at   TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS cache_acquisition_errors (
+                cache_key   TEXT PRIMARY KEY,
+                error_json  TEXT NOT NULL,
+                kind        TEXT NOT NULL,
+                provider    TEXT NOT NULL,
+                operation   TEXT NOT NULL,
+                recorded_at TEXT NOT NULL,
+                expires_at  TEXT NOT NULL,
+                job_id      TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_acquisition_errors_expires ON cache_acquisition_errors(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_acquisition_errors_job ON cache_acquisition_errors(job_id);
             """;
         cmd.ExecuteNonQuery();
 
@@ -210,7 +241,9 @@ public sealed class SqliteCacheStore : ICacheStore
         var jobId = ExtractJobId(cacheKey);
 
         using var conn = OpenConnection();
+        using var tx = conn.BeginTransaction();
         using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
         cmd.CommandText = """
             INSERT OR REPLACE INTO cache_metadata (cache_key, json_value, created_at, expires_at, job_id)
             VALUES (@key, @value, @created, @expires, @jobId);
@@ -222,6 +255,12 @@ public sealed class SqliteCacheStore : ICacheStore
         cmd.Parameters.AddWithValue("@jobId", jobId);
         cmd.ExecuteNonQuery();
 
+        cmd.Parameters.Clear();
+        cmd.CommandText = "DELETE FROM cache_acquisition_errors WHERE cache_key = @key;";
+        cmd.Parameters.AddWithValue("@key", cacheKey);
+        cmd.ExecuteNonQuery();
+
+        tx.Commit();
         return Task.CompletedTask;
     }
 
@@ -339,7 +378,9 @@ public sealed class SqliteCacheStore : ICacheStore
         var now = DateTimeOffset.UtcNow;
 
         using var conn = OpenConnection();
+        using var tx = conn.BeginTransaction();
         using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
         cmd.CommandText = """
             INSERT OR REPLACE INTO cache_artifacts (cache_key, file_path, file_size, created_at, last_accessed, job_id)
             VALUES (@key, @path, @size, @created, @accessed, @jobId);
@@ -352,8 +393,120 @@ public sealed class SqliteCacheStore : ICacheStore
         cmd.Parameters.AddWithValue("@jobId", jobId);
         cmd.ExecuteNonQuery();
 
+        cmd.Parameters.Clear();
+        cmd.CommandText = "DELETE FROM cache_acquisition_errors WHERE cache_key = @key;";
+        cmd.Parameters.AddWithValue("@key", cacheKey);
+        cmd.ExecuteNonQuery();
+
+        tx.Commit();
+
         // Evict if over cap
         await EvictLruIfOverCapAsync(ct);
+    }
+
+    public Task<AcquisitionError?> GetAcquisitionErrorAsync(string cacheKey, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        try
+        {
+            using var conn = OpenConnection();
+            using var cmd = conn.CreateCommand();
+            if (_options.EvalMode)
+            {
+                cmd.CommandText = """
+                    SELECT error_json, recorded_at
+                    FROM cache_acquisition_errors
+                    WHERE cache_key = @key;
+                    """;
+                cmd.Parameters.AddWithValue("@key", cacheKey);
+            }
+            else
+            {
+                cmd.CommandText = """
+                    SELECT error_json, recorded_at
+                    FROM cache_acquisition_errors
+                    WHERE cache_key = @key AND expires_at > @now;
+                    """;
+                cmd.Parameters.AddWithValue("@key", cacheKey);
+                cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture));
+            }
+
+            using var reader = cmd.ExecuteReader();
+            if (!reader.Read())
+                return Task.FromResult<AcquisitionError?>(null);
+
+            var json = reader.GetString(0);
+            var recordedAtText = reader.GetString(1);
+            var error = JsonSerializer.Deserialize<AcquisitionError>(json, AcquisitionJsonOptions.Default);
+            if (error is null)
+                throw new JsonException("Stored acquisition error is null.");
+
+            var recordedAt = DateTimeOffset.Parse(recordedAtText, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+            return Task.FromResult<AcquisitionError?>(error with { RecordedAt = recordedAt });
+        }
+        catch (SqliteException ex) when (_options.EvalMode && ex.SqliteErrorCode == 1 && ex.Message.Contains("no such table", StringComparison.OrdinalIgnoreCase))
+        {
+            return Task.FromResult<AcquisitionError?>(null);
+        }
+        catch (Exception ex) when (ex is JsonException or FormatException)
+        {
+            throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                AcquisitionErrorKind.InvalidResponse,
+                "cache",
+                "deserialize_cache_entry",
+                new Dictionary<string, object?> { ["key"] = cacheKey },
+                "Cached acquisition error snapshot entry is corrupt or not valid JSON."),
+                ex);
+        }
+    }
+
+    public Task SetAcquisitionErrorAsync(string cacheKey, AcquisitionError error, TimeSpan ttl, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (_options.EvalMode) return Task.CompletedTask;
+
+        var now = DateTimeOffset.UtcNow;
+        var storedError = error with
+        {
+            Source = null,
+            Replayed = null,
+            RecordedAt = null
+        };
+        var jobId = ExtractJobId(cacheKey);
+
+        using var conn = OpenConnection();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT OR REPLACE INTO cache_acquisition_errors
+                (cache_key, error_json, kind, provider, operation, recorded_at, expires_at, job_id)
+            VALUES
+                (@key, @json, @kind, @provider, @operation, @recorded, @expires, @jobId);
+            """;
+        cmd.Parameters.AddWithValue("@key", cacheKey);
+        cmd.Parameters.AddWithValue("@json", JsonSerializer.Serialize(storedError, AcquisitionJsonOptions.Default));
+        cmd.Parameters.AddWithValue("@kind", KindWireName(storedError.Kind));
+        cmd.Parameters.AddWithValue("@provider", storedError.Provider);
+        cmd.Parameters.AddWithValue("@operation", storedError.Operation);
+        cmd.Parameters.AddWithValue("@recorded", now.ToString(Iso8601Format, CultureInfo.InvariantCulture));
+        cmd.Parameters.AddWithValue("@expires", (now + ttl).ToString(Iso8601Format, CultureInfo.InvariantCulture));
+        cmd.Parameters.AddWithValue("@jobId", jobId);
+        cmd.ExecuteNonQuery();
+
+        return Task.CompletedTask;
+    }
+
+    public Task DeleteAcquisitionErrorAsync(string cacheKey, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (_options.EvalMode) return Task.CompletedTask;
+
+        using var conn = OpenConnection();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM cache_acquisition_errors WHERE cache_key = @key;";
+        cmd.Parameters.AddWithValue("@key", cacheKey);
+        cmd.ExecuteNonQuery();
+
+        return Task.CompletedTask;
     }
 
     private static async Task<bool> TryPublishArtifactAsync(
@@ -463,6 +616,7 @@ public sealed class SqliteCacheStore : ICacheStore
             DELETE FROM cache_metadata;
             DELETE FROM cache_artifacts;
             DELETE FROM cache_job_state;
+            DELETE FROM cache_acquisition_errors;
             """;
         cmd.ExecuteNonQuery();
 
@@ -657,6 +811,11 @@ public sealed class SqliteCacheStore : ICacheStore
         }
         return cacheKey;
     }
+
+    private static string KindWireName(AcquisitionErrorKind kind)
+        => JsonSerializer.Deserialize<string>(
+            JsonSerializer.Serialize(kind, AcquisitionJsonOptions.Default),
+            AcquisitionJsonOptions.Default)!;
 
     public void Dispose()
     {

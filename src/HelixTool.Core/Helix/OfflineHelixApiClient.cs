@@ -5,8 +5,9 @@ namespace HelixTool.Core.Helix;
 
 /// <summary>
 /// Eval-mode stub for <see cref="IHelixApiClient"/>.
-/// Every method throws <see cref="InvalidOperationException"/> so that cache misses in eval mode
-/// surface as an explicit, descriptive error rather than silently falling through to live Helix.
+/// Every method throws <see cref="HlxAcquisitionException"/> so snapshot misses in eval mode
+/// surface as explicit <see cref="AcquisitionErrorKind.NotInSnapshot"/> errors rather than
+/// silently falling through to live Helix.
 /// </summary>
 public sealed class OfflineHelixApiClient : IHelixApiClient
 {
@@ -14,11 +15,14 @@ public sealed class OfflineHelixApiClient : IHelixApiClient
         string operation,
         IReadOnlyDictionary<string, object?> resource)
         => new(AcquisitionErrorFactory.Create(
-            AcquisitionErrorKind.NotFound,
+            AcquisitionErrorKind.NotInSnapshot,
             "cache",
             operation,
             resource,
-            "Network blocked: eval mode. Cache key not found in snapshot."));
+            $"Snapshot does not contain cache entry for {operation}.") with
+        {
+            Source = "snapshot"
+        });
 
     public Task<IJobDetails> GetJobDetailsAsync(string jobId, CancellationToken ct = default)
         => throw Blocked("get_helix_job", HelixAcquisition.Resource(("jobId", jobId)));

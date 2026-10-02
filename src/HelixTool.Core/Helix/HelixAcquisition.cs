@@ -82,5 +82,5 @@ internal static class HelixAcquisition
         => status.HasValue ? (HttpStatusCode)status.Value : null;
 
     private static string ResourceDescription(IReadOnlyDictionary<string, object?> resource)
-        => string.Join(", ", resource.Select(kvp => $"{kvp.Key}={kvp.Value}"));
+        => string.Join(", ", AcquisitionRedaction.RedactResource(resource).Select(kvp => $"{kvp.Key}={kvp.Value}"));
 }

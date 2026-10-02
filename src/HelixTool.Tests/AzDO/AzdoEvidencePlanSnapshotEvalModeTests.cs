@@ -162,6 +162,6 @@ public class AzdoEvidencePlanSnapshotEvalModeTests : IDisposable
                 JobResults = ["failed", "canceled"]
             }));
 
-        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "cache", "list_artifacts");
+        SnapshotEvalTestHarness.AssertSnapshotMiss(ex, "list_artifacts");
     }
 }

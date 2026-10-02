@@ -15,6 +15,7 @@ public class AzdoService
 {
     private readonly IAzdoApiClient _client;
     private readonly IHelixApiClient? _helixApi;
+    private readonly IAzdoAcquisitionFailureRecorder _failureRecorder;
     private const string ValidFilterValues = "'failed', 'all', 'running', 'pending', 'incomplete', or 'issues'";
     private static readonly HashSet<string> s_validFilters = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -51,7 +52,7 @@ public class AzdoService
     /// Unit tests use this constructor. Production prefers the two-argument overload.
     /// </summary>
     public AzdoService(IAzdoApiClient client)
-        : this(client, null) { }
+        : this(client, null, null) { }
 
     /// <summary>
     /// Initializes a new instance of <see cref="AzdoService"/> with Helix-side job detection
@@ -60,10 +61,14 @@ public class AzdoService
     /// <param name="client">AzDO API client for build/timeline queries.</param>
     /// <param name="helixApi">Helix API client for canonical <c>Job.ListAsync(source)</c> queries.
     ///   Pass <c>null</c> to use timeline scraping only.</param>
-    public AzdoService(IAzdoApiClient client, IHelixApiClient? helixApi)
+    public AzdoService(
+        IAzdoApiClient client,
+        IHelixApiClient? helixApi,
+        IAzdoAcquisitionFailureRecorder? failureRecorder = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _helixApi = helixApi;
+        _failureRecorder = failureRecorder ?? NoOpAzdoAcquisitionFailureRecorder.Instance;
     }
 
     public static string NormalizeFilter(string filter)
@@ -258,7 +263,7 @@ public class AzdoService
         if (timeline.Records.Any(record => record.Log?.Id == logId))
             return;
 
-        throw CreateAzdoAcquisitionError(
+        var ex = CreateAzdoAcquisitionError(
             AcquisitionErrorKind.NotFound,
             "get_build_log",
             org,
@@ -266,6 +271,8 @@ public class AzdoService
             buildId,
             $"Build log {logId} for build {buildId} returned an empty body, but the log ID was absent from the build log metadata and timeline log references.",
             ("logId", logId));
+        await _failureRecorder.RecordBuildLogFailureAsync(org, project, buildId, logId, ex.Error, ct);
+        throw ex;
     }
 
     /// <summary>

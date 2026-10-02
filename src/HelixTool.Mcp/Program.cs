@@ -99,6 +99,10 @@ builder.Services.AddScoped<IAzdoApiClient>(sp =>
         sp.GetRequiredService<ICacheStore>(),
         sp.GetRequiredService<CacheOptions>(),
         sp.GetRequiredService<IAzdoTokenAccessor>()));
+builder.Services.AddScoped<IAzdoAcquisitionFailureRecorder>(sp =>
+    new CachingAzdoAcquisitionFailureRecorder(
+        sp.GetRequiredService<ICacheStore>(),
+        sp.GetRequiredService<CacheOptions>()));
 // HelixService in normal mode — real HelixDownload HttpClient
 builder.Services.AddScoped<HelixService>(sp =>
     new HelixService(
@@ -110,7 +114,8 @@ builder.Services.AddScoped<HelixService>(sp =>
 builder.Services.AddScoped<AzdoService>(sp =>
 new AzdoService(
     sp.GetRequiredService<IAzdoApiClient>(),
-    sp.GetRequiredService<IHelixApiClient>()));
+    sp.GetRequiredService<IHelixApiClient>(),
+    sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>()));
 
 builder.Services
     .AddMcpServer(options =>

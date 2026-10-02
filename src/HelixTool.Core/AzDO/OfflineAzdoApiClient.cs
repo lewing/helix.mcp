@@ -4,8 +4,9 @@ namespace HelixTool.Core.AzDO;
 
 /// <summary>
 /// Eval-mode stub for <see cref="IAzdoApiClient"/>.
-/// Every method throws <see cref="InvalidOperationException"/> so that cache misses in eval mode
-/// surface as an explicit, descriptive error rather than silently falling through to live AzDO.
+/// Every method throws <see cref="HlxAcquisitionException"/> so snapshot misses in eval mode
+/// surface as explicit <see cref="AcquisitionErrorKind.NotInSnapshot"/> errors rather than
+/// silently falling through to live AzDO.
 /// </summary>
 public sealed class OfflineAzdoApiClient : IAzdoApiClient
 {
@@ -13,11 +14,14 @@ public sealed class OfflineAzdoApiClient : IAzdoApiClient
         string operation,
         IReadOnlyDictionary<string, object?> resource)
         => new(AcquisitionErrorFactory.Create(
-            AcquisitionErrorKind.NotFound,
+            AcquisitionErrorKind.NotInSnapshot,
             "cache",
             operation,
             resource,
-            "Network blocked: eval mode. Cache key not found in snapshot."));
+            $"Snapshot does not contain cache entry for {operation}.") with
+        {
+            Source = "snapshot"
+        });
 
     private static IReadOnlyDictionary<string, object?> Resource(
         string org,

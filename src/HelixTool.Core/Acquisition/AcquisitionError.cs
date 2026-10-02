@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace HelixTool.Core.Acquisition;
 
@@ -14,6 +15,7 @@ public enum AcquisitionErrorKind
     Timeout,
     TransportError,
     InvalidResponse,
+    NotInSnapshot,
 }
 
 /// <summary>Machine-readable acquisition failure details shared by CLI and MCP surfaces.</summary>
@@ -40,6 +42,18 @@ public sealed record AcquisitionError
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? RetryAfterSeconds { get; init; }
 
+    [JsonPropertyName("source")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Source { get; init; }
+
+    [JsonPropertyName("replayed")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Replayed { get; init; }
+
+    [JsonPropertyName("recordedAt")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? RecordedAt { get; init; }
+
     [JsonPropertyName("message")]
     public required string Message { get; init; }
 }
@@ -48,12 +62,19 @@ public sealed record AcquisitionError
 public sealed class HlxAcquisitionException : Exception
 {
     public HlxAcquisitionException(AcquisitionError error, Exception? inner = null)
-        : base(error.Message, inner)
+        : base(AcquisitionRedaction.RedactSensitiveUrls(error.Message), inner)
     {
-        Error = error;
+        Error = Sanitize(error);
     }
 
     public AcquisitionError Error { get; }
+
+    private static AcquisitionError Sanitize(AcquisitionError error)
+        => error with
+        {
+            Resource = AcquisitionRedaction.RedactResource(error.Resource),
+            Message = AcquisitionRedaction.RedactSensitiveUrls(error.Message)
+        };
 }
 
 /// <summary>Stable JSON envelope for CLI and MCP structured acquisition failures.</summary>
@@ -89,6 +110,7 @@ public sealed class AcquisitionErrorKindJsonConverter : JsonConverter<Acquisitio
             "timeout" => AcquisitionErrorKind.Timeout,
             "transport_error" => AcquisitionErrorKind.TransportError,
             "invalid_response" => AcquisitionErrorKind.InvalidResponse,
+            "not_in_snapshot" => AcquisitionErrorKind.NotInSnapshot,
             _ => throw new JsonException($"Unknown acquisition error kind '{value}'.")
         };
     }
@@ -106,6 +128,7 @@ public sealed class AcquisitionErrorKindJsonConverter : JsonConverter<Acquisitio
             AcquisitionErrorKind.Timeout => "timeout",
             AcquisitionErrorKind.TransportError => "transport_error",
             AcquisitionErrorKind.InvalidResponse => "invalid_response",
+            AcquisitionErrorKind.NotInSnapshot => "not_in_snapshot",
             _ => throw new JsonException($"Unknown acquisition error kind '{value}'.")
         });
     }
@@ -126,10 +149,10 @@ internal static class AcquisitionErrorFactory
             Kind = kind,
             Provider = provider,
             Operation = operation,
-            Resource = resource,
+            Resource = AcquisitionRedaction.RedactResource(resource),
             HttpStatus = httpStatus.HasValue ? (int)httpStatus.Value : null,
             RetryAfterSeconds = retryAfterSeconds,
-            Message = message,
+            Message = AcquisitionRedaction.RedactSensitiveUrls(message),
         };
 
     public static AcquisitionErrorKind KindFromStatus(HttpStatusCode statusCode)
@@ -151,6 +174,63 @@ internal static class AcquisitionErrorFactory
             AcquisitionErrorKind.Timeout => "timed out",
             AcquisitionErrorKind.TransportError => "transport error",
             AcquisitionErrorKind.InvalidResponse => "invalid response",
+            AcquisitionErrorKind.NotInSnapshot => "not in snapshot",
             _ => kind.ToString()
         };
+}
+
+internal static class AcquisitionRedaction
+{
+    private static readonly Regex s_urlRegex = new(
+        "https?://[^\\s\"'<>]+",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    public static IReadOnlyDictionary<string, object?> RedactResource(IReadOnlyDictionary<string, object?> resource)
+    {
+        var redacted = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var (key, value) in resource)
+            redacted[key] = RedactResourceValue(value);
+        return redacted;
+    }
+
+    public static object? RedactResourceValue(object? value)
+        => value is string text ? RedactSensitiveUrls(text) : value;
+
+    public static string RedactSensitiveUrls(string value)
+        => s_urlRegex.Replace(value, static match =>
+        {
+            var text = match.Value;
+            var suffixStart = text.Length;
+            while (suffixStart > 0 && IsTrailingPunctuation(text[suffixStart - 1]))
+                suffixStart--;
+
+            var candidate = text[..suffixStart];
+            var suffix = text[suffixStart..];
+            return TryRedactUrl(candidate, out var redacted)
+                ? string.Concat(redacted, suffix)
+                : text;
+        });
+
+    private static bool TryRedactUrl(string value, out string redacted)
+    {
+        if (Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+        {
+            var builder = new UriBuilder(uri.Scheme, uri.Host, uri.IsDefaultPort ? -1 : uri.Port, uri.AbsolutePath)
+            {
+                UserName = string.Empty,
+                Password = string.Empty,
+                Query = string.Empty,
+                Fragment = string.Empty
+            };
+            redacted = builder.Uri.GetLeftPart(UriPartial.Path);
+            return true;
+        }
+
+        redacted = value;
+        return false;
+    }
+
+    private static bool IsTrailingPunctuation(char value)
+        => value is '.' or ',' or ';' or ':' or ')' or ']' or '}';
 }

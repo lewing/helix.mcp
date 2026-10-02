@@ -185,6 +185,17 @@ internal static class SnapshotEvalTestHarness
         return (long)command.ExecuteScalar()!;
     }
 
+    public static void AssertSnapshotMiss(HlxAcquisitionException ex, string operation)
+    {
+        Assert.Equal("cache", ex.Error.Provider);
+        Assert.Equal(operation, ex.Error.Operation);
+        Assert.Equal("\"not_in_snapshot\"", JsonSerializer.Serialize(ex.Error.Kind, AcquisitionJsonOptions.Default));
+        var source = typeof(AcquisitionError).GetProperty("Source");
+        Assert.NotNull(source);
+        Assert.Equal("snapshot", source.GetValue(ex.Error) as string);
+        Assert.Contains("snapshot", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static FileStream OpenSharedRead(string path) =>
         new(
             path,
@@ -298,9 +309,7 @@ public class OfflineAzdoApiClientTests
 
     private static void AssertOfflineCacheMiss(HlxAcquisitionException ex, string operation)
     {
-        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "cache", operation);
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("snapshot", ex.Message, StringComparison.OrdinalIgnoreCase);
+        SnapshotEvalTestHarness.AssertSnapshotMiss(ex, operation);
     }
 }
 
@@ -370,9 +379,7 @@ public class OfflineHelixApiClientTests
 
     private static void AssertOfflineCacheMiss(HlxAcquisitionException ex, string operation)
     {
-        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "cache", operation);
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("snapshot", ex.Message, StringComparison.OrdinalIgnoreCase);
+        SnapshotEvalTestHarness.AssertSnapshotMiss(ex, operation);
     }
 }
 
@@ -454,7 +461,7 @@ public class EvalModeCompositionTests : IDisposable
         {
             var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
                 () => client.GetBuildAsync("dnceng-public", "public", 9999));
-            AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "cache", "get_build");
+            SnapshotEvalTestHarness.AssertSnapshotMiss(ex, "get_build");
         }
     }
 
@@ -466,7 +473,7 @@ public class EvalModeCompositionTests : IDisposable
         {
             var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
                 () => client.GetTimelineAsync("dnceng-public", "public", 9999));
-            AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "cache", "get_timeline");
+            SnapshotEvalTestHarness.AssertSnapshotMiss(ex, "get_timeline");
         }
     }
 
@@ -611,7 +618,7 @@ public class SnapshotCiEvidenceScenarioTests : IDisposable
         var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => evalAzdo.GetBuildAsync("dnceng-public", "public", 999));
 
-        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "cache", "get_build");
+        SnapshotEvalTestHarness.AssertSnapshotMiss(ex, "get_build");
     }
 
     [Fact]
@@ -714,7 +721,7 @@ public class EvalModeAzdoAuthTests : IDisposable
 
         var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => provider.GetRequiredService<IAzdoApiClient>().GetBuildAsync("org", "proj", 42));
-        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "cache", "get_build");
+        SnapshotEvalTestHarness.AssertSnapshotMiss(ex, "get_build");
         Assert.Null(evalOptions.AuthTokenHash);
     }
 }
@@ -1061,7 +1068,7 @@ public class EvalModePrimaryEvidenceTests : IDisposable
 
         var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => client.GetBuildLogsListAsync("dnceng-public", "public", 17));
-        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "cache", "list_build_logs");
+        SnapshotEvalTestHarness.AssertSnapshotMiss(ex, "list_build_logs");
     }
 
     /// <summary>
@@ -1317,7 +1324,7 @@ public class EvalModeHelixServiceCompositionTests : IDisposable
 
         var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => client.GetBuildAsync("org", "project", 1));
-        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "cache", "get_build");
+        SnapshotEvalTestHarness.AssertSnapshotMiss(ex, "get_build");
     }
 
     // ── Negative: verify a factory-resolved client would pass through (non-blocking) ──
