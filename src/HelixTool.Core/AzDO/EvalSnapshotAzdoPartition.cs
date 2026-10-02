@@ -30,6 +30,10 @@ public static class EvalSnapshotAzdoPartitionSelector
             return FromPartition(explicitPartition, EnvironmentVariable);
         }
 
+        var manifestPartition = ReadManifestPartition(snapshotPath);
+        if (manifestPartition is not null)
+            return FromPartition(manifestPartition, "manifest");
+
         if (discovered.Count == 1)
             return FromPartition(discovered.Single(), "snapshot");
 
@@ -39,10 +43,6 @@ public static class EvalSnapshotAzdoPartitionSelector
                 $"Snapshot '{snapshotPath}' contains multiple AzDO cache partitions ({string.Join(", ", discovered.Order(StringComparer.Ordinal))}). " +
                 $"Set {EnvironmentVariable}=public or {EnvironmentVariable}=cache-xxxxxxxx to choose one explicitly.");
         }
-
-        var manifestPartition = ReadManifestPartition(snapshotPath);
-        if (manifestPartition is not null)
-            return FromPartition(manifestPartition, "manifest");
 
         return FromPartition("public", "default");
     }
@@ -125,16 +125,48 @@ public static class EvalSnapshotAzdoPartitionSelector
         if (parts.Length < 2)
             return null;
 
-        if (parts[0] is "azdo" or "azdo-build")
+        if (parts[0] == "azdo")
         {
-            var candidate = parts[1];
-            return candidate.Length == 8 && candidate.All(Uri.IsHexDigit)
-                ? $"cache-{candidate.ToLowerInvariant()}"
-                : "public";
+            if (parts.Length >= 4 && IsAzdoMetadataSuffixStart(parts[3]))
+                return "public";
+
+            if (parts.Length >= 5 &&
+                IsAuthHash(parts[1]) &&
+                IsAzdoMetadataSuffixStart(parts[4]))
+            {
+                return $"cache-{parts[1].ToLowerInvariant()}";
+            }
+
+            return null;
+        }
+
+        if (parts[0] == "azdo-build")
+        {
+            if (parts.Length == 4)
+                return "public";
+
+            if (parts.Length == 5 && IsAuthHash(parts[1]))
+                return $"cache-{parts[1].ToLowerInvariant()}";
         }
 
         return null;
     }
+
+    private static bool IsAuthHash(string value)
+        => value.Length == 8 && value.All(Uri.IsHexDigit);
+
+    private static bool IsAzdoMetadataSuffixStart(string value)
+        => value is "build"
+            or "builds"
+            or "timeline"
+            or "log"
+            or "log-fresh"
+            or "changes"
+            or "testruns"
+            or "testresults"
+            or "testattachments"
+            or "artifacts"
+            or "logslist";
 
     private static string? ReadManifestPartition(string snapshotPath)
     {

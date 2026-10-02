@@ -101,6 +101,8 @@ Snapshots preserve all cached data and artifact files. When `HLX_EVAL_SNAPSHOT` 
 
 Schema v2 snapshots also preserve deterministic acquisition failures (`not_found`, `access_denied`, `invalid_response`) recorded during live collection. Offline replay returns the original provider failure with `source: "snapshot"`, `replayed: true`, and `recordedAt`; keys never collected into the snapshot return `kind: "not_in_snapshot"`, `provider: "cache"`.
 
+Snapshots produced by v0.10.3 or earlier can contain empty/corrupt raw AzDO logs from NUL-containing cache values; run `hlx cache clear`, re-collect the snapshot, and verify with `hlx snapshot validate`.
+
 ### Collecting scanner snapshots
 
 Use `hlx collect azdo-build` to populate a deterministic cache, export it, and write a manifest in one step:

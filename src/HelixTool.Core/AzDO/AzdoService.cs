@@ -891,7 +891,7 @@ public class AzdoService
             Next = next,
             Cache = new HlxCacheProvenance
             {
-                Key = page.All ? completeKey : windowKey(page),
+                Key = completeKey,
                 CompleteKey = completeKey
             },
             Note = note

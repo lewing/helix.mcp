@@ -2,8 +2,13 @@
 // Uses temp directories with real SQLite database files for proper integration testing.
 // SqliteCacheStore requires file-based SQLite (constructor calls Directory.CreateDirectory).
 
+using System.Globalization;
+using System.Text;
+using System.Text.Json;
 using HelixTool.Core;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.Cache;
+using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace HelixTool.Tests;
@@ -43,6 +48,157 @@ public class SqliteCacheStoreTests : IDisposable
         var result = await _store.GetMetadataAsync(key);
 
         Assert.Equal(json, result);
+    }
+
+    [Fact]
+    public async Task Metadata_MarkerPrefixedValueRoundTripsLosslessly_Finding4168886828()
+    {
+        const string key = "job:marker-prefix:details";
+        const string value = "hlx:nul-base64\nthis-is-not-base64-but-is-valid-metadata";
+
+        await _store.SetMetadataAsync(key, value, TimeSpan.FromHours(4));
+        var result = await _store.GetMetadataAsync(key);
+
+        Assert.Equal(value, result);
+    }
+
+    [Fact]
+    public async Task Metadata_LegacyMarkerPlaintextWithValidBase64Suffix_RoundTripsAsPlaintext()
+    {
+        const string key = "job:legacy-marker-plaintext:details";
+        const string value = "hlx:nul-base64\nSGVsbG8=";
+        await InsertRawMetadataAsync(_opts, key, value);
+
+        var result = await _store.GetMetadataAsync(key);
+
+        Assert.Equal(value, result);
+    }
+
+    [Fact]
+    public async Task Metadata_Existing154EncodedNulRow_StillDecodes()
+    {
+        const string key = "job:legacy-154-encoded:details";
+        const string decoded = "before\0after";
+        var encoded = "hlx:nul-base64\n" + Convert.ToBase64String(Encoding.UTF8.GetBytes(decoded));
+        await InsertRawMetadataAsync(_opts, key, encoded);
+
+        var result = await _store.GetMetadataAsync(key);
+
+        Assert.Equal(decoded, result);
+    }
+
+    [Fact]
+    public async Task Metadata_Existing154EncodedMarkerPrefixedRow_StillDecodesAfterSnapshotExport()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hlx-legacy-154-snapshot-{Guid.NewGuid():N}");
+        var snapshot = Path.Combine(root, "snapshot");
+        const string key = "job:legacy-154-snapshot:details";
+        const string decoded = "hlx:nul-base64\nthis-was-intentionally-encoded";
+        var encoded = "hlx:nul-base64\n" + Convert.ToBase64String(Encoding.UTF8.GetBytes(decoded));
+        try
+        {
+            var options = new CacheOptions { CacheRoot = root };
+            using (var writer = new SqliteCacheStore(options))
+            {
+                await writer.StartupMaintenance;
+                await InsertRawMetadataAsync(options, key, encoded);
+            }
+
+            await SnapshotExporter.ExportAsync(Path.Combine(root, "public"), snapshot);
+            var validation = await SnapshotValidator.ValidateAsync(snapshot);
+            Assert.True(validation.IsValid, string.Join(Environment.NewLine, validation.Errors));
+
+            using var eval = new SqliteCacheStore(new CacheOptions { CacheRoot = snapshot, EvalMode = true });
+            var result = await eval.GetMetadataAsync(key);
+            Assert.Equal(decoded, result);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task Metadata_PureWeenLargeRawLogReproducer_RoundTripsExactBytes_Gist6403762()
+    {
+        var payload = new string('A', 6329) + "first line\nsecond line\n";
+        var prefixed = "\0raw\n" + payload;
+        Assert.Equal(6352, Encoding.UTF8.GetByteCount(payload));
+        Assert.Equal(6357, Encoding.UTF8.GetByteCount(prefixed));
+
+        await _store.SetMetadataAsync("control", payload, TimeSpan.FromHours(4));
+        await _store.SetMetadataAsync("prefixed", prefixed, TimeSpan.FromHours(4));
+
+        var control = await _store.GetMetadataAsync("control");
+        var actualPrefixed = await _store.GetMetadataAsync("prefixed");
+        Assert.Equal(payload, control);
+        Assert.Equal(prefixed, actualPrefixed);
+        Assert.Equal(6352, Encoding.UTF8.GetByteCount(control!));
+        Assert.Equal(6357, Encoding.UTF8.GetByteCount(actualPrefixed!));
+    }
+
+    [Fact]
+    public async Task Metadata_SmallNulPayload_RoundTripsExactTwentyEightBytes_Gist6403762()
+    {
+        var value = new string('A', 13) + "\0" + new string('B', 14);
+        Assert.Equal(28, Encoding.UTF8.GetByteCount(value));
+
+        await _store.SetMetadataAsync("small-nul", value, TimeSpan.FromHours(4));
+        var result = await _store.GetMetadataAsync("small-nul");
+
+        Assert.Equal(value, result);
+        Assert.Equal(28, Encoding.UTF8.GetByteCount(result!));
+    }
+
+    public static IEnumerable<object[]> NulPayloadThresholds()
+    {
+        foreach (var size in new[] { 1024, 4096, 6144, 65536, 1024 * 1024 })
+        foreach (var position in new[] { "start", "middle", "end" })
+            yield return [size, position];
+    }
+
+    [Theory]
+    [MemberData(nameof(NulPayloadThresholds))]
+    public async Task Metadata_NulPayloadsAroundStorageThresholds_RoundTrip_Gist6403762(int byteCount, string nulPosition)
+    {
+        var value = CreateAsciiPayloadWithNul(byteCount, nulPosition);
+        Assert.Equal(byteCount, Encoding.UTF8.GetByteCount(value));
+        var key = $"threshold:{byteCount}:{nulPosition}";
+
+        await _store.SetMetadataAsync(key, value, TimeSpan.FromHours(4));
+        var result = await _store.GetMetadataAsync(key);
+
+        Assert.Equal(value, result);
+        Assert.Equal(byteCount, Encoding.UTF8.GetByteCount(result!));
+    }
+
+    [Fact]
+    public async Task AcquisitionErrors_NulContainingContent_RoundTrips_Gist6403762()
+    {
+        var error = AcquisitionErrorFactory.Create(
+            AcquisitionErrorKind.InvalidResponse,
+            "cache",
+            "deserialize_cache_entry",
+            new Dictionary<string, object?> { ["key"] = "log\0key" },
+            "before\0after");
+
+        await _store.SetAcquisitionErrorAsync("job:nul-error:details", error, TimeSpan.FromHours(1));
+        var result = await _store.GetAcquisitionErrorAsync("job:nul-error:details");
+
+        Assert.NotNull(result);
+        Assert.Equal("before\0after", result!.Message);
+        Assert.Equal("log\0key", Assert.IsType<JsonElement>(result.Resource["key"]).GetString());
+    }
+
+    [Fact]
+    public async Task JobState_NulContainingJobId_IsRejected_Gist6403762()
+    {
+        const string jobId = "job-prefix\0job-suffix";
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(
+            () => _store.SetJobCompletedAsync(jobId, completed: true, TimeSpan.FromHours(1)));
+
+        Assert.Contains("NUL", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -389,6 +545,41 @@ public class SqliteCacheStoreTests : IDisposable
     }
 
     private static string MetadataDbPath(CacheOptions opts) => Path.Combine(opts.GetEffectiveCacheRoot(), "cache.db");
+
+    private static async Task InsertRawMetadataAsync(CacheOptions opts, string cacheKey, string value)
+    {
+        await using var conn = new SqliteConnection($"Data Source={MetadataDbPath(opts)}");
+        await conn.OpenAsync();
+        using var cmd = conn.CreateCommand();
+        var now = DateTimeOffset.UtcNow;
+        cmd.CommandText = """
+            INSERT OR REPLACE INTO cache_metadata (cache_key, json_value, created_at, expires_at, job_id)
+            VALUES (@key, @value, @created, @expires, @jobId);
+            """;
+        cmd.Parameters.AddWithValue("@key", cacheKey);
+        cmd.Parameters.AddWithValue("@value", value);
+        cmd.Parameters.AddWithValue("@created", now.ToString("O", CultureInfo.InvariantCulture));
+        cmd.Parameters.AddWithValue("@expires", now.AddHours(1).ToString("O", CultureInfo.InvariantCulture));
+        cmd.Parameters.AddWithValue("@jobId", "legacy");
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    private static string CreateAsciiPayloadWithNul(int byteCount, string nulPosition)
+    {
+        if (byteCount <= 0)
+            throw new ArgumentOutOfRangeException(nameof(byteCount));
+
+        var chars = Enumerable.Repeat('X', byteCount).ToArray();
+        var nulIndex = nulPosition switch
+        {
+            "start" => 0,
+            "middle" => byteCount / 2,
+            "end" => byteCount - 1,
+            _ => throw new ArgumentOutOfRangeException(nameof(nulPosition), nulPosition, null)
+        };
+        chars[nulIndex] = '\0';
+        return new string(chars);
+    }
 
     private static async Task<bool> MetadataRowExistsAsync(CacheOptions opts, string cacheKey)
     {

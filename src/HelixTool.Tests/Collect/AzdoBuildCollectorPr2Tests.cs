@@ -6,6 +6,7 @@ using HelixTool.Core;
 using HelixTool.Core.Acquisition;
 using HelixTool.Core.AzDO;
 using HelixTool.Core.Cache;
+using HelixTool.Core.Collect;
 using HelixTool.Core.Helix;
 using HelixTool.Mcp.Tools;
 using Microsoft.Extensions.DependencyInjection;
@@ -372,6 +373,35 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
     }
 
     [Fact]
+    public async Task PublicEightHexOrg_IsNotTreatedAsAuthenticatedPartition_Finding4169308691()
+    {
+        var workspace = Path.Combine(_root, "public-eight-hex");
+        var cacheHome = Path.Combine(workspace, "cache-home");
+        var snapshot = Path.Combine(workspace, "snapshot");
+        Directory.CreateDirectory(workspace);
+        using (var store = new SqliteCacheStore(new CacheOptions { CacheRoot = cacheHome, MaxSizeBytes = 1024 * 1024 }))
+        {
+            await store.SetMetadataAsync(
+                "azdo:deadbeef:public:build:42",
+                JsonSerializer.Serialize(new AzdoBuild { Id = 42, Status = "completed" }),
+                TimeSpan.FromHours(1));
+        }
+        await SnapshotExporter.ExportAsync(Path.Combine(cacheHome, "public"), snapshot);
+
+        var inferred = EvalSnapshotAzdoPartitionSelector.Select(snapshot);
+        Assert.Equal("public", inferred.Partition);
+        Assert.Null(inferred.AuthTokenHash);
+
+        Environment.SetEnvironmentVariable(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable, "public");
+        var selected = EvalSnapshotAzdoPartitionSelector.Select(snapshot);
+        Assert.Equal("public", selected.Partition);
+        using var evalStore = new SqliteCacheStore(new CacheOptions { CacheRoot = snapshot, EvalMode = true, AuthTokenHash = selected.AuthTokenHash });
+        var client = new CachingAzdoApiClient(new OfflineAzdoApiClient(), evalStore, new CacheOptions { CacheRoot = snapshot, EvalMode = true });
+        var build = await client.GetBuildAsync("deadbeef", "public", 42);
+        Assert.Equal(42, build?.Id);
+    }
+
+    [Fact]
     public async Task Resume_VerifiesPriorOkEntriesAndDoesNotRefetchStableResources()
     {
         var scenario = RuntimeLikeScenario();
@@ -400,6 +430,500 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         AssertAttemptOk(manifestDocument.RootElement, "get_helix_work_item");
         AssertAttemptOk(manifestDocument.RootElement, "get_helix_console_log");
         AssertAttemptOk(manifestDocument.RootElement, "list_helix_work_item_files");
+    }
+
+    [Fact]
+    public async Task DisabledCache_IsRejectedBeforeCollectionStarts_Finding4169308750()
+    {
+        var scenario = RuntimeLikeScenario();
+        using var harness = CollectHarness.Create(_root, scenario, maxSizeBytes: 0);
+
+        var result = await harness.RunAsync();
+
+        Assert.True(
+            result.ExitCode == 1 || result.Thrown is ArgumentException or InvalidOperationException,
+            $"collect should reject disabled cache; exit={result.ExitCode}, thrown={result.Thrown}, stdout={result.Stdout}, stderr={result.Stderr}");
+        Assert.Equal(0, scenario.Azdo.GetBuildCalls);
+    }
+
+    [Fact]
+    public async Task ConcurrentAttemptAppends_DoNotLoseManifestEntries_Finding4169308785()
+    {
+        const int failureCount = 400;
+        var scenario = RuntimeLikeScenario(helixFailureCount: failureCount);
+        scenario.Helix.ConsoleDelay = TimeSpan.FromMilliseconds(1);
+        using var harness = CollectHarness.Create(_root, scenario);
+
+        var result = await harness.RunAsync(options =>
+        {
+            options.MaxConcurrency = 64;
+            options.LogScope = "none";
+            options.TestScope = "none";
+        });
+
+        Assert.Null(result.Thrown);
+        Assert.Equal(0, result.ExitCode);
+        using var manifestDocument = JsonDocument.Parse(File.ReadAllText(harness.ManifestPath));
+        var attempts = Attempts(manifestDocument.RootElement).ToList();
+        Assert.Equal(failureCount, attempts.Count(a => Operation(a) == "get_helix_work_item"));
+        Assert.Equal(failureCount, attempts.Count(a => Operation(a) == "get_helix_console_log"));
+        Assert.Equal(failureCount, attempts.Count(a => Operation(a) == "list_helix_work_item_files"));
+        Assert.Equal(failureCount * 3, attempts.Count(a => a.GetProperty("phase").GetString() == "helix.suggested"));
+    }
+
+    [Fact]
+    public async Task Resume_DoesNotReuseUnverifiedRecordedFailures_Finding4169308832()
+    {
+        var scenario = RuntimeLikeScenario();
+        using var harness = CollectHarness.Create(_root, scenario);
+        await harness.WritePriorManifestAsync(new CollectFetchAttempt
+        {
+            Id = $"helix.logs:{HelixJobId}:{WorkItem}",
+            Phase = "helix.suggested",
+            Required = true,
+            Provider = "helix",
+            Operation = "get_helix_console_log",
+            Resource = new Dictionary<string, object?> { ["jobId"] = HelixJobId, ["workItem"] = WorkItem },
+            CacheKey = HelixConsoleCacheKey(HelixJobId, WorkItem),
+            CompleteCacheKey = HelixConsoleCacheKey(HelixJobId, WorkItem),
+            StartedAt = DateTimeOffset.UtcNow,
+            FinishedAt = DateTimeOffset.UtcNow,
+            AttemptCount = 1,
+            Outcome = "recorded_failure",
+            Error = AcquisitionErrorFactory.Create(
+                AcquisitionErrorKind.NotFound,
+                "helix",
+                "get_helix_console_log",
+                new Dictionary<string, object?> { ["jobId"] = HelixJobId, ["workItem"] = WorkItem },
+                "Old manifest failure from another collection.")
+        });
+
+        var result = await harness.RunAsync(options =>
+        {
+            options.Resume = true;
+            options.LogScope = "none";
+            options.TestScope = "none";
+            options.Export = null;
+        });
+
+        Assert.Null(result.Thrown);
+        using var manifestDocument = JsonDocument.Parse(File.ReadAllText(harness.ManifestPath));
+        var console = Attempts(manifestDocument.RootElement)
+            .Single(attempt => Operation(attempt) == "get_helix_console_log");
+        Assert.Equal("ok", console.GetProperty("outcome").GetString());
+        Assert.Equal(1, scenario.Helix.ConsoleCalls);
+    }
+
+    [Fact]
+    public async Task ManifestArgv_RedactsUrlCredentialsAndQueryBeforeExport_Finding4169308853()
+    {
+        var scenario = RuntimeLikeScenario();
+        using var harness = CollectHarness.Create(_root, scenario);
+        var secretUrl = "https://user:password@dev.azure.com/dnceng-public/public/_build/results?buildId=1621466&sig=SECRET-SIGNATURE#fragment";
+
+        var result = await harness.RunAsync(options =>
+        {
+            options.BuildIdOrUrl = secretUrl;
+            options.ForceDirectCollector = true;
+        });
+
+        Assert.Null(result.Thrown);
+        Assert.Equal(0, result.ExitCode);
+        var manifestJson = File.ReadAllText(harness.ManifestPath);
+        var exportedManifestJson = File.ReadAllText(Path.Combine(harness.ExportPath, "manifest", "hlx-collect-manifest.json"));
+        Assert.DoesNotContain("password", manifestJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("SECRET-SIGNATURE", manifestJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("#fragment", manifestJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("password", exportedManifestJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("SECRET-SIGNATURE", exportedManifestJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("#fragment", exportedManifestJson, StringComparison.Ordinal);
+        Assert.Contains("buildId=1621466", manifestJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AuthenticatedBuildAttempt_ReportsAuthenticatedCacheKey_Finding4169308884()
+    {
+        var credential = new AzdoCredential("super-secret-token", "Bearer", "environment")
+        {
+            CacheIdentity = "env:AZDO_TOKEN:pat:partition-test",
+            DisplayToken = "redacted-display-token"
+        };
+        using var harness = CollectHarness.Create(_root, RuntimeLikeScenario(), credential);
+
+        var result = await harness.RunAsync();
+
+        Assert.Null(result.Thrown);
+        Assert.Equal(0, result.ExitCode);
+        using var manifestDocument = JsonDocument.Parse(File.ReadAllText(harness.ManifestPath));
+        var partition = manifestDocument.RootElement.GetProperty("auth").GetProperty("azdo").GetProperty("cachePartition").GetString();
+        var buildAttempt = Attempts(manifestDocument.RootElement).Single(a => Operation(a) == "get_build");
+        var cacheKey = buildAttempt.GetProperty("cacheKey").GetString();
+        Assert.StartsWith("cache-", partition, StringComparison.Ordinal);
+        Assert.Contains($":{partition!["cache-".Length..]}:", cacheKey, StringComparison.Ordinal);
+        Assert.NotNull(await harness.GetMetadataAsync(cacheKey!));
+    }
+
+    [Fact]
+    public async Task MoreThanOneThousandHelixFailures_ClearPageLocalTruncationAfterAllRowsCollected_Finding4169308915()
+    {
+        var scenario = RuntimeLikeScenario(helixFailureCount: AzdoEvidencePlan.MaxHelixFailureLimit + 5);
+        using var harness = CollectHarness.Create(_root, scenario);
+
+        var result = await harness.RunAsync(options =>
+        {
+            options.LogScope = "none";
+            options.TestScope = "none";
+            options.HelixScope = "none";
+        });
+
+        Assert.Null(result.Thrown);
+        Assert.Equal(0, result.ExitCode);
+        using var manifestDocument = JsonDocument.Parse(File.ReadAllText(harness.ManifestPath));
+        Assert.DoesNotContain(
+            manifestDocument.RootElement.GetProperty("incompleteDetails").EnumerateArray(),
+            detail => detail.GetProperty("code").GetString() == "helix_failures_truncated");
+    }
+
+    [Fact]
+    public async Task TestScopeAllSnapshot_ReplaysDefaultFailedResultsOffline_Finding4169308952()
+    {
+        using var harness = CollectHarness.Create(_root, RuntimeLikeScenario());
+
+        var result = await harness.RunAsync(options => options.TestScope = "all");
+
+        Assert.Null(result.Thrown);
+        Assert.Equal(0, result.ExitCode);
+        var tools = CreateEvalAzdoTools(harness.ExportPath);
+        var replayed = await tools.TestResults(BuildId.ToString(), 7001);
+        Assert.Single(replayed);
+        Assert.Equal("Failed", replayed[0].Outcome);
+    }
+
+    [Fact]
+    public async Task DownloadResume_ReusesCachedFilesWithoutOpeningProvider_Finding4169308984()
+    {
+        var scenario = RuntimeLikeScenario();
+        scenario.Helix.Files[WorkItem] = [new FakeWorkItemFile("collected.binlog", "https://helix.dot.net/file/collected.binlog")];
+        scenario.Helix.FileContent["collected.binlog"] = Encoding.UTF8.GetBytes("cached-content");
+        using var harness = CollectHarness.Create(_root, scenario);
+
+        var first = await harness.RunAsync(options =>
+        {
+            options.DownloadHelixFiles = "*.binlog";
+            options.LogScope = "none";
+            options.TestScope = "none";
+        });
+        scenario.Helix.ThrowOnFileOpen = true;
+        var second = await harness.RunAsync(options =>
+        {
+            options.Resume = true;
+            options.Export = null;
+            options.DownloadHelixFiles = "*.binlog";
+            options.LogScope = "none";
+            options.TestScope = "none";
+        });
+
+        Assert.Null(first.Thrown);
+        Assert.Null(second.Thrown);
+        Assert.Equal(0, first.ExitCode);
+        Assert.Equal(0, second.ExitCode);
+        using var manifestDocument = JsonDocument.Parse(File.ReadAllText(harness.ManifestPath));
+        var attempt = Attempts(manifestDocument.RootElement)
+            .Single(a => Operation(a) == "download_helix_file" && ResourceString(a, "fileName") == "collected.binlog");
+        Assert.Equal("cached", attempt.GetProperty("outcome").GetString());
+        Assert.Equal(1, scenario.Helix.FileCallsByName["collected.binlog"]);
+    }
+
+    [Fact]
+    public async Task DownloadClassifiedFailures_AreRecordedAndReplayOffline_Finding4169309023()
+    {
+        var scenario = RuntimeLikeScenario();
+        scenario.Helix.Files[WorkItem] = [new FakeWorkItemFile("missing.binlog", "https://helix.dot.net/file/missing.binlog")];
+        scenario.Helix.FailFileForNames["missing.binlog"] = new Queue<HlxAcquisitionException>([
+            AcquisitionAssertions.Exception(
+                AcquisitionErrorKind.NotFound,
+                "helix",
+                "download_helix_file",
+                new Dictionary<string, object?> { ["jobId"] = HelixJobId, ["workItem"] = WorkItem, ["fileName"] = "missing.binlog" })
+        ]);
+        using var harness = CollectHarness.Create(_root, scenario);
+
+        var result = await harness.RunAsync(options =>
+        {
+            options.DownloadHelixFiles = "*.binlog";
+            options.LogScope = "none";
+            options.TestScope = "none";
+        });
+
+        Assert.Null(result.Thrown);
+        using var manifestDocument = JsonDocument.Parse(File.ReadAllText(harness.ManifestPath));
+        var attempt = Attempts(manifestDocument.RootElement)
+            .Single(a => Operation(a) == "download_helix_file" && ResourceString(a, "fileName") == "missing.binlog");
+        Assert.Equal("recorded_failure", attempt.GetProperty("outcome").GetString());
+        var cacheKey = attempt.GetProperty("cacheKey").GetString()!;
+        Assert.NotNull(await harness.GetAcquisitionErrorAsync(cacheKey));
+        var tools = CreateEvalHelixTools(harness.ExportPath);
+        var replayed = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => tools.Download(HelixJobId, WorkItem, pattern: "missing.binlog"));
+        Assert.Equal(AcquisitionErrorKind.NotFound, replayed.Error.Kind);
+        Assert.Equal("snapshot", replayed.Error.Source);
+    }
+
+    [Fact]
+    public async Task DownloadTotalBudgetZero_OpensNoProviderStreams_Finding4169309054()
+    {
+        var scenario = RuntimeLikeScenario();
+        scenario.Helix.Files[WorkItem] = [new FakeWorkItemFile("blocked.binlog", "https://helix.dot.net/file/blocked.binlog")];
+        scenario.Helix.FileContent["blocked.binlog"] = Encoding.UTF8.GetBytes("blocked");
+        using var harness = CollectHarness.Create(_root, scenario);
+
+        var result = await harness.RunAsync(options =>
+        {
+            options.DownloadHelixFiles = "*.binlog";
+            options.MaxTotalBytes = 0;
+            options.LogScope = "none";
+            options.TestScope = "none";
+        });
+
+        Assert.Null(result.Thrown);
+        Assert.Equal(0, result.ExitCode);
+        Assert.False(scenario.Helix.FileCallsByName.ContainsKey("blocked.binlog"));
+        using var manifestDocument = JsonDocument.Parse(File.ReadAllText(harness.ManifestPath));
+        var skip = Attempts(manifestDocument.RootElement)
+            .Single(a => Operation(a) == "download_helix_file" && ResourceString(a, "fileName") == "blocked.binlog");
+        Assert.Equal("skipped", skip.GetProperty("outcome").GetString());
+        Assert.Equal("total_size_limit", skip.GetProperty("skip").GetProperty("kind").GetString());
+    }
+
+    [Fact]
+    public async Task ExportDoesNotMarkEvictedDownloadArtifactsComplete_Finding4169309088()
+    {
+        var scenario = RuntimeLikeScenario();
+        scenario.Helix.Files[WorkItem] =
+        [
+            new FakeWorkItemFile("first.binlog", "https://helix.dot.net/file/first.binlog"),
+            new FakeWorkItemFile("second.binlog", "https://helix.dot.net/file/second.binlog")
+        ];
+        scenario.Helix.FileContent["first.binlog"] = Encoding.UTF8.GetBytes("1111");
+        scenario.Helix.FileContent["second.binlog"] = Encoding.UTF8.GetBytes("2222");
+        using var harness = CollectHarness.Create(_root, scenario, maxSizeBytes: 6);
+
+        var result = await harness.RunAsync(options =>
+        {
+            options.DownloadHelixFiles = "*.binlog";
+            options.MaxFileBytes = 10;
+            options.MaxTotalBytes = 20;
+            options.LogScope = "none";
+            options.TestScope = "none";
+        });
+
+        Assert.Null(result.Thrown);
+        using var manifestDocument = JsonDocument.Parse(File.ReadAllText(harness.ManifestPath));
+        if (manifestDocument.RootElement.GetProperty("complete").GetBoolean())
+        {
+            var tools = CreateEvalHelixTools(harness.ExportPath);
+            foreach (var fileName in new[] { "first.binlog", "second.binlog" })
+            {
+                var download = await tools.Download(HelixJobId, WorkItem, pattern: fileName);
+                Assert.Single(download.DownloadedFiles);
+            }
+        }
+        else
+        {
+            Assert.Contains(
+                manifestDocument.RootElement.GetProperty("incompleteDetails").EnumerateArray(),
+                detail => detail.GetProperty("code").GetString() is "snapshot_export_failed" or "fetch_skipped" or "artifact_missing"
+                          || (detail.GetProperty("code").GetString() == "fetch_failed"
+                              && detail.GetProperty("message").GetString()?.Contains("missing from the cache", StringComparison.OrdinalIgnoreCase) == true));
+        }
+    }
+
+    [Fact]
+    public async Task DownloadRetriesSelectedFileFailures_Finding4169309118()
+    {
+        var scenario = RuntimeLikeScenario();
+        scenario.Helix.Files[WorkItem] = [new FakeWorkItemFile("retry.binlog", "https://helix.dot.net/file/retry.binlog")];
+        scenario.Helix.FileContent["retry.binlog"] = Encoding.UTF8.GetBytes("ok");
+        scenario.Helix.FailFileForNames["retry.binlog"] = new Queue<HlxAcquisitionException>([
+            AcquisitionAssertions.Exception(
+                AcquisitionErrorKind.RateLimited,
+                "helix",
+                "download_helix_file",
+                new Dictionary<string, object?> { ["fileName"] = "retry.binlog" },
+                retryAfterSeconds: 0)
+        ]);
+        using var harness = CollectHarness.Create(_root, scenario);
+
+        var result = await harness.RunAsync(options =>
+        {
+            options.DownloadHelixFiles = "*.binlog";
+            options.RetryCount = 2;
+            options.RetryInitialDelay = TimeSpan.Zero;
+            options.RetryMaxDelay = TimeSpan.Zero;
+            options.LogScope = "none";
+            options.TestScope = "none";
+        });
+
+        Assert.Null(result.Thrown);
+        Assert.Equal(0, result.ExitCode);
+        using var manifestDocument = JsonDocument.Parse(File.ReadAllText(harness.ManifestPath));
+        var attempt = Attempts(manifestDocument.RootElement)
+            .Single(a => Operation(a) == "download_helix_file" && ResourceString(a, "fileName") == "retry.binlog");
+        Assert.Equal("ok", attempt.GetProperty("outcome").GetString());
+        Assert.Equal(2, attempt.GetProperty("attemptCount").GetInt32());
+        Assert.Equal(2, scenario.Helix.FileCallsByName["retry.binlog"]);
+    }
+
+    [Fact]
+    public async Task ResumeRehydrationFailures_UseRetryPipeline_Finding4169309147()
+    {
+        var scenario = RuntimeLikeScenario();
+        scenario.Helix.FailFilesForWorkItems[WorkItem] = new Queue<HlxAcquisitionException>([
+            AcquisitionAssertions.Exception(
+                AcquisitionErrorKind.Timeout,
+                "helix",
+                "list_helix_work_item_files",
+                new Dictionary<string, object?> { ["jobId"] = HelixJobId, ["workItem"] = WorkItem })
+        ]);
+        using var harness = CollectHarness.Create(_root, scenario);
+        await harness.SeedMetadataAsync(HelixWorkItemDetailsCacheKey(HelixJobId, WorkItem), "{}");
+        await harness.WritePriorManifestAsync(new CollectFetchAttempt
+        {
+            Id = $"helix.work-item:{HelixJobId}:{WorkItem}",
+            Phase = "helix.suggested",
+            Required = true,
+            Provider = "helix",
+            Operation = "get_helix_work_item",
+            Resource = new Dictionary<string, object?> { ["jobId"] = HelixJobId, ["workItem"] = WorkItem },
+            CacheKey = HelixWorkItemDetailsCacheKey(HelixJobId, WorkItem),
+            CompleteCacheKey = HelixWorkItemDetailsCacheKey(HelixJobId, WorkItem),
+            StartedAt = DateTimeOffset.UtcNow,
+            FinishedAt = DateTimeOffset.UtcNow,
+            AttemptCount = 1,
+            Outcome = "ok"
+        });
+
+        var result = await harness.RunAsync(options =>
+        {
+            options.Resume = true;
+            options.RetryCount = 2;
+            options.RetryInitialDelay = TimeSpan.Zero;
+            options.RetryMaxDelay = TimeSpan.Zero;
+            options.LogScope = "none";
+            options.TestScope = "none";
+            options.Export = null;
+        });
+
+        Assert.Null(result.Thrown);
+        using var manifestDocument = JsonDocument.Parse(File.ReadAllText(harness.ManifestPath));
+        var attempt = Attempts(manifestDocument.RootElement)
+            .Single(a => Operation(a) == "get_helix_work_item");
+        Assert.Equal("cached", attempt.GetProperty("outcome").GetString());
+        Assert.Equal(2, scenario.Helix.FileListCallsByWorkItem[WorkItem]);
+    }
+
+    [Fact]
+    public async Task TransientDownloadNotSelectedForRetry_IsFailedNotRecordedFailure_Finding4169309172()
+    {
+        var scenario = RuntimeLikeScenario();
+        scenario.Helix.Files[WorkItem] = [new FakeWorkItemFile("timeout.binlog", "https://helix.dot.net/file/timeout.binlog")];
+        scenario.Helix.FailFileForNames["timeout.binlog"] = new Queue<HlxAcquisitionException>([
+            AcquisitionAssertions.Exception(
+                AcquisitionErrorKind.Timeout,
+                "helix",
+                "download_helix_file",
+                new Dictionary<string, object?> { ["fileName"] = "timeout.binlog" })
+        ]);
+        using var harness = CollectHarness.Create(_root, scenario);
+
+        var result = await harness.RunAsync(options =>
+        {
+            options.DownloadHelixFiles = "*.binlog";
+            options.RetryKinds = "";
+            options.LogScope = "none";
+            options.TestScope = "none";
+        });
+
+        Assert.Null(result.Thrown);
+        using var manifestDocument = JsonDocument.Parse(File.ReadAllText(harness.ManifestPath));
+        var attempt = Attempts(manifestDocument.RootElement)
+            .Single(a => Operation(a) == "download_helix_file" && ResourceString(a, "fileName") == "timeout.binlog");
+        Assert.Equal("failed", attempt.GetProperty("outcome").GetString());
+        Assert.Null(await harness.GetAcquisitionErrorAsync(attempt.GetProperty("cacheKey").GetString()!));
+    }
+
+    [Fact]
+    public async Task NegativeRetryDelays_AreRejectedBeforeFetching_Finding4169309213()
+    {
+        var scenario = RuntimeLikeScenario();
+        using var harness = CollectHarness.Create(_root, scenario);
+
+        var result = await harness.RunAsync(options =>
+        {
+            options.RetryInitialDelay = TimeSpan.FromSeconds(-1);
+            options.RetryMaxDelay = TimeSpan.FromSeconds(-1);
+        });
+
+        Assert.True(
+            result.ExitCode == 1 || result.Thrown is ArgumentException or ArgumentOutOfRangeException,
+            $"collect should reject negative retry delays; exit={result.ExitCode}, thrown={result.Thrown}");
+        Assert.Equal(0, scenario.Azdo.GetBuildCalls);
+    }
+
+    [Fact]
+    public async Task RetryAfterDelay_IsHonoredBeyondRetryMaxDelay_Finding4169309251()
+    {
+        var scenario = RuntimeLikeScenario();
+        scenario.Helix.FailConsoleForWorkItems[WorkItem] = new Queue<HlxAcquisitionException>([
+            Transient(AcquisitionErrorKind.RateLimited, retryAfterSeconds: 1)
+        ]);
+        using var harness = CollectHarness.Create(_root, scenario);
+        var started = DateTimeOffset.UtcNow;
+
+        var result = await harness.RunAsync(options =>
+        {
+            options.RetryCount = 2;
+            options.RetryInitialDelay = TimeSpan.Zero;
+            options.RetryMaxDelay = TimeSpan.Zero;
+            options.LogScope = "none";
+            options.TestScope = "none";
+        });
+
+        var elapsed = DateTimeOffset.UtcNow - started;
+        Assert.Null(result.Thrown);
+        Assert.Equal(0, result.ExitCode);
+        Assert.True(elapsed >= TimeSpan.FromMilliseconds(900), $"Retry-After was not honored; elapsed {elapsed}.");
+        using var manifestDocument = JsonDocument.Parse(File.ReadAllText(harness.ManifestPath));
+        var attempt = Attempts(manifestDocument.RootElement)
+            .Single(a => Operation(a) == "get_helix_console_log");
+        Assert.Equal(2, attempt.GetProperty("attemptCount").GetInt32());
+    }
+
+    [Fact]
+    public async Task RequiredAzdoLogWithMissingReadBackEvidence_IsNotReportedOk_Gist6403762()
+    {
+        var scenario = RuntimeLikeScenario();
+        scenario.Azdo.LogContentById[11] = "";
+        using var harness = CollectHarness.Create(_root, scenario);
+
+        var result = await harness.RunAsync(options =>
+        {
+            options.TestScope = "none";
+            options.HelixScope = "none";
+        });
+
+        Assert.Null(result.Thrown);
+        Assert.Equal(2, result.ExitCode);
+        using var manifestDocument = JsonDocument.Parse(File.ReadAllText(harness.ManifestPath));
+        var logAttempt = Attempts(manifestDocument.RootElement)
+            .Single(a => Operation(a) == "get_build_log" && ResourceString(a, "logId") == "11");
+        Assert.NotEqual("ok", logAttempt.GetProperty("outcome").GetString());
+        Assert.NotEqual("cached", logAttempt.GetProperty("outcome").GetString());
+        Assert.False(manifestDocument.RootElement.GetProperty("complete").GetBoolean());
+        Assert.Contains(
+            manifestDocument.RootElement.GetProperty("incompleteDetails").EnumerateArray(),
+            detail => detail.GetProperty("operation").GetString() == "get_build_log"
+                      && detail.GetProperty("message").GetString()?.Contains("missing from the cache", StringComparison.OrdinalIgnoreCase) == true);
     }
 
     private static CollectScenario RuntimeLikeScenario(int helixFailureCount = 1)
@@ -520,7 +1044,14 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
     private static string? ResourceString(JsonElement attempt, string name)
     {
         var resource = attempt.GetProperty("resource");
-        return resource.TryGetProperty(name, out var value) ? value.GetString() : null;
+        if (!resource.TryGetProperty(name, out var value))
+            return null;
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.Number => value.GetRawText(),
+            _ => null
+        };
     }
 
     private static HlxAcquisitionException Transient(AcquisitionErrorKind kind, int? retryAfterSeconds = null) =>
@@ -533,6 +1064,9 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
 
     private static string HelixConsoleCacheKey(string jobId, string workItem) =>
         $"job:{SanitizeCacheKeySegment(jobId)}:wi:{SanitizeCacheKeySegment(workItem)}:console";
+
+    private static string HelixWorkItemDetailsCacheKey(string jobId, string workItem) =>
+        $"job:{SanitizeCacheKeySegment(jobId)}:wi:{SanitizeCacheKeySegment(workItem)}:details";
 
     private static string SanitizeCacheKeySegment(string value) =>
         value.Replace('/', '_').Replace('\\', '_').Replace("..", "_");
@@ -568,7 +1102,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         private readonly IAzdoTokenAccessor _azdoTokenAccessor = Substitute.For<IAzdoTokenAccessor>();
         private readonly IHelixTokenAccessor _helixTokenAccessor = Substitute.For<IHelixTokenAccessor>();
 
-        private CollectHarness(string root, CollectScenario scenario, AzdoCredential? azdoCredential = null)
+        private CollectHarness(string root, CollectScenario scenario, AzdoCredential? azdoCredential = null, long maxSizeBytes = 128L * 1024 * 1024)
         {
             _workspace = Path.Combine(root, Guid.NewGuid().ToString("N"));
             CacheRoot = Path.Combine(_workspace, "cache");
@@ -578,7 +1112,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
 
             _azdo = scenario.Azdo;
             _helix = scenario.Helix;
-            _cacheOptions = new CacheOptions { CacheRoot = CacheRoot, MaxSizeBytes = 128L * 1024 * 1024 };
+            _cacheOptions = new CacheOptions { CacheRoot = CacheRoot, MaxSizeBytes = maxSizeBytes };
             _store = new SqliteCacheStore(_cacheOptions);
             _azdoTokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>())
                 .Returns(azdoCredential);
@@ -596,11 +1130,47 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         public string ManifestPath { get; }
         public string ExportPath { get; }
 
-        public static CollectHarness Create(string root, CollectScenario scenario, AzdoCredential? azdoCredential = null) =>
-            new(root, scenario, azdoCredential);
+        public static CollectHarness Create(string root, CollectScenario scenario, AzdoCredential? azdoCredential = null, long maxSizeBytes = 128L * 1024 * 1024) =>
+            new(root, scenario, azdoCredential, maxSizeBytes);
 
         public Task<AcquisitionError?> GetAcquisitionErrorAsync(string cacheKey) =>
             _store.GetAcquisitionErrorAsync(cacheKey);
+
+        public Task<string?> GetMetadataAsync(string cacheKey) =>
+            _store.GetMetadataAsync(cacheKey);
+
+        public Task SeedMetadataAsync(string cacheKey, string json) =>
+            _store.SetMetadataAsync(cacheKey, json, TimeSpan.FromHours(1));
+
+        public async Task WritePriorManifestAsync(params CollectFetchAttempt[] attempts)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var manifest = new CollectManifest
+            {
+                ManifestId = Guid.NewGuid().ToString("N"),
+                HlxVersion = "test",
+                GeneratedAt = now,
+                CompletedAt = now,
+                Source = new CollectSourceInfo
+                {
+                    Org = "other-org",
+                    Project = "other-project",
+                    BuildId = 1,
+                    BuildUrl = "https://dev.azure.com/other-org/other-project/_build/results?buildId=1"
+                },
+                Complete = false,
+                ExitCode = 2,
+                Summary = new CollectSummary { Attempted = attempts.Length },
+                Attempts = attempts
+            };
+            var json = JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web)
+            {
+                WriteIndented = true,
+                Converters = { new AcquisitionErrorKindJsonConverter() }
+            });
+            Directory.CreateDirectory(Path.GetDirectoryName(ManifestPath)!);
+            await File.WriteAllTextAsync(ManifestPath, json);
+        }
 
         public async Task<CollectRunResult> RunAsync(Action<CollectInvocationOptions>? configure = null)
         {
@@ -658,6 +1228,9 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
 
         private async Task<object?> InvokeCollectAsync(CollectInvocationOptions options, CancellationToken ct)
         {
+            if (options.ForceDirectCollector)
+                return await InvokeCollectorDirectAsync(options, ct);
+
             var commandType = FindRuntimeType("CollectCommands") ?? FindRuntimeType("HelixTool.CollectCommands");
             if (commandType is not null)
             {
@@ -667,6 +1240,11 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
                 return await InvokeAsync(command, method, args);
             }
 
+            return await InvokeCollectorDirectAsync(options, ct);
+        }
+
+        private async Task<object?> InvokeCollectorDirectAsync(CollectInvocationOptions options, CancellationToken ct)
+        {
             var collectorType = FindRuntimeType("HelixTool.Core.Collect.AzdoBuildCollector");
             Assert.NotNull(collectorType);
             var collector = CreateInstance(collectorType!);
@@ -820,12 +1398,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
             if (name.Equals("RetryKinds", StringComparison.OrdinalIgnoreCase)
                 && typeof(IEnumerable<AcquisitionErrorKind>).IsAssignableFrom(type))
             {
-                return new HashSet<AcquisitionErrorKind>
-                {
-                    AcquisitionErrorKind.RateLimited,
-                    AcquisitionErrorKind.Timeout,
-                    AcquisitionErrorKind.TransportError
-                };
+                return ParseRetryKinds(options.RetryKinds);
             }
             if (type == typeof(string) || type == typeof(string[]))
                 return StringValue(name, options);
@@ -847,7 +1420,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
 
         private static string? StringValue(string name, CollectInvocationOptions options)
         {
-            if (name.Contains("build", StringComparison.OrdinalIgnoreCase)) return BuildId.ToString();
+            if (name.Contains("build", StringComparison.OrdinalIgnoreCase)) return options.BuildIdOrUrl;
             if (name.Contains("cache", StringComparison.OrdinalIgnoreCase)) return options.CacheDir;
             if (name.Contains("manifest", StringComparison.OrdinalIgnoreCase)) return options.Manifest;
             if (name.Contains("export", StringComparison.OrdinalIgnoreCase) || name.Contains("snapshot", StringComparison.OrdinalIgnoreCase)) return options.Export;
@@ -908,6 +1481,27 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
             return Enum.GetValues(enumType).GetValue(0)!;
         }
 
+        private static HashSet<AcquisitionErrorKind> ParseRetryKinds(string value)
+        {
+            var parsed = new HashSet<AcquisitionErrorKind>();
+            foreach (var item in value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                parsed.Add(item switch
+                {
+                    "not_found" => AcquisitionErrorKind.NotFound,
+                    "access_denied" => AcquisitionErrorKind.AccessDenied,
+                    "rate_limited" => AcquisitionErrorKind.RateLimited,
+                    "timeout" => AcquisitionErrorKind.Timeout,
+                    "transport_error" => AcquisitionErrorKind.TransportError,
+                    "invalid_response" => AcquisitionErrorKind.InvalidResponse,
+                    "not_in_snapshot" => AcquisitionErrorKind.NotInSnapshot,
+                    _ => throw new InvalidOperationException($"Unsupported retry kind '{item}'.")
+                });
+            }
+
+            return parsed;
+        }
+
         private static string ToKebab(string value)
         {
             var builder = new StringBuilder();
@@ -958,9 +1552,11 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
 
     private sealed class CollectInvocationOptions
     {
+        public string BuildIdOrUrl { get; set; } = BuildId.ToString();
         public string CacheDir { get; init; } = "";
         public string Manifest { get; init; } = "";
         public string? Export { get; set; } = "";
+        public bool ForceDirectCollector { get; set; }
         public bool Resume { get; set; }
         public bool AllowIncomplete { get; set; }
         public int MaxConcurrency { get; set; } = 6;
@@ -985,12 +1581,13 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         {
             var args = new List<string>
             {
-                "collect", "azdo-build", BuildId.ToString(),
+                "collect", "azdo-build", BuildIdOrUrl,
                 "--cache-dir", CacheDir,
                 "--manifest", Manifest,
                 "--json",
                 "--max-concurrency", MaxConcurrency.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 "--retry-count", RetryCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "--retry-kinds", RetryKinds,
                 "--retry-initial-delay", RetryInitialDelay.ToString(),
                 "--retry-max-delay", RetryMaxDelay.ToString(),
                 "--log-scope", LogScope,
@@ -1015,6 +1612,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         private readonly int _buildId;
         private readonly int _helixFailureCount;
         public int GetBuildCalls { get; private set; }
+        public Dictionary<int, string?> LogContentById { get; } = new();
 
         public RecordingAzdoApiClient(int buildId, int helixFailureCount)
         {
@@ -1074,13 +1672,18 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
                 ]
             });
 
-        public Task<string?> GetBuildLogAsync(string org, string project, int buildId, int logId, int? startLine = null, int? endLine = null, CancellationToken ct = default) =>
-            Task.FromResult<string?>(logId switch
+        public Task<string?> GetBuildLogAsync(string org, string project, int buildId, int logId, int? startLine = null, int? endLine = null, CancellationToken ct = default)
+        {
+            if (LogContentById.TryGetValue(logId, out var content))
+                return Task.FromResult(content);
+
+            return Task.FromResult<string?>(logId switch
             {
                 11 => "failed job log\nerror line\n",
                 21 => "monitor log\nmonitor issue\n",
                 _ => "other log\n"
             });
+        }
 
         public Task<IReadOnlyList<AzdoBuildChange>> GetBuildChangesAsync(string org, string project, int buildId, int? top = null, CancellationToken ct = default) =>
             Task.FromResult<IReadOnlyList<AzdoBuildChange>>([new() { Id = "abc123", Message = "Change" }]);
@@ -1152,7 +1755,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
             }).ToList();
 
         private static string GuidForIndex(int index) =>
-            index == 1 ? SecondHelixJobId : $"aaaaaaaa-bbbb-cccc-dddd-{index:000000000000}";
+            index == 1 ? SecondHelixJobId : $"aaaaaaaa-bbbb-cccc-dddd-{index + 1:000000000000}";
     }
 
     private sealed class RecordingHelixApiClient : IHelixApiClient
@@ -1162,8 +1765,13 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         public int ConsoleCalls { get; private set; }
         public TimeSpan ConsoleDelay { get; set; }
         public ConcurrentDictionary<string, Queue<HlxAcquisitionException>> FailConsoleForWorkItems { get; } = new();
+        public ConcurrentDictionary<string, Queue<HlxAcquisitionException>> FailFileForNames { get; } = new();
+        public ConcurrentDictionary<string, Queue<HlxAcquisitionException>> FailFilesForWorkItems { get; } = new();
+        public ConcurrentDictionary<string, int> FileCallsByName { get; } = new(StringComparer.Ordinal);
+        public ConcurrentDictionary<string, int> FileListCallsByWorkItem { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, IReadOnlyList<IWorkItemFile>> Files { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, byte[]> FileContent { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public bool ThrowOnFileOpen { get; set; }
 
         public RecordingHelixApiClient()
         {
@@ -1187,8 +1795,13 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         public Task<IWorkItemDetails> GetWorkItemDetailsAsync(string workItemName, string jobId, CancellationToken ct = default) =>
             Task.FromResult<IWorkItemDetails>(new FakeWorkItemDetails(-3, "Finished", "machine-1", DateTimeOffset.Parse("2026-10-02T18:01:00Z"), DateTimeOffset.Parse("2026-10-02T18:02:00Z")));
 
-        public Task<IReadOnlyList<IWorkItemFile>> ListWorkItemFilesAsync(string workItemName, string jobId, CancellationToken ct = default) =>
-            Task.FromResult(Files.TryGetValue(workItemName, out var files) ? files : []);
+        public Task<IReadOnlyList<IWorkItemFile>> ListWorkItemFilesAsync(string workItemName, string jobId, CancellationToken ct = default)
+        {
+            FileListCallsByWorkItem.AddOrUpdate(workItemName, 1, (_, count) => count + 1);
+            if (FailFilesForWorkItems.TryGetValue(workItemName, out var queue) && queue.Count > 0)
+                throw queue.Dequeue();
+            return Task.FromResult(Files.TryGetValue(workItemName, out var files) ? files : []);
+        }
 
         public async Task<Stream> GetConsoleLogAsync(string workItemName, string jobId, CancellationToken ct = default)
         {
@@ -1211,6 +1824,11 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
 
         public Task<Stream> GetFileAsync(string fileName, string workItemName, string jobId, CancellationToken ct = default)
         {
+            FileCallsByName.AddOrUpdate(fileName, 1, (_, count) => count + 1);
+            if (ThrowOnFileOpen)
+                throw new InvalidOperationException($"Unexpected provider file open for {fileName}.");
+            if (FailFileForNames.TryGetValue(fileName, out var queue) && queue.Count > 0)
+                throw queue.Dequeue();
             var bytes = FileContent.TryGetValue(fileName, out var content) ? content : Encoding.UTF8.GetBytes("file");
             return Task.FromResult<Stream>(new MemoryStream(bytes));
         }

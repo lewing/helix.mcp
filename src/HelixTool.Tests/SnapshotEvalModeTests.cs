@@ -1031,6 +1031,32 @@ public class EvalModePrimaryEvidenceTests : IDisposable
     }
 
     [Fact]
+    public async Task GetBuildLogAsync_EvalMode_MarkerOnlyRawLogRowFailsInvalidResponse_Gist6403762()
+    {
+        const string org = "dnceng-public";
+        const string project = "public";
+        const int buildId = 1;
+        const int logId = 7;
+        const string logKey = "azdo:dnceng-public:public:log:1:7";
+
+        using var writerStore = new SqliteCacheStore(new CacheOptions { CacheRoot = _parentDir });
+        await writerStore.SetMetadataAsync(logKey, "\0raw\n", TimeSpan.FromHours(4));
+        writerStore.Dispose();
+
+        var evalOpts = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true };
+        using var evalStore = new SqliteCacheStore(evalOpts);
+        var client = new CachingAzdoApiClient(new OfflineAzdoApiClient(), evalStore, evalOpts);
+
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => client.GetBuildLogAsync(org, project, buildId, logId));
+
+        Assert.Equal(AcquisitionErrorKind.InvalidResponse, ex.Error.Kind);
+        Assert.Equal("cache", ex.Error.Provider);
+        Assert.Equal("deserialize_cache_entry", ex.Error.Operation);
+        AcquisitionAssertions.Resource(ex.Error, "key", logKey);
+    }
+
+    [Fact]
     public async Task GetBuildLogsListAsync_EvalMode_ServesCachedList_WhenBuildMarkersAbsent()
     {
         const string key = "azdo:dnceng-public:public:logslist:17";

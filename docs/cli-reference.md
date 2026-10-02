@@ -166,6 +166,8 @@ hlx azdo log 12345678 42 --full
 
 The AzDO list commands `changes`, `test-runs`, `test-results`, `artifacts`, and `test-attachments` support deterministic paging for scanners and offline snapshot population.
 
+AzDO continuation-token list paging follows at most 1000 pages per list request and fails closed with `invalid_response` if the provider repeats a continuation token/request URL or exceeds that cap; partial results are not returned as complete.
+
 **Flags:**
 
 - `--limit N` — Maximum rows to return for this page. Defaults are command-specific: `changes` 20, `test-runs` 50, `test-results` 200, `artifacts` 100, and `test-attachments` 100.
@@ -208,8 +210,8 @@ Envelope fields:
 - `complete` — `true` when this response contains the complete selected list.
 - `truncated` — `true` when this response is a bounded page rather than the complete selected list.
 - `next` — `{ "offset": N, "limit": N }` when another page exists after this response; otherwise `null`.
-- `cache.key` — Cache key for the exact response (`--all` uses the complete key; windows use window keys where the backing endpoint supports them).
-- `cache.completeKey` — Cache key for the complete selected list. In eval mode, capped MCP/list calls can be served from this complete key.
+- `cache.key` — Backing cache key used to serve/replay this list response. List envelopes currently use the complete selected-list cache key here.
+- `cache.completeKey` — Cache key for the complete selected list; currently the same value as `cache.key`. In eval mode, capped MCP/list calls can be served from this complete key.
 - `note` — Human-readable truncation guidance, present only when `truncated` is `true`.
 
 Exit codes for these list commands:
@@ -503,7 +505,7 @@ hlx collect azdo-build 12345678 --export /tmp/build-12345678-snapshot
 hlx collect azdo-build "https://dev.azure.com/dnceng-public/public/_build/results?buildId=12345678" --manifest collect.json --json
 ```
 
-The command cannot run when `HLX_EVAL_SNAPSHOT` is set. It populates live cache entries first; `--export` then copies those entries into a snapshot and copies the manifest to `manifest/hlx-collect-manifest.json` inside the snapshot.
+The command cannot run when `HLX_EVAL_SNAPSHOT` is set or when caching is disabled with `HLX_CACHE_MAX_SIZE_MB=0`. It populates live cache entries first; `--export` then copies those entries into a snapshot and copies the manifest to `manifest/hlx-collect-manifest.json` inside the snapshot.
 
 **Flags and defaults:**
 
@@ -519,7 +521,7 @@ The command cannot run when `HLX_EVAL_SNAPSHOT` is set. It populates live cache 
 | `--retry-count <int>` | `3` | Total attempts per transient acquisition. Must be greater than `0`. |
 | `--retry-kinds <csv>` | `rate_limited,timeout,transport_error` | Acquisition error kinds retried by the collector. Valid values are `not_found`, `access_denied`, `rate_limited`, `timeout`, `transport_error`, `invalid_response`, and `not_in_snapshot`. |
 | `--retry-initial-delay <duration>` | `2s` | Initial retry delay. Accepts `TimeSpan` values or suffixes such as `2s`, `5m`, or `1h`. |
-| `--retry-max-delay <duration>` | `30s` | Maximum retry delay. Accepts the same duration formats as `--retry-initial-delay`. |
+| `--retry-max-delay <duration>` | `30s` | Maximum computed exponential-backoff delay. Accepts the same duration formats as `--retry-initial-delay`; provider `retryAfterSeconds` / `Retry-After` delays are honored separately up to 1 hour. |
 | `--artifact-pattern <glob>` | `*` | Artifact-name glob used by evidence planning. |
 | `--artifact-job-prefix <prefix>` | `null` | Prefix stripped from artifact names before matching. |
 | `--keep-attempt-prefix` | `false` | Keep `AttemptN_` in artifact names instead of stripping it. |
@@ -554,6 +556,8 @@ Each `attempts[]` entry has `id`, optional `parentId`, `phase`, `required`, `pro
 `paging`, when present, contains `returned`, nullable `total`, `offset`, nullable `limit`, `complete`, `truncated`, and `next`. `skip.kind` is emitted as `policy_excluded`, `not_selected`, `size_limit`, or `total_size_limit` by the current collector. `bytes` is `null` for skips. `error` reuses the `AcquisitionError` shape from [Errors and exit codes](#errors-and-exit-codes): `kind`, `provider`, `operation`, `resource`, optional `httpStatus`, optional `retryAfterSeconds`, optional `source`, optional `replayed`, optional `recordedAt`, and `message`.
 
 `summary` contains `attempted`, `ok`, `cached`, `recordedFailure`, `failed`, `skipped`, and `bytes`. `auth.azdo.cachePartition` is the non-secret replay partition (`public` or `cache-xxxxxxxx`); `auth.azdo.replay` is `public` or `snapshot_partition`; `auth.helix.path` is `anonymous`, `environment`, or `stored-credential`. `snapshot.manifestPath` is `manifest/hlx-collect-manifest.json` when `--export` succeeds; the standalone manifest path is the `--manifest` value or `hlx-collect-manifest.json` in the current directory.
+
+Before writing the final manifest/export result, the collector re-reads every `ok`/`cached` cache entry that has a `cacheKey`. Missing metadata, empty/corrupt raw AzDO log rows, and byte-count mismatches are downgraded to failed cache verification and make the manifest incomplete; missing Helix artifact evidence is reported as `artifact_missing`, while corrupt/size-mismatched evidence is reported as `fetch_failed` with `provider: "cache"`.
 
 Trimmed real manifest example, generated from public build `1621192` with `--log-scope none --test-scope none --helix-scope none`:
 
@@ -665,9 +669,9 @@ Trimmed real manifest example, generated from public build `1621192` with `--log
 | `1` | Command/setup failure: invalid retry kind or delay, invalid policy values, running in eval mode, or snapshot export/validation failure. |
 | `2` | Manifest was written, but required collection is incomplete: required fetch failure, recorded provider failure, unallowed required skip, or incomplete evidence-plan details such as unresolved/truncated Helix failures. |
 
-**Retry behavior:** only `rate_limited`, `timeout`, and `transport_error` are retried by default. `--retry-count` is the total attempt count. `retryAfterSeconds` is honored for rate limits when present; otherwise retries use exponential backoff from `--retry-initial-delay` bounded by `--retry-max-delay` with small jitter. Non-retried acquisition kinds such as `not_found`, `access_denied`, and `invalid_response` become `recorded_failure` attempts.
+**Retry behavior:** only `rate_limited`, `timeout`, and `transport_error` are retried by default. `--retry-count` is the total attempt count. `retryAfterSeconds` is honored for rate limits when present, even beyond `--retry-max-delay`, with a 1-hour safety ceiling; otherwise retries use exponential backoff from `--retry-initial-delay` bounded by `--retry-max-delay` with small jitter. Non-retried acquisition kinds such as `not_found`, `access_denied`, and `invalid_response` become `recorded_failure` attempts.
 
-**Resume behavior:** `--resume` reads the existing manifest at the resolved manifest path. Prior `ok`/`cached` attempts are recorded as `cached` only if the referenced cache key still exists. Prior non-transient provider failures are preserved as `recorded_failure`. Prior transient failures are retried under the current retry policy. Policy changes are reflected in the newly written manifest.
+**Resume behavior:** `--resume` reads the existing manifest at the resolved manifest path. Prior `ok`/`cached` attempts are recorded as `cached` only if the referenced cache key still exists, and final cache verification still runs before export/manifest completion. Prior provider failures are reused as `recorded_failure` only when the matching negative-cache entry still exists and its kind is not selected by the current retry policy; otherwise they are refetched/retried. Policy changes are reflected in the newly written manifest.
 
 ## Snapshot Commands
 
@@ -713,6 +717,7 @@ Validate a snapshot directory for use with `HLX_EVAL_SNAPSHOT`. Checks:
 - Database integrity and schema version
 - Schema v2 acquisition-failure table and indexes
 - SQLite sidecar absence (`-wal`, `-shm`, `-journal` files)
+- Empty/corrupt NUL-prefixed raw AzDO log metadata rows
 - Artifact references and file sizes
 
 ```bash
@@ -895,7 +900,7 @@ When a direct build-log body is empty, hlx validates the logId against the build
 | `AZDO_TOKEN_TYPE` | Optional `AZDO_TOKEN` classification override. Use `pat` or `bearer` when live AzDO token auto-detection misclassifies the token. Snapshot replay does not require this variable. |
 | `HLX_EVAL_SNAPSHOT` | Path to a snapshot directory (created with `hlx snapshot export`) for offline replay mode. When set, hlx loads the snapshot's cached data instead of making live API calls. Overrides all cache configuration and auth. |
 | `HLX_EVAL_AZDO_PARTITION` | Optional eval-mode AzDO cache partition selector. Use `public` or `cache-xxxxxxxx` when a snapshot contains multiple AzDO partitions, or to override automatic single-partition/manifest selection. |
-| `HLX_CACHE_MAX_SIZE_MB` | Max cache size in MB (default: 1024, set to `0` to disable) |
+| `HLX_CACHE_MAX_SIZE_MB` | Max cache size in MB (default: 1024, set to `0` to disable). `hlx collect azdo-build` requires caching and rejects `0`. |
 | `HLX_DISABLE_FILE_SEARCH` | Set to `true` to disable file content search tools |
 | `HLX_API_KEY` | Require API key for HTTP MCP server access |
 

@@ -2938,6 +2938,34 @@ public class SnapshotValidatorTests : IDisposable
     }
 
     [Fact]
+    public async Task Validate_MarkerOnlyRawLogMetadata_IsIntegrityError_Gist6403762()
+    {
+        var workspace = Workspace("marker-only-raw-log");
+        var source = SnapshotTestHelper.CreateSource(
+            workspace,
+            metadataRows: 0,
+            artifactRows: 0,
+            useWal: false);
+        using (var connection = SnapshotTestHelper.OpenConnection(source.DatabasePath))
+        {
+            SnapshotTestHelper.InsertMetadata(
+                connection,
+                "azdo:dnceng-public:public:log:1:7",
+                "\0raw\n",
+                "azdo-log");
+        }
+
+        var result = await SnapshotValidator.ValidateAsync(source.Root);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(
+            result.Errors,
+            error => error.Contains("azdo:dnceng-public:public:log:1:7", StringComparison.Ordinal)
+                     && error.Contains("metadata", StringComparison.OrdinalIgnoreCase)
+                     && error.Contains("empty", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task Validate_PublishedSnapshot_WhileEvalModeStoreRemainsOpen_SucceedsWithNoWritesOrSidecars()
     {
         // Closes the gap between two facts that are each already true individually

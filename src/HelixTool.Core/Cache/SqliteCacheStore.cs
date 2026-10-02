@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HelixTool.Core.Acquisition;
@@ -20,6 +21,7 @@ public sealed class SqliteCacheStore : ICacheStore
     private const int ErrorAccessDenied = unchecked((int)0x80070005);
     private const int ArtifactFileRetryCount = 6;
     private const string EncodedNulMetadataPrefix = "hlx:nul-base64\n";
+    private const string EncodedMetadataV2Prefix = "hlx:b64:v2:";
 
     /// <summary>Bound on how long <see cref="Dispose"/> waits for startup maintenance to finish.</summary>
     private static readonly TimeSpan DisposeJoinTimeout = TimeSpan.FromSeconds(10);
@@ -115,7 +117,7 @@ public sealed class SqliteCacheStore : ICacheStore
         {
             cmd.Parameters.Clear();
             cmd.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=@t;";
-            cmd.Parameters.AddWithValue("@t", table);
+            AddTextParameter(cmd, "@t", table);
             var count = Convert.ToInt32(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
             if (count == 0)
                 throw new InvalidOperationException(
@@ -129,7 +131,7 @@ public sealed class SqliteCacheStore : ICacheStore
             {
                 cmd.Parameters.Clear();
                 cmd.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=@t;";
-                cmd.Parameters.AddWithValue("@t", table);
+                AddTextParameter(cmd, "@t", table);
                 var count = Convert.ToInt32(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
                 if (count == 0)
                     throw new InvalidOperationException(
@@ -220,13 +222,13 @@ public sealed class SqliteCacheStore : ICacheStore
         if (_options.EvalMode)
         {
             cmd.CommandText = "SELECT json_value FROM cache_metadata WHERE cache_key = @key;";
-            cmd.Parameters.AddWithValue("@key", cacheKey);
+            AddTextParameter(cmd, "@key", cacheKey);
         }
         else
         {
             cmd.CommandText = "SELECT json_value FROM cache_metadata WHERE cache_key = @key AND expires_at > @now;";
-            cmd.Parameters.AddWithValue("@key", cacheKey);
-            cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture));
+            AddTextParameter(cmd, "@key", cacheKey);
+            AddTextParameter(cmd, "@now", DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture));
         }
 
         var result = cmd.ExecuteScalar() as string;
@@ -250,16 +252,16 @@ public sealed class SqliteCacheStore : ICacheStore
             INSERT OR REPLACE INTO cache_metadata (cache_key, json_value, created_at, expires_at, job_id)
             VALUES (@key, @value, @created, @expires, @jobId);
             """;
-        cmd.Parameters.AddWithValue("@key", cacheKey);
-        cmd.Parameters.AddWithValue("@value", EncodeMetadataValue(jsonValue));
-        cmd.Parameters.AddWithValue("@created", now.ToString(Iso8601Format, CultureInfo.InvariantCulture));
-        cmd.Parameters.AddWithValue("@expires", (now + ttl).ToString(Iso8601Format, CultureInfo.InvariantCulture));
-        cmd.Parameters.AddWithValue("@jobId", jobId);
+        AddTextParameter(cmd, "@key", cacheKey);
+        AddTextParameter(cmd, "@value", EncodeMetadataValue(jsonValue));
+        AddTextParameter(cmd, "@created", now.ToString(Iso8601Format, CultureInfo.InvariantCulture));
+        AddTextParameter(cmd, "@expires", (now + ttl).ToString(Iso8601Format, CultureInfo.InvariantCulture));
+        AddTextParameter(cmd, "@jobId", jobId);
         cmd.ExecuteNonQuery();
 
         cmd.Parameters.Clear();
         cmd.CommandText = "DELETE FROM cache_acquisition_errors WHERE cache_key = @key;";
-        cmd.Parameters.AddWithValue("@key", cacheKey);
+        AddTextParameter(cmd, "@key", cacheKey);
         cmd.ExecuteNonQuery();
 
         tx.Commit();
@@ -268,21 +270,88 @@ public sealed class SqliteCacheStore : ICacheStore
 
     private static string EncodeMetadataValue(string value)
     {
-        if (value.IndexOf('\0') < 0)
+        if (value.IndexOf('\0') < 0 &&
+            !value.StartsWith(EncodedNulMetadataPrefix, StringComparison.Ordinal) &&
+            !value.StartsWith(EncodedMetadataV2Prefix, StringComparison.Ordinal))
+        {
             return value;
+        }
 
-        return EncodedNulMetadataPrefix + Convert.ToBase64String(Encoding.UTF8.GetBytes(value));
+        var bytes = Encoding.UTF8.GetBytes(value);
+        var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        return $"{EncodedMetadataV2Prefix}{bytes.Length}:{hash}\n{Convert.ToBase64String(bytes)}";
     }
 
-    private static string? DecodeMetadataValue(string? value)
+    internal static string? DecodeMetadataValue(string? value)
     {
         if (value is null)
             return null;
+        if (value.StartsWith(EncodedMetadataV2Prefix, StringComparison.Ordinal))
+        {
+            return DecodeV2MetadataValue(value) ?? value;
+        }
+
         if (!value.StartsWith(EncodedNulMetadataPrefix, StringComparison.Ordinal))
             return value;
 
         var payload = value[EncodedNulMetadataPrefix.Length..];
-        return Encoding.UTF8.GetString(Convert.FromBase64String(payload));
+        try
+        {
+            var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(payload));
+            return decoded.IndexOf('\0') >= 0 ||
+                   decoded.StartsWith(EncodedNulMetadataPrefix, StringComparison.Ordinal) ||
+                   decoded.StartsWith(EncodedMetadataV2Prefix, StringComparison.Ordinal)
+                ? decoded
+                : value;
+        }
+        catch (FormatException)
+        {
+            return value;
+        }
+    }
+
+    private static string? DecodeV2MetadataValue(string value)
+    {
+        var newline = value.IndexOf('\n', EncodedMetadataV2Prefix.Length);
+        if (newline < 0)
+            return null;
+
+        var header = value[EncodedMetadataV2Prefix.Length..newline];
+        var parts = header.Split(':');
+        if (parts.Length != 2 ||
+            !int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var expectedLength) ||
+            expectedLength < 0 ||
+            parts[1].Length != 64)
+        {
+            return null;
+        }
+
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromBase64String(value[(newline + 1)..]);
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+
+        if (bytes.Length != expectedLength)
+            return null;
+
+        var actualHash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        if (!string.Equals(actualHash, parts[1], StringComparison.Ordinal))
+            return null;
+
+        return Encoding.UTF8.GetString(bytes);
+    }
+
+    private static void AddTextParameter(SqliteCommand command, string name, string? value)
+    {
+        if (value is not null && value.IndexOf('\0') >= 0)
+            throw new ArgumentException($"SQLite TEXT parameter '{name}' contains a NUL character and must be encoded before binding.", nameof(value));
+
+        command.Parameters.AddWithValue(name, value is null ? DBNull.Value : value);
     }
 
     public async Task<Stream?> GetArtifactAsync(string cacheKey, CancellationToken ct = default)
@@ -291,7 +360,7 @@ public sealed class SqliteCacheStore : ICacheStore
         using var conn = OpenConnection();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT file_path FROM cache_artifacts WHERE cache_key = @key;";
-        cmd.Parameters.AddWithValue("@key", cacheKey);
+        AddTextParameter(cmd, "@key", cacheKey);
 
         var relPath = cmd.ExecuteScalar() as string;
         if (relPath == null) return null;
@@ -304,8 +373,8 @@ public sealed class SqliteCacheStore : ICacheStore
         {
             using var upd = conn.CreateCommand();
             upd.CommandText = "UPDATE cache_artifacts SET last_accessed = @now WHERE cache_key = @key;";
-            upd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture));
-            upd.Parameters.AddWithValue("@key", cacheKey);
+            AddTextParameter(upd, "@now", DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture));
+            AddTextParameter(upd, "@key", cacheKey);
             upd.ExecuteNonQuery();
         }
 
@@ -328,7 +397,7 @@ public sealed class SqliteCacheStore : ICacheStore
         {
             using var del = conn.CreateCommand();
             del.CommandText = "DELETE FROM cache_artifacts WHERE cache_key = @key;";
-            del.Parameters.AddWithValue("@key", cacheKey);
+            AddTextParameter(del, "@key", cacheKey);
             del.ExecuteNonQuery();
         }
         return null;
@@ -406,17 +475,17 @@ public sealed class SqliteCacheStore : ICacheStore
             INSERT OR REPLACE INTO cache_artifacts (cache_key, file_path, file_size, created_at, last_accessed, job_id)
             VALUES (@key, @path, @size, @created, @accessed, @jobId);
             """;
-        cmd.Parameters.AddWithValue("@key", cacheKey);
-        cmd.Parameters.AddWithValue("@path", relPath);
+        AddTextParameter(cmd, "@key", cacheKey);
+        AddTextParameter(cmd, "@path", relPath);
         cmd.Parameters.AddWithValue("@size", fileSize);
-        cmd.Parameters.AddWithValue("@created", now.ToString(Iso8601Format, CultureInfo.InvariantCulture));
-        cmd.Parameters.AddWithValue("@accessed", now.ToString(Iso8601Format, CultureInfo.InvariantCulture));
-        cmd.Parameters.AddWithValue("@jobId", jobId);
+        AddTextParameter(cmd, "@created", now.ToString(Iso8601Format, CultureInfo.InvariantCulture));
+        AddTextParameter(cmd, "@accessed", now.ToString(Iso8601Format, CultureInfo.InvariantCulture));
+        AddTextParameter(cmd, "@jobId", jobId);
         cmd.ExecuteNonQuery();
 
         cmd.Parameters.Clear();
         cmd.CommandText = "DELETE FROM cache_acquisition_errors WHERE cache_key = @key;";
-        cmd.Parameters.AddWithValue("@key", cacheKey);
+        AddTextParameter(cmd, "@key", cacheKey);
         cmd.ExecuteNonQuery();
 
         tx.Commit();
@@ -439,7 +508,7 @@ public sealed class SqliteCacheStore : ICacheStore
                     FROM cache_acquisition_errors
                     WHERE cache_key = @key;
                     """;
-                cmd.Parameters.AddWithValue("@key", cacheKey);
+                AddTextParameter(cmd, "@key", cacheKey);
             }
             else
             {
@@ -448,8 +517,8 @@ public sealed class SqliteCacheStore : ICacheStore
                     FROM cache_acquisition_errors
                     WHERE cache_key = @key AND expires_at > @now;
                     """;
-                cmd.Parameters.AddWithValue("@key", cacheKey);
-                cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture));
+                AddTextParameter(cmd, "@key", cacheKey);
+                AddTextParameter(cmd, "@now", DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture));
             }
 
             using var reader = cmd.ExecuteReader();
@@ -505,24 +574,24 @@ public sealed class SqliteCacheStore : ICacheStore
             VALUES
                 (@key, @json, @kind, @provider, @operation, @recorded, @expires, @jobId);
             """;
-        cmd.Parameters.AddWithValue("@key", cacheKey);
-        cmd.Parameters.AddWithValue("@json", JsonSerializer.Serialize(storedError, AcquisitionJsonOptions.Default));
-        cmd.Parameters.AddWithValue("@kind", KindWireName(storedError.Kind));
-        cmd.Parameters.AddWithValue("@provider", storedError.Provider);
-        cmd.Parameters.AddWithValue("@operation", storedError.Operation);
-        cmd.Parameters.AddWithValue("@recorded", now.ToString(Iso8601Format, CultureInfo.InvariantCulture));
-        cmd.Parameters.AddWithValue("@expires", (now + ttl).ToString(Iso8601Format, CultureInfo.InvariantCulture));
-        cmd.Parameters.AddWithValue("@jobId", jobId);
+        AddTextParameter(cmd, "@key", cacheKey);
+        AddTextParameter(cmd, "@json", JsonSerializer.Serialize(storedError, AcquisitionJsonOptions.Default));
+        AddTextParameter(cmd, "@kind", KindWireName(storedError.Kind));
+        AddTextParameter(cmd, "@provider", storedError.Provider);
+        AddTextParameter(cmd, "@operation", storedError.Operation);
+        AddTextParameter(cmd, "@recorded", now.ToString(Iso8601Format, CultureInfo.InvariantCulture));
+        AddTextParameter(cmd, "@expires", (now + ttl).ToString(Iso8601Format, CultureInfo.InvariantCulture));
+        AddTextParameter(cmd, "@jobId", jobId);
         cmd.ExecuteNonQuery();
 
         cmd.Parameters.Clear();
         cmd.CommandText = "DELETE FROM cache_metadata WHERE cache_key = @key;";
-        cmd.Parameters.AddWithValue("@key", cacheKey);
+        AddTextParameter(cmd, "@key", cacheKey);
         cmd.ExecuteNonQuery();
 
         cmd.Parameters.Clear();
         cmd.CommandText = "SELECT file_path FROM cache_artifacts WHERE cache_key = @key;";
-        cmd.Parameters.AddWithValue("@key", cacheKey);
+        AddTextParameter(cmd, "@key", cacheKey);
         var artifactPath = cmd.ExecuteScalar() as string;
         if (artifactPath is not null)
         {
@@ -530,7 +599,7 @@ public sealed class SqliteCacheStore : ICacheStore
 
             cmd.Parameters.Clear();
             cmd.CommandText = "DELETE FROM cache_artifacts WHERE cache_key = @key;";
-            cmd.Parameters.AddWithValue("@key", cacheKey);
+            AddTextParameter(cmd, "@key", cacheKey);
             cmd.ExecuteNonQuery();
         }
 
@@ -546,7 +615,7 @@ public sealed class SqliteCacheStore : ICacheStore
         using var conn = OpenConnection();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "DELETE FROM cache_acquisition_errors WHERE cache_key = @key;";
-        cmd.Parameters.AddWithValue("@key", cacheKey);
+        AddTextParameter(cmd, "@key", cacheKey);
         cmd.ExecuteNonQuery();
 
         return Task.CompletedTask;
@@ -597,13 +666,13 @@ public sealed class SqliteCacheStore : ICacheStore
         if (_options.EvalMode)
         {
             cmd.CommandText = "SELECT is_completed FROM cache_job_state WHERE job_id = @jobId;";
-            cmd.Parameters.AddWithValue("@jobId", jobId);
+            AddTextParameter(cmd, "@jobId", jobId);
         }
         else
         {
             cmd.CommandText = "SELECT is_completed FROM cache_job_state WHERE job_id = @jobId AND expires_at > @now;";
-            cmd.Parameters.AddWithValue("@jobId", jobId);
-            cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture));
+            AddTextParameter(cmd, "@jobId", jobId);
+            AddTextParameter(cmd, "@now", DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture));
         }
 
         var result = cmd.ExecuteScalar();
@@ -624,11 +693,11 @@ public sealed class SqliteCacheStore : ICacheStore
             INSERT OR REPLACE INTO cache_job_state (job_id, is_completed, finished_at, cached_at, expires_at)
             VALUES (@jobId, @completed, @finished, @cached, @expires);
             """;
-        cmd.Parameters.AddWithValue("@jobId", jobId);
+        AddTextParameter(cmd, "@jobId", jobId);
         cmd.Parameters.AddWithValue("@completed", completed ? 1 : 0);
-        cmd.Parameters.AddWithValue("@finished", completed ? now.ToString(Iso8601Format, CultureInfo.InvariantCulture) : (object)DBNull.Value);
-        cmd.Parameters.AddWithValue("@cached", now.ToString(Iso8601Format, CultureInfo.InvariantCulture));
-        cmd.Parameters.AddWithValue("@expires", (now + ttl).ToString(Iso8601Format, CultureInfo.InvariantCulture));
+        AddTextParameter(cmd, "@finished", completed ? now.ToString(Iso8601Format, CultureInfo.InvariantCulture) : null);
+        AddTextParameter(cmd, "@cached", now.ToString(Iso8601Format, CultureInfo.InvariantCulture));
+        AddTextParameter(cmd, "@expires", (now + ttl).ToString(Iso8601Format, CultureInfo.InvariantCulture));
         cmd.ExecuteNonQuery();
 
         return Task.CompletedTask;
@@ -750,7 +819,7 @@ public sealed class SqliteCacheStore : ICacheStore
         using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = "DELETE FROM cache_metadata WHERE expires_at < @now;";
-            cmd.Parameters.AddWithValue("@now", now);
+            AddTextParameter(cmd, "@now", now);
             cmd.ExecuteNonQuery();
         }
 
@@ -759,7 +828,7 @@ public sealed class SqliteCacheStore : ICacheStore
         using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = "DELETE FROM cache_job_state WHERE expires_at < @now;";
-            cmd.Parameters.AddWithValue("@now", now);
+            AddTextParameter(cmd, "@now", now);
             cmd.ExecuteNonQuery();
         }
 
@@ -768,7 +837,7 @@ public sealed class SqliteCacheStore : ICacheStore
         using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = "DELETE FROM cache_acquisition_errors WHERE expires_at < @now;";
-            cmd.Parameters.AddWithValue("@now", now);
+            AddTextParameter(cmd, "@now", now);
             cmd.ExecuteNonQuery();
         }
 
@@ -778,7 +847,7 @@ public sealed class SqliteCacheStore : ICacheStore
         using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = "SELECT cache_key, file_path FROM cache_artifacts WHERE last_accessed < @cutoff;";
-            cmd.Parameters.AddWithValue("@cutoff", cutoff);
+            AddTextParameter(cmd, "@cutoff", cutoff);
             using var reader = cmd.ExecuteReader();
 
             toDelete = new List<(string Key, string Path)>();
@@ -841,7 +910,7 @@ public sealed class SqliteCacheStore : ICacheStore
             // Delete row
             using var del = conn.CreateCommand();
             del.CommandText = "DELETE FROM cache_artifacts WHERE cache_key = @key;";
-            del.Parameters.AddWithValue("@key", key);
+            AddTextParameter(del, "@key", key);
             del.ExecuteNonQuery();
         }
     }

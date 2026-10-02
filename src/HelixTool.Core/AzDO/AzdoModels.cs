@@ -276,7 +276,7 @@ public sealed record AzdoIssue
 public sealed record AzdoBuildChange
 {
     [JsonPropertyName("id")]
-    public string? Id { get; init; }
+    public string Id { get; init; } = "";
 
     [JsonPropertyName("message")]
     public string? Message { get; init; }

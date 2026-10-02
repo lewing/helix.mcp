@@ -8,6 +8,15 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+### **Fixed — cache data loss**
+
+- **SQLite NUL metadata encoding:** On v0.10.3 and earlier, cached values containing NUL characters could be stored as zero bytes by the SQLite metadata path. The main known impact was raw AzDO build logs around 6 KB and larger: they are cached as plain text with a NUL-prefixed `\0raw\n` marker, so live calls usually hid the issue by refetching, but offline/eval snapshots could replay empty logs while still validating. Metadata values containing NULs are now encoded losslessly before storage and decoded on read; empty raw-log rows are treated as corrupt (`cache/invalid_response` in eval/offline mode, refetched in live mode), and `hlx snapshot validate` flags empty/corrupt raw AzDO log metadata rows. Clear affected local caches with `hlx cache clear` and re-collect any snapshots produced by v0.10.3 or earlier. Reported by PureWeen (gist).
+
+### Fixed
+
+- **Paging correctness:** AzDO list fetches now follow continuation tokens across all provider pages, fail closed on repeated continuation tokens/URLs or more than 1000 pages, and CLI JSON list envelopes report `cache.key` as the backing complete-list cache key used for replay (the same value as `cache.completeKey`).
+- **Collector robustness:** `hlx collect azdo-build` now uses thread-safe manifest attempt appends, verifies cached evidence before marking resumed entries complete, retries selected Helix file downloads within byte budgets, honors provider `Retry-After` beyond `--retry-max-delay` up to a 1-hour safety ceiling, rejects disabled caching (`HLX_CACHE_MAX_SIZE_MB=0`), redacts credentials/query/fragment data from recorded argv URLs, lets `--test-scope all` also populate failed-result replay keys for default offline callers, and detects snapshot AzDO cache partitions without credentials.
+
 ### `hlx collect azdo-build` scanner snapshots
 
 - **One-command snapshot collection:** Added `hlx collect azdo-build <build-id-or-url>` to collect deterministic AzDO/Helix evidence into the hlx cache, optionally export a replayable snapshot, and write a versioned manifest at `manifest/hlx-collect-manifest.json` inside exported snapshots.

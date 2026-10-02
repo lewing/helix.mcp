@@ -69,7 +69,7 @@ public sealed record HlxNextPage(
     [property: JsonPropertyName("offset")] int Offset,
     [property: JsonPropertyName("limit")] int Limit);
 
-/// <summary>Cache keys relevant to a paged CLI result.</summary>
+/// <summary>Cache keys relevant to a paged CLI result. <see cref="Key"/> is the actual backing cache entry used to serve the response.</summary>
 public sealed record HlxCacheProvenance
 {
     [JsonPropertyName("key")]

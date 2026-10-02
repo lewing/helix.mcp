@@ -18,6 +18,9 @@ public sealed class AzdoBuildCollector
         WriteIndented = true,
         Converters = { new AcquisitionErrorKindJsonConverter() }
     };
+    private static readonly TimeSpan RecordedFailureTtl = TimeSpan.FromHours(4);
+    private static readonly TimeSpan TestMetadataTtl = TimeSpan.FromHours(1);
+    private static readonly TimeSpan RetryAfterSafetyCeiling = TimeSpan.FromHours(1);
 
     private readonly AzdoService _azdoService;
     private readonly IAzdoApiClient _azdoClient;
@@ -55,6 +58,13 @@ public sealed class AzdoBuildCollector
     {
         ArgumentNullException.ThrowIfNull(policy);
         ValidatePolicy(policy);
+        if (_cacheOptions.MaxSizeBytes <= 0)
+        {
+            throw new InvalidOperationException(
+                "Collection requires caching, but caching is disabled (HLX_CACHE_MAX_SIZE_MB=0). " +
+                "Use a positive cache size and an isolated --cache-dir before running collect.");
+        }
+        await ResolveAzdoAuthContextAsync(ct);
 
         var startedAt = DateTimeOffset.UtcNow;
         var manifestPath = ResolveManifestPath(policy);
@@ -186,6 +196,12 @@ public sealed class AzdoBuildCollector
             await CollectHelixSuggestedFetchesAsync(attempts, priorAttempts, policy, evidencePlan, ct);
         }
 
+        attempts = await VerifyCollectedEvidenceAsync(attempts, ct);
+        attempts = attempts.OrderBy(a => a.Phase, StringComparer.Ordinal)
+            .ThenBy(a => a.ParentId, StringComparer.Ordinal)
+            .ThenBy(a => a.Id, StringComparer.Ordinal)
+            .ToList();
+
         var requiredAttempts = attempts.Where(a => a.Required).ToList();
         foreach (var attempt in requiredAttempts)
         {
@@ -193,7 +209,10 @@ public sealed class AzdoBuildCollector
             {
                 incomplete.Add(new CollectIncompleteDetail
                 {
-                    Code = "fetch_failed",
+                    Code = attempt.Error?.Kind == AcquisitionErrorKind.NotInSnapshot &&
+                           IsArtifactOperation(attempt.Operation)
+                        ? "artifact_missing"
+                        : "fetch_failed",
                     Message = attempt.Error?.Message ?? $"{attempt.Operation} failed.",
                     Operation = attempt.Operation,
                     Resource = attempt.Resource
@@ -354,11 +373,29 @@ public sealed class AzdoBuildCollector
             offset += currentPlan.HelixFailures.Count;
             if (currentPlan.HelixFailures.Count == 0 || allHelixFailures.Count >= currentPlan.HelixFailureTotal)
             {
+                var mergedDetails = currentPlan.IncompleteDetails
+                    .Where(detail => !string.Equals(detail.Code, "helix_failures_truncated", StringComparison.Ordinal))
+                    .ToList();
+                var mergedReasons = currentPlan.IncompleteReasons
+                    .Where(reason => !reason.Contains("Helix failure", StringComparison.OrdinalIgnoreCase) ||
+                                     !reason.Contains("truncated", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
                 merged = currentPlan with
                 {
                     HelixFailures = allHelixFailures,
                     HelixFailureOffset = 0,
-                    HelixFailuresTruncated = allHelixFailures.Count < currentPlan.HelixFailureTotal
+                    HelixFailuresTruncated = allHelixFailures.Count < currentPlan.HelixFailureTotal,
+                    IncompleteDetails = allHelixFailures.Count >= currentPlan.HelixFailureTotal
+                        ? mergedDetails
+                        : currentPlan.IncompleteDetails,
+                    IncompleteReasons = allHelixFailures.Count >= currentPlan.HelixFailureTotal
+                        ? mergedReasons
+                        : currentPlan.IncompleteReasons,
+                    Complete = allHelixFailures.Count >= currentPlan.HelixFailureTotal &&
+                               mergedDetails.Count == 0 &&
+                               mergedReasons.Count == 0
+                        ? true
+                        : currentPlan.Complete
                 };
                 break;
             }
@@ -399,10 +436,10 @@ public sealed class AzdoBuildCollector
         }
 
         var selectedLogIds = SelectLogIds(policy.LogScope, timeline, logsList, evidencePlan);
-        await ForEachAsync(selectedLogIds, policy.MaxConcurrency, async logId =>
+        var logAttempts = await ForEachCollectAsync(selectedLogIds, policy.MaxConcurrency, async (logId, localAttempts) =>
         {
             await RunAsync(
-                attempts,
+                localAttempts,
                 priorAttempts,
                 CreateAttempt($"azdo.log:{buildId}:{logId}", "azdo.logs", true, "azdo", "get_build_log",
                     Resource(("org", org), ("project", project), ("buildId", buildId), ("logId", logId)),
@@ -412,6 +449,7 @@ public sealed class AzdoBuildCollector
                 metadata: true,
                 ct);
         }, ct);
+        attempts.AddRange(logAttempts);
     }
 
     private async Task CollectTestsAsync(
@@ -452,10 +490,10 @@ public sealed class AzdoBuildCollector
             ? "Passed,Failed,NotExecuted,Inconclusive,Timeout,Aborted,Error,NotRunnable,NotApplicable"
             : "Failed";
 
-        await ForEachAsync(runsEnvelope.Results, policy.MaxConcurrency, async run =>
+        var testAttempts = await ForEachCollectAsync(runsEnvelope.Results, policy.MaxConcurrency, async (run, localAttempts) =>
         {
             var resultsEnvelope = await RunAsync(
-                attempts,
+                localAttempts,
                 priorAttempts,
                 CreateAttempt($"azdo.test-results:{run.Id}:{outcomes}", "azdo.tests", true, "azdo", "list_test_results",
                     Resource(("org", org), ("project", project), ("runId", run.Id), ("outcomes", outcomes)),
@@ -474,10 +512,22 @@ public sealed class AzdoBuildCollector
             if (resultsEnvelope is null)
                 return;
 
+            if (policy.TestScope.Equals("all", StringComparison.OrdinalIgnoreCase))
+            {
+                var failedResults = resultsEnvelope.Results
+                    .Where(result => string.Equals(result.Outcome, "Failed", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                await _cacheStore.SetMetadataAsync(
+                    AzdoListCacheKeys.TestResultsComplete(_cacheOptions, org, project, run.Id, "Failed"),
+                    JsonSerializer.Serialize(failedResults, s_jsonOptions),
+                    TestMetadataTtl,
+                    ct);
+            }
+
             foreach (var result in resultsEnvelope.Results)
             {
                 await RunAsync(
-                    attempts,
+                    localAttempts,
                     priorAttempts,
                     CreateAttempt($"azdo.test-attachments:{run.Id}:{result.Id}", "azdo.tests", false, "azdo", "list_test_attachments",
                         Resource(("org", org), ("project", project), ("runId", run.Id), ("resultId", result.Id)),
@@ -495,6 +545,7 @@ public sealed class AzdoBuildCollector
                     pagingSelector: value => value is HlxListEnvelope<AzdoTestAttachment> envelope ? PagingFromEnvelope(envelope) : null);
             }
         }, ct);
+        attempts.AddRange(testAttempts);
     }
 
     private async Task CollectHelixSuggestedFetchesAsync(
@@ -512,14 +563,11 @@ public sealed class AzdoBuildCollector
         }
 
         var fetches = evidencePlan.HelixFailures
-            .SelectMany(failure => failure.SuggestedFetches)
-            .Where(fetch => !string.IsNullOrWhiteSpace(fetch.WorkItem))
-            .GroupBy(fetch => $"{fetch.Tool}:{fetch.HelixJobId}:{fetch.WorkItem}", StringComparer.Ordinal)
-            .Select(group => group.First())
+            .SelectMany(DefaultHelixFetches)
             .ToList();
         var downloadBudget = new HelixFileDownloadBudget(policy.MaxTotalBytes);
 
-        await ForEachAsync(fetches, policy.MaxConcurrency, async fetch =>
+        var helixAttempts = await ForEachCollectAsync(fetches, policy.MaxConcurrency, async (fetch, localAttempts) =>
         {
             var jobId = HelixIdResolver.ResolveJobId(fetch.HelixJobId);
             var workItem = fetch.WorkItem!;
@@ -527,7 +575,7 @@ public sealed class AzdoBuildCollector
             {
                 case "helix_work_item":
                     await RunAsync(
-                        attempts,
+                        localAttempts,
                         priorAttempts,
                         CreateAttempt($"helix.work-item:{jobId}:{workItem}", "helix.suggested", true, "helix", "get_helix_work_item",
                             Resource(("jobId", jobId), ("workItem", workItem)),
@@ -539,7 +587,7 @@ public sealed class AzdoBuildCollector
                     break;
                 case "helix_logs":
                     await RunAsync(
-                        attempts,
+                        localAttempts,
                         priorAttempts,
                         CreateAttempt($"helix.logs:{jobId}:{workItem}", "helix.suggested", true, "helix", "get_helix_console_log",
                             Resource(("jobId", jobId), ("workItem", workItem)),
@@ -551,7 +599,7 @@ public sealed class AzdoBuildCollector
                     break;
                 case "helix_files":
                     var files = await RunAsync(
-                        attempts,
+                        localAttempts,
                         priorAttempts,
                         CreateAttempt($"helix.files:{jobId}:{workItem}", "helix.suggested", true, "helix", "list_helix_work_item_files",
                             Resource(("jobId", jobId), ("workItem", workItem)),
@@ -560,14 +608,16 @@ public sealed class AzdoBuildCollector
                         async token => await _helixService.GetWorkItemFilesAsync(jobId, workItem, token),
                         metadata: true,
                         ct);
-                    await CollectSelectedHelixFilesAsync(attempts, policy, downloadBudget, jobId, workItem, files ?? [], ct);
+                    await CollectSelectedHelixFilesAsync(localAttempts, priorAttempts, policy, downloadBudget, jobId, workItem, files ?? [], ct);
                     break;
             }
         }, ct);
+        attempts.AddRange(helixAttempts);
     }
 
     private async Task CollectSelectedHelixFilesAsync(
         List<CollectFetchAttempt> attempts,
+        IReadOnlyDictionary<string, CollectFetchAttempt> priorAttempts,
         CollectPolicy policy,
         HelixFileDownloadBudget downloadBudget,
         string jobId,
@@ -594,6 +644,7 @@ public sealed class AzdoBuildCollector
 
             await DownloadHelixFileWithCapsAsync(
                 attempts,
+                priorAttempts,
                 policy,
                 downloadBudget,
                 attemptId,
@@ -608,6 +659,7 @@ public sealed class AzdoBuildCollector
 
     private async Task DownloadHelixFileWithCapsAsync(
         List<CollectFetchAttempt> attempts,
+        IReadOnlyDictionary<string, CollectFetchAttempt> priorAttempts,
         CollectPolicy policy,
         HelixFileDownloadBudget downloadBudget,
         string attemptId,
@@ -620,121 +672,243 @@ public sealed class AzdoBuildCollector
     {
         var started = DateTimeOffset.UtcNow;
         var stopwatch = Stopwatch.StartNew();
-        var tempPath = Path.Combine(Path.GetTempPath(), $"hlx-collect-{Guid.NewGuid():N}.tmp");
-        try
+        if (policy.Resume &&
+            priorAttempts.TryGetValue(attemptId, out var prior) &&
+            string.Equals(prior.CacheKey, cacheKey, StringComparison.Ordinal) &&
+            prior.Outcome is "ok" or "cached")
         {
-            await using var source = await OpenUncachedHelixFileAsync(fileName, workItem, jobId, ct);
-            await using (var destination = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
-            using (var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+            await using var cached = await _cacheStore.GetArtifactAsync(cacheKey, ct);
+            if (cached is not null)
             {
-                var buffer = new byte[64 * 1024];
-                long bytes = 0;
-                while (true)
-                {
-                    var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
-                    if (read == 0)
-                        break;
-
-                    bytes += read;
-                    if (bytes > policy.MaxFileBytes)
-                    {
-                        stopwatch.Stop();
-                        attempts.Add(SkipAttempt(
-                            attemptId,
-                            "helix_files",
-                            false,
-                            "helix",
-                            "download_helix_file",
-                            resource,
-                            cacheKey,
-                            started,
-                            stopwatch.ElapsedMilliseconds,
-                            "size_limit",
-                            $"Helix uploaded file '{fileName}' exceeded --max-file-bytes {policy.MaxFileBytes}."));
-                        return;
-                    }
-
-                    await destination.WriteAsync(buffer.AsMemory(0, read), ct);
-                    hash.AppendData(buffer.AsSpan(0, read));
-                }
-
-                if (!downloadBudget.TryReserve(bytes))
+                var cachedBytes = prior.Bytes ?? (cached.CanSeek ? cached.Length : 0);
+                if (cachedBytes <= policy.MaxFileBytes && downloadBudget.TryConsume(cachedBytes))
                 {
                     stopwatch.Stop();
-                    attempts.Add(SkipAttempt(
-                        attemptId,
-                        "helix_files",
-                        false,
-                        "helix",
-                        "download_helix_file",
-                        resource,
-                        cacheKey,
-                        started,
-                        stopwatch.ElapsedMilliseconds,
-                        "total_size_limit",
-                        $"Helix uploaded file '{fileName}' would exceed --max-total-bytes {policy.MaxTotalBytes}."));
+                    AppendAttempt(attempts, prior with
+                    {
+                        Outcome = "cached",
+                        StartedAt = started,
+                        FinishedAt = DateTimeOffset.UtcNow,
+                        DurationMs = stopwatch.ElapsedMilliseconds,
+                        Bytes = cachedBytes
+                    });
                     return;
                 }
 
-                destination.Position = 0;
-                await _cacheStore.SetArtifactAsync(cacheKey, destination, ct);
                 stopwatch.Stop();
-                attempts.Add(new CollectFetchAttempt
-                {
-                    Id = attemptId,
-                    Phase = "helix_files",
-                    Required = false,
-                    Provider = "helix",
-                    Operation = "download_helix_file",
-                    Resource = resource,
-                    CacheKey = cacheKey,
-                    CompleteCacheKey = cacheKey,
-                    StartedAt = started,
-                    FinishedAt = DateTimeOffset.UtcNow,
-                    DurationMs = stopwatch.ElapsedMilliseconds,
-                    AttemptCount = 1,
-                    Outcome = "ok",
-                    Bytes = bytes,
-                    Sha256 = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant()
-                });
+                AppendAttempt(attempts, SkipAttempt(
+                    attemptId,
+                    "helix_files",
+                    false,
+                    "helix",
+                    "download_helix_file",
+                    resource,
+                    cacheKey,
+                    started,
+                    stopwatch.ElapsedMilliseconds,
+                    cachedBytes > policy.MaxFileBytes ? "size_limit" : "total_size_limit",
+                    cachedBytes > policy.MaxFileBytes
+                        ? $"Cached Helix uploaded file '{fileName}' exceeds --max-file-bytes {policy.MaxFileBytes}."
+                        : $"Cached Helix uploaded file '{fileName}' would exceed --max-total-bytes {policy.MaxTotalBytes}."));
+                return;
             }
         }
-        catch (HlxAcquisitionException ex)
+
+        if (policy.MaxFileBytes == 0)
         {
             stopwatch.Stop();
-            attempts.Add(new CollectFetchAttempt
-            {
-                Id = attemptId,
-                Phase = "helix_files",
-                Required = false,
-                Provider = "helix",
-                Operation = "download_helix_file",
-                Resource = resource,
-                CacheKey = cacheKey,
-                CompleteCacheKey = cacheKey,
-                StartedAt = started,
-                FinishedAt = DateTimeOffset.UtcNow,
-                DurationMs = stopwatch.ElapsedMilliseconds,
-                AttemptCount = 1,
-                Outcome = policy.RetryKinds.Contains(ex.Error.Kind) ? "failed" : "recorded_failure",
-                Error = ex.Error
-            });
+            AppendAttempt(attempts, SkipAttempt(
+                attemptId,
+                "helix_files",
+                false,
+                "helix",
+                "download_helix_file",
+                resource,
+                cacheKey,
+                started,
+                stopwatch.ElapsedMilliseconds,
+                "size_limit",
+                $"Helix uploaded file '{fileName}' was not opened because --max-file-bytes is 0."));
+            return;
         }
-        finally
+
+        if (downloadBudget.Remaining <= 0)
         {
-            try { File.Delete(tempPath); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            stopwatch.Stop();
+            AppendAttempt(attempts, SkipAttempt(
+                attemptId,
+                "helix_files",
+                false,
+                "helix",
+                "download_helix_file",
+                resource,
+                cacheKey,
+                started,
+                stopwatch.ElapsedMilliseconds,
+                "total_size_limit",
+                $"Helix uploaded file '{fileName}' was not opened because --max-total-bytes is exhausted."));
+            return;
         }
+
+        var attemptCount = 0;
+        HlxAcquisitionException? acquisitionFailure = null;
+        while (attemptCount < policy.RetryCount)
+        {
+            attemptCount++;
+            var tempPath = Path.Combine(Path.GetTempPath(), $"hlx-collect-{Guid.NewGuid():N}.tmp");
+            long reservedBytes = 0;
+            try
+            {
+                await using var source = await OpenUncachedHelixFileAsync(fileName, workItem, jobId, ct);
+                await using (var destination = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
+                using (var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+                {
+                    var buffer = new byte[64 * 1024];
+                    long bytes = 0;
+                    while (true)
+                    {
+                        var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
+                        if (read == 0)
+                            break;
+
+                        if (bytes + read > policy.MaxFileBytes)
+                        {
+                            downloadBudget.Release(reservedBytes);
+                            stopwatch.Stop();
+                            AppendAttempt(attempts, SkipAttempt(
+                                attemptId,
+                                "helix_files",
+                                false,
+                                "helix",
+                                "download_helix_file",
+                                resource,
+                                cacheKey,
+                                started,
+                                stopwatch.ElapsedMilliseconds,
+                                "size_limit",
+                                $"Helix uploaded file '{fileName}' exceeded --max-file-bytes {policy.MaxFileBytes}."));
+                            return;
+                        }
+
+                        if (!downloadBudget.TryConsume(read))
+                        {
+                            downloadBudget.Release(reservedBytes);
+                            stopwatch.Stop();
+                            AppendAttempt(attempts, SkipAttempt(
+                                attemptId,
+                                "helix_files",
+                                false,
+                                "helix",
+                                "download_helix_file",
+                                resource,
+                                cacheKey,
+                                started,
+                                stopwatch.ElapsedMilliseconds,
+                                "total_size_limit",
+                                $"Helix uploaded file '{fileName}' would exceed --max-total-bytes {policy.MaxTotalBytes}."));
+                            return;
+                        }
+
+                        reservedBytes += read;
+                        bytes += read;
+                        await destination.WriteAsync(buffer.AsMemory(0, read), ct);
+                        hash.AppendData(buffer.AsSpan(0, read));
+                    }
+
+                    destination.Position = 0;
+                    await _cacheStore.SetArtifactAsync(cacheKey, destination, ct);
+                    stopwatch.Stop();
+                    AppendAttempt(attempts, new CollectFetchAttempt
+                    {
+                        Id = attemptId,
+                        Phase = "helix_files",
+                        Required = false,
+                        Provider = "helix",
+                        Operation = "download_helix_file",
+                        Resource = resource,
+                        CacheKey = cacheKey,
+                        CompleteCacheKey = cacheKey,
+                        StartedAt = started,
+                        FinishedAt = DateTimeOffset.UtcNow,
+                        DurationMs = stopwatch.ElapsedMilliseconds,
+                        AttemptCount = attemptCount,
+                        Outcome = "ok",
+                        Bytes = bytes,
+                        Sha256 = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant()
+                    });
+                    return;
+                }
+            }
+            catch (HlxAcquisitionException ex) when (attemptCount < policy.RetryCount && policy.RetryKinds.Contains(ex.Error.Kind))
+            {
+                downloadBudget.Release(reservedBytes);
+                acquisitionFailure = ex;
+                await Task.Delay(GetRetryDelay(policy, ex.Error, attemptCount), ct);
+            }
+            catch (HlxAcquisitionException ex)
+            {
+                downloadBudget.Release(reservedBytes);
+                acquisitionFailure = ex;
+                break;
+            }
+            finally
+            {
+                try { File.Delete(tempPath); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            }
+        }
+
+        stopwatch.Stop();
+        var error = acquisitionFailure?.Error;
+        var recorded = error is not null && await TryRecordAcquisitionFailureAsync(cacheKey, error, ct);
+        AppendAttempt(attempts, new CollectFetchAttempt
+        {
+            Id = attemptId,
+            Phase = "helix_files",
+            Required = false,
+            Provider = "helix",
+            Operation = "download_helix_file",
+            Resource = resource,
+            CacheKey = cacheKey,
+            CompleteCacheKey = cacheKey,
+            StartedAt = started,
+            FinishedAt = DateTimeOffset.UtcNow,
+            DurationMs = stopwatch.ElapsedMilliseconds,
+            AttemptCount = attemptCount,
+            Outcome = recorded ? "recorded_failure" : "failed",
+            Error = error
+        });
     }
 
-    private Task<Stream> OpenUncachedHelixFileAsync(
+    private async Task<Stream> OpenUncachedHelixFileAsync(
         string fileName,
         string workItem,
         string jobId,
         CancellationToken ct)
-        => _helixClient is IUncachedHelixFileClient uncached
-            ? uncached.GetFileUncachedAsync(fileName, workItem, jobId, ct)
-            : _helixClient.GetFileAsync(fileName, workItem, jobId, ct);
+    {
+        try
+        {
+            return _helixClient is IUncachedHelixFileClient uncached
+                ? await uncached.GetFileUncachedAsync(fileName, workItem, jobId, ct)
+                : await _helixClient.GetFileAsync(fileName, workItem, jobId, ct);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw HelixAcquisition.FromHttp(ex, "download_helix_file", HelixAcquisition.Resource(("jobId", jobId), ("workItem", workItem), ("fileName", fileName)));
+        }
+        catch (Microsoft.DotNet.Helix.Client.RestApiException ex)
+        {
+            throw HelixAcquisition.FromRestApi(ex, "download_helix_file", HelixAcquisition.Resource(("jobId", jobId), ("workItem", workItem), ("fileName", fileName)));
+        }
+        catch (TaskCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TaskCanceledException ex)
+        {
+            throw HelixAcquisition.Timeout(ex, "download_helix_file", HelixAcquisition.Resource(("jobId", jobId), ("workItem", workItem), ("fileName", fileName)));
+        }
+    }
 
     private static CollectFetchAttempt SkipAttempt(
         string id,
@@ -777,32 +951,35 @@ public sealed class AzdoBuildCollector
         Func<object?, CollectPagingInfo?>? pagingSelector = null)
     {
         ct.ThrowIfCancellationRequested();
+        var resumeAsCached = false;
 
         if (policy.Resume && priorAttempts.TryGetValue(template.Id, out var prior))
         {
-            if (prior.Outcome is "ok" or "cached" && await CacheEntryExistsAsync(prior.CacheKey, metadata, ct))
+            var sameKey = string.Equals(prior.CacheKey, template.CacheKey, StringComparison.Ordinal);
+            if (sameKey &&
+                prior.Outcome is "ok" or "cached" &&
+                await CacheEntryExistsAsync(template.CacheKey, metadata, ct))
             {
-                var value = await action(ct);
-                attempts.Add(prior with
-                {
-                    Outcome = "cached",
-                    StartedAt = DateTimeOffset.UtcNow,
-                    FinishedAt = DateTimeOffset.UtcNow,
-                    DurationMs = 0
-                });
-                return value;
+                resumeAsCached = true;
             }
-
-            if (prior.Error is not null && !policy.RetryKinds.Contains(prior.Error.Kind))
+            else if (sameKey && prior.Error is not null)
             {
-                attempts.Add(prior with
+                var storedError = string.IsNullOrWhiteSpace(template.CacheKey)
+                    ? null
+                    : await _cacheStore.GetAcquisitionErrorAsync(template.CacheKey, ct);
+                if (storedError is not null && !policy.RetryKinds.Contains(storedError.Kind))
                 {
-                    Outcome = "recorded_failure",
-                    StartedAt = DateTimeOffset.UtcNow,
-                    FinishedAt = DateTimeOffset.UtcNow,
-                    DurationMs = 0
-                });
-                return default;
+                    AppendAttempt(attempts, template with
+                    {
+                        Outcome = "recorded_failure",
+                        StartedAt = DateTimeOffset.UtcNow,
+                        FinishedAt = DateTimeOffset.UtcNow,
+                        DurationMs = 0,
+                        AttemptCount = 1,
+                        Error = storedError
+                    });
+                    return default;
+                }
             }
         }
 
@@ -819,16 +996,19 @@ public sealed class AzdoBuildCollector
                 var value = await action(ct);
                 stopwatch.Stop();
                 var serialized = JsonSerializer.Serialize(value, s_jsonOptions);
-                var bytes = Encoding.UTF8.GetByteCount(serialized);
-                attempts.Add(template with
+                var cacheBytes = template.CacheKey is null
+                    ? null
+                    : await TryGetCacheByteCountAsync(template.CacheKey, metadata, template.Operation, ct);
+                var bytes = cacheBytes ?? Encoding.UTF8.GetByteCount(serialized);
+                AppendAttempt(attempts, template with
                 {
                     StartedAt = started,
                     FinishedAt = DateTimeOffset.UtcNow,
                     DurationMs = stopwatch.ElapsedMilliseconds,
                     AttemptCount = attemptCount,
-                    Outcome = "ok",
+                    Outcome = resumeAsCached ? "cached" : "ok",
                     Bytes = bytes,
-                    Sha256 = Sha256Hex(Encoding.UTF8.GetBytes(serialized)),
+                    Sha256 = cacheBytes is null ? Sha256Hex(Encoding.UTF8.GetBytes(serialized)) : null,
                     Paging = pagingSelector?.Invoke(value)
                 });
                 return value;
@@ -847,13 +1027,14 @@ public sealed class AzdoBuildCollector
 
         stopwatch.Stop();
         var error = acquisitionFailure?.Error;
-        attempts.Add(template with
+        var recorded = error is not null && await AcquisitionFailureWasRecordedAsync(template.CacheKey, error, ct);
+        AppendAttempt(attempts, template with
         {
             StartedAt = started,
             FinishedAt = DateTimeOffset.UtcNow,
             DurationMs = stopwatch.ElapsedMilliseconds,
             AttemptCount = attemptCount,
-            Outcome = error is not null && policy.RetryKinds.Contains(error.Kind) ? "failed" : error is null ? "failed" : "recorded_failure",
+            Outcome = recorded ? "recorded_failure" : "failed",
             Error = error
         });
         return default;
@@ -894,7 +1075,7 @@ public sealed class AzdoBuildCollector
         string? cacheKey = null)
     {
         var now = DateTimeOffset.UtcNow;
-        attempts.Add(new CollectFetchAttempt
+        AppendAttempt(attempts, new CollectFetchAttempt
         {
             Id = id,
             Phase = phase,
@@ -911,6 +1092,14 @@ public sealed class AzdoBuildCollector
             Outcome = "skipped",
             Skip = new CollectSkipInfo { Kind = kind, Message = message }
         });
+    }
+
+    private static void AppendAttempt(List<CollectFetchAttempt> attempts, CollectFetchAttempt attempt)
+    {
+        lock (attempts)
+        {
+            attempts.Add(attempt);
+        }
     }
 
     private static IReadOnlyDictionary<string, object?> Resource(params (string, object?)[] values)
@@ -935,6 +1124,191 @@ public sealed class AzdoBuildCollector
 
         await using var stream = await _cacheStore.GetArtifactAsync(cacheKey, ct);
         return stream is not null;
+    }
+
+    private async Task<long?> TryGetCacheByteCountAsync(
+        string cacheKey,
+        bool metadata,
+        string operation,
+        CancellationToken ct)
+    {
+        if (metadata)
+        {
+            var cached = await _cacheStore.GetMetadataAsync(cacheKey, ct);
+            return cached is null ? null : MetadataCacheByteCount(operation, cached);
+        }
+
+        await using var stream = await _cacheStore.GetArtifactAsync(cacheKey, ct);
+        return stream is { CanSeek: true } ? stream.Length : null;
+    }
+
+    private async Task ResolveAzdoAuthContextAsync(CancellationToken ct)
+    {
+        var credential = await _azdoTokenAccessor.GetAccessTokenAsync(ct);
+        var authContext = credential is null
+            ? null
+            : credential.CacheIdentity ?? AzdoCredential.BuildCacheIdentity(credential.Source, credential.DisplayToken);
+        _cacheOptions.UpdateAuthContext(authContext);
+    }
+
+    private async Task<bool> TryRecordAcquisitionFailureAsync(
+        string? cacheKey,
+        AcquisitionError error,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(cacheKey) ||
+            !AcquisitionFailureRecorderPolicy.IsRecordable(error))
+        {
+            return false;
+        }
+
+        await _cacheStore.SetAcquisitionErrorAsync(cacheKey, error, RecordedFailureTtl, ct);
+        return await AcquisitionFailureWasRecordedAsync(cacheKey, error, ct);
+    }
+
+    private async Task<bool> AcquisitionFailureWasRecordedAsync(
+        string? cacheKey,
+        AcquisitionError error,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(cacheKey) ||
+            !AcquisitionFailureRecorderPolicy.IsRecordable(error))
+        {
+            return false;
+        }
+
+        var stored = await _cacheStore.GetAcquisitionErrorAsync(cacheKey, ct);
+        return stored is not null &&
+            stored.Kind == error.Kind &&
+            string.Equals(stored.Provider, error.Provider, StringComparison.Ordinal) &&
+            string.Equals(stored.Operation, error.Operation, StringComparison.Ordinal);
+    }
+
+    private async Task<List<CollectFetchAttempt>> VerifyCollectedEvidenceAsync(
+        IReadOnlyList<CollectFetchAttempt> attempts,
+        CancellationToken ct)
+    {
+        var verified = new List<CollectFetchAttempt>(attempts.Count);
+        foreach (var attempt in attempts)
+        {
+            if (attempt.Outcome is not ("ok" or "cached") ||
+                string.IsNullOrWhiteSpace(attempt.CacheKey))
+            {
+                verified.Add(attempt);
+                continue;
+            }
+
+            var verification = await VerifyCacheEvidenceAsync(attempt, ct);
+            if (verification.Ok)
+            {
+                verified.Add(attempt);
+                continue;
+            }
+
+            verified.Add(attempt with
+            {
+                Outcome = "failed",
+                Error = AcquisitionErrorFactory.Create(
+                verification.Kind,
+                    "cache",
+                    "verify_collected_evidence",
+                    Resource(("key", attempt.CacheKey), ("operation", attempt.Operation)),
+                verification.Message)
+            });
+        }
+
+        return verified;
+    }
+
+    private async Task<(bool Ok, AcquisitionErrorKind Kind, string Message)> VerifyCacheEvidenceAsync(
+        CollectFetchAttempt attempt,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(attempt.CacheKey))
+        {
+            return (false, AcquisitionErrorKind.NotInSnapshot,
+                $"Collected evidence for {attempt.Operation} did not report a cache key.");
+        }
+
+        if (IsArtifactOperation(attempt.Operation))
+        {
+            await using var stream = await _cacheStore.GetArtifactAsync(attempt.CacheKey, ct);
+            if (stream is null)
+            {
+                return (false, AcquisitionErrorKind.NotInSnapshot,
+                $"Collected evidence for {attempt.Operation} was missing from the cache before export.");
+            }
+
+            if (attempt.Bytes is { } expectedBytes &&
+                stream.CanSeek &&
+                stream.Length != expectedBytes)
+            {
+                return (false, AcquisitionErrorKind.InvalidResponse,
+                $"Collected artifact evidence for {attempt.Operation} changed size before export: expected {expectedBytes} byte(s), found {stream.Length}.");
+            }
+
+            return (true, AcquisitionErrorKind.NotInSnapshot, "");
+        }
+
+        var cached = await _cacheStore.GetMetadataAsync(attempt.CacheKey, ct);
+        if (cached is null)
+        {
+            return (false, AcquisitionErrorKind.NotInSnapshot,
+                $"Collected evidence for {attempt.Operation} was missing from the cache before export.");
+        }
+
+        if (attempt.Operation == "get_build_log" &&
+            (cached.Length == 0 || string.Equals(cached, CachingAzdoApiClient.RawTextPrefix, StringComparison.Ordinal)))
+        {
+            return (false, AcquisitionErrorKind.InvalidResponse,
+                $"Collected AzDO log evidence for {attempt.Operation} was empty/corrupt before export.");
+        }
+
+        if (attempt.Bytes is { } expectedMetadataBytes)
+        {
+            var actualMetadataBytes = MetadataCacheByteCount(attempt.Operation, cached);
+            if (actualMetadataBytes != expectedMetadataBytes)
+            {
+                return (false, AcquisitionErrorKind.InvalidResponse,
+                $"Collected metadata evidence for {attempt.Operation} changed size before export: expected {expectedMetadataBytes} byte(s), found {actualMetadataBytes}.");
+            }
+        }
+
+        return (true, AcquisitionErrorKind.NotInSnapshot, "");
+    }
+
+    private static int MetadataCacheByteCount(string operation, string cached)
+    {
+        if (operation == "get_build_log" &&
+            cached.StartsWith(CachingAzdoApiClient.RawTextPrefix, StringComparison.Ordinal))
+        {
+            return Encoding.UTF8.GetByteCount(cached[CachingAzdoApiClient.RawTextPrefix.Length..]);
+        }
+
+        return Encoding.UTF8.GetByteCount(cached);
+    }
+
+    private static bool IsArtifactOperation(string operation)
+        => operation is "get_helix_console_log" or "download_helix_file";
+
+    private static IEnumerable<AzdoHelixEvidenceFetch> DefaultHelixFetches(AzdoHelixEvidenceFailure failure)
+    {
+        if (string.IsNullOrWhiteSpace(failure.HelixJobId) || string.IsNullOrWhiteSpace(failure.WorkItem))
+            yield break;
+
+        yield return new AzdoHelixEvidenceFetch { Tool = "helix_work_item", HelixJobId = failure.HelixJobId, WorkItem = failure.WorkItem, Purpose = "work_item_details" };
+        yield return new AzdoHelixEvidenceFetch { Tool = "helix_logs", HelixJobId = failure.HelixJobId, WorkItem = failure.WorkItem, Purpose = "console_log" };
+        yield return new AzdoHelixEvidenceFetch { Tool = "helix_files", HelixJobId = failure.HelixJobId, WorkItem = failure.WorkItem, Purpose = "uploaded_files" };
+    }
+
+    private static IEnumerable<AzdoHelixEvidenceFetch> CompanionHelixFetches(AzdoHelixEvidenceFetch fetch)
+    {
+        if (string.IsNullOrWhiteSpace(fetch.HelixJobId) || string.IsNullOrWhiteSpace(fetch.WorkItem))
+            yield break;
+
+        yield return fetch with { Tool = "helix_work_item", Purpose = "work_item_details" };
+        yield return fetch with { Tool = "helix_logs", Purpose = "console_log" };
+        yield return fetch with { Tool = "helix_files", Purpose = "uploaded_files" };
     }
 
     private static async Task<IReadOnlyDictionary<string, CollectFetchAttempt>> LoadPriorAttemptsAsync(
@@ -1001,7 +1375,7 @@ public sealed class AzdoBuildCollector
             CompletedAt = DateTimeOffset.UtcNow,
             Command = new CollectCommandInfo
             {
-                Argv = policy.Argv,
+                Argv = policy.Argv.Select(AcquisitionRedaction.RedactSensitiveUrls).ToList(),
                 Options = policy.Options
             },
             Source = source,
@@ -1088,6 +1462,8 @@ public sealed class AzdoBuildCollector
             throw new ArgumentOutOfRangeException(nameof(policy), "max concurrency must be greater than 0.");
         if (policy.RetryCount <= 0)
             throw new ArgumentOutOfRangeException(nameof(policy), "retry count must be greater than 0.");
+        if (policy.RetryInitialDelay < TimeSpan.Zero || policy.RetryMaxDelay < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(policy), "retry delays must be non-negative.");
         if (!IsOneOf(policy.LogScope, "failed", "all", "none"))
             throw new ArgumentException("Invalid --log-scope. Must be failed, all, or none.", nameof(policy));
         if (!IsOneOf(policy.TestScope, "failed", "all", "none"))
@@ -1160,7 +1536,7 @@ public sealed class AzdoBuildCollector
     private static TimeSpan GetRetryDelay(CollectPolicy policy, AcquisitionError error, int attemptCount)
     {
         if (error.RetryAfterSeconds is > 0 and var retryAfter)
-            return TimeSpan.FromSeconds(Math.Min(retryAfter, (int)policy.RetryMaxDelay.TotalSeconds));
+            return TimeSpan.FromSeconds(Math.Min(retryAfter, (int)RetryAfterSafetyCeiling.TotalSeconds));
 
         var exponentialSeconds = policy.RetryInitialDelay.TotalSeconds * Math.Pow(2, Math.Max(0, attemptCount - 1));
         var jitterMilliseconds = Random.Shared.Next(0, 250);
@@ -1186,8 +1562,38 @@ public sealed class AzdoBuildCollector
             {
                 semaphore.Release();
             }
-        });
+        }).ToList();
         await Task.WhenAll(tasks);
+    }
+
+    private static async Task<IReadOnlyList<CollectFetchAttempt>> ForEachCollectAsync<T>(
+        IReadOnlyList<T> items,
+        int maxConcurrency,
+        Func<T, List<CollectFetchAttempt>, Task> action,
+        CancellationToken ct)
+    {
+        using var semaphore = new SemaphoreSlim(maxConcurrency);
+        var indexedTasks = items.Select((item, index) => RunOneAsync(item, index)).ToList();
+        var results = await Task.WhenAll(indexedTasks);
+        return results
+            .OrderBy(result => result.Index)
+            .SelectMany(result => result.Attempts)
+            .ToList();
+
+        async Task<(int Index, List<CollectFetchAttempt> Attempts)> RunOneAsync(T item, int index)
+        {
+            await semaphore.WaitAsync(ct);
+            var localAttempts = new List<CollectFetchAttempt>();
+            try
+            {
+                await action(item, localAttempts);
+                return (index, localAttempts);
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        }
     }
 
     private static string HelixWorkItemDetailsKey(string jobId, string workItem)
@@ -1216,7 +1622,16 @@ public sealed class AzdoBuildCollector
         private readonly object _gate = new();
         private long _usedBytes;
 
-        public bool TryReserve(long bytes)
+        public long Remaining
+        {
+            get
+            {
+                lock (_gate)
+                    return Math.Max(0, maxTotalBytes - _usedBytes);
+            }
+        }
+
+        public bool TryConsume(long bytes)
         {
             lock (_gate)
             {
@@ -1225,6 +1640,17 @@ public sealed class AzdoBuildCollector
 
                 _usedBytes += bytes;
                 return true;
+            }
+        }
+
+        public void Release(long bytes)
+        {
+            if (bytes <= 0)
+                return;
+
+            lock (_gate)
+            {
+                _usedBytes = Math.Max(0, _usedBytes - bytes);
             }
         }
     }
