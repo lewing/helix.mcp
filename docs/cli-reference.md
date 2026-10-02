@@ -512,7 +512,7 @@ The command cannot run when `HLX_EVAL_SNAPSHOT` is set or when caching is disabl
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--cache-dir <dir>` | `null` | Cache base directory to populate. Omit to use the normal hlx cache root, except with `--export`, which uses a fresh isolated per-run temporary cache to avoid exporting other builds or auth partitions. |
-| `--manifest <path>` | `null` | Manifest output path. When omitted, writes `hlx-collect-manifest.json` inside the effective cache directory, not CWD. |
+| `--manifest <path>` | `null` | Manifest output path. When omitted, writes `hlx-collect-manifest.json` inside the effective cache directory (which includes the auth-partition subdirectory, e.g. `public/`), not CWD. |
 | `--resume` | `false` | Reuse successful entries from the previous manifest when the referenced cache evidence still exists. |
 | `--export <snapshot-dir>` | `null` | Destination snapshot directory. Must not already exist. |
 | `--json` | `false` | Print the complete manifest JSON to stdout after collection. |
@@ -560,7 +560,7 @@ Each `attempts[]` entry has `id`, optional `parentId`, `phase`, `required`, `pro
 
 `paging`, when present, contains `returned`, nullable `total`, `offset`, nullable `limit`, `complete`, `truncated`, and `next`. `skip.kind` is emitted as `policy_excluded`, `not_selected`, `size_limit`, `total_size_limit`, `test_result_limit`, or `test_attachment_limit`. Test-volume skips include requested counts, effective budgets, and remediation text; attachment exclusions are aggregated per run rather than adding one manifest row for every passed test. `policy.caps` records effective `maxTestResults` and `maxTestAttachments`, `policy.maxTestResultsExplicit` distinguishes consent from the default, and `policy.testAttachmentScope` records selected coverage. These additive fields preserve older manifest readability. `bytes` is `null` for skips. `error` reuses the `AcquisitionError` shape from [Errors and exit codes](#errors-and-exit-codes): `kind`, `provider`, `operation`, `resource`, optional `httpStatus`, optional `retryAfterSeconds`, optional `source`, optional `replayed`, optional `recordedAt`, and `message`.
 
-`summary` contains `attempted`, `ok`, `cached`, `recordedFailure`, `failed`, `skipped`, and `bytes`. `auth.azdo.cachePartition` is the non-secret replay partition (`public` or `cache-xxxxxxxx`); `auth.azdo.replay` is `public` or `snapshot_partition`; `auth.helix.path` is `anonymous`, `environment`, or `stored-credential`. `snapshot.manifestPath` is `manifest/hlx-collect-manifest.json` when `--export` succeeds; the standalone manifest path is the `--manifest` value or `hlx-collect-manifest.json` inside the effective cache directory.
+`summary` contains `attempted`, `ok`, `cached`, `recordedFailure`, `failed`, `skipped`, and `bytes`. `auth.azdo.cachePartition` is the non-secret replay partition (`public` or `cache-xxxxxxxx`); `auth.azdo.replay` is `public` or `snapshot_partition`; `auth.helix.path` is `anonymous`, `environment`, or `stored-credential`. `snapshot.manifestPath` is `manifest/hlx-collect-manifest.json` when `--export` succeeds; the standalone manifest path is the `--manifest` value or `hlx-collect-manifest.json` inside the effective cache directory (which includes the auth-partition subdirectory, e.g. `public/`).
 
 Before writing the final manifest/export result, the collector re-reads every `ok`/`cached` cache entry that has a `cacheKey`. Missing metadata, empty/corrupt raw AzDO log rows, and byte-count mismatches are downgraded to failed cache verification and make the manifest incomplete; missing Helix artifact evidence is reported as `artifact_missing`, while corrupt/size-mismatched evidence is reported as `fetch_failed` with `provider: "cache"`.
 
@@ -683,17 +683,16 @@ Trimmed real manifest example, generated from public build `1621192` with `--log
 ```bash
 # Original run: no --cache-dir, so hlx used an isolated temp cache and reported it on stderr
 hlx collect azdo-build 1621192 --export /tmp/snap-v1
-# /tmp/hlx-collect-cache/<guid>/hlx-collect-manifest.json is the standalone manifest written
-# inside that isolated cache directory (command.options.cacheDir in both copies)
+# /tmp/hlx-collect-cache/<guid>/public/hlx-collect-manifest.json is the standalone manifest
+# written inside that isolated cache directory's effective (partition) subdirectory
+# (command.options.cacheDir records the <guid> root, not the partition subdirectory, in both copies)
 
-# Resuming: reuse that recorded cache directory and its standalone manifest, exporting to a
-# NEW destination. --manifest is both the resume input and the file this run rewrites with the
-# resumed attempts/policy, so point it at the cache-dir-local standalone manifest above (or a
-# copy of it) — never at /tmp/snap-v1/manifest/hlx-collect-manifest.json, which would overwrite
-# snap-v1's exported manifest while leaving its database/artifacts stale.
+# Resuming: reuse that recorded cache directory; passing the original --cache-dir alone makes
+# hlx resolve the standalone manifest automatically, so --manifest can be omitted. Export to a
+# NEW destination — never reuse /tmp/snap-v1/manifest/hlx-collect-manifest.json, which would
+# overwrite snap-v1's exported manifest while leaving its database/artifacts stale.
 hlx collect azdo-build 1621192 \
   --cache-dir /tmp/hlx-collect-cache/<guid> \
-  --manifest /tmp/hlx-collect-cache/<guid>/hlx-collect-manifest.json \
   --resume --export /tmp/snap-v2
 ```
 
