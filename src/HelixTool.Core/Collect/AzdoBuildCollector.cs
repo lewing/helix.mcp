@@ -517,6 +517,7 @@ public sealed class AzdoBuildCollector
             .GroupBy(fetch => $"{fetch.Tool}:{fetch.HelixJobId}:{fetch.WorkItem}", StringComparer.Ordinal)
             .Select(group => group.First())
             .ToList();
+        var downloadBudget = new HelixFileDownloadBudget(policy.MaxTotalBytes);
 
         await ForEachAsync(fetches, policy.MaxConcurrency, async fetch =>
         {
@@ -559,34 +560,211 @@ public sealed class AzdoBuildCollector
                         async token => await _helixService.GetWorkItemFilesAsync(jobId, workItem, token),
                         metadata: true,
                         ct);
-                    RecordHelixFileDownloadPolicy(attempts, policy, jobId, workItem, files ?? []);
+                    await CollectSelectedHelixFilesAsync(attempts, policy, downloadBudget, jobId, workItem, files ?? [], ct);
                     break;
             }
         }, ct);
     }
 
-    private void RecordHelixFileDownloadPolicy(
+    private async Task CollectSelectedHelixFilesAsync(
         List<CollectFetchAttempt> attempts,
         CollectPolicy policy,
+        HelixFileDownloadBudget downloadBudget,
         string jobId,
         string workItem,
-        IReadOnlyList<HelixService.FileEntry> files)
+        IReadOnlyList<HelixService.FileEntry> files,
+        CancellationToken ct)
     {
         foreach (var file in files)
         {
             var selected = policy.DownloadHelixFiles is not null &&
                 StringHelpers.MatchesPattern(file.Name, policy.DownloadHelixFiles);
-            var skipKind = selected ? "size_limit" : "policy_excluded";
-            var message = selected
-                ? $"Helix uploaded-file byte download was skipped by --max-file-bytes {policy.MaxFileBytes}."
-                : "Helix uploaded-file byte downloads are excluded by default; metadata was collected.";
-            AddSkip(attempts, $"helix.file-download:{jobId}:{workItem}:{file.Name}", "helix_files", false, "helix", "download_helix_file",
-                Resource(("jobId", jobId), ("workItem", workItem), ("fileName", file.Name)),
-                skipKind,
-                message,
-                cacheKey: HelixFileKey(jobId, workItem, file.Name));
+            var attemptId = $"helix.file-download:{jobId}:{workItem}:{file.Name}";
+            var resource = Resource(("jobId", jobId), ("workItem", workItem), ("fileName", file.Name));
+            var cacheKey = HelixFileKey(jobId, workItem, file.Name);
+            if (!selected)
+            {
+                AddSkip(attempts, attemptId, "helix_files", false, "helix", "download_helix_file",
+                    resource,
+                    "policy_excluded",
+                    "Helix uploaded-file byte downloads are excluded by default; metadata was collected.",
+                    cacheKey: cacheKey);
+                continue;
+            }
+
+            await DownloadHelixFileWithCapsAsync(
+                attempts,
+                policy,
+                downloadBudget,
+                attemptId,
+                jobId,
+                workItem,
+                file.Name,
+                cacheKey,
+                resource,
+                ct);
         }
     }
+
+    private async Task DownloadHelixFileWithCapsAsync(
+        List<CollectFetchAttempt> attempts,
+        CollectPolicy policy,
+        HelixFileDownloadBudget downloadBudget,
+        string attemptId,
+        string jobId,
+        string workItem,
+        string fileName,
+        string cacheKey,
+        IReadOnlyDictionary<string, object?> resource,
+        CancellationToken ct)
+    {
+        var started = DateTimeOffset.UtcNow;
+        var stopwatch = Stopwatch.StartNew();
+        var tempPath = Path.Combine(Path.GetTempPath(), $"hlx-collect-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            await using var source = await OpenUncachedHelixFileAsync(fileName, workItem, jobId, ct);
+            await using (var destination = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
+            using (var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+            {
+                var buffer = new byte[64 * 1024];
+                long bytes = 0;
+                while (true)
+                {
+                    var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
+                    if (read == 0)
+                        break;
+
+                    bytes += read;
+                    if (bytes > policy.MaxFileBytes)
+                    {
+                        stopwatch.Stop();
+                        attempts.Add(SkipAttempt(
+                            attemptId,
+                            "helix_files",
+                            false,
+                            "helix",
+                            "download_helix_file",
+                            resource,
+                            cacheKey,
+                            started,
+                            stopwatch.ElapsedMilliseconds,
+                            "size_limit",
+                            $"Helix uploaded file '{fileName}' exceeded --max-file-bytes {policy.MaxFileBytes}."));
+                        return;
+                    }
+
+                    await destination.WriteAsync(buffer.AsMemory(0, read), ct);
+                    hash.AppendData(buffer.AsSpan(0, read));
+                }
+
+                if (!downloadBudget.TryReserve(bytes))
+                {
+                    stopwatch.Stop();
+                    attempts.Add(SkipAttempt(
+                        attemptId,
+                        "helix_files",
+                        false,
+                        "helix",
+                        "download_helix_file",
+                        resource,
+                        cacheKey,
+                        started,
+                        stopwatch.ElapsedMilliseconds,
+                        "total_size_limit",
+                        $"Helix uploaded file '{fileName}' would exceed --max-total-bytes {policy.MaxTotalBytes}."));
+                    return;
+                }
+
+                destination.Position = 0;
+                await _cacheStore.SetArtifactAsync(cacheKey, destination, ct);
+                stopwatch.Stop();
+                attempts.Add(new CollectFetchAttempt
+                {
+                    Id = attemptId,
+                    Phase = "helix_files",
+                    Required = false,
+                    Provider = "helix",
+                    Operation = "download_helix_file",
+                    Resource = resource,
+                    CacheKey = cacheKey,
+                    CompleteCacheKey = cacheKey,
+                    StartedAt = started,
+                    FinishedAt = DateTimeOffset.UtcNow,
+                    DurationMs = stopwatch.ElapsedMilliseconds,
+                    AttemptCount = 1,
+                    Outcome = "ok",
+                    Bytes = bytes,
+                    Sha256 = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant()
+                });
+            }
+        }
+        catch (HlxAcquisitionException ex)
+        {
+            stopwatch.Stop();
+            attempts.Add(new CollectFetchAttempt
+            {
+                Id = attemptId,
+                Phase = "helix_files",
+                Required = false,
+                Provider = "helix",
+                Operation = "download_helix_file",
+                Resource = resource,
+                CacheKey = cacheKey,
+                CompleteCacheKey = cacheKey,
+                StartedAt = started,
+                FinishedAt = DateTimeOffset.UtcNow,
+                DurationMs = stopwatch.ElapsedMilliseconds,
+                AttemptCount = 1,
+                Outcome = policy.RetryKinds.Contains(ex.Error.Kind) ? "failed" : "recorded_failure",
+                Error = ex.Error
+            });
+        }
+        finally
+        {
+            try { File.Delete(tempPath); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+    }
+
+    private Task<Stream> OpenUncachedHelixFileAsync(
+        string fileName,
+        string workItem,
+        string jobId,
+        CancellationToken ct)
+        => _helixClient is IUncachedHelixFileClient uncached
+            ? uncached.GetFileUncachedAsync(fileName, workItem, jobId, ct)
+            : _helixClient.GetFileAsync(fileName, workItem, jobId, ct);
+
+    private static CollectFetchAttempt SkipAttempt(
+        string id,
+        string phase,
+        bool required,
+        string provider,
+        string operation,
+        IReadOnlyDictionary<string, object?> resource,
+        string? cacheKey,
+        DateTimeOffset started,
+        long durationMs,
+        string skipKind,
+        string message)
+        => new()
+        {
+            Id = id,
+            Phase = phase,
+            Required = required,
+            Provider = provider,
+            Operation = operation,
+            Resource = resource,
+            CacheKey = cacheKey,
+            CompleteCacheKey = cacheKey,
+            StartedAt = started,
+            FinishedAt = DateTimeOffset.UtcNow,
+            DurationMs = durationMs,
+            AttemptCount = 1,
+            Outcome = "skipped",
+            Skip = new CollectSkipInfo { Kind = skipKind, Message = message }
+        };
 
     private async Task<T?> RunAsync<T>(
         List<CollectFetchAttempt> attempts,
@@ -604,6 +782,7 @@ public sealed class AzdoBuildCollector
         {
             if (prior.Outcome is "ok" or "cached" && await CacheEntryExistsAsync(prior.CacheKey, metadata, ct))
             {
+                var value = await action(ct);
                 attempts.Add(prior with
                 {
                     Outcome = "cached",
@@ -611,7 +790,7 @@ public sealed class AzdoBuildCollector
                     FinishedAt = DateTimeOffset.UtcNow,
                     DurationMs = 0
                 });
-                return default;
+                return value;
             }
 
             if (prior.Error is not null && !policy.RetryKinds.Contains(prior.Error.Kind))
@@ -675,9 +854,7 @@ public sealed class AzdoBuildCollector
             DurationMs = stopwatch.ElapsedMilliseconds,
             AttemptCount = attemptCount,
             Outcome = error is not null && policy.RetryKinds.Contains(error.Kind) ? "failed" : error is null ? "failed" : "recorded_failure",
-            Error = error is not null && policy.RetryKinds.Contains(error.Kind)
-                ? error with { Source = $"transient-after-{attemptCount}" }
-                : error
+            Error = error
         });
         return default;
     }
@@ -875,9 +1052,7 @@ public sealed class AzdoBuildCollector
             : $"cache-{_cacheOptions.AuthTokenHash}";
         var replay = partition == "public"
             ? "public"
-            : status.Path.Contains("environment", StringComparison.OrdinalIgnoreCase)
-                ? "environment_token_required"
-                : "not_replayable_az_cli";
+            : "snapshot_partition";
         return new CollectAzdoAuthInfo
         {
             Path = status.Path,
@@ -1035,4 +1210,22 @@ public sealed class AzdoBuildCollector
 
     private static string XmlConvertDuration(TimeSpan duration)
         => System.Xml.XmlConvert.ToString(duration);
+
+    private sealed class HelixFileDownloadBudget(long maxTotalBytes)
+    {
+        private readonly object _gate = new();
+        private long _usedBytes;
+
+        public bool TryReserve(long bytes)
+        {
+            lock (_gate)
+            {
+                if (_usedBytes + bytes > maxTotalBytes)
+                    return false;
+
+                _usedBytes += bytes;
+                return true;
+            }
+        }
+    }
 }

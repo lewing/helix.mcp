@@ -664,6 +664,9 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient, IAzdoCachedBuildLogRe
 
     private async Task EnsureAuthTokenHashAsync(CancellationToken ct)
     {
+        if (_options.EvalMode)
+            return;
+
         if (_tokenAccessor is null)
             return;
 

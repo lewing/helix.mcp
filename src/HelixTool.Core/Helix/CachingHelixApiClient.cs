@@ -11,7 +11,7 @@ namespace HelixTool.Core.Helix;
 /// Console logs for running jobs are never cached (append-only streams).
 /// Pass-through when <see cref="CacheOptions.MaxSizeBytes"/> is 0 (disabled).
 /// </summary>
-public sealed class CachingHelixApiClient : IHelixApiClient
+public sealed class CachingHelixApiClient : IHelixApiClient, IUncachedHelixFileClient
 {
     private static readonly TimeSpan RunningShortTtl = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan RunningMediumTtl = TimeSpan.FromSeconds(30);
@@ -253,6 +253,9 @@ public sealed class CachingHelixApiClient : IHelixApiClient
             return storedStream;
         return await _inner.GetFileAsync(fileName, workItemName, jobId, ct);
     }
+
+    public Task<Stream> GetFileUncachedAsync(string fileName, string workItemName, string jobId, CancellationToken ct = default)
+        => _inner.GetFileAsync(fileName, workItemName, jobId, ct);
 
     /// <inheritdoc />
     /// <remarks>Not cached — source-scoped queries span many jobs; callers get fresh results.</remarks>

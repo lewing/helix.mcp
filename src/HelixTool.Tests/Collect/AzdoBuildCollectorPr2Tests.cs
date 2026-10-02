@@ -2,11 +2,13 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using HelixTool.Core;
 using HelixTool.Core.Acquisition;
 using HelixTool.Core.AzDO;
 using HelixTool.Core.Cache;
 using HelixTool.Core.Helix;
 using HelixTool.Mcp.Tools;
+using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
 using Xunit;
 
@@ -49,7 +51,13 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
     private const string SecondWorkItem = "System.Net.Http.Tests";
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"hlx-collect-pr2-{Guid.NewGuid():N}");
 
-    public void Dispose() => TryDelete(_root);
+    public void Dispose()
+    {
+        Environment.SetEnvironmentVariable(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable, null);
+        Environment.SetEnvironmentVariable("AZDO_TOKEN", null);
+        Environment.SetEnvironmentVariable("AZDO_TOKEN_TYPE", null);
+        TryDelete(_root);
+    }
 
     [Fact]
     public async Task CompleteRuntimeLikeBuild_CollectsEvidenceExportsSnapshotAndReplaysEveryOkManifestItem()
@@ -227,8 +235,10 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         var scenario = RuntimeLikeScenario();
         scenario.Helix.Files[WorkItem] =
         [
+            new FakeWorkItemFile("small.binlog", "https://helix.dot.net/file/small.binlog?sig=SECRET-SAS-SIGNATURE"),
             new FakeWorkItemFile("oversized.binlog", "https://helix.dot.net/file/oversized.binlog?sig=SECRET-SAS-SIGNATURE")
         ];
+        scenario.Helix.FileContent["small.binlog"] = Encoding.UTF8.GetBytes("ok");
         scenario.Helix.FileContent["oversized.binlog"] = Encoding.UTF8.GetBytes("too-large-for-cap");
         using var harness = CollectHarness.Create(_root, scenario);
 
@@ -243,11 +253,122 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         Assert.Null(result.Thrown);
         Assert.Equal(0, result.ExitCode);
         using var manifestDocument = JsonDocument.Parse(File.ReadAllText(harness.ManifestPath));
+        var ok = Attempts(manifestDocument.RootElement)
+            .Single(attempt => Operation(attempt) == "download_helix_file" && ResourceString(attempt, "fileName") == "small.binlog");
+        Assert.Equal("ok", ok.GetProperty("outcome").GetString());
+        Assert.Equal(2, ok.GetProperty("bytes").GetInt64());
+
         var skip = Attempts(manifestDocument.RootElement)
             .Single(attempt => Operation(attempt) == "download_helix_file" && ResourceString(attempt, "fileName") == "oversized.binlog");
         Assert.Equal("skipped", skip.GetProperty("outcome").GetString());
         Assert.Equal("size_limit", skip.GetProperty("skip").GetProperty("kind").GetString());
         AssertNoSecrets(manifestDocument.RootElement.GetRawText());
+
+        var tools = CreateEvalHelixTools(harness.ExportPath);
+        var download = await tools.Download(HelixJobId, WorkItem, pattern: "small.binlog");
+        var downloadedPath = Assert.Single(download.DownloadedFiles);
+        Assert.Equal("ok", await File.ReadAllTextAsync(downloadedPath));
+
+        var oversizedMiss = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => tools.Download(HelixJobId, WorkItem, pattern: "oversized.binlog"));
+        Assert.Equal(AcquisitionErrorKind.NotInSnapshot, oversizedMiss.Error.Kind);
+    }
+
+    [Fact]
+    public async Task TotalCapSkipsSelectedFilesAfterBudgetIsExhausted()
+    {
+        var scenario = RuntimeLikeScenario();
+        scenario.Helix.Files[WorkItem] =
+        [
+            new FakeWorkItemFile("one.binlog", "https://helix.dot.net/file/one.binlog"),
+            new FakeWorkItemFile("two.binlog", "https://helix.dot.net/file/two.binlog")
+        ];
+        scenario.Helix.FileContent["one.binlog"] = Encoding.UTF8.GetBytes("1234");
+        scenario.Helix.FileContent["two.binlog"] = Encoding.UTF8.GetBytes("5678");
+        using var harness = CollectHarness.Create(_root, scenario);
+
+        var result = await harness.RunAsync(options =>
+        {
+            options.DownloadHelixFiles = "*.binlog";
+            options.MaxFileBytes = 10;
+            options.MaxTotalBytes = 4;
+            options.TestScope = "none";
+            options.LogScope = "none";
+        });
+
+        Assert.Null(result.Thrown);
+        Assert.Equal(0, result.ExitCode);
+        using var manifestDocument = JsonDocument.Parse(File.ReadAllText(harness.ManifestPath));
+        Assert.Contains(Attempts(manifestDocument.RootElement), attempt =>
+            Operation(attempt) == "download_helix_file"
+            && attempt.GetProperty("outcome").GetString() == "skipped"
+            && attempt.GetProperty("skip").GetProperty("kind").GetString() == "total_size_limit");
+    }
+
+    [Fact]
+    public async Task AuthScopedCollectedSnapshot_ReplaysWithoutAzdoToken()
+    {
+        var credential = new AzdoCredential("super-secret-token", "Bearer", "environment")
+        {
+            CacheIdentity = "env:AZDO_TOKEN:pat:partition-test",
+            DisplayToken = "redacted-display-token"
+        };
+        using var harness = CollectHarness.Create(_root, RuntimeLikeScenario(), credential);
+
+        var result = await harness.RunAsync();
+
+        Assert.Null(result.Thrown);
+        Assert.Equal(0, result.ExitCode);
+        using var manifestDocument = JsonDocument.Parse(File.ReadAllText(harness.ManifestPath));
+        var cachePartition = manifestDocument.RootElement.GetProperty("auth").GetProperty("azdo").GetProperty("cachePartition").GetString();
+        Assert.StartsWith("cache-", cachePartition, StringComparison.Ordinal);
+        Assert.Equal("snapshot_partition", manifestDocument.RootElement.GetProperty("auth").GetProperty("azdo").GetProperty("replay").GetString());
+        AssertNoSecrets(manifestDocument.RootElement.GetRawText());
+
+        Environment.SetEnvironmentVariable("AZDO_TOKEN", null);
+        Environment.SetEnvironmentVariable("AZDO_TOKEN_TYPE", null);
+        var tools = CreateEvalAzdoTools(harness.ExportPath);
+        var plan = await tools.EvidencePlan(BuildId.ToString());
+        Assert.NotEmpty(plan.HelixFailures);
+        var runs = await tools.TestRuns(BuildId.ToString());
+        Assert.Single(runs);
+    }
+
+    [Fact]
+    public async Task MultiPartitionSnapshot_FailsClosedWithoutSelectionAndReplaysWhenSelected()
+    {
+        var workspace = Path.Combine(_root, "multi-partition");
+        var cacheHome = Path.Combine(workspace, "cache-home");
+        var snapshot = Path.Combine(workspace, "snapshot");
+        Directory.CreateDirectory(workspace);
+        var options = new CacheOptions { CacheRoot = cacheHome, MaxSizeBytes = 1024 * 1024 };
+        using (var store = new SqliteCacheStore(options))
+        {
+            await store.SetMetadataAsync(
+                "azdo:dnceng-public:public:build:1",
+                JsonSerializer.Serialize(new AzdoBuild { Id = 1, Status = "completed" }),
+                TimeSpan.FromHours(1));
+            options.AuthTokenHash = "abcdef12";
+            await store.SetMetadataAsync(
+                "azdo:abcdef12:dnceng-public:public:build:2",
+                JsonSerializer.Serialize(new AzdoBuild { Id = 2, Status = "completed" }),
+                TimeSpan.FromHours(1));
+        }
+        await SnapshotExporter.ExportAsync(Path.Combine(cacheHome, "public"), snapshot);
+
+        var ambiguous = Assert.Throws<InvalidOperationException>(() => EvalSnapshotAzdoPartitionSelector.Select(snapshot));
+        Assert.Contains(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable, ambiguous.Message, StringComparison.Ordinal);
+
+        Environment.SetEnvironmentVariable(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable, "cache-abcdef12");
+        var selected = EvalSnapshotAzdoPartitionSelector.Select(snapshot);
+        Assert.Equal("abcdef12", selected.AuthTokenHash);
+
+        var evalOptions = new CacheOptions { CacheRoot = snapshot, EvalMode = true, AuthTokenHash = selected.AuthTokenHash };
+        var services = new ServiceCollection();
+        services.AddEvalModeCore(evalOptions);
+        using var provider = services.BuildServiceProvider();
+        var build = await provider.GetRequiredService<IAzdoApiClient>().GetBuildAsync("dnceng-public", "public", 2);
+        Assert.Equal(2, build?.Id);
     }
 
     [Fact]
@@ -273,6 +394,12 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         Assert.Equal(consoleCallsAfterFirstRun, scenario.Helix.ConsoleCalls);
         using var manifestDocument = JsonDocument.Parse(File.ReadAllText(harness.ManifestPath));
         Assert.Contains(Attempts(manifestDocument.RootElement), attempt => attempt.GetProperty("outcome").GetString() == "cached");
+        AssertAttemptOk(manifestDocument.RootElement, "get_build_log");
+        AssertAttemptOk(manifestDocument.RootElement, "list_test_runs");
+        AssertAttemptOk(manifestDocument.RootElement, "list_test_results");
+        AssertAttemptOk(manifestDocument.RootElement, "get_helix_work_item");
+        AssertAttemptOk(manifestDocument.RootElement, "get_helix_console_log");
+        AssertAttemptOk(manifestDocument.RootElement, "list_helix_work_item_files");
     }
 
     private static CollectScenario RuntimeLikeScenario(int helixFailureCount = 1)
@@ -365,7 +492,8 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
 
     private static AzdoMcpTools CreateEvalAzdoTools(string snapshotPath)
     {
-        var options = new CacheOptions { CacheRoot = snapshotPath, EvalMode = true };
+        var partition = EvalSnapshotAzdoPartitionSelector.Select(snapshotPath);
+        var options = new CacheOptions { CacheRoot = snapshotPath, EvalMode = true, AuthTokenHash = partition.AuthTokenHash };
         var store = new SqliteCacheStore(options);
         var client = new CachingAzdoApiClient(new OfflineAzdoApiClient(), store, options);
         var helix = new CachingHelixApiClient(new OfflineHelixApiClient(), store, options);
@@ -440,7 +568,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         private readonly IAzdoTokenAccessor _azdoTokenAccessor = Substitute.For<IAzdoTokenAccessor>();
         private readonly IHelixTokenAccessor _helixTokenAccessor = Substitute.For<IHelixTokenAccessor>();
 
-        private CollectHarness(string root, CollectScenario scenario)
+        private CollectHarness(string root, CollectScenario scenario, AzdoCredential? azdoCredential = null)
         {
             _workspace = Path.Combine(root, Guid.NewGuid().ToString("N"));
             CacheRoot = Path.Combine(_workspace, "cache");
@@ -453,9 +581,11 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
             _cacheOptions = new CacheOptions { CacheRoot = CacheRoot, MaxSizeBytes = 128L * 1024 * 1024 };
             _store = new SqliteCacheStore(_cacheOptions);
             _azdoTokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>())
-                .Returns((AzdoCredential?)null);
+                .Returns(azdoCredential);
             _azdoTokenAccessor.AuthStatusAsync(Arg.Any<CancellationToken>())
-                .Returns(new AzdoAuthStatus { IsAuthenticated = false, Path = "anonymous", Source = "anonymous" });
+                .Returns(azdoCredential is null
+                    ? new AzdoAuthStatus { IsAuthenticated = false, Path = "anonymous", Source = "anonymous" }
+                    : new AzdoAuthStatus { IsAuthenticated = true, Path = "environment", Source = "AZDO_TOKEN" });
             _azdoClient = new CachingAzdoApiClient(_azdo, _store, _cacheOptions, _azdoTokenAccessor);
             _helixClient = new CachingHelixApiClient(_helix, _store, _cacheOptions);
             _azdoService = new AzdoService(_azdoClient, _helixClient, new CachingAzdoAcquisitionFailureRecorder(_store, _cacheOptions), _cacheOptions);
@@ -466,7 +596,8 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         public string ManifestPath { get; }
         public string ExportPath { get; }
 
-        public static CollectHarness Create(string root, CollectScenario scenario) => new(root, scenario);
+        public static CollectHarness Create(string root, CollectScenario scenario, AzdoCredential? azdoCredential = null) =>
+            new(root, scenario, azdoCredential);
 
         public Task<AcquisitionError?> GetAcquisitionErrorAsync(string cacheKey) =>
             _store.GetAcquisitionErrorAsync(cacheKey);

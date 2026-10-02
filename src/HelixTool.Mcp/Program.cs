@@ -41,12 +41,13 @@ var mcpEvalSnapshotDir = Environment.GetEnvironmentVariable("HLX_EVAL_SNAPSHOT")
 if (!string.IsNullOrEmpty(mcpEvalSnapshotDir))
 {
     var resolvedSnapshot = Path.GetFullPath(mcpEvalSnapshotDir);
+    var azdoPartition = EvalSnapshotAzdoPartitionSelector.Select(resolvedSnapshot);
     var evalOptions = new CacheOptions
     {
         CacheRoot = resolvedSnapshot,
         EvalMode = true,
         CacheRootHash = null,
-        AuthTokenHash = null,
+        AuthTokenHash = azdoPartition.AuthTokenHash,
     };
     // In eval mode all scoped services use the fixed eval options and offline stubs.
     builder.Services.AddEvalModeCore(evalOptions, ServiceLifetime.Scoped);

@@ -48,12 +48,13 @@ var evalSnapshotDir = Environment.GetEnvironmentVariable("HLX_EVAL_SNAPSHOT");
 if (!string.IsNullOrEmpty(evalSnapshotDir))
 {
     var resolvedSnapshot = Path.GetFullPath(evalSnapshotDir);
+    var azdoPartition = EvalSnapshotAzdoPartitionSelector.Select(resolvedSnapshot);
     var evalOptions = new CacheOptions
     {
         CacheRoot = resolvedSnapshot,
         EvalMode = true,
         CacheRootHash = null,
-        AuthTokenHash = null,
+        AuthTokenHash = azdoPartition.AuthTokenHash,
     };
     services.AddEvalModeCore(evalOptions);
     services.AddSingleton(sp => new Lazy<HelixService>(() => sp.GetRequiredService<HelixService>()));
@@ -1046,12 +1047,13 @@ Available as `failureCategory` in JSON and MCP output.
         if (!string.IsNullOrEmpty(mcpEvalSnapshotDir))
         {
             var resolvedSnapshot = Path.GetFullPath(mcpEvalSnapshotDir);
+            var azdoPartition = EvalSnapshotAzdoPartitionSelector.Select(resolvedSnapshot);
             var evalOptions = new CacheOptions
             {
                 CacheRoot = resolvedSnapshot,
                 EvalMode = true,
                 CacheRootHash = null,
-                AuthTokenHash = null,
+                AuthTokenHash = azdoPartition.AuthTokenHash,
             };
             builder.Services.AddEvalModeCore(evalOptions);
             builder.Services.AddSingleton<AzdoService>(sp =>

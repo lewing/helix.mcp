@@ -43,6 +43,15 @@ public interface IHelixApiClient
         string source, string buildId, int count = 100_000, CancellationToken ct = default);
 }
 
+/// <summary>
+/// Optional companion for cache decorators that can expose uncached file bytes to callers
+/// that must validate policy before publishing a cache artifact.
+/// </summary>
+public interface IUncachedHelixFileClient
+{
+    Task<Stream> GetFileUncachedAsync(string fileName, string workItemName, string jobId, CancellationToken ct = default);
+}
+
 /// <summary>Newtonsoft-free projection of a Helix SDK job summary.</summary>
 public interface IHelixJobSummary
 {
