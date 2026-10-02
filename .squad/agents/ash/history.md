@@ -133,3 +133,33 @@ Completed background research into public dotnet queue-monitor adoption and comp
 
 **Status:** COMPLETED  
 **Outcome:** Requirements approved; no further action on new-tool proposals without evidence
+
+## Learnings (2026-10-02)
+
+### Scanner-safe hlx surface gap analysis
+
+**Core finding:** hlx is strong for agent investigations but not yet a deterministic acquisition layer. MCP defaults intentionally cap and shape output for context; scanner scripts need explicit completeness, pagination, stable error kinds, and bundle provenance.
+
+**#152 scope is broader than `azdo_log`:**
+- Confirmed direct bug: `AzdoApiClient.GetBuildLogAsync` returns null on 404 and `azdo_log` MCP converts null to `string.Empty`.
+- Related hidden-success paths include AzDO list/object helpers returning null/empty on 404/204/empty bodies, timeline-null success notes, cross-step log search skipping null logs, and `azdo_helix_jobs` swallowing primary Helix lookup errors before timeline fallback.
+- Helix service methods usually throw useful `HelixException`s, but the payload remains human text; scanners need machine-readable `not_found/access_denied/rate_limited/timeout/transport_error/invalid_response`.
+
+**Best existing scanner pattern:** `azdo evidence plan` already models deterministic output well: bounded candidates, `complete`, `truncated`, totals, incomplete reasons, warnings, and exit 2 for produced-but-incomplete output.
+
+**Recommended product direction:** add shared acquisition outcome/error infrastructure first, then CLI `--all`/paging and JSON envelopes, then consider `hlx collect` as a deterministic bundle writer. Keep MCP capped by default; do not expand agent-facing payloads just to satisfy script collection.
+
+**Decision artifact:** Filed `.squad/decisions/inbox/ash-scanner-scenarios.md`. Full gap analysis written to session artifact `scanner-scenarios-gap-analysis.md`.
+
+### Bundle-is-snapshot revision
+
+**Directive absorbed:** Larry clarified that Vitek's deterministic collection → files-on-disk → agent retrieval flow is the same concept as the existing `hlx` offline snapshot/cache. The product language should not invent a second "bundle" abstraction: scanners should populate the cache, export a snapshot, and agents should run the same MCP/CLI tools under `HLX_EVAL_SNAPSHOT`.
+
+**Branch delta since first scanner analysis:**
+- Helix-aware `azdo_evidence_plan` has landed: `helixFailures[]`, `suggestedFetches[]`, `helixFailureOffset/Limit/Total/Truncated`, stable `incompleteDetails[].code`, and fail-closed CLI exit `2` for partial Helix-failure pages.
+- #152 acquisition errors have landed: `HlxAcquisitionException`, `AcquisitionError` kinds, CLI JSON `{ok:false,error}`, MCP `structuredContent.error`, and eval-mode cache misses as `provider=cache`, `kind=not_found`.
+- Empty-log not-found handling is partly addressed but remains a stated edge for Azure DevOps HTTP-200 empty-body log IDs.
+
+**Revised product direction:** Prioritize `hlx collect` / `hlx snapshot populate` as evidence-plan-driven snapshot population plus a manifest/completeness ledger. Keep MCP responses capped for agents; let the collector do uncapped/paged acquisition, persist acquisition errors, and prove what was or was not fetched.
+
+**Decision artifact:** Filed `.squad/decisions/inbox/ash-bundle-is-snapshot.md`. Revised session artifact `scanner-scenarios-gap-analysis.md` with "Message for Vitek" and snapshot-centered priorities.

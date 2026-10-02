@@ -151,3 +151,61 @@ See `.squad/agents/kane/history-archive.md` for detailed work on:
 - Folder restructuring analysis (Option A executed in PR #17)
 - Cache security review, HelixService refactoring
 - Knowledgebase refresh guidance
+
+## 2026-10-02 — Helix-aware evidence plan documentation
+
+**Task:** Document arcade queue-monitor parsing shipped in commit 28beceb. Update docs/cli-reference.md `hlx azdo evidence plan` section to explain new `helixFailures[]` field, paging parameters, and `incompleteDetails[].code` semantics. Update README.md tool description and add CHANGELOG.md [Unreleased] entry.
+
+**Changes:**
+1. **docs/cli-reference.md** — Expanded command description, added `--helix-failure-offset` / `--helix-failure-limit` parameters. Updated Output Structure section with full `helixFailures[]` documentation including field meanings (helixJobId, workItem, state, exitCode, sourceFormat, suggestedFetches). Documented paging semantics and all seven `incompleteDetails[].code` values from source. Added exit code clarification: exit 2 when plan is incomplete due to truncation/ambiguity/gaps. Added jq example converting `helixFailures[]` into helix fetch command templates for scripts.
+2. **README.md** — Updated `azdo_evidence_plan` row in MCP Tools table to note Helix monitor support, paging fields, `incompleteDetails[].code` values, and that Helix drilldown routes to helix tools, not a new MCP tool.
+3. **CHANGELOG.md** — Added [Unreleased] entry titled "Helix-aware evidence plan — arcade queue-monitor parsing". Documented parsing behavior, paging support, machine-readable failure codes, deterministic drilldown via `suggestedFetches[]`, and backward compatibility (no changes to artifact plan `entries[]`, empty helix failures never silent).
+
+**Key design decisions preserved in docs:**
+- No new MCP tool for monitor status; evidence plan surfaces Helix IDs for routing to existing Helix tools.
+- `helixFailures[]` is timeline-only (no Helix API calls from evidence planning).
+- Paging is deterministic for collectors: fail-closed when truncated (explicit `helixFailuresTruncated=true`), never "no failures" for unparseable output.
+- `suggestedFetches[]` gives scripts exact tool/jobId/workItem coordinates; CLI examples show `jq` patterns to extract fetch commands.
+- Monitor jobs without artifacts remain incomplete with explicit codes, not silent misses.
+
+**No stale text found:** CiKnowledgeService.cs does not mention evidence plan (grep found no matches); no documentation debt identified in src/.
+
+**Completeness:** All user-facing surfaces now document Helix integration. Docs match shipped code (field names from AzdoEvidenceModels.cs/AzdoMcpTools.cs/Program.cs verified). Paging semantics tied to DefaultHelixFailureLimit and MaxHelixFailureLimit constants. Backward compatibility explicitly noted for evidence plan contract stability.
+
+## 2026-10-02T12:05:00Z — Session handoff: Evidence plan Helix + #152 acquisition errors
+
+Cross-agent context from Scribe:
+
+**For Kane (Documentation):**
+- Ripley's evidence-plan implementation is complete (commit 28beceb, 2047 tests pass)
+- Dallas approved the design; Lambert's tests report it works except for missing stable reason codes in human CLI output
+- Two test failures are implementation gaps (codes expected but not emitted): `CliEvidencePlan_UnparseableMonitorHumanOutput_ExitsTwoWithStableReasonCode`, `CliEvidencePlan_HelixFailurePaging_ReportsTruncationAndSecondPage`
+- Dallas also approved acquisition error contract (#152) as separate PR: stable `HlxAcquisitionException` with `AcquisitionError` record, MCP filter, CLI JSON envelope
+- Update MCP descriptions for both evidence-plan Helix features and acquisition error contract when Ripley adds missing reason codes to CLI output
+- Phasing: #152 error contract PR first (P0), then pagination/completeness, then `hlx collect` bundle writer
+
+**Coordination:**
+- Ash's scanner analysis supports phasing evidence-plan Helix + #152 error contract before scanner work
+- All five agents' decisions merged; ready for Larry's review gate
+
+## 2026-10-02 — Evidence plan code strings
+
+**Learning:** Verify enum/code strings against source, never infer.
+
+## 2026-10-02 — #152 acquisition errors and fail-closed paging docs
+
+**Learning:** For public error contracts, verify JSON property names, enum wire strings, provider values, and exit-code behavior against the exact commit source/tests plus a real CLI run. Evidence-plan paging now treats `helixFailureTotal > helixFailures.length` as partial even on later/final offset pages; never document offset math as the completeness rule.
+
+## 2026-10-02 — Snapshot replay acquisition errors
+
+**Learning:** Snapshot "bundle" docs must describe the existing cache/snapshot path, not a parallel artifact format. Verify replay examples in anonymous mode when possible; Azure CLI-auth cache partitions can make offline replay miss earlier with `not_in_snapshot`. Source-verified wire fields: schema v2 records only `not_found`, `access_denied`, and `invalid_response`; replay adds `source: "snapshot"`, `replayed: true`, and `recordedAt`; true collector gaps use `kind=not_in_snapshot`, `provider=cache`.
+
+### 2026-10-02: PR #153 documentation for snapshot misses (commit 58fd3d0)
+- Documented `not_in_snapshot` acquisition kind and distinction from provider `not_found`
+- Explained negative cache replay workflow in eval mode (source="snapshot", replayed=true)
+- Clarified schema v1/v2 coexistence and validation contract
+- Documented scanner/collect workflow for offline cache population
+- Described empty-log validation and `get_build_log` absence detection
+- All documentation reviews passed by Dallas
+- Full test suite validation: 2175 passed / 9 skipped
+- **Status:** APPROVED as part of PR #153 merge readiness

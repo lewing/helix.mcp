@@ -1,6 +1,6 @@
-using System.Net;
 using System.Xml;
 using System.Xml.Linq;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.Cache;
 using Microsoft.DotNet.Helix.Client;
 
@@ -39,17 +39,32 @@ public class HelixService
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
     }
 
-    /// <summary>Convert a Helix SDK <see cref="RestApiException"/> to a <see cref="HelixException"/>
-    /// using the HTTP status code from the response.</summary>
-    private static HelixException ConvertRestApiException(RestApiException ex, string context)
+    private static async Task<T> ClassifyHelixApiAsync<T>(
+        Func<Task<T>> call,
+        string operation,
+        IReadOnlyDictionary<string, object?> resource,
+        CancellationToken cancellationToken)
     {
-        return ex.Response?.Status switch
+        try
         {
-            401 or 403 => new HelixException(
-                "Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex),
-            404 => new HelixException($"{context} not found.", ex),
-            _ => new HelixException($"Helix API error: {ex.Message}", ex),
-        };
+            return await call();
+        }
+        catch (HttpRequestException ex)
+        {
+            throw HelixAcquisition.FromHttp(ex, operation, resource);
+        }
+        catch (RestApiException ex)
+        {
+            throw HelixAcquisition.FromRestApi(ex, operation, resource);
+        }
+        catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TaskCanceledException ex)
+        {
+            throw HelixAcquisition.Timeout(ex, operation, resource);
+        }
     }
 
     /// <summary>Represents a single work item's name and exit code. <see cref="IsCompleted"/> is false
@@ -74,95 +89,102 @@ public class HelixService
         ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
         var id = HelixIdResolver.ResolveJobId(jobId);
 
-        try
+        var job = await ClassifyHelixApiAsync(
+            () => _api.GetJobDetailsAsync(id, cancellationToken),
+            "get_helix_job",
+            HelixAcquisition.Resource(("jobId", id)),
+            cancellationToken);
+        var workItems = await ClassifyHelixApiAsync(
+            () => _api.ListWorkItemsAsync(id, cancellationToken),
+            "list_helix_work_items",
+            HelixAcquisition.Resource(("jobId", id)),
+            cancellationToken);
+        if (IsMissingJobPlaceholder(job, id, workItems))
         {
-            var job = await _api.GetJobDetailsAsync(id, cancellationToken);
-            var workItems = await _api.ListWorkItemsAsync(id, cancellationToken);
+            throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                AcquisitionErrorKind.NotFound,
+                "helix",
+                "get_helix_job",
+                HelixAcquisition.Resource(("jobId", id)),
+                $"Helix job '{id}' was not found; the details endpoint returned an empty placeholder."));
+        }
 
-            var semaphore = new SemaphoreSlim(10);
-            var tasks = workItems.Select(wi => wi.ExitCode == 0
-                ? Task.FromResult(CreatePassedResult(wi, id))
-                : CreateDetailedResultAsync(wi, id, semaphore, cancellationToken)).ToList();
+        var semaphore = new SemaphoreSlim(10);
+        var tasks = workItems.Select(wi => wi.ExitCode == 0
+            ? Task.FromResult(CreatePassedResult(wi, id))
+            : CreateDetailedResultAsync(wi, id, semaphore, cancellationToken)).ToList();
 
-            var results = await Task.WhenAll(tasks);
-            // Work items whose detailed ExitCode is null are still Waiting/Running/Unscheduled
-            // — they must NOT be counted as failed.
-            var inProgress = results.Where(r => !r.IsCompleted).ToList();
-            var failed = results.Where(r => r.IsCompleted && r.ExitCode != 0).ToList();
-            var passed = results.Where(r => r.IsCompleted && r.ExitCode == 0).ToList();
+        var results = await Task.WhenAll(tasks);
+        // Work items whose detailed ExitCode is null are still Waiting/Running/Unscheduled
+        // — they must NOT be counted as failed.
+        var inProgress = results.Where(r => !r.IsCompleted).ToList();
+        var failed = results.Where(r => r.IsCompleted && r.ExitCode != 0).ToList();
+        var passed = results.Where(r => r.IsCompleted && r.ExitCode == 0).ToList();
 
-            return new JobSummary(
-                id,
-                job.Name ?? "", job.QueueId ?? "", job.QueueAlias, job.Creator ?? "", job.Source ?? "",
-                job.Created, job.Finished,
-                workItems.Count, failed, passed, inProgress,
-                string.IsNullOrEmpty(job.DockerTag) ? null : job.DockerTag);
+        return new JobSummary(
+            id,
+            job.Name ?? "", job.QueueId ?? "", job.QueueAlias, job.Creator ?? "", job.Source ?? "",
+            job.Created, job.Finished,
+            workItems.Count, failed, passed, inProgress,
+            string.IsNullOrEmpty(job.DockerTag) ? null : job.DockerTag);
 
-            static WorkItemResult CreatePassedResult(IWorkItemSummary summary, string resolvedJobId)
-                => new(summary.Name, 0, null, null, null, BuildConsoleLogUrl(resolvedJobId, summary.Name), null);
+        static WorkItemResult CreatePassedResult(IWorkItemSummary summary, string resolvedJobId)
+            => new(summary.Name, 0, null, null, null, BuildConsoleLogUrl(resolvedJobId, summary.Name), null);
 
-            async Task<WorkItemResult> CreateDetailedResultAsync(
-                IWorkItemSummary summary,
-                string resolvedJobId,
-                SemaphoreSlim detailSemaphore,
-                CancellationToken ct)
+        async Task<WorkItemResult> CreateDetailedResultAsync(
+            IWorkItemSummary summary,
+            string resolvedJobId,
+            SemaphoreSlim detailSemaphore,
+            CancellationToken ct)
+        {
+            await detailSemaphore.WaitAsync(ct);
+            try
             {
-                await detailSemaphore.WaitAsync(ct);
-                try
-                {
-                    var details = await _api.GetWorkItemDetailsAsync(summary.Name, resolvedJobId, ct);
-                    TimeSpan? duration = (details.Started.HasValue && details.Finished.HasValue)
-                        ? details.Finished.Value - details.Started.Value
-                        : null;
-                    var exitCode = details.ExitCode ?? -1;
-                    bool isCompleted = details.ExitCode.HasValue;
-                    FailureCategory? category = isCompleted && exitCode != 0
-                        ? ClassifyFailure(exitCode, details.State, duration, summary.Name)
-                        : null;
-                    return new WorkItemResult(
-                        summary.Name,
-                        exitCode,
-                        details.State,
-                        details.MachineName,
-                        duration,
-                        BuildConsoleLogUrl(resolvedJobId, summary.Name),
-                        category,
-                        IsCompleted: isCompleted);
-                }
-                finally
-                {
-                    detailSemaphore.Release();
-                }
+                var details = await ClassifyHelixApiAsync(
+                    () => _api.GetWorkItemDetailsAsync(summary.Name, resolvedJobId, ct),
+                    "get_helix_work_item",
+                    HelixAcquisition.Resource(("jobId", resolvedJobId), ("workItem", summary.Name)),
+                    ct);
+                TimeSpan? duration = (details.Started.HasValue && details.Finished.HasValue)
+                    ? details.Finished.Value - details.Started.Value
+                    : null;
+                var exitCode = details.ExitCode ?? -1;
+                bool isCompleted = details.ExitCode.HasValue;
+                FailureCategory? category = isCompleted && exitCode != 0
+                    ? ClassifyFailure(exitCode, details.State, duration, summary.Name)
+                    : null;
+                return new WorkItemResult(
+                    summary.Name,
+                    exitCode,
+                    details.State,
+                    details.MachineName,
+                    duration,
+                    BuildConsoleLogUrl(resolvedJobId, summary.Name),
+                    category,
+                    IsCompleted: isCompleted);
             }
+            finally
+            {
+                detailSemaphore.Release();
+            }
+        }
 
-            static string BuildConsoleLogUrl(string resolvedJobId, string workItemName)
-                => $"https://helix.dot.net/api/2019-06-17/jobs/{resolvedJobId}/workitems/{workItemName}/console";
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
-        {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            throw new HelixException($"Job '{id}' not found.", ex);
-        }
-        catch (HttpRequestException ex)
-        {
-            throw new HelixException($"Helix API error: {ex.Message}", ex);
-        }
-        catch (RestApiException ex)
-        {
-            throw ConvertRestApiException(ex, $"Job '{id}'");
-        }
-        catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (TaskCanceledException ex)
-        {
-            throw new HelixException("Helix API request timed out.", ex);
-        }
+        static string BuildConsoleLogUrl(string resolvedJobId, string workItemName)
+            => $"https://helix.dot.net/api/2019-06-17/jobs/{resolvedJobId}/workitems/{workItemName}/console";
     }
+
+    private static bool IsMissingJobPlaceholder(
+        IJobDetails job,
+        string jobId,
+        IReadOnlyList<IWorkItemSummary> workItems)
+        => workItems.Count == 0
+            && string.Equals(job.Name, jobId, StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrEmpty(job.QueueId)
+            && string.IsNullOrEmpty(job.QueueAlias)
+            && string.IsNullOrEmpty(job.Creator)
+            && string.IsNullOrEmpty(job.Source)
+            && string.IsNullOrEmpty(job.Created)
+            && string.IsNullOrEmpty(job.Finished);
 
     /// <summary>Represents an uploaded file from a Helix work item.</summary>
     public record FileEntry(string Name, string Uri);
@@ -189,21 +211,13 @@ public class HelixService
                 f.Name, f.Link ?? ""
             )).ToList();
         }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
-        {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            throw new HelixException($"Work item '{workItem}' in job '{id}' not found.", ex);
-        }
         catch (HttpRequestException ex)
         {
-            throw new HelixException($"Helix API error: {ex.Message}", ex);
+            throw HelixAcquisition.FromHttp(ex, "list_helix_work_item_files", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
         catch (RestApiException ex)
         {
-            throw ConvertRestApiException(ex, $"Work item '{workItem}' in job '{id}'");
+            throw HelixAcquisition.FromRestApi(ex, "list_helix_work_item_files", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -211,7 +225,7 @@ public class HelixService
         }
         catch (TaskCanceledException ex)
         {
-            throw new HelixException("Helix API request timed out.", ex);
+            throw HelixAcquisition.Timeout(ex, "list_helix_work_item_files", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
     }
 
@@ -238,21 +252,13 @@ public class HelixService
             await stream.CopyToAsync(file, cancellationToken);
             return path;
         }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
-        {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            throw new HelixException($"Console log for '{workItem}' in job '{id}' not found.", ex);
-        }
         catch (HttpRequestException ex)
         {
-            throw new HelixException($"Helix API error: {ex.Message}", ex);
+            throw HelixAcquisition.FromHttp(ex, "get_helix_console_log", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
         catch (RestApiException ex)
         {
-            throw ConvertRestApiException(ex, $"Console log for '{workItem}' in job '{id}'");
+            throw HelixAcquisition.FromRestApi(ex, "get_helix_console_log", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -260,7 +266,7 @@ public class HelixService
         }
         catch (TaskCanceledException ex)
         {
-            throw new HelixException("Helix API request timed out.", ex);
+            throw HelixAcquisition.Timeout(ex, "get_helix_console_log", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
     }
 
@@ -288,21 +294,13 @@ public class HelixService
 
             return content;
         }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
-        {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            throw new HelixException($"Console log for '{workItem}' in job '{id}' not found.", ex);
-        }
         catch (HttpRequestException ex)
         {
-            throw new HelixException($"Helix API error: {ex.Message}", ex);
+            throw HelixAcquisition.FromHttp(ex, "get_helix_console_log", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
         catch (RestApiException ex)
         {
-            throw ConvertRestApiException(ex, $"Console log for '{workItem}' in job '{id}'");
+            throw HelixAcquisition.FromRestApi(ex, "get_helix_console_log", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -310,7 +308,7 @@ public class HelixService
         }
         catch (TaskCanceledException ex)
         {
-            throw new HelixException("Helix API request timed out.", ex);
+            throw HelixAcquisition.Timeout(ex, "get_helix_console_log", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
     }
 
@@ -333,80 +331,59 @@ public class HelixService
         ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
         var id = HelixIdResolver.ResolveJobId(jobId);
 
-        try
+        // Single-work-item fast path: skip listing all work items.
+        if (!string.IsNullOrWhiteSpace(workItem))
         {
-            // Single-work-item fast path: skip listing all work items.
-            if (!string.IsNullOrWhiteSpace(workItem))
+            progress?.Report(new ProgressUpdate(0, 1, $"Scanning work item '{workItem}'"));
+            var files = await GetWorkItemFilesAsync(id, workItem, cancellationToken);
+            var matching = files
+                .Where(f => MatchesPattern(f.Name, pattern))
+                .ToList();
+            var results = matching.Count > 0
+                ? [new FileSearchResult(workItem, matching)]
+                : new List<FileSearchResult>();
+            progress?.Report(new ProgressUpdate(1, 1, $"Scanned 1 work item ({results.Count} match(es))"));
+            return new FindFilesResults(results, Truncated: false, TotalWorkItems: 1);
+        }
+
+        var allWorkItems = await ClassifyHelixApiAsync(
+            () => _api.ListWorkItemsAsync(id, cancellationToken),
+            "list_helix_work_items",
+            HelixAcquisition.Resource(("jobId", id)),
+            cancellationToken);
+        var totalWorkItems = allWorkItems.Count;
+        var toScan = allWorkItems.Take(maxItems).ToList();
+        var scanResults = new List<FileSearchResult>();
+
+        int total = toScan.Count;
+        int step = ProgressReporter.ItemStep(total);
+        progress?.Report(new ProgressUpdate(0, total,
+            total == 0 ? "No work items to scan" : $"Scanning {total} work item(s)"));
+
+        int scanned = 0;
+        foreach (var wi in toScan)
+        {
+            var files = await ClassifyHelixApiAsync(
+                () => _api.ListWorkItemFilesAsync(wi.Name, id, cancellationToken),
+                "list_helix_work_item_files",
+                HelixAcquisition.Resource(("jobId", id), ("workItem", wi.Name)),
+                cancellationToken);
+            var matching = files
+                .Where(f => MatchesPattern(f.Name, pattern))
+                .Select(f => new FileEntry(f.Name, f.Link ?? ""))
+                .ToList();
+            if (matching.Count > 0)
+                scanResults.Add(new FileSearchResult(wi.Name, matching));
+
+            scanned++;
+            if (progress is not null && (scanned % step == 0 || scanned == total))
             {
-                progress?.Report(new ProgressUpdate(0, 1, $"Scanning work item '{workItem}'"));
-                // Use GetWorkItemFilesAsync so a missing work item is reported as
-                // "Work item 'X' in job 'Y' not found" rather than the job-level 404 message.
-                var files = await GetWorkItemFilesAsync(id, workItem, cancellationToken);
-                var matching = files
-                    .Where(f => MatchesPattern(f.Name, pattern))
-                    .ToList();
-                var results = matching.Count > 0
-                    ? [new FileSearchResult(workItem, matching)]
-                    : new List<FileSearchResult>();
-                progress?.Report(new ProgressUpdate(1, 1, $"Scanned 1 work item ({results.Count} match(es))"));
-                return new FindFilesResults(results, Truncated: false, TotalWorkItems: 1);
+                progress.Report(new ProgressUpdate(scanned, total,
+                    $"Scanned {scanned} of {total} work item(s) ({scanResults.Count} match(es))"));
             }
+        }
 
-            var allWorkItems = await _api.ListWorkItemsAsync(id, cancellationToken);
-            var totalWorkItems = allWorkItems.Count;
-            var toScan = allWorkItems.Take(maxItems).ToList();
-            var scanResults = new List<FileSearchResult>();
-
-            int total = toScan.Count;
-            int step = ProgressReporter.ItemStep(total);
-            progress?.Report(new ProgressUpdate(0, total,
-                total == 0 ? "No work items to scan" : $"Scanning {total} work item(s)"));
-
-            int scanned = 0;
-            foreach (var wi in toScan)
-            {
-                var files = await _api.ListWorkItemFilesAsync(wi.Name, id, cancellationToken);
-                var matching = files
-                    .Where(f => MatchesPattern(f.Name, pattern))
-                    .Select(f => new FileEntry(f.Name, f.Link ?? ""))
-                    .ToList();
-                if (matching.Count > 0)
-                    scanResults.Add(new FileSearchResult(wi.Name, matching));
-
-                scanned++;
-                if (progress is not null && (scanned % step == 0 || scanned == total))
-                {
-                    progress.Report(new ProgressUpdate(scanned, total,
-                        $"Scanned {scanned} of {total} work item(s) ({scanResults.Count} match(es))"));
-                }
-            }
-
-            return new FindFilesResults(scanResults, totalWorkItems > maxItems, totalWorkItems);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
-        {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            throw new HelixException($"Job '{id}' not found.", ex);
-        }
-        catch (HttpRequestException ex)
-        {
-            throw new HelixException($"Helix API error: {ex.Message}", ex);
-        }
-        catch (RestApiException ex)
-        {
-            throw ConvertRestApiException(ex, $"Job '{id}'");
-        }
-        catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (TaskCanceledException ex)
-        {
-            throw new HelixException("Helix API request timed out.", ex);
-        }
+        return new FindFilesResults(scanResults, totalWorkItems > maxItems, totalWorkItems);
     }
 
     /// <summary>Scan work items in a job to find which ones contain binlog files.</summary>
@@ -426,65 +403,46 @@ public class HelixService
         ArgumentException.ThrowIfNullOrWhiteSpace(workItem);
         var id = HelixIdResolver.ResolveJobId(jobId);
 
-        try
-        {
-            var files = await _api.ListWorkItemFilesAsync(workItem, id, cancellationToken);
-            var matching = files.Where(f => MatchesPattern(f.Name, pattern)).ToList();
+        var files = await ClassifyHelixApiAsync(
+            () => _api.ListWorkItemFilesAsync(workItem, id, cancellationToken),
+            "list_helix_work_item_files",
+            HelixAcquisition.Resource(("jobId", id), ("workItem", workItem), ("pattern", pattern)),
+            cancellationToken);
+        var matching = files.Where(f => MatchesPattern(f.Name, pattern)).ToList();
 
-            if (matching.Count == 0)
-                return [];
+        if (matching.Count == 0)
+            return [];
 
-            var idPrefix = id.Length >= 8 ? id[..8] : id;
-            var outDir = Path.Combine(Path.GetTempPath(), $"helix-{idPrefix}-{Guid.NewGuid():N}");
-            Directory.CreateDirectory(outDir);
-            var paths = new List<string>();
+        var idPrefix = id.Length >= 8 ? id[..8] : id;
+        var outDir = Path.Combine(Path.GetTempPath(), $"helix-{idPrefix}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outDir);
+        var paths = new List<string>();
 
-            int total = matching.Count;
-            progress?.Report(new ProgressUpdate(0, total, $"Downloading {total} file(s)"));
+        int total = matching.Count;
+        progress?.Report(new ProgressUpdate(0, total, $"Downloading {total} file(s)"));
 
-            int done = 0;
-            foreach (var f in matching)
-            {
-                await using var stream = await _api.GetFileAsync(f.Name, workItem, id, cancellationToken);
-                var safeName = CacheSecurity.SanitizePathSegment(Path.GetFileName(f.Name));
-                var outPath = Path.Combine(outDir, safeName);
-                CacheSecurity.ValidatePathWithinRoot(outPath, outDir);
-                Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
-                await using var file = File.Create(outPath);
-                await stream.CopyToAsync(file, cancellationToken);
-                paths.Add(outPath);
+        int done = 0;
+        foreach (var f in matching)
+        {
+            await using var stream = await ClassifyHelixApiAsync(
+                () => _api.GetFileAsync(f.Name, workItem, id, cancellationToken),
+                "download_helix_file",
+                HelixAcquisition.Resource(("jobId", id), ("workItem", workItem), ("fileName", f.Name)),
+                cancellationToken);
+            var safeName = CacheSecurity.SanitizePathSegment(Path.GetFileName(f.Name));
+            var outPath = Path.Combine(outDir, safeName);
+            CacheSecurity.ValidatePathWithinRoot(outPath, outDir);
+            Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
+            await using var file = File.Create(outPath);
+            await stream.CopyToAsync(file, cancellationToken);
+            paths.Add(outPath);
 
-                done++;
-                progress?.Report(new ProgressUpdate(done, total,
-                    $"Downloaded {done} of {total} file(s): {safeName}"));
-            }
+            done++;
+            progress?.Report(new ProgressUpdate(done, total,
+                $"Downloaded {done} of {total} file(s): {safeName}"));
+        }
 
-            return paths;
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
-        {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            throw new HelixException($"Work item '{workItem}' in job '{id}' not found.", ex);
-        }
-        catch (HttpRequestException ex)
-        {
-            throw new HelixException($"Helix API error: {ex.Message}", ex);
-        }
-        catch (RestApiException ex)
-        {
-            throw ConvertRestApiException(ex, $"Work item '{workItem}' in job '{id}'");
-        }
-        catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (TaskCanceledException ex)
-        {
-            throw new HelixException("Helix API request timed out.", ex);
-        }
+        return paths;
     }
 
     /// <summary>Download a file from a direct URL (e.g., blob storage URI) to a temp file.</summary>
@@ -525,21 +483,13 @@ public class HelixService
 
             return path;
         }
-        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized || ex.StatusCode == System.Net.HttpStatusCode.Forbidden)
-        {
-            throw new HelixException("Access denied downloading file. The URL may require authentication.", ex);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
-        {
-            throw new HelixException($"File not found at URL: {url}", ex);
-        }
         catch (HttpRequestException ex)
         {
-            throw new HelixException($"Download error: {ex.Message}", ex);
+            throw HelixAcquisition.FromHttp(ex, "download_url", HelixAcquisition.Resource(("url", url)));
         }
         catch (RestApiException ex)
         {
-            throw ConvertRestApiException(ex, $"Resource");
+            throw HelixAcquisition.FromRestApi(ex, "download_url", HelixAcquisition.Resource(("url", url)));
         }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -547,7 +497,7 @@ public class HelixService
         }
         catch (TaskCanceledException ex)
         {
-            throw new HelixException("Download request timed out.", ex);
+            throw HelixAcquisition.Timeout(ex, "download_url", HelixAcquisition.Resource(("url", url)));
         }
     }
 
@@ -564,55 +514,36 @@ public class HelixService
         ArgumentException.ThrowIfNullOrWhiteSpace(workItem);
         var id = HelixIdResolver.ResolveJobId(jobId);
 
-        try
-        {
-            var detailsTask = _api.GetWorkItemDetailsAsync(workItem, id, cancellationToken);
-            var filesTask = _api.ListWorkItemFilesAsync(workItem, id, cancellationToken);
-            await Task.WhenAll(detailsTask, filesTask);
+        var detailsTask = ClassifyHelixApiAsync(
+            () => _api.GetWorkItemDetailsAsync(workItem, id, cancellationToken),
+            "get_helix_work_item",
+            HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)),
+            cancellationToken);
+        var filesTask = ClassifyHelixApiAsync(
+            () => _api.ListWorkItemFilesAsync(workItem, id, cancellationToken),
+            "list_helix_work_item_files",
+            HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)),
+            cancellationToken);
+        await Task.WhenAll(detailsTask, filesTask);
 
-            var details = detailsTask.Result;
-            var files = filesTask.Result;
+        var details = detailsTask.Result;
+        var files = filesTask.Result;
 
-            TimeSpan? duration = (details.Started.HasValue && details.Finished.HasValue)
-                ? details.Finished.Value - details.Started.Value
-                : null;
-            var consoleLogUrl = $"https://helix.dot.net/api/2019-06-17/jobs/{id}/workitems/{workItem}/console";
-            var fileEntries = files.Select(f => new FileEntry(
-                f.Name, f.Link ?? ""
-            )).ToList();
+        TimeSpan? duration = (details.Started.HasValue && details.Finished.HasValue)
+            ? details.Finished.Value - details.Started.Value
+            : null;
+        var consoleLogUrl = $"https://helix.dot.net/api/2019-06-17/jobs/{id}/workitems/{workItem}/console";
+        var fileEntries = files.Select(f => new FileEntry(
+            f.Name, f.Link ?? ""
+        )).ToList();
 
-            var exitCode = details.ExitCode ?? -1;
-            bool isCompleted = details.ExitCode.HasValue;
-            FailureCategory? category = isCompleted && exitCode != 0
-                ? ClassifyFailure(exitCode, details.State, duration, workItem)
-                : null;
+        var exitCode = details.ExitCode ?? -1;
+        bool isCompleted = details.ExitCode.HasValue;
+        FailureCategory? category = isCompleted && exitCode != 0
+            ? ClassifyFailure(exitCode, details.State, duration, workItem)
+            : null;
 
-            return new WorkItemDetail(workItem, exitCode, details.State, details.MachineName, duration, consoleLogUrl, fileEntries, category, IsCompleted: isCompleted);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
-        {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            throw new HelixException($"Work item '{workItem}' in job '{id}' not found.", ex);
-        }
-        catch (HttpRequestException ex)
-        {
-            throw new HelixException($"Helix API error: {ex.Message}", ex);
-        }
-        catch (RestApiException ex)
-        {
-            throw ConvertRestApiException(ex, $"Work item '{workItem}' in job '{id}'");
-        }
-        catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (TaskCanceledException ex)
-        {
-            throw new HelixException("Helix API request timed out.", ex);
-        }
+        return new WorkItemDetail(workItem, exitCode, details.State, details.MachineName, duration, consoleLogUrl, fileEntries, category, IsCompleted: isCompleted);
     }
 
     /// <summary>Summary for multiple jobs.</summary>
@@ -1018,27 +949,11 @@ public class HelixService
 
         // Auto-discovery: get file list once and find all test result files
         var id = HelixIdResolver.ResolveJobId(jobId);
-        List<IWorkItemFile> allFiles;
-        try
-        {
-            allFiles = (await _api.ListWorkItemFilesAsync(workItem, id, cancellationToken)).ToList();
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
-        {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            throw new HelixException($"Work item '{workItem}' in job '{id}' not found.", ex);
-        }
-        catch (HttpRequestException ex)
-        {
-            throw new HelixException($"Helix API error: {ex.Message}", ex);
-        }
-        catch (RestApiException ex)
-        {
-            throw ConvertRestApiException(ex, $"Work item '{workItem}' in job '{id}'");
-        }
+        var allFiles = (await ClassifyHelixApiAsync(
+            () => _api.ListWorkItemFilesAsync(workItem, id, cancellationToken),
+            "list_helix_work_item_files",
+            HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)),
+            cancellationToken)).ToList();
 
         // Find test result files matching known patterns
         var testResultFiles = allFiles.Where(f => IsTestResultFile(f.Name)).ToList();
@@ -1120,7 +1035,11 @@ public class HelixService
 
         foreach (var f in files)
         {
-            await using var stream = await _api.GetFileAsync(f.Name, workItem, jobId, cancellationToken);
+            await using var stream = await ClassifyHelixApiAsync(
+                () => _api.GetFileAsync(f.Name, workItem, jobId, cancellationToken),
+                "download_helix_file",
+                HelixAcquisition.Resource(("jobId", jobId), ("workItem", workItem), ("fileName", f.Name)),
+                cancellationToken);
             var safeName = CacheSecurity.SanitizePathSegment(Path.GetFileName(f.Name));
             var outPath = Path.Combine(outDir, safeName);
             CacheSecurity.ValidatePathWithinRoot(outPath, outDir);

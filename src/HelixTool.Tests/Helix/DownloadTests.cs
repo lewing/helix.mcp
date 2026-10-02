@@ -1,5 +1,6 @@
 using System.Net;
 using HelixTool.Core;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.Cache;
 using HelixTool.Core.Helix;
 using NSubstitute;
@@ -306,15 +307,15 @@ public class DownloadFilesTests : IDisposable
     // ==========================================================================
 
     [Fact]
-    public async Task DownloadFilesAsync_NotFound_ThrowsHelixException()
+    public async Task DownloadFilesAsync_NotFound_ThrowsAcquisitionNotFound()
     {
         _mockApi.ListWorkItemFilesAsync("wi1", ValidJobId, Arg.Any<CancellationToken>())
             .ThrowsAsync(new HttpRequestException("Not Found", null, HttpStatusCode.NotFound));
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _svc.DownloadFilesAsync(ValidJobId, "wi1"));
 
-        Assert.Contains("not found", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "helix", "list_helix_work_item_files", 404);
     }
 
     // ==========================================================================
@@ -322,27 +323,27 @@ public class DownloadFilesTests : IDisposable
     // ==========================================================================
 
     [Fact]
-    public async Task DownloadFilesAsync_Unauthorized_ThrowsHelixException()
+    public async Task DownloadFilesAsync_Unauthorized_ThrowsAcquisitionAccessDenied()
     {
         _mockApi.ListWorkItemFilesAsync("wi1", ValidJobId, Arg.Any<CancellationToken>())
             .ThrowsAsync(new HttpRequestException("Unauthorized", null, HttpStatusCode.Unauthorized));
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _svc.DownloadFilesAsync(ValidJobId, "wi1"));
 
-        Assert.Contains("Access denied", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.AccessDenied, "helix", "list_helix_work_item_files", 401);
     }
 
     [Fact]
-    public async Task DownloadFilesAsync_Forbidden_ThrowsHelixException()
+    public async Task DownloadFilesAsync_Forbidden_ThrowsAcquisitionAccessDenied()
     {
         _mockApi.ListWorkItemFilesAsync("wi1", ValidJobId, Arg.Any<CancellationToken>())
             .ThrowsAsync(new HttpRequestException("Forbidden", null, HttpStatusCode.Forbidden));
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _svc.DownloadFilesAsync(ValidJobId, "wi1"));
 
-        Assert.Contains("Access denied", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.AccessDenied, "helix", "list_helix_work_item_files", 403);
     }
 
     // ==========================================================================
@@ -350,15 +351,15 @@ public class DownloadFilesTests : IDisposable
     // ==========================================================================
 
     [Fact]
-    public async Task DownloadFilesAsync_ServerError_ThrowsHelixException()
+    public async Task DownloadFilesAsync_ServerError_ThrowsTransportError()
     {
         _mockApi.ListWorkItemFilesAsync("wi1", ValidJobId, Arg.Any<CancellationToken>())
             .ThrowsAsync(new HttpRequestException("Server Error", null, HttpStatusCode.InternalServerError));
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _svc.DownloadFilesAsync(ValidJobId, "wi1"));
 
-        Assert.Contains("API error", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.TransportError, "helix", "list_helix_work_item_files", 500);
     }
 
     // ==========================================================================
@@ -366,15 +367,15 @@ public class DownloadFilesTests : IDisposable
     // ==========================================================================
 
     [Fact]
-    public async Task DownloadFilesAsync_Timeout_ThrowsHelixException()
+    public async Task DownloadFilesAsync_Timeout_ThrowsAcquisitionTimeout()
     {
         _mockApi.ListWorkItemFilesAsync("wi1", ValidJobId, Arg.Any<CancellationToken>())
             .ThrowsAsync(new TaskCanceledException("timed out"));
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _svc.DownloadFilesAsync(ValidJobId, "wi1"));
 
-        Assert.Contains("timed out", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.Timeout, "helix", "list_helix_work_item_files");
     }
 
     // ==========================================================================

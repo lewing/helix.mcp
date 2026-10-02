@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.Cache;
 using HelixTool.Core.Helix;
 using HelixTool.Mcp;
@@ -257,6 +258,15 @@ public class ApiKeyScopedRequestIsolationTests : IClassFixture<ApiKeyScopedReque
                 Task.FromResult<Stream?>(null);
 
             public Task SetArtifactAsync(string cacheKey, Stream content, CancellationToken ct = default) =>
+                Task.CompletedTask;
+
+            public Task<AcquisitionError?> GetAcquisitionErrorAsync(string cacheKey, CancellationToken ct = default) =>
+                Task.FromResult<AcquisitionError?>(null);
+
+            public Task SetAcquisitionErrorAsync(string cacheKey, AcquisitionError error, TimeSpan ttl, CancellationToken ct = default) =>
+                Task.CompletedTask;
+
+            public Task DeleteAcquisitionErrorAsync(string cacheKey, CancellationToken ct = default) =>
                 Task.CompletedTask;
 
             public Task<bool?> IsJobCompletedAsync(string jobId, CancellationToken ct = default) =>

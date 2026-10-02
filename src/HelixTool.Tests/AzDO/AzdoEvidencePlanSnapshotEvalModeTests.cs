@@ -13,6 +13,7 @@
 // Run: `dotnet test --filter "FullyQualifiedName~AzdoEvidencePlanSnapshotEvalModeTests"`
 
 using System.Text.Json;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.AzDO;
 using HelixTool.Core.Cache;
 using Xunit;
@@ -150,7 +151,7 @@ public class AzdoEvidencePlanSnapshotEvalModeTests : IDisposable
         // fallback — for every one of the three cached GETs GetEvidencePlanAsync depends on.
         var svc = await CreateSnapshotBackedServiceAsync(includeArtifacts: false);
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => svc.GetEvidencePlanAsync(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() => svc.GetEvidencePlanAsync(
             BuildId.ToString(),
             new AzdoEvidencePlanOptions
             {
@@ -161,6 +162,6 @@ public class AzdoEvidencePlanSnapshotEvalModeTests : IDisposable
                 JobResults = ["failed", "canceled"]
             }));
 
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        SnapshotEvalTestHarness.AssertSnapshotMiss(ex, "list_artifacts");
     }
 }

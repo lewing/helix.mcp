@@ -6,6 +6,7 @@ namespace HelixTool.Core.Cache;
 /// <param name="Warnings">Non-fatal issues that may affect snapshot usability.</param>
 /// <param name="MetadataEntries">Number of rows in <c>cache_metadata</c>.</param>
 /// <param name="ArtifactEntries">Number of rows in <c>cache_artifacts</c>.</param>
+/// <param name="AcquisitionErrorEntries">Number of rows in <c>cache_acquisition_errors</c>.</param>
 /// <param name="MissingArtifactFiles">
 /// Number of artifact rows whose referenced files are absent from the snapshot.
 /// A non-zero value is always reflected as one or more entries in <see cref="Errors"/>.
@@ -16,4 +17,5 @@ public sealed record SnapshotValidationResult(
     IReadOnlyList<string> Warnings,
     int MetadataEntries,
     int ArtifactEntries,
+    int AcquisitionErrorEntries,
     int MissingArtifactFiles);

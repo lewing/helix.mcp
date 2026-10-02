@@ -40,6 +40,12 @@ public sealed record AzdoEvidencePlanOptions
     /// Default: <c>["failed", "canceled"]</c>.
     /// </summary>
     public IReadOnlyList<string> JobResults { get; init; } = ["failed", "canceled"];
+
+    /// <summary>Offset into parsed Helix monitor failures for deterministic collectors.</summary>
+    public int HelixFailureOffset { get; init; }
+
+    /// <summary>Maximum parsed Helix monitor failures to return.</summary>
+    public int HelixFailureLimit { get; init; } = AzdoEvidencePlan.DefaultHelixFailureLimit;
 }
 
 /// <summary>Named constants for <see cref="AzdoEvidencePlanOptions.Match"/>.</summary>
@@ -309,6 +315,115 @@ public sealed record AzdoBuiltPlanResult
     public string? Note { get; init; }
 }
 
+/// <summary>A parsed Helix monitor work-item failure surfaced by the evidence plan.</summary>
+public sealed record AzdoHelixEvidenceFailure
+{
+    [JsonPropertyName("monitorJobId")]
+    public string MonitorJobId { get; init; } = "";
+
+    [JsonPropertyName("monitorJobName")]
+    public string MonitorJobName { get; init; } = "";
+
+    [JsonPropertyName("monitorJobResult")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? MonitorJobResult { get; init; }
+
+    [JsonPropertyName("monitorJobOrder")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MonitorJobOrder { get; init; }
+
+    [JsonPropertyName("monitorJobAttempt")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MonitorJobAttempt { get; init; }
+
+    [JsonPropertyName("monitorTaskId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? MonitorTaskId { get; init; }
+
+    [JsonPropertyName("monitorTaskName")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? MonitorTaskName { get; init; }
+
+    [JsonPropertyName("helixJobId")]
+    public string HelixJobId { get; init; } = "";
+
+    [JsonPropertyName("helixJobName")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? HelixJobName { get; init; }
+
+    [JsonPropertyName("leg")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Leg { get; init; }
+
+    [JsonPropertyName("queue")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Queue { get; init; }
+
+    [JsonPropertyName("workItem")]
+    public string WorkItem { get; init; } = "";
+
+    [JsonPropertyName("state")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? State { get; init; }
+
+    [JsonPropertyName("exitCode")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ExitCode { get; init; }
+
+    [JsonPropertyName("details")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Details { get; init; }
+
+    [JsonPropertyName("sourceFormat")]
+    public string SourceFormat { get; init; } = "";
+
+    [JsonPropertyName("suggestedFetches")]
+    public IReadOnlyList<AzdoHelixEvidenceFetch> SuggestedFetches { get; init; } = [];
+}
+
+/// <summary>A deterministic follow-up fetch intent for a parsed Helix monitor failure.</summary>
+public sealed record AzdoHelixEvidenceFetch
+{
+    [JsonPropertyName("tool")]
+    public string Tool { get; init; } = "";
+
+    [JsonPropertyName("helixJobId")]
+    public string HelixJobId { get; init; } = "";
+
+    [JsonPropertyName("workItem")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? WorkItem { get; init; }
+
+    [JsonPropertyName("purpose")]
+    public string Purpose { get; init; } = "";
+}
+
+/// <summary>A stable machine-readable incomplete evidence-plan condition.</summary>
+public sealed record AzdoEvidenceIncompleteDetail
+{
+    [JsonPropertyName("code")]
+    public string Code { get; init; } = "";
+
+    [JsonPropertyName("message")]
+    public string Message { get; init; } = "";
+
+    [JsonPropertyName("jobId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? JobId { get; init; }
+
+    [JsonPropertyName("jobName")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? JobName { get; init; }
+
+    [JsonPropertyName("count")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Count { get; init; }
+
+    [JsonPropertyName("total")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Total { get; init; }
+}
+
 /// <summary>
 /// Output of <see cref="AzdoService.GetEvidencePlanAsync"/>: a deterministic,
 /// read-only plan mapping failed/canceled jobs to their artifact candidates.
@@ -318,6 +433,15 @@ public sealed record AzdoEvidencePlan
 {
     /// <summary>Maximum number of original warning diagnostics returned in <see cref="Warnings"/>.</summary>
     public const int MaxWarnings = 10;
+
+    /// <summary>Maximum parsed Helix monitor failures returned by default in <see cref="HelixFailures"/>.</summary>
+    public const int MaxHelixFailures = AzdoEvidenceMatcher.MaxPlanEntries;
+
+    /// <summary>Default parsed Helix monitor failure page size.</summary>
+    public const int DefaultHelixFailureLimit = AzdoEvidenceMatcher.MaxPlanEntries;
+
+    /// <summary>Maximum accepted parsed Helix monitor failure page size.</summary>
+    public const int MaxHelixFailureLimit = 1000;
 
     [JsonPropertyName("buildId")]
     public int BuildId { get; init; }
@@ -348,6 +472,21 @@ public sealed record AzdoEvidencePlan
     [JsonPropertyName("entries")]
     public IReadOnlyList<AzdoEvidencePlanEntry> Entries { get; init; } = [];
 
+    [JsonPropertyName("helixFailures")]
+    public IReadOnlyList<AzdoHelixEvidenceFailure> HelixFailures { get; init; } = [];
+
+    [JsonPropertyName("helixFailureOffset")]
+    public int HelixFailureOffset { get; init; }
+
+    [JsonPropertyName("helixFailureLimit")]
+    public int HelixFailureLimit { get; init; } = DefaultHelixFailureLimit;
+
+    [JsonPropertyName("helixFailureTotal")]
+    public int HelixFailureTotal { get; init; }
+
+    [JsonPropertyName("helixFailuresTruncated")]
+    public bool HelixFailuresTruncated { get; init; }
+
     /// <summary><c>true</c> when every entry has exactly one mapped candidate and no output was truncated.</summary>
     [JsonPropertyName("complete")]
     public bool Complete { get; init; }
@@ -356,6 +495,10 @@ public sealed record AzdoEvidencePlan
     [JsonPropertyName("incompleteReasons")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public IReadOnlyList<string> IncompleteReasons { get; init; } = [];
+
+    [JsonPropertyName("incompleteDetails")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public IReadOnlyList<AzdoEvidenceIncompleteDetail> IncompleteDetails { get; init; } = [];
 
     /// <summary>
     /// The first <see cref="MaxWarnings"/> original non-fatal planning diagnostics in deterministic order.

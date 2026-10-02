@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Text.Json.Serialization;
+using HelixTool.Core.Acquisition;
 
 namespace HelixTool.Core.AzDO;
 
@@ -542,6 +543,21 @@ public sealed record HelixJobsFromBuildResult(
     [JsonPropertyName("timelineIssues")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<HelixTimelineIssue>? TimelineIssues { get; init; }
+
+    /// <summary>False when fallback output was produced but provider acquisition evidence is incomplete.</summary>
+    [JsonPropertyName("complete")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Complete { get; init; }
+
+    /// <summary>Helix-side primary lookup acquisition failure preserved when timeline fallback is used.</summary>
+    [JsonPropertyName("primaryAcquisitionError")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AcquisitionError? PrimaryAcquisitionError { get; init; }
+
+    /// <summary>AzDO timeline acquisition failure preserved when failure evidence is unavailable.</summary>
+    [JsonPropertyName("timelineAcquisitionError")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AcquisitionError? TimelineAcquisitionError { get; init; }
 }
 
 /// <summary>A single timeline record matching a search pattern.</summary>

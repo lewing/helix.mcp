@@ -450,6 +450,9 @@ public class AzdoEvidenceFixtureTests
     [InlineData(typeof(AzdoEvidencePlanEntry))]
     [InlineData(typeof(AzdoEvidenceCandidate))]
     [InlineData(typeof(AzdoBuildProvenance))]
+    [InlineData(typeof(AzdoHelixEvidenceFailure))]
+    [InlineData(typeof(AzdoHelixEvidenceFetch))]
+    [InlineData(typeof(AzdoEvidenceIncompleteDetail))]
     public void ResultType_AllProperties_HaveJsonPropertyName(Type type)
     {
         // mcp-structured-content: every property carries an explicit [JsonPropertyName].

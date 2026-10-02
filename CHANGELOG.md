@@ -8,6 +8,25 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+### Machine-readable acquisition errors and fail-closed evidence paging (#152)
+
+- **Structured acquisition errors:** CLI JSON hard failures now emit `{ "ok": false, "error": { ... } }` from a central CLI filter, and MCP tool failures return `isError: true` with the same `structuredContent.error` object. The stable `kind` values are `not_found`, `access_denied`, `rate_limited`, `timeout`, `transport_error`, `invalid_response`, and `not_in_snapshot`; providers are `azdo`, `helix`, and `cache`.
+- **Snapshot replay of recorded failures:** Schema v2 snapshots record deterministic live acquisition failures (`not_found`, `access_denied`, `invalid_response`) and replay them offline with the original `kind`, `provider`, `operation`, `resource`, and optional `httpStatus`, plus `source: "snapshot"`, `replayed: true`, and `recordedAt`. Transient failures are not recorded, live mode never serves recorded failures, and v1 snapshots remain loadable with a compatibility warning. Keys never collected into a snapshot fail as `kind=not_in_snapshot`, `provider=cache`.
+- **Caller-owned retry policy:** Errors include operation/resource context plus optional `httpStatus` and `retryAfterSeconds`; callers decide whether to retry, skip, or fail collection. Genuinely empty successful results remain successes.
+- **Security:** URL query strings and fragments are redacted from serialized error `resource` string values to avoid leaking signed URLs or tokens.
+- **Helix operation classification:** Helix API calls now classify acquisition errors per operation, including file downloads as `download_helix_file`, so CLI/MCP errors and snapshot replay point to the exact failed fetch.
+- **Evidence-plan paging fail-closed:** Any partial Helix-failure page (`helixFailureTotal > helixFailures.length`, including later offset pages) now reports `complete=false`, `truncated=true`, `helix_failures_truncated`, and CLI exit `2`. Human output uses explicit ranges such as `showing 1-1 of 2`; collectors should fetch/merge remaining pages or request a limit at least as large as `helixFailureTotal`.
+- **Empty AzDO logs reclassified:** When a direct build-log body is empty, hlx validates the logId against build logs metadata; if logId is missing from both the logs list and timeline record.log.id, the operation fails with kind=not_found. Empty full logs are no longer cached as successes. See azdo_log tool documentation.
+- Requested by Vitek Karas; see lewing/helix.mcp#152.
+
+### Helix-aware evidence plan — arcade queue-monitor parsing
+
+- **Evidence plan Helix support:** `azdo_evidence_plan` now parses arcade queue-monitor timeline issues into structured `helixFailures[]` rows (helixJobId, helixJobName, workItem, state, exitCode, sourceFormat, suggestedFetches) instead of reporting the monitor job as a missing artifact. A failed/canceled monitor job with parseable work-item failures is no longer incomplete just because no `Logs_Build_*` artifact exists for the monitor itself.
+- **Paging for deterministic collectors:** Added `helixFailureOffset` / `helixFailureLimit` / `helixFailureTotal` / `helixFailuresTruncated` fields and CLI flags to support pagination. Default page size: 200, max: 1000. Use paging when `helixFailuresTruncated` is `true`; after #152, every partial page fails closed with exit `2` and `helix_failures_truncated` until a single response contains all parsed failures.
+- **Machine-readable failure semantics:** Added stable `incompleteDetails[].code` values alongside human `incompleteReasons[]`. Codes: `artifact_ambiguous` = multiple artifact candidates for one selected job; `artifact_missing` = no matching artifact candidate; `candidates_truncated` = a job's candidate list exceeded the per-entry bound; `entries_truncated` = selected jobs exceeded the plan entry bound; `helix_failures_truncated` = the current response contains only a partial Helix-failure page; `monitor_unparseable` = a selected monitor-like job had no parseable Helix work-item failures; `monitor_unresolved_job_id` = failure-shaped monitor entries lacked a recoverable Helix job ID.
+- **Deterministic drilldown:** Each `helixFailures[]` row includes `suggestedFetches[]` with tool names, Helix IDs, and work-item selectors. Scripts can read the plan, decide completeness, and use emitted `helix_work_item`, `helix_logs`, and `helix_files` fetch intents for deep investigation.
+- **Backward compatible:** The artifact plan (`entries[]`) remains unchanged for non-monitor jobs. Monitor jobs without parseable failures remain selectable and report incompleteness with explicit codes. Empty `helixFailures[]` with failures unparseable is never reported as "no failures."
+
 ## [v0.10.2] — 2026-09-11
 
 ### SQLite cache store isolation and snapshot export concurrency (#130)

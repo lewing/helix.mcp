@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.Helix;
 
 namespace HelixTool.Core.AzDO;
@@ -14,6 +15,7 @@ public class AzdoService
 {
     private readonly IAzdoApiClient _client;
     private readonly IHelixApiClient? _helixApi;
+    private readonly IAzdoAcquisitionFailureRecorder _failureRecorder;
     private const string ValidFilterValues = "'failed', 'all', 'running', 'pending', 'incomplete', or 'issues'";
     private static readonly HashSet<string> s_validFilters = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -50,7 +52,7 @@ public class AzdoService
     /// Unit tests use this constructor. Production prefers the two-argument overload.
     /// </summary>
     public AzdoService(IAzdoApiClient client)
-        : this(client, null) { }
+        : this(client, null, null) { }
 
     /// <summary>
     /// Initializes a new instance of <see cref="AzdoService"/> with Helix-side job detection
@@ -59,10 +61,14 @@ public class AzdoService
     /// <param name="client">AzDO API client for build/timeline queries.</param>
     /// <param name="helixApi">Helix API client for canonical <c>Job.ListAsync(source)</c> queries.
     ///   Pass <c>null</c> to use timeline scraping only.</param>
-    public AzdoService(IAzdoApiClient client, IHelixApiClient? helixApi)
+    public AzdoService(
+        IAzdoApiClient client,
+        IHelixApiClient? helixApi,
+        IAzdoAcquisitionFailureRecorder? failureRecorder = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _helixApi = helixApi;
+        _failureRecorder = failureRecorder ?? NoOpAzdoAcquisitionFailureRecorder.Instance;
     }
 
     public static string NormalizeFilter(string filter)
@@ -119,7 +125,13 @@ public class AzdoService
         var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
         var build = await _client.GetBuildAsync(org, project, buildId, ct);
         if (build is null)
-            throw new InvalidOperationException($"Build {buildId} not found in {org}/{project}.");
+            throw CreateAzdoAcquisitionError(
+                AcquisitionErrorKind.NotFound,
+                "get_build",
+                org,
+                project,
+                buildId,
+                $"Build {buildId} not found in {org}/{project}.");
 
         TimeSpan? duration = (build.StartTime.HasValue && build.FinishTime.HasValue)
             ? build.FinishTime.Value - build.StartTime.Value
@@ -159,7 +171,19 @@ public class AzdoService
     public async Task<AzdoTimeline?> GetTimelineAsync(string buildIdOrUrl, CancellationToken ct = default)
     {
         var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
-        return await _client.GetTimelineAsync(org, project, buildId, ct);
+        var timeline = await _client.GetTimelineAsync(org, project, buildId, ct);
+        if (timeline is null)
+        {
+            throw CreateAzdoAcquisitionError(
+                AcquisitionErrorKind.NotFound,
+                "get_timeline",
+                org,
+                project,
+                buildId,
+                $"Timeline for build {buildId} in {org}/{project} was not found.");
+        }
+
+        return timeline;
     }
 
     /// <summary>
@@ -170,11 +194,12 @@ public class AzdoService
         string buildIdOrUrl, int logId, int? tailLines = null, CancellationToken ct = default)
     {
         var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
+        IReadOnlyList<AzdoBuildLogEntry>? logsList = null;
 
         // Optimization: use lineCount metadata to fetch only the tail
         if (tailLines is > 0)
         {
-            var logsList = await _client.GetBuildLogsListAsync(org, project, buildId, ct);
+            logsList = await _client.GetBuildLogsListAsync(org, project, buildId, ct);
             var logEntry = logsList.FirstOrDefault(e => e.Id == logId);
 
             if (logEntry is not null && logEntry.LineCount > (long)tailLines.Value * 2)
@@ -190,11 +215,82 @@ public class AzdoService
 
         // Fallback: fetch full log, trim client-side
         var content = await _client.GetBuildLogAsync(org, project, buildId, logId, ct: ct);
+        if (content is null)
+        {
+            throw CreateAzdoAcquisitionError(
+                AcquisitionErrorKind.NotFound,
+                "get_build_log",
+                org,
+                project,
+                buildId,
+                $"Build log {logId} for build {buildId} was not found.",
+                ("logId", logId));
+        }
 
-        if (content is null || tailLines is null or <= 0)
+        if (content.Length == 0)
+            await ValidateEmptyBuildLogReferenceAsync(org, project, buildId, logId, logsList, ct);
+
+        if (tailLines is null or <= 0)
             return content;
 
         return StringHelpers.TailLines(content, tailLines.Value);
+    }
+
+    private async Task ValidateEmptyBuildLogReferenceAsync(
+        string org,
+        string project,
+        int buildId,
+        int logId,
+        IReadOnlyList<AzdoBuildLogEntry>? logsList,
+        CancellationToken ct)
+    {
+        logsList ??= await _client.GetBuildLogsListAsync(org, project, buildId, ct);
+        if (logsList.Any(entry => entry.Id == logId))
+            return;
+
+        var timeline = await _client.GetTimelineAsync(org, project, buildId, ct);
+        if (timeline is null)
+        {
+            throw CreateAzdoAcquisitionError(
+                AcquisitionErrorKind.NotFound,
+                "get_timeline",
+                org,
+                project,
+                buildId,
+                $"Timeline for build {buildId} in {org}/{project} was not found.");
+        }
+
+        if (timeline.Records.Any(record => record.Log?.Id == logId))
+            return;
+
+        var ex = CreateAzdoAcquisitionError(
+            AcquisitionErrorKind.NotFound,
+            "get_build_log",
+            org,
+            project,
+            buildId,
+            $"Build log {logId} for build {buildId} returned an empty body, but the log ID was absent from the build log metadata and timeline log references.",
+            ("logId", logId));
+        var isBuildTerminal = await IsBuildTerminalForRecordingAsync(org, project, buildId, ct);
+        await _failureRecorder.RecordBuildLogFailureAsync(org, project, buildId, logId, ex.Error, isBuildTerminal, ct);
+        throw ex;
+    }
+
+    private async Task<bool> IsBuildTerminalForRecordingAsync(
+        string org,
+        string project,
+        int buildId,
+        CancellationToken ct)
+    {
+        try
+        {
+            var build = await _client.GetBuildAsync(org, project, buildId, ct);
+            return string.Equals(build?.Status, "completed", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -763,19 +859,6 @@ public class AzdoService
         @"jobs/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    // Matches "Work item {name} in job {guid} has failed"
-    private static readonly Regex FailedWorkItemRegex = new(
-        @"Work item (.+?) in job ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) has failed",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-    private static readonly Regex MonitorFailedWorkItemRegex = new(
-        @"Work item '(?<wi>[^']+)' in job '(?<job>[^']*)' failed\b",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-    private static readonly Regex JobGuidInTextRegex = new(
-        @"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
     /// <summary>
     /// Compute the Helix source string for a build, mirroring arcade's
     /// <c>HelixJobSource.Compute</c> (JobMonitor/HelixJobSource.cs).
@@ -832,6 +915,7 @@ public class AzdoService
         // Available when IHelixApiClient is injected (production). Unit tests use the
         // timeline-only constructor and skip this block.
         string? source = null;
+        AcquisitionError? primaryAcquisitionError = null;
         if (_helixApi != null)
         {
             var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
@@ -845,41 +929,25 @@ public class AzdoService
                     jobSummaries = await _helixApi.ListJobsByBuildAsync(
                         source, buildId.ToString(), count: 100_000, ct: ct);
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+                catch (HlxAcquisitionException ex) when (!ct.IsCancellationRequested)
                 {
-                    // Helix API unreachable or auth failure — fall through to timeline.
+                    primaryAcquisitionError = ex.Error;
                 }
 
                 if (jobSummaries is { Count: > 0 })
                 {
                     AzdoTimeline? timeline;
                     string? timelineUnavailableNote = null;
+                    AcquisitionError? timelineAcquisitionError = null;
                     try
                     {
                         timeline = await _client.GetTimelineAsync(
                             org, project, buildId, ct);
                     }
-                    catch (HttpRequestException ex) when (!ct.IsCancellationRequested)
+                    catch (HlxAcquisitionException ex) when (!ct.IsCancellationRequested)
                     {
                         timeline = null;
-                        timelineUnavailableNote =
-                            $"AzDO timeline issue evidence is unavailable: {ex.Message}";
-                    }
-                    catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
-                    {
-                        timeline = null;
-                        timelineUnavailableNote =
-                            $"AzDO timeline issue evidence is unavailable: {ex.Message}";
-                    }
-                    catch (JsonException ex) when (!ct.IsCancellationRequested)
-                    {
-                        timeline = null;
-                        timelineUnavailableNote =
-                            $"AzDO timeline issue evidence is unavailable: {ex.Message}";
-                    }
-                    catch (InvalidOperationException ex) when (!ct.IsCancellationRequested)
-                    {
-                        timeline = null;
+                        timelineAcquisitionError = ex.Error;
                         timelineUnavailableNote =
                             $"AzDO timeline issue evidence is unavailable: {ex.Message}";
                     }
@@ -893,7 +961,9 @@ public class AzdoService
                     {
                         result = result with
                         {
-                            Note = AppendNote(result.Note, timelineUnavailableNote)
+                            Note = AppendNote(result.Note, timelineUnavailableNote),
+                            Complete = false,
+                            TimelineAcquisitionError = timelineAcquisitionError
                         };
                     }
 
@@ -912,7 +982,7 @@ public class AzdoService
         // (e.g. dotnet/sdk uses "🟣 Run TestBuild Tests").
         // `source` carries over from the primary attempt above when one was made, so the
         // wire result still reports the computed Helix source even on the fallback path.
-        return await GetHelixJobsViaTimelineAsync(buildIdOrUrl, filter, ct, source);
+        return await GetHelixJobsViaTimelineAsync(buildIdOrUrl, filter, ct, source, primaryAcquisitionError);
     }
 
     /// <summary>Project Helix job summaries into a build-level result.</summary>
@@ -1039,15 +1109,33 @@ public class AzdoService
     /// result (<c>JsonIgnore(WhenWritingNull)</c>).
     /// </param>
     private async Task<HelixJobsFromBuildResult> GetHelixJobsViaTimelineAsync(
-        string buildIdOrUrl, string filter, CancellationToken ct, string? source = null)
+        string buildIdOrUrl,
+        string filter,
+        CancellationToken ct,
+        string? source = null,
+        AcquisitionError? primaryAcquisitionError = null)
     {
-        var timeline = await GetTimelineAsync(buildIdOrUrl, ct);
+        AzdoTimeline? timeline;
+        AcquisitionError? timelineAcquisitionError = null;
+        try
+        {
+            timeline = await GetTimelineAsync(buildIdOrUrl, ct);
+        }
+        catch (HlxAcquisitionException ex) when (!ct.IsCancellationRequested)
+        {
+            timeline = null;
+            timelineAcquisitionError = ex.Error;
+        }
+
         if (timeline is null)
             return new HelixJobsFromBuildResult(buildIdOrUrl, 0, 0, [])
             {
                 Note = $"No timeline available for build {buildIdOrUrl} — Helix jobs cannot be discovered via the timeline. The build may still be initializing, was canceled before any leg reported, or has no timeline data.",
                 Source = source,
-                Strategy = "timeline"
+                Strategy = "timeline",
+                Complete = false,
+                PrimaryAcquisitionError = primaryAcquisitionError,
+                TimelineAcquisitionError = timelineAcquisitionError
             };
 
         var recordById = timeline.Records
@@ -1093,11 +1181,11 @@ public class AzdoService
                     }
 
                     // Extract failed work item names and associate with their own job.
-                    foreach (var (jobId, workItemName) in
-                        ParseMonitorFailureEvidence(issue.Message))
+                    foreach (var failure in
+                        AzdoMonitorFailureParser.ParseMessage(issue.Message))
                     {
-                        jobIds.Add(jobId);
-                        AddFailedWorkItem(failedWorkItems, jobId, workItemName);
+                        jobIds.Add(failure.HelixJobId);
+                        AddFailedWorkItem(failedWorkItems, failure.HelixJobId, failure.WorkItem);
                     }
                 }
             }
@@ -1168,11 +1256,15 @@ public class AzdoService
             FailedHelixJobs: failedCount,
             Jobs: jobs)
         {
-            Note = note,
+            Note = primaryAcquisitionError is null
+                ? note
+                : AppendNote(note, $"Primary Helix job acquisition failed: {primaryAcquisitionError.Message}"),
             Source = source,
             Strategy = "timeline",
             OutcomeUnknownHelixJobs = outcomeUnknownCount,
-            TimelineIssues = BuildTimelineIssues(timeline)
+            TimelineIssues = BuildTimelineIssues(timeline),
+            Complete = primaryAcquisitionError is null ? null : false,
+            PrimaryAcquisitionError = primaryAcquisitionError
         };
     }
 
@@ -1214,6 +1306,32 @@ public class AzdoService
     private static string AppendNote(string? note, string addition) =>
         string.IsNullOrWhiteSpace(note) ? addition : $"{note} {addition}";
 
+    private static HlxAcquisitionException CreateAzdoAcquisitionError(
+        AcquisitionErrorKind kind,
+        string operation,
+        string org,
+        string project,
+        int buildId,
+        string message,
+        params (string Name, object? Value)[] additionalResource)
+    {
+        var resource = new Dictionary<string, object?>
+        {
+            ["org"] = org,
+            ["project"] = project,
+            ["buildId"] = buildId
+        };
+        foreach (var (name, value) in additionalResource)
+            resource[name] = value;
+
+        return new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+            kind,
+            "azdo",
+            operation,
+            resource,
+            message));
+    }
+
     private static Dictionary<string, List<string>> ParseMonitorFailureEvidence(
         AzdoTimeline timeline)
     {
@@ -1225,93 +1343,13 @@ public class AzdoService
             .Select(issue => issue.Message)
             .Where(message => !string.IsNullOrEmpty(message)))
         {
-            foreach (var (jobId, workItemName) in
-                ParseMonitorFailureEvidence(message!))
+            foreach (var failure in AzdoMonitorFailureParser.ParseMessage(message!))
             {
-                AddFailedWorkItem(failedWorkItems, jobId, workItemName);
+                AddFailedWorkItem(failedWorkItems, failure.HelixJobId, failure.WorkItem);
             }
         }
 
         return failedWorkItems;
-    }
-
-    private static IEnumerable<(string JobId, string WorkItemName)>
-        ParseMonitorFailureEvidence(string message)
-    {
-        foreach (Match match in FailedWorkItemRegex.Matches(message))
-            yield return (match.Groups[2].Value, match.Groups[1].Value);
-
-        var lines = message.Split('\n');
-        for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
-        {
-            foreach (Match match in MonitorFailedWorkItemRegex.Matches(lines[lineIndex]))
-            {
-                var jobId = RecoverMonitorJobId(
-                    match.Groups["job"].Value, lines, lineIndex);
-                if (jobId is not null)
-                    yield return (jobId, match.Groups["wi"].Value);
-            }
-
-            if (TryParseMonitorFailureTreeLine(
-                lines[lineIndex], out var workItemName, out var jobText))
-            {
-                var jobId = RecoverMonitorJobId(jobText, lines, lineIndex);
-                if (jobId is not null)
-                    yield return (jobId, workItemName);
-            }
-        }
-    }
-
-    private static string? RecoverMonitorJobId(
-        string jobText, string[] lines, int entryLineIndex)
-    {
-        var directMatch = JobGuidInTextRegex.Match(jobText);
-        if (directMatch.Success)
-            return directMatch.Value;
-
-        var consoleBlockLines = lines
-            .Skip(entryLineIndex + 1)
-            .TakeWhile(line => !IsMonitorFailureEntry(line))
-            .SkipWhile(line => !line.Contains("Console:", StringComparison.OrdinalIgnoreCase));
-        var consoleBlock = string.Join('\n', consoleBlockLines);
-        var consoleJobIds = HelixJobIdRegex.Matches(consoleBlock)
-            .Select(match => match.Groups[1].Value)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(2)
-            .ToList();
-        return consoleJobIds.Count == 1 ? consoleJobIds[0] : null;
-    }
-
-    private static bool IsMonitorFailureEntry(string line) =>
-        MonitorFailedWorkItemRegex.IsMatch(line)
-        || TryParseMonitorFailureTreeLine(line, out _, out _);
-
-    private static bool TryParseMonitorFailureTreeLine(
-        string line, out string workItemName, out string jobText)
-    {
-        const string jobMarker = " (Job: ";
-        var markerIndex = line.IndexOf(jobMarker, StringComparison.OrdinalIgnoreCase);
-        if (markerIndex < 0)
-        {
-            workItemName = "";
-            jobText = "";
-            return false;
-        }
-
-        workItemName = line[..markerIndex].Trim();
-        if (workItemName.StartsWith("├─", StringComparison.Ordinal)
-            || workItemName.StartsWith("└─", StringComparison.Ordinal))
-        {
-            workItemName = workItemName[2..].Trim();
-        }
-        else
-        {
-            jobText = "";
-            return false;
-        }
-
-        jobText = line[(markerIndex + jobMarker.Length)..];
-        return workItemName.Length > 0;
     }
 
     private static void AddFailedWorkItem(
@@ -1410,6 +1448,16 @@ public class AzdoService
                     $"Must be one of: failed, canceled, abandoned, skipped, succeededWithIssues, succeeded, none.",
                     nameof(options));
         }
+        if (options.HelixFailureOffset < 0)
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.HelixFailureOffset,
+                "Helix failure offset must be greater than or equal to 0.");
+        if (options.HelixFailureLimit is < 1 or > AzdoEvidencePlan.MaxHelixFailureLimit)
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                options.HelixFailureLimit,
+                $"Helix failure limit must be between 1 and {AzdoEvidencePlan.MaxHelixFailureLimit}.");
 
         var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
 
@@ -1421,11 +1469,23 @@ public class AzdoService
 
         var build = await buildTask;
         if (build is null)
-            throw new InvalidOperationException($"Build {buildId} not found in {org}/{project}.");
+            throw CreateAzdoAcquisitionError(
+                AcquisitionErrorKind.NotFound,
+                "get_build",
+                org,
+                project,
+                buildId,
+                $"Build {buildId} not found in {org}/{project}.");
 
         var timeline = await timelineTask;
         if (timeline is null || timeline.Records.Count == 0)
-            throw new InvalidOperationException($"No timeline available for build {buildId} in {org}/{project}.");
+            throw CreateAzdoAcquisitionError(
+                AcquisitionErrorKind.NotFound,
+                "get_timeline",
+                org,
+                project,
+                buildId,
+                $"No timeline available for build {buildId} in {org}/{project}.");
 
         var allArtifacts = await artifactsTask;
 
@@ -1436,9 +1496,20 @@ public class AzdoService
                 .Where(a => StringHelpers.MatchesPattern(a.Name ?? string.Empty, options.ArtifactPattern))
                 .ToList();
 
-        // Run the matching algorithm (filtering by type/result is done inside BuildPlan)
-        var planResult = AzdoEvidenceMatcher.BuildPlan(
-            timeline.Records, filteredArtifacts, options);
+        var selectedJobs = AzdoEvidenceMatcher.SelectAndSortJobs(timeline.Records, options.JobResults);
+        var monitorScan = AzdoMonitorFailureParser.ScanTimeline(
+            timeline,
+            selectedJobs.Select(job => job.Id ?? "").ToList());
+        var parsedMonitorJobIds = monitorScan.MonitorJobs
+            .Where(job => job.Failures.Count > 0)
+            .Select(job => job.MonitorJobId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var artifactJobs = selectedJobs
+            .Where(job => job.Id is null || !parsedMonitorJobIds.Contains(job.Id))
+            .ToList();
+
+        var planResult = AzdoEvidenceMatcher.BuildPlanFromSelectedJobs(
+            artifactJobs, filteredArtifacts, options);
 
         var provenance = AzdoBuildProvenance.FromBuild(build, org, project);
 
@@ -1460,10 +1531,75 @@ public class AzdoService
         foreach (var warning in planResult.Warnings)
             AddWarning(warning);
 
+        var incompleteReasons = new List<string>(planResult.IncompleteReasons);
+        var incompleteDetails = BuildArtifactIncompleteDetails(planResult);
+        foreach (var monitorJob in monitorScan.MonitorJobs)
+        {
+            if (monitorJob.Failures.Count == 0 && monitorJob.IsMonitorLike)
+            {
+                var reason =
+                    $"Monitor job '{monitorJob.MonitorJobName}' ({monitorJob.MonitorJobId}) failed, but no parseable Helix work-item failures were found in timeline issues. Use azdo_timeline/azdo_search_timeline and the monitor task log to inspect the raw failure.";
+                incompleteReasons.Add(reason);
+                incompleteDetails.Add(new AzdoEvidenceIncompleteDetail
+                {
+                    Code = "monitor_unparseable",
+                    Message = reason,
+                    JobId = monitorJob.MonitorJobId,
+                    JobName = monitorJob.MonitorJobName
+                });
+            }
+
+            if (monitorJob.UnresolvedFailureEntryCount > 0)
+            {
+                var entryNoun = monitorJob.UnresolvedFailureEntryCount == 1 ? "entry" : "entries";
+                var reason =
+                    $"Monitor job '{monitorJob.MonitorJobName}' ({monitorJob.MonitorJobId}) has {monitorJob.UnresolvedFailureEntryCount} failure-shaped timeline {entryNoun} whose Helix job ID could not be recovered.";
+                incompleteReasons.Add(reason);
+                incompleteDetails.Add(new AzdoEvidenceIncompleteDetail
+                {
+                    Code = "monitor_unresolved_job_id",
+                    Message = reason,
+                    JobId = monitorJob.MonitorJobId,
+                    JobName = monitorJob.MonitorJobName,
+                    Count = monitorJob.UnresolvedFailureEntryCount
+                });
+            }
+        }
+
+        var helixFailureRows = BuildHelixFailureRows(monitorScan);
+        var helixFailureTotal = helixFailureRows.Count;
+        var helixFailures = helixFailureRows
+            .Skip(options.HelixFailureOffset)
+            .Take(options.HelixFailureLimit)
+            .ToList();
+        var helixFailuresTruncated = helixFailureTotal > helixFailures.Count;
+        if (helixFailuresTruncated)
+        {
+            var pageDescription = helixFailures.Count == 0
+                ? $"showing 0 of {helixFailureTotal}"
+                : $"showing {options.HelixFailureOffset + 1}-{options.HelixFailureOffset + helixFailures.Count} of {helixFailureTotal}";
+            var reason =
+                $"Helix monitor failures truncated: {pageDescription}.";
+            incompleteReasons.Add(reason);
+            incompleteDetails.Add(new AzdoEvidenceIncompleteDetail
+            {
+                Code = "helix_failures_truncated",
+                Message = reason,
+                Count = helixFailures.Count,
+                Total = helixFailureTotal
+            });
+            AddWarning(
+                $"Helix monitor failures truncated: {pageDescription}; helixFailureTotal preserves the full count.");
+        }
+
         var warningTotal = allWarnings.Count;
         var warnings = allWarnings
             .Take(AzdoEvidencePlan.MaxWarnings)
             .ToList();
+        var truncated = planResult.Truncated || helixFailuresTruncated;
+        var note = helixFailuresTruncated
+            ? AppendNote(planResult.Note, incompleteReasons.Last(reason => reason.Contains("Helix monitor failures truncated:", StringComparison.Ordinal)))
+            : planResult.Note;
 
         return new AzdoEvidencePlan
         {
@@ -1476,15 +1612,148 @@ public class AzdoService
             ArtifactJobPrefix = options.ArtifactJobPrefix,
             StripAttemptPrefix = options.StripAttemptPrefix,
             Entries = planResult.Entries,
-            Complete = planResult.Complete,
-            IncompleteReasons = planResult.IncompleteReasons,
+            HelixFailures = helixFailures,
+            HelixFailureOffset = options.HelixFailureOffset,
+            HelixFailureLimit = options.HelixFailureLimit,
+            HelixFailureTotal = helixFailureTotal,
+            HelixFailuresTruncated = helixFailuresTruncated,
+            Complete = planResult.Complete && incompleteDetails.Count == 0,
+            IncompleteReasons = incompleteReasons,
+            IncompleteDetails = incompleteDetails,
             Warnings = warnings,
             WarningTotal = warningTotal,
             WarningsTruncated = warningTotal > warnings.Count,
-            Truncated = planResult.Truncated,
+            Truncated = truncated,
             TotalEntries = planResult.Truncated ? planResult.Total : null,
-            Note = planResult.Note,
+            Note = note,
             GeneratedAt = DateTimeOffset.UtcNow
         };
+    }
+
+    private static List<AzdoEvidenceIncompleteDetail> BuildArtifactIncompleteDetails(
+        AzdoBuiltPlanResult planResult)
+    {
+        var details = new List<AzdoEvidenceIncompleteDetail>();
+        if (planResult.Total > planResult.Entries.Count)
+        {
+            details.Add(new AzdoEvidenceIncompleteDetail
+            {
+                Code = "entries_truncated",
+                Message = $"Plan entries truncated: showing first {planResult.Entries.Count} of {planResult.Total} selected jobs.",
+                Count = planResult.Entries.Count,
+                Total = planResult.Total
+            });
+        }
+
+        foreach (var entry in planResult.Entries)
+        {
+            if (entry.Status == "missing")
+            {
+                details.Add(new AzdoEvidenceIncompleteDetail
+                {
+                    Code = "artifact_missing",
+                    Message = $"Job '{entry.JobName}' ({entry.JobId}): no matching artifact found.",
+                    JobId = entry.JobId,
+                    JobName = entry.JobName
+                });
+            }
+            else if (entry.Status == "ambiguous")
+            {
+                details.Add(new AzdoEvidenceIncompleteDetail
+                {
+                    Code = "artifact_ambiguous",
+                    Message = $"Job '{entry.JobName}' ({entry.JobId}): {entry.CandidateTotal} ambiguous candidates — none selected.",
+                    JobId = entry.JobId,
+                    JobName = entry.JobName,
+                    Count = entry.CandidateTotal
+                });
+            }
+
+            if (entry.CandidatesTruncated)
+            {
+                details.Add(new AzdoEvidenceIncompleteDetail
+                {
+                    Code = "candidates_truncated",
+                    Message = $"Candidate list for job '{entry.JobName}' ({entry.JobId}) was truncated.",
+                    JobId = entry.JobId,
+                    JobName = entry.JobName,
+                    Count = entry.Candidates.Count,
+                    Total = entry.CandidateTotal
+                });
+            }
+        }
+
+        return details;
+    }
+
+    private static List<AzdoHelixEvidenceFailure> BuildHelixFailureRows(
+        AzdoMonitorFailureScan monitorScan)
+    {
+        var rows = new List<AzdoHelixEvidenceFailure>();
+        foreach (var monitorJob in monitorScan.MonitorJobs)
+        {
+            foreach (var failure in monitorJob.Failures)
+            {
+                rows.Add(new AzdoHelixEvidenceFailure
+                {
+                    MonitorJobId = monitorJob.MonitorJobId,
+                    MonitorJobName = monitorJob.MonitorJobName,
+                    MonitorJobResult = monitorJob.MonitorJobResult,
+                    MonitorJobOrder = monitorJob.MonitorJobOrder,
+                    MonitorJobAttempt = monitorJob.MonitorJobAttempt,
+                    MonitorTaskId = failure.MonitorTaskId,
+                    MonitorTaskName = failure.MonitorTaskName,
+                    HelixJobId = failure.HelixJobId,
+                    HelixJobName = failure.HelixJobName,
+                    Leg = failure.Leg,
+                    Queue = failure.Queue,
+                    WorkItem = failure.WorkItem,
+                    State = failure.State,
+                    ExitCode = failure.ExitCode,
+                    Details = failure.Details,
+                    SourceFormat = failure.SourceFormat,
+                    SuggestedFetches = BuildSuggestedHelixFetches(failure.HelixJobId, failure.WorkItem)
+                });
+            }
+        }
+
+        return rows
+            .OrderBy(row => row.MonitorJobOrder ?? int.MaxValue)
+            .ThenBy(row => row.MonitorJobName, StringComparer.Ordinal)
+            .ThenByDescending(row => row.MonitorJobAttempt ?? 0)
+            .ThenBy(row => row.MonitorTaskName ?? "", StringComparer.Ordinal)
+            .ThenBy(row => row.HelixJobId, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.WorkItem, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private static IReadOnlyList<AzdoHelixEvidenceFetch> BuildSuggestedHelixFetches(
+        string helixJobId,
+        string workItem)
+    {
+        return
+        [
+            new()
+            {
+                Tool = "helix_work_item",
+                HelixJobId = helixJobId,
+                WorkItem = workItem,
+                Purpose = "work-item metadata"
+            },
+            new()
+            {
+                Tool = "helix_logs",
+                HelixJobId = helixJobId,
+                WorkItem = workItem,
+                Purpose = "work-item console/log files"
+            },
+            new()
+            {
+                Tool = "helix_files",
+                HelixJobId = helixJobId,
+                WorkItem = workItem,
+                Purpose = "work-item artifact/file listing"
+            }
+        ];
     }
 }

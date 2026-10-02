@@ -51,3 +51,11 @@
 - Checked agent history sizes: Dallas 564, Ripley 512, Lambert 351, Kane 118 — no summarization/archive action needed
 - Noted escalation requirement: recruit independent .NET concurrency/filesystem test specialist for future revisions
 
+### 2026-10-02: PR #153 snapshot misses and review fixes merge
+- Logged `2026-10-02T1905Z-pr153-review-and-snapshot-misses` session summary with all four agent participation records
+- Merged 3 inbox decisions into `decisions.md`: Windows-safe filenames (hard rule), snapshot misses design, Dallas PR #153 review gates (rounds 1-2)
+- Removed merged inbox files: `copilot-windows-safe-filenames.md`, `dallas-snapshot-misses.md`, `dallas-review-153-round2.md`
+- Created 4 orchestration-log entries (Windows-safe UTC naming): Ripley review fixes, Dallas gate reviews, Lambert snapshot-misses implementation, Kane documentation
+- ⚠️ **Windows-safe filename rule now hardened in Scribe charter:** All .squad file names must use compact UTC (`2026-10-02T1905Z-{slug}.md`), never colons or `<>"|?*\`. This rule is enforced in all .squad operations going forward.
+- Checked agent history sizes: Kane 15,886 bytes (≥15360 threshold); summarization pending
+- No new deduplication needed — all three merged decisions are distinct topics

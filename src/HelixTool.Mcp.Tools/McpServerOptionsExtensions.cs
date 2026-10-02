@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
+using HelixTool.Core.Acquisition;
 
 namespace HelixTool.Mcp.Tools;
 
@@ -93,6 +94,29 @@ public static class McpServerOptionsExtensions
             }
 
             return await next(request, ct);
+        });
+
+        return options;
+    }
+
+    public static McpServerOptions AddAcquisitionErrorFilter(this McpServerOptions options)
+    {
+        options.Filters.Request.CallToolFilters.Add(next => async (request, ct) =>
+        {
+            try
+            {
+                return await next(request, ct);
+            }
+            catch (HlxAcquisitionException ex)
+            {
+                var envelope = new AcquisitionErrorEnvelope(ex.Error);
+                return new CallToolResult
+                {
+                    IsError = true,
+                    Content = [new TextContentBlock { Text = ex.Error.Message }],
+                    StructuredContent = JsonSerializer.SerializeToElement(envelope, AcquisitionJsonOptions.Default)
+                };
+            }
         });
 
         return options;

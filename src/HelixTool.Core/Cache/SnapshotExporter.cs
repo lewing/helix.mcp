@@ -15,7 +15,7 @@ namespace HelixTool.Core.Cache;
 /// </summary>
 public static class SnapshotExporter
 {
-    internal const int SchemaVersion = 1;
+    internal const int SchemaVersion = 2;
 
     private const int BusyTimeoutSeconds = 5;
     private const int BusyTimeoutMilliseconds = BusyTimeoutSeconds * 1000;
@@ -290,12 +290,15 @@ public static class SnapshotExporter
                 "The cache may be empty or was never fully initialized. " +
                 "Run hlx in normal mode to populate the cache before exporting.");
 
-        if (version != SchemaVersion)
+        if (version is not (1 or SchemaVersion))
             throw new InvalidOperationException(
-                $"Source cache schema version {version} is not supported (expected {SchemaVersion}). " +
+                $"Source cache schema version {version} is not supported (expected 1 or {SchemaVersion}). " +
                 "Ensure hlx is up-to-date or use the version of hlx that populated this cache.");
 
-        foreach (var table in new[] { "cache_metadata", "cache_artifacts", "cache_job_state" })
+        var tables = version >= SchemaVersion
+            ? new[] { "cache_metadata", "cache_artifacts", "cache_job_state", "cache_acquisition_errors" }
+            : new[] { "cache_metadata", "cache_artifacts", "cache_job_state" };
+        foreach (var table in tables)
         {
             command.Parameters.Clear();
             command.CommandText =

@@ -94,8 +94,24 @@ public static class AzdoEvidenceMatcher
         IEnumerable<AzdoBuildArtifact> artifacts,
         AzdoEvidencePlanOptions options)
     {
-        var strategy = AzdoEvidenceMatchStrategy.Canonicalize(options.Match);
         var jobs = SelectAndSortJobs(allRecords, options.JobResults);
+        return BuildPlanFromSelectedJobs(jobs, artifacts, options);
+    }
+
+    /// <summary>
+    /// Build the evidence plan from an already selected, sorted Job record list.
+    /// The caller owns filtering; this overload preserves the provided selection exactly.
+    /// </summary>
+    /// <param name="selectedJobs">Job records selected and sorted by the caller.</param>
+    /// <param name="artifacts">All artifacts from the build, pre-filtered by caller if desired.</param>
+    /// <param name="options">Options driving prefix stripping and matching strategy.</param>
+    public static AzdoBuiltPlanResult BuildPlanFromSelectedJobs(
+        IReadOnlyList<AzdoTimelineRecord> selectedJobs,
+        IEnumerable<AzdoBuildArtifact> artifacts,
+        AzdoEvidencePlanOptions options)
+    {
+        var strategy = AzdoEvidenceMatchStrategy.Canonicalize(options.Match);
+        var jobs = selectedJobs;
         var artifactList = artifacts is IReadOnlyList<AzdoBuildArtifact> l ? l : artifacts.ToList();
 
         // Pre-process artifacts: strip prefixes + compute match keys once

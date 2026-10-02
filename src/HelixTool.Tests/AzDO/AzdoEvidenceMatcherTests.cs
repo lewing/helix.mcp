@@ -190,6 +190,34 @@ public class AzdoEvidenceMatcherTests
         Assert.True(plan.Complete);
     }
 
+    [Fact]
+    public void BuildPlanFromSelectedJobs_UsesProvidedSelection_WithoutReFilteringAllRecords()
+    {
+        var selectedJobs = new List<AzdoTimelineRecord>
+        {
+            new() { Id = "job-succeeded", Type = "Job", Result = "succeeded", Name = "Succeeded Job", Order = 10, Attempt = 1 },
+            new() { Id = "task-failed", Type = "Task", Result = "failed", Name = "Failed Task", Order = 1, Attempt = 1 }
+        };
+        var artifacts = new List<AzdoBuildArtifact>
+        {
+            new() { Id = 1, Name = "Logs_Build_Attempt1_Succeeded_Job", Source = "job-succeeded", Resource = new() { Type = "Container" } },
+            new() { Id = 2, Name = "Logs_Build_Attempt1_Failed_Task", Source = "task-failed", Resource = new() { Type = "Container" } }
+        };
+        var opts = new AzdoEvidencePlanOptions
+        {
+            JobResults = ["failed"],
+            ArtifactJobPrefix = "Logs_Build_",
+            StripAttemptPrefix = true,
+            Match = "auto"
+        };
+
+        var plan = AzdoEvidenceMatcher.BuildPlanFromSelectedJobs(selectedJobs, artifacts, opts);
+
+        Assert.Equal(["job-succeeded", "task-failed"], plan.Entries.Select(entry => entry.JobId));
+        Assert.All(plan.Entries, entry => Assert.Equal("mapped", entry.Status));
+        Assert.True(plan.Complete);
+    }
+
     // ════════════════════════════════════════════════════════════════════════
     // A8 — NativeAOT collision guard
     // ════════════════════════════════════════════════════════════════════════

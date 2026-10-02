@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Text.Json;
+using HelixTool.Core.Acquisition;
 using Microsoft.Data.Sqlite;
 
 namespace HelixTool.Core.Cache;
@@ -9,7 +11,7 @@ namespace HelixTool.Core.Cache;
 /// </summary>
 public static class SnapshotValidator
 {
-    private const int ExpectedSchemaVersion = 1;
+    private const int ExpectedSchemaVersion = 2;
     private const int BusyTimeoutSeconds = 5;
     private const int BusyTimeoutMilliseconds = BusyTimeoutSeconds * 1000;
     private const int MaxMissingFileErrors = 10;
@@ -141,6 +143,7 @@ public static class SnapshotValidator
 
         var metadataEntries = 0;
         var artifactEntries = 0;
+        var acquisitionErrorEntries = 0;
         var missingFiles = 0;
         var artifactRows = new List<ArtifactRow>();
 
@@ -173,10 +176,16 @@ public static class SnapshotValidator
                 command.CommandText = "PRAGMA user_version;";
                 var version =
                     Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
-                if (version != ExpectedSchemaVersion)
+                if (version == 1)
+                {
+                    warnings.Add(
+                        "Snapshot schema version 1 is valid but predates recorded acquisition failures; " +
+                        "missing entries will replay as kind=not_in_snapshot instead of original provider failures.");
+                }
+                else if (version != ExpectedSchemaVersion)
                 {
                     errors.Add(
-                        $"Schema version mismatch: expected {ExpectedSchemaVersion}, found {version}. " +
+                        $"Schema version mismatch: expected 1 or {ExpectedSchemaVersion}, found {version}. " +
                         "The snapshot was created with a different version of hlx and cannot be used.");
                 }
 
@@ -195,6 +204,42 @@ public static class SnapshotValidator
                         errors.Add(
                             $"Missing required table '{table}'. " +
                             "The snapshot database may be incomplete or corrupt.");
+                    }
+                }
+
+                var hasAcquisitionErrorsTable = false;
+                if (version >= ExpectedSchemaVersion)
+                {
+                    foreach (var table in new[] { "cache_acquisition_errors" })
+                    {
+                        command.Parameters.Clear();
+                        command.CommandText =
+                            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=@table;";
+                        command.Parameters.AddWithValue("@table", table);
+                        var count =
+                            Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+                        if (count == 0)
+                        {
+                            errors.Add(
+                                $"Missing required table '{table}'. " +
+                                "The snapshot database may be incomplete or corrupt.");
+                        }
+                        else
+                        {
+                            hasAcquisitionErrorsTable = true;
+                        }
+                    }
+
+                    foreach (var index in new[] { "idx_acquisition_errors_expires", "idx_acquisition_errors_job" })
+                    {
+                        command.Parameters.Clear();
+                        command.CommandText =
+                            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=@index;";
+                        command.Parameters.AddWithValue("@index", index);
+                        var count =
+                            Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+                        if (count == 0)
+                            errors.Add($"Missing required index '{index}'.");
                     }
                 }
 
@@ -218,6 +263,11 @@ public static class SnapshotValidator
                         artifactRows.Add(new ArtifactRow(reader.GetString(0), reader.GetInt64(1)));
                     }
                 }
+
+                if (errors.Count == 0 && version >= ExpectedSchemaVersion && hasAcquisitionErrorsTable)
+                {
+                    acquisitionErrorEntries = ValidateAcquisitionErrorRows(command, errors, ct);
+                }
             }
 
             if (HasSidecar(lexicalDbPath, errors) ||
@@ -230,6 +280,7 @@ public static class SnapshotValidator
                     warnings,
                     metadataEntries,
                     artifactRows.Count,
+                    acquisitionErrorEntries,
                     missingFiles));
             }
         }
@@ -250,6 +301,7 @@ public static class SnapshotValidator
                 warnings,
                 metadataEntries,
                 artifactRows.Count,
+                acquisitionErrorEntries,
                 missingFiles));
         }
 
@@ -388,7 +440,90 @@ public static class SnapshotValidator
             warnings,
             metadataEntries,
             artifactEntries,
+            acquisitionErrorEntries,
             missingFiles));
+    }
+
+    private static int ValidateAcquisitionErrorRows(
+        SqliteCommand command,
+        List<string> errors,
+        CancellationToken ct)
+    {
+        command.Parameters.Clear();
+        command.CommandText = "SELECT COUNT(*) FROM cache_acquisition_errors;";
+        var count = Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+
+        command.Parameters.Clear();
+        command.CommandText = """
+            SELECT cache_key, error_json, kind, provider, operation, recorded_at, expires_at
+            FROM cache_acquisition_errors
+            ORDER BY cache_key;
+            """;
+        using (var reader = command.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                ct.ThrowIfCancellationRequested();
+                var cacheKey = reader.GetString(0);
+                var errorJson = reader.GetString(1);
+                var kind = reader.GetString(2);
+                var provider = reader.GetString(3);
+                var operation = reader.GetString(4);
+                var recordedAt = reader.GetString(5);
+                var expiresAt = reader.GetString(6);
+
+                try
+                {
+                    var error = JsonSerializer.Deserialize<AcquisitionError>(errorJson, AcquisitionJsonOptions.Default);
+                    if (error is null)
+                    {
+                        errors.Add($"Acquisition error row '{cacheKey}' has null error_json.");
+                        continue;
+                    }
+
+                    var serializedKind = JsonSerializer.Deserialize<string>(
+                        JsonSerializer.Serialize(error.Kind, AcquisitionJsonOptions.Default),
+                        AcquisitionJsonOptions.Default);
+                    if (!string.Equals(kind, serializedKind, StringComparison.Ordinal))
+                        errors.Add($"Acquisition error row '{cacheKey}' kind column does not match error_json.");
+                    if (!string.Equals(provider, error.Provider, StringComparison.Ordinal))
+                        errors.Add($"Acquisition error row '{cacheKey}' provider column does not match error_json.");
+                    if (!string.Equals(operation, error.Operation, StringComparison.Ordinal))
+                        errors.Add($"Acquisition error row '{cacheKey}' operation column does not match error_json.");
+                }
+                catch (JsonException ex)
+                {
+                    errors.Add($"Acquisition error row '{cacheKey}' has invalid error_json: {ex.Message}");
+                }
+
+                if (!DateTimeOffset.TryParse(recordedAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out _))
+                    errors.Add($"Acquisition error row '{cacheKey}' has invalid recorded_at timestamp.");
+                if (!DateTimeOffset.TryParse(expiresAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out _))
+                    errors.Add($"Acquisition error row '{cacheKey}' has invalid expires_at timestamp.");
+            }
+        }
+
+        command.Parameters.Clear();
+        command.CommandText = """
+            SELECT cache_key
+            FROM (
+                SELECT e.cache_key AS cache_key
+                FROM cache_acquisition_errors e
+                INNER JOIN cache_metadata m ON m.cache_key = e.cache_key
+                UNION
+                SELECT e.cache_key AS cache_key
+                FROM cache_acquisition_errors e
+                INNER JOIN cache_artifacts a ON a.cache_key = e.cache_key
+            )
+            ORDER BY cache_key;
+            """;
+        using (var reader = command.ExecuteReader())
+        {
+            while (reader.Read())
+                errors.Add($"Cache key has both positive and negative snapshot entries: {reader.GetString(0)}");
+        }
+
+        return count;
     }
 
     private static StringComparison PathComparison => OperatingSystem.IsWindows()
@@ -517,7 +652,7 @@ public static class SnapshotValidator
     private static SnapshotValidationResult Fail(
         List<string> errors,
         List<string> warnings)
-        => new(false, errors, warnings, 0, 0, 0);
+        => new(false, errors, warnings, 0, 0, 0, 0);
 
     private sealed record ArtifactRow(string FilePath, long FileSize);
 }

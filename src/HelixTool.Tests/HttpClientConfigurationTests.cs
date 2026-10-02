@@ -5,6 +5,7 @@
 using System.Net;
 using System.Text;
 using HelixTool.Core;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.Cache;
 using HelixTool.Core.Helix;
 using HelixTool.Core.AzDO;
@@ -80,7 +81,7 @@ public class HttpClientConfigurationTests
     }
 
     [Fact]
-    public async Task AzdoApiClient_TimeoutMidRequest_ThrowsTaskCanceledException()
+    public async Task AzdoApiClient_TimeoutMidRequest_ThrowsAcquisitionTimeout()
     {
         // When HttpClient times out, it throws TaskCanceledException (not OperationCanceledException).
         // HelixService wraps this in HelixException; AzdoApiClient should handle similarly.
@@ -93,9 +94,10 @@ public class HttpClientConfigurationTests
         tokenAccessor.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns(new AzdoCredential("test-token", "Bearer", "test"));
         var client = new AzdoApiClient(httpClient, tokenAccessor);
 
-        // TaskCanceledException is expected when timeout fires
-        await Assert.ThrowsAnyAsync<TaskCanceledException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => client.GetBuildAsync("dnceng", "public", 123));
+
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.Timeout, "azdo", "get_build");
     }
 
     [Fact]
@@ -156,9 +158,9 @@ public class HttpClientConfigurationTests
     // ── Helix: HelixService static HttpClient ────────────────────────
 
     [Fact]
-    public async Task HelixService_TimeoutWrapsInHelixException()
+    public async Task HelixService_TimeoutThrowsAcquisitionTimeout()
     {
-        // HelixService wraps TaskCanceledException (timeout) as HelixException.
+        // HelixService classifies TaskCanceledException (timeout) as an acquisition timeout.
         // Verify this contract holds for GetConsoleLogContentAsync.
         var mockApi = Substitute.For<IHelixApiClient>();
         var validJobId = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
@@ -167,9 +169,9 @@ public class HttpClientConfigurationTests
 
         var svc = new HelixService(mockApi, new HttpClient());
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => svc.GetConsoleLogContentAsync(validJobId, "test-wi"));
-        Assert.Contains("timed out", ex.Message);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.Timeout, "helix", "get_helix_console_log");
     }
 
     [Fact]

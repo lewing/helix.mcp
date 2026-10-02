@@ -6,6 +6,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using HelixTool.Core;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.Cache;
 using HelixTool.Core.AzDO;
 using NSubstitute;
@@ -424,7 +425,7 @@ public class AzdoSecurityTests
             .Returns(BearerCredential("super-secret-bearer-token-xyz123"));
         var client = new AzdoApiClient(new HttpClient(handler), tokenAccessor);
 
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => client.GetBuildAsync("dnceng", "public", 1));
 
         Assert.DoesNotContain("super-secret-bearer-token-xyz123", ex.Message);
@@ -440,7 +441,7 @@ public class AzdoSecurityTests
             .Returns(BasicCredential("my-secret-pat-value"));
         var client = new AzdoApiClient(new HttpClient(handler), tokenAccessor);
 
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => client.GetBuildAsync("dnceng", "public", 1));
 
         Assert.DoesNotContain("my-secret-pat-value", ex.Message);
@@ -459,7 +460,7 @@ public class AzdoSecurityTests
             .Returns(BearerCredential("bearer-token-in-500-test"));
         var client = new AzdoApiClient(new HttpClient(handler), tokenAccessor);
 
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => client.GetBuildAsync("dnceng", "public", 1));
 
         Assert.DoesNotContain("bearer-token-in-500-test", ex.Message);

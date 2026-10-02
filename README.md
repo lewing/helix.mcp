@@ -98,6 +98,8 @@ HLX_EVAL_SNAPSHOT=/tmp/my-snapshot hlx status <jobId>  # Use snapshot
 
 Snapshots preserve all cached data and artifact files. When `HLX_EVAL_SNAPSHOT` is set, `hlx` runs entirely offline against the snapshot's SQLite database. See the [CLI reference](docs/cli-reference.md#snapshot-commands) for auth-scoped replay limitations and the complete workflow.
 
+Schema v2 snapshots also preserve deterministic acquisition failures (`not_found`, `access_denied`, `invalid_response`) recorded during live collection. Offline replay returns the original provider failure with `source: "snapshot"`, `replayed: true`, and `recordedAt`; keys never collected into the snapshot return `kind: "not_in_snapshot"`, `provider: "cache"`.
+
 ## MCP Tools
 
 ### Helix Tools (9)
@@ -129,10 +131,18 @@ Snapshots preserve all cached data and artifact files. When `HLX_EVAL_SNAPSHOT` 
 | `azdo_test_results` | Individual test results. Filter by outcome (`outcomes` param). Defaults to failed tests only (top 200). |
 | `azdo_artifacts` | Build artifacts with pattern filtering (e.g., `*.binlog`). |
 | `azdo_test_attachments` | Test result attachments (screenshots, logs, dumps). |
-| `azdo_evidence_plan` | Plan failed/canceled job → artifact evidence mapping. `auto` (default) joins by source GUID, then falls back to normalized-exact names; source-ID-only, normalized-exact, and exact-name modes are also available. Read-only; returns ranked candidates, ambiguity and truncation metadata, and completeness status (never silently chooses). The MCP `stripAttemptPrefix` parameter defaults to `true`; the equivalent CLI strips by default and exposes the inverse bare flag `--keep-attempt-prefix`. |
+| `azdo_evidence_plan` | Plan failed/canceled job → artifact evidence mapping. `auto` (default) joins by source GUID, then falls back to normalized-exact names; source-ID-only, normalized-exact, and exact-name modes are also available. Parses selected arcade queue-monitor timeline issues into structured `helixFailures[]` rows (helixJobId, workItem, state, exitCode, sourceFormat, suggestedFetches). Paging fields: helixFailureOffset/Limit/Total/Truncated. Any partial Helix-failure page (`helixFailureTotal > helixFailures.length`, including later offset pages) is fail-closed: `complete=false`, `truncated=true`, `helix_failures_truncated`, and CLI exit `2`. Read-only; returns ranked candidates, ambiguity and truncation metadata, completeness status, and stable `incompleteDetails[].code` values (never silently chooses). The MCP `stripAttemptPrefix` parameter defaults to `true`; the equivalent CLI strips by default and exposes the inverse bare flag `--keep-attempt-prefix`. `suggestedFetches[].tool` emits `helix_work_item`, `helix_logs`, and `helix_files` for drilldown. |
+
+`azdo_evidence_plan` incomplete codes: `artifact_ambiguous` = multiple artifact candidates for one selected job; `artifact_missing` = no matching artifact candidate; `candidates_truncated` = a job's candidate list exceeded the per-entry bound; `entries_truncated` = selected jobs exceeded the plan entry bound; `helix_failures_truncated` = the current response contains only a partial Helix-failure page; `monitor_unparseable` = a selected monitor-like job had no parseable Helix work-item failures; `monitor_unresolved_job_id` = failure-shaped monitor entries lacked a recoverable Helix job ID. Human output reports paging ranges such as `showing 1-1 of 2`; collectors should treat exit `2` from paging as "fetch/merge remaining pages" or rerun with a limit at least as large as `helixFailureTotal`.
 
 > **Parameter validation:** MCP tools reject unknown parameter names with a structured error (including a "Did you mean?" hint when the unknown name is close to a known parameter) — LLM-hallucinated or mistyped param names get immediate feedback instead of silent drops.
 > Common aliases are resolved automatically before validation: `buildId` / `build_id` / `buildUrl` → `buildIdOrUrl` on AzDO tools that accept a build identifier; `result` → `resultFilter` on `azdo_search_timeline`.
+
+## Errors and exit codes
+
+CLI JSON hard failures use `{ "ok": false, "error": { ... } }`; MCP tool failures set `isError: true` and put the same object under `structuredContent.error`. `error.kind` is one of `not_found`, `access_denied`, `rate_limited`, `timeout`, `transport_error`, `invalid_response`, or `not_in_snapshot`; `provider` is `azdo`, `helix`, or `cache`; fields are `kind`, `provider`, `operation`, `resource`, optional `httpStatus`, optional `retryAfterSeconds`, optional snapshot replay fields (`source`, `replayed`, `recordedAt`), and `message`. Resource URL values redact query strings and fragments.
+
+Exit codes are `0` for success (including genuinely empty successes), `1` for hard command/acquisition errors, and `2` for incomplete evidence plans that still wrote bounded output. Callers own retry/skip policy. When a direct build-log body is empty, hlx validates the logId against the build's logs list and timeline record.log.id; if absent from both, it fails with kind=not_found. Empty full logs are not cached as successes. See the [CLI reference](docs/cli-reference.md#errors-and-exit-codes) for examples.
 
 ## MCP Resources
 

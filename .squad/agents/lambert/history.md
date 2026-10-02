@@ -32,3 +32,72 @@ Added `src/HelixTool.Tests/AzDO/TestResultsSilentEmptyTests.cs` with 15 focused 
 ## Environment Note
 
 Local runtime may be .NET 11 preview only while projects target `net10.0`; use `DOTNET_ROLL_FORWARD=Major` for builds/tests when needed.
+
+## Learnings
+
+### 2026-10-02T11:29:27-05:00 — Helix evidence-plan monitor coverage
+
+- Live public timelines are compact enough to distill into deterministic unit fixtures: dotnet/runtime build 1621192 is monitor-only with a `Monitor Helix Jobs` warning for `System.Diagnostics.Process.Tests`; build 1621133 combines the same monitor shape with a canceled `osx-arm64 Debug Libraries_CheckedCoreCLR` leg and a real `Logs_Build_Attempt1_osx__arm64_Debug_Libraries_CheckedCoreCLR` artifact.
+- Human CLI output needs explicit `incompleteDetails[].code` rendering, not just human `incompleteReasons`; otherwise deterministic collector failures like `monitor_unparseable` and `helix_failures_truncated` are invisible in non-JSON mode even when JSON is machine-readable.
+- Parser tests should cover direct GUID extraction, console fallback scoping, tree-line parsing, and warning/tree dedupe separately from service tests; that isolates production parsing bugs from evidence-plan wiring bugs.
+
+## 2026-10-02T12:05:00Z — Session handoff: Test findings + #152 phasing
+
+Cross-agent context from Scribe:
+
+**For Lambert (Testing):**
+- Your evidence-plan Helix tests are high quality (255 targeted / 2 failed); the 2 failures are implementation gaps, not test bugs
+- Missing stable reason codes in human CLI output: Dallas's design requires them for deterministic collectors (`[monitor_unparseable]`, `[helix_failures_truncated]`)
+- Ripley's implementation calculated codes but did not emit them in human formatter
+- Recommendation: flag both test failures as "design-implementation gap" for Ripley to fix before merge
+- Dallas approved acquisition error contract (#152) in parallel; your error test patterns will scale to MCP + CLI JSON envelopes for acquisition failures
+- Phasing: error contract first, then scanner pagination/completeness, then bundle writer
+
+**Parallel work:**
+- Ash's scanner analysis aligns with Dallas's #152 phasing recommendation
+- All decisions merged and ready for Larry's review
+
+### 2026-10-02T12:04:09-05:00 — Acquisition error contract coverage (#152)
+
+- Added recorded/offline acquisition coverage for AzDO HTTP classification, Helix service classification, MCP structured error filtering/tool integration, CLI `--json` envelopes, cache failure non-persistence, eval/offline cache errors, and `azdo_helix_jobs` fallback preservation of primary acquisition errors. Assertions pin structured fields (`kind`, `provider`, `operation`, `resource`, `httpStatus`, `retryAfterSeconds`) rather than human message wording.
+- Updated stale tests that encoded old success-shaped behavior (`null`, `[]`, `string.Empty`, `HelixException`, `InvalidOperationException`) to the #152 `HlxAcquisitionException`/structured acquisition contract, while keeping legitimate empty successes (`200` empty logs, valid `value: []`, empty Helix file lists) green.
+- Useful implementation feedback caught during test-first iteration: invalid-response paths initially omitted `httpStatus`, MCP structured content initially exposed enum names instead of stable wire strings, composite timeline failures should be represented as incomplete results with `timelineAcquisitionError`, and unexpected non-acquisition exceptions should not trigger Helix fallback. Ripley fixed the implementation gaps during the session; final focused acquisition validation was 67 passed / 0 failed, full suite 2088 passed / 9 skipped.
+
+### 2026-10-02T12:55:00-05:00 — AzDO empty-log metadata validation follow-up (#152)
+
+- Dallas's rejected live case proved raw HTTP `200` + zero-byte AzDO log bodies are not sufficient evidence of success: build 1621466/log 999999 returns an empty body, but the build logs list and timeline both exclude that log ID. Service-level validation now treats that shape as `not_found` while preserving genuinely empty logs when the ID appears in either metadata source.
+- The raw AzDO client can still model provider transport literally (`200` empty text => `""`); ambiguity is resolved in `AzdoService`, where build-log list and timeline metadata are available and failures from those metadata calls can propagate as their own classified acquisition errors.
+- Cache tests should pin both failure non-persistence and empty-success non-persistence for full AzDO logs. Skipping zero-length full-log cache writes is the safe P0 because a cached empty body can outlive the metadata context needed to distinguish "real empty log" from "nonexistent log ID."
+
+### 2026-10-02T12:50:00-05:00 — Locked-out revisions: paging and empty-log fixes
+
+- Revised two rejected commits after Dallas locked out original author (Ripley):
+  - **Commit 28beceb rejection:** paging contract falsely reported non-final pages as complete. Ripley's calculation `offset + shown < total` missed final-page cases. Revised to: any partial page must fail closed with `helixFailuresTruncated=true`, `truncated=true`, `complete=false`, and `incompleteDetails[].code == "helix_failures_truncated"`; only pages where `limit >= total` can be complete. Updated reason text to avoid false "showing first N" claims on later pages.
+  - **Commit 5f11d95 rejection:** AzDO HTTP 200 empty-body log ambiguity. Dallas's spec required metadata validation in `AzdoService.GetBuildLogAsync`: after direct fetch returns `""`, validate requested logId in logs-list (already fetched for tail calls) or timeline records; if absent, throw `not_found` acquisition error; if present, return `""`. Prevent cache persistence of zero-length logs until metadata validation proves logId exists.
+- Both revisions validated: 2095 full suite passed / 9 skipped; targeted #152 tests 98/98 passed; live `azdo log 1621466 999999 --json` now exits 1 with `kind=not_found`, `provider=azdo`, `operation=get_build_log`, `resource.logId=999999`.
+
+### 2026-10-02T13:30:00-05:00 — PR #153 acquisition regression follow-up
+
+- Regression coverage should assert the serialized public boundary (`AcquisitionError`, CLI `{ ok:false, error }`, MCP `structuredContent`) for secret-bearing URLs, not just exception fields; SAS token leaks can survive if only service-level messages are checked.
+- Eval/offline corrupt-cache tests are most useful as endpoint theories over every cached API method with `Offline*ApiClient` underneath; the expected discriminator is `provider=cache`, `kind=invalid_response`, so corrupt primary evidence cannot silently degrade into a cache miss/not_found.
+- CLI acquisition error handling needs a central wrapper shared by Helix and AzDO commands. Removing per-command catches without invoking the wrapper causes JSON-capable commands to throw `HlxAcquisitionException` instead of emitting the machine-readable failure envelope.
+
+### 2026-10-02T13:55:00-05:00 — Snapshot miss and replay coverage
+
+- Snapshot-miss tests should assert the wire kind (`"not_in_snapshot"`) and `source="snapshot"` rather than relying on enum names only; that keeps old `NotFound/cache` behavior visibly distinct at CLI/MCP boundaries.
+- Negative replay coverage needs both storage-level and decorator-level assertions: the store can persist rows correctly while `CachingAzdoApiClient`/`CachingHelixApiClient` still skip replay and fall through to `Offline*ApiClient`, producing `not_in_snapshot`.
+- Snapshot schema-v2 validation is brittle around hand-written SQL; a validator query bug (`ORDER BY` term not in result set) can break all exports, so a tiny handcrafted v2 snapshot is a good canary before relying on broader exporter tests.
+
+### 2026-10-02: PR #153 snapshot misses implementation and hardening (commits ae35fd3 → b7a97e1)
+- **Iteration 1 (ae35fd3):** Implemented `not_in_snapshot` acquisition kind, SQLite schema-v2 `cache_acquisition_errors` table, AzDO/Helix replay logic, service-level empty-log recorder, initial test coverage
+- **Dallas rejection:** 3 required fixes identified:
+  1. Terminal-state probes inside `catch` blocks could replace original acquisition error
+  2. Empty-log `not_found` recorded without terminal-build check (risk of permanent offline marking for in-progress logs)
+  3. Negative rows outlive validity; expired negatives never evicted before snapshot export
+- **Iteration 2 (b7a97e1) — Hardened revision:**
+  1. Probe failures now safely caught; original `HlxAcquisitionException` preserved unchanged
+  2. Empty-log `not_found` gated on `IsBuildCompletedAsync`; in-progress builds rethrow without recording
+  3. Atomic positive/negative cache clearing; `EvictExpiredAsync` deletes expired entries before export
+- **Test coverage:** Windows-flaky expired-negative test fixed; all 3 findings covered by regression scenarios
+- **Validation:** Full suite 2175 passed / 0 failed / 9 skipped, 0 warnings
+- **Dallas verdict:** APPROVED (b7a97e1) — Ready for merge

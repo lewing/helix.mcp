@@ -62,14 +62,34 @@ public sealed class HelixApiClient : IHelixApiClient
     public async Task<IReadOnlyList<IHelixJobSummary>> ListJobsByBuildAsync(
         string source, string buildId, int count = 100_000, CancellationToken ct = default)
     {
-        // count: 100_000 cap mirrors the arcade HelixService reference implementation.
-        // In practice a single AzDO build submits ~1k–5k Helix jobs; the cap is generous.
-        var jobs = await _api.Job.ListAsync(source: source, count: count, cancellationToken: ct);
-        return jobs
-            .Select(j => new JobSummaryAdapter(j))
-            .Where(j => j.HasBuildId(buildId))
-            .Select(j => (IHelixJobSummary)j)
-            .ToList();
+        var resource = HelixAcquisition.Resource(("source", source), ("buildId", buildId), ("count", count));
+        try
+        {
+            // count: 100_000 cap mirrors the arcade HelixService reference implementation.
+            // In practice a single AzDO build submits ~1k–5k Helix jobs; the cap is generous.
+            var jobs = await _api.Job.ListAsync(source: source, count: count, cancellationToken: ct);
+            return jobs
+                .Select(j => new JobSummaryAdapter(j))
+                .Where(j => j.HasBuildId(buildId))
+                .Select(j => (IHelixJobSummary)j)
+                .ToList();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TaskCanceledException ex)
+        {
+            throw HelixAcquisition.Timeout(ex, "list_helix_jobs_by_build", resource);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw HelixAcquisition.FromHttp(ex, "list_helix_jobs_by_build", resource);
+        }
+        catch (RestApiException ex)
+        {
+            throw HelixAcquisition.FromRestApi(ex, "list_helix_jobs_by_build", resource);
+        }
     }
 
     // Adapters to bridge SDK concrete types to our mockable interfaces

@@ -1,4 +1,5 @@
 using ModelContextProtocol;
+using HelixTool.Core.Acquisition;
 
 namespace HelixTool.Mcp.Tools;
 
@@ -15,6 +16,10 @@ internal static class McpExceptionHandler
             return await call();
         }
         catch (McpException)
+        {
+            throw;
+        }
+        catch (HlxAcquisitionException)
         {
             throw;
         }
@@ -35,6 +40,10 @@ internal static class McpExceptionHandler
             return call();
         }
         catch (McpException)
+        {
+            throw;
+        }
+        catch (HlxAcquisitionException)
         {
             throw;
         }

@@ -1,4 +1,5 @@
 using HelixTool.Core.AzDO;
+using HelixTool.Core.Acquisition;
 using HelixTool.Mcp.Tools;
 using ModelContextProtocol;
 using NSubstitute;
@@ -149,29 +150,35 @@ public class AzdoMcpToolsTests
     }
 
     [Fact]
-    public async Task Timeline_NullResult_ReturnsFriendlyNote()
+    public async Task Timeline_AcquisitionNotFound_PropagatesAcquisitionError()
     {
         _mockApi.GetTimelineAsync("dnceng-public", "public", 10, Arg.Any<CancellationToken>())
-            .Returns((AzdoTimeline?)null);
+            .Returns(_ => Task.FromException<AzdoTimeline?>(AcquisitionAssertions.Exception(
+                AcquisitionErrorKind.NotFound,
+                "azdo",
+                "get_timeline",
+                new Dictionary<string, object?> { ["buildId"] = 10 },
+                httpStatus: 404)));
 
-        var result = await _tools.Timeline("10");
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() => _tools.Timeline("10"));
 
-        Assert.NotNull(result);
-        Assert.Contains("No timeline available", result!.Note, StringComparison.OrdinalIgnoreCase);
-        Assert.Empty(result.Records);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "get_timeline", 404);
     }
 
     [Fact]
-    public async Task SearchTimeline_NullTimeline_ReturnsFriendlyResult()
+    public async Task SearchTimeline_AcquisitionNotFound_PropagatesAcquisitionError()
     {
         _mockApi.GetTimelineAsync("dnceng-public", "public", 42, Arg.Any<CancellationToken>())
-            .Returns((AzdoTimeline?)null);
+            .Returns(_ => Task.FromException<AzdoTimeline?>(AcquisitionAssertions.Exception(
+                AcquisitionErrorKind.NotFound,
+                "azdo",
+                "get_timeline",
+                new Dictionary<string, object?> { ["buildId"] = 42 },
+                httpStatus: 404)));
 
-        var result = await _tools.SearchTimeline("42", "error");
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() => _tools.SearchTimeline("42", "error"));
 
-        Assert.NotNull(result);
-        Assert.Contains("No timeline available", result.Note, StringComparison.OrdinalIgnoreCase);
-        Assert.Empty(result.Matches);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "get_timeline", 404);
     }
 
     [Fact]
@@ -235,14 +242,19 @@ public class AzdoMcpToolsTests
     }
 
     [Fact]
-    public async Task Log_NullContent_ReturnsEmptyString()
+    public async Task Log_AcquisitionNotFound_PropagatesAcquisitionError()
     {
         _mockApi.GetBuildLogAsync("dnceng-public", "public", 1, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
-            .Returns((string?)null);
+            .Returns(_ => Task.FromException<string?>(AcquisitionAssertions.Exception(
+                AcquisitionErrorKind.NotFound,
+                "azdo",
+                "get_build_log",
+                new Dictionary<string, object?> { ["buildId"] = 1, ["logId"] = 5 },
+                httpStatus: 404)));
 
-        var result = await _tools.Log("1", 5);
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() => _tools.Log("1", 5));
 
-        Assert.Equal(string.Empty, result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "get_build_log", 404);
     }
 
     [Fact]

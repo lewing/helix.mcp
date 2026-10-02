@@ -1,4 +1,6 @@
 using System.Text.Json;
+using HelixTool.Core.Acquisition;
+using HelixTool.Core.AzDO;
 using HelixTool.Core.Cache;
 
 namespace HelixTool.Core.Helix;
@@ -39,22 +41,37 @@ public sealed class CachingHelixApiClient : IHelixApiClient
         var cached = await _cache.GetMetadataAsync(cacheKey, ct);
         if (cached != null)
         {
-            var dto = JsonSerializer.Deserialize<JobDetailsDto>(cached)!;
+            var dto = TryDeserialize<JobDetailsDto>(cached, cacheKey);
+            if (dto is null)
+                return await FetchAndCacheAsync();
             return dto;
         }
 
-        var result = await _inner.GetJobDetailsAsync(jobId, ct);
+        if (_options.EvalMode)
+            await ThrowReplayedSnapshotErrorIfPresentAsync(cacheKey, ct);
 
-        // Update job state cache
-        var isCompleted = result.Finished != null;
-        await _cache.SetJobCompletedAsync(jobId, isCompleted,
-            isCompleted ? JobStateCompletedTtl : JobStateTtl, ct);
+        return await FetchAndCacheAsync();
 
-        var ttl = isCompleted ? CompletedLongTtl : RunningShortTtl;
-        var json = JsonSerializer.Serialize(JobDetailsDto.From(result));
-        await _cache.SetMetadataAsync(cacheKey, json, ttl, ct);
+        async Task<IJobDetails> FetchAndCacheAsync()
+        {
+            var result = await CallAndMaybeRecordAsync(
+                () => _inner.GetJobDetailsAsync(jobId, ct),
+                cacheKey,
+                CompletedLongTtl,
+                async () => await _cache.IsJobCompletedAsync(jobId, ct) == true,
+                ct);
 
-        return result;
+            // Update job state cache
+            var isCompleted = result.Finished != null;
+            await _cache.SetJobCompletedAsync(jobId, isCompleted,
+                isCompleted ? JobStateCompletedTtl : JobStateTtl, ct);
+
+            var ttl = isCompleted ? CompletedLongTtl : RunningShortTtl;
+            var json = JsonSerializer.Serialize(JobDetailsDto.From(result));
+            await _cache.SetMetadataAsync(cacheKey, json, ttl, ct);
+
+            return result;
+        }
     }
 
     public async Task<IReadOnlyList<IWorkItemSummary>> ListWorkItemsAsync(string jobId, CancellationToken ct = default)
@@ -65,16 +82,31 @@ public sealed class CachingHelixApiClient : IHelixApiClient
         var cached = await _cache.GetMetadataAsync(cacheKey, ct);
         if (cached != null)
         {
-            var dtos = JsonSerializer.Deserialize<List<WorkItemSummaryDto>>(cached)!;
+            var dtos = TryDeserialize<List<WorkItemSummaryDto>>(cached, cacheKey);
+            if (dtos is null)
+                return await FetchAndCacheAsync();
             return dtos.Cast<IWorkItemSummary>().ToList();
         }
 
-        var result = await _inner.ListWorkItemsAsync(jobId, ct);
-        var ttl = await GetTtlAsync(jobId, RunningShortTtl, CompletedLongTtl, ct);
-        var json = JsonSerializer.Serialize(result.Select(WorkItemSummaryDto.From).ToList());
-        await _cache.SetMetadataAsync(cacheKey, json, ttl, ct);
+        if (_options.EvalMode)
+            await ThrowReplayedSnapshotErrorIfPresentAsync(cacheKey, ct);
 
-        return result;
+        return await FetchAndCacheAsync();
+
+        async Task<IReadOnlyList<IWorkItemSummary>> FetchAndCacheAsync()
+        {
+            var result = await CallAndMaybeRecordAsync(
+                () => _inner.ListWorkItemsAsync(jobId, ct),
+                cacheKey,
+                CompletedLongTtl,
+                () => IsJobCompletedAsync(jobId, ct),
+                ct);
+            var ttl = await GetTtlAsync(jobId, RunningShortTtl, CompletedLongTtl, ct);
+            var json = JsonSerializer.Serialize(result.Select(WorkItemSummaryDto.From).ToList());
+            await _cache.SetMetadataAsync(cacheKey, json, ttl, ct);
+
+            return result;
+        }
     }
 
     public async Task<IWorkItemDetails> GetWorkItemDetailsAsync(string workItemName, string jobId, CancellationToken ct = default)
@@ -85,16 +117,31 @@ public sealed class CachingHelixApiClient : IHelixApiClient
         var cached = await _cache.GetMetadataAsync(cacheKey, ct);
         if (cached != null)
         {
-            var dto = JsonSerializer.Deserialize<WorkItemDetailsDto>(cached)!;
+            var dto = TryDeserialize<WorkItemDetailsDto>(cached, cacheKey);
+            if (dto is null)
+                return await FetchAndCacheAsync();
             return dto;
         }
 
-        var result = await _inner.GetWorkItemDetailsAsync(workItemName, jobId, ct);
-        var ttl = await GetTtlAsync(jobId, RunningShortTtl, CompletedLongTtl, ct);
-        var json = JsonSerializer.Serialize(WorkItemDetailsDto.From(result));
-        await _cache.SetMetadataAsync(cacheKey, json, ttl, ct);
+        if (_options.EvalMode)
+            await ThrowReplayedSnapshotErrorIfPresentAsync(cacheKey, ct);
 
-        return result;
+        return await FetchAndCacheAsync();
+
+        async Task<IWorkItemDetails> FetchAndCacheAsync()
+        {
+            var result = await CallAndMaybeRecordAsync(
+                () => _inner.GetWorkItemDetailsAsync(workItemName, jobId, ct),
+                cacheKey,
+                CompletedLongTtl,
+                () => IsJobCompletedAsync(jobId, ct),
+                ct);
+            var ttl = await GetTtlAsync(jobId, RunningShortTtl, CompletedLongTtl, ct);
+            var json = JsonSerializer.Serialize(WorkItemDetailsDto.From(result));
+            await _cache.SetMetadataAsync(cacheKey, json, ttl, ct);
+
+            return result;
+        }
     }
 
     public async Task<IReadOnlyList<IWorkItemFile>> ListWorkItemFilesAsync(string workItemName, string jobId, CancellationToken ct = default)
@@ -105,16 +152,31 @@ public sealed class CachingHelixApiClient : IHelixApiClient
         var cached = await _cache.GetMetadataAsync(cacheKey, ct);
         if (cached != null)
         {
-            var dtos = JsonSerializer.Deserialize<List<WorkItemFileDto>>(cached)!;
+            var dtos = TryDeserialize<List<WorkItemFileDto>>(cached, cacheKey);
+            if (dtos is null)
+                return await FetchAndCacheAsync();
             return dtos.Cast<IWorkItemFile>().ToList();
         }
 
-        var result = await _inner.ListWorkItemFilesAsync(workItemName, jobId, ct);
-        var ttl = await GetTtlAsync(jobId, RunningMediumTtl, CompletedLongTtl, ct);
-        var json = JsonSerializer.Serialize(result.Select(WorkItemFileDto.From).ToList());
-        await _cache.SetMetadataAsync(cacheKey, json, ttl, ct);
+        if (_options.EvalMode)
+            await ThrowReplayedSnapshotErrorIfPresentAsync(cacheKey, ct);
 
-        return result;
+        return await FetchAndCacheAsync();
+
+        async Task<IReadOnlyList<IWorkItemFile>> FetchAndCacheAsync()
+        {
+            var result = await CallAndMaybeRecordAsync(
+                () => _inner.ListWorkItemFilesAsync(workItemName, jobId, ct),
+                cacheKey,
+                CompletedLongTtl,
+                () => IsJobCompletedAsync(jobId, ct),
+                ct);
+            var ttl = await GetTtlAsync(jobId, RunningMediumTtl, CompletedLongTtl, ct);
+            var json = JsonSerializer.Serialize(result.Select(WorkItemFileDto.From).ToList());
+            await _cache.SetMetadataAsync(cacheKey, json, ttl, ct);
+
+            return result;
+        }
     }
 
     public async Task<Stream> GetConsoleLogAsync(string workItemName, string jobId, CancellationToken ct = default)
@@ -130,19 +192,32 @@ public sealed class CachingHelixApiClient : IHelixApiClient
             var cachedStreamEval = await _cache.GetArtifactAsync(cacheKey, ct);
             if (cachedStreamEval != null)
                 return cachedStreamEval;
+            await ThrowReplayedSnapshotErrorIfPresentAsync(cacheKey, ct);
             return await _inner.GetConsoleLogAsync(workItemName, jobId, ct);
         }
 
         // Never cache console logs for running jobs (append-only streams)
         var isCompleted = await IsJobCompletedAsync(jobId, ct);
         if (!isCompleted)
-            return await _inner.GetConsoleLogAsync(workItemName, jobId, ct);
+        {
+            return await CallAndMaybeRecordAsync(
+                () => _inner.GetConsoleLogAsync(workItemName, jobId, ct),
+                cacheKey,
+                ConsoleLogTtl,
+                static () => Task.FromResult(false),
+                ct);
+        }
 
         var cachedStream = await _cache.GetArtifactAsync(cacheKey, ct);
         if (cachedStream != null)
             return cachedStream;
 
-        var stream = await _inner.GetConsoleLogAsync(workItemName, jobId, ct);
+        var stream = await CallAndMaybeRecordAsync(
+            () => _inner.GetConsoleLogAsync(workItemName, jobId, ct),
+            cacheKey,
+            ConsoleLogTtl,
+            static () => Task.FromResult(true),
+            ct);
         await _cache.SetArtifactAsync(cacheKey, stream, ct);
         await stream.DisposeAsync();
 
@@ -161,7 +236,15 @@ public sealed class CachingHelixApiClient : IHelixApiClient
         if (cachedStream != null)
             return cachedStream;
 
-        var stream = await _inner.GetFileAsync(fileName, workItemName, jobId, ct);
+        if (_options.EvalMode)
+            await ThrowReplayedSnapshotErrorIfPresentAsync(cacheKey, ct);
+
+        var stream = await CallAndMaybeRecordAsync(
+            () => _inner.GetFileAsync(fileName, workItemName, jobId, ct),
+            cacheKey,
+            CompletedLongTtl,
+            () => IsJobCompletedAsync(jobId, ct),
+            ct);
         await _cache.SetArtifactAsync(cacheKey, stream, ct);
         await stream.DisposeAsync();
 
@@ -191,6 +274,74 @@ public sealed class CachingHelixApiClient : IHelixApiClient
     {
         var isCompleted = await IsJobCompletedAsync(jobId, ct);
         return isCompleted ? completedTtl : runningTtl;
+    }
+
+    private async Task ThrowReplayedSnapshotErrorIfPresentAsync(string key, CancellationToken ct)
+    {
+        var error = await _cache.GetAcquisitionErrorAsync(key, ct);
+        if (error is not null)
+            throw new HlxAcquisitionException(AcquisitionFailureRecorderPolicy.ReplayFromSnapshot(error));
+    }
+
+    private async Task<T> CallAndMaybeRecordAsync<T>(
+        Func<Task<T>> call,
+        string key,
+        TimeSpan ttl,
+        Func<Task<bool>> shouldRecordNotFoundAsync,
+        CancellationToken ct)
+    {
+        try
+        {
+            return await call();
+        }
+        catch (HlxAcquisitionException ex)
+        {
+            var shouldRecord = AcquisitionFailureRecorderPolicy.IsRecordable(ex.Error);
+            if (shouldRecord && ex.Error.Kind == AcquisitionErrorKind.NotFound)
+                shouldRecord = await TryShouldRecordNotFoundAsync(shouldRecordNotFoundAsync);
+
+            if (shouldRecord)
+            {
+                await _cache.SetAcquisitionErrorAsync(key, ex.Error, ttl, ct);
+            }
+
+            throw;
+        }
+    }
+
+    private static async Task<bool> TryShouldRecordNotFoundAsync(Func<Task<bool>> shouldRecordNotFoundAsync)
+    {
+        try
+        {
+            return await shouldRecordNotFoundAsync();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private T? TryDeserialize<T>(string cached, string key)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<T>(cached);
+        }
+        catch (JsonException ex)
+        {
+            if (_options.EvalMode)
+            {
+                throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                    AcquisitionErrorKind.InvalidResponse,
+                    "cache",
+                    "deserialize_cache_entry",
+                    new Dictionary<string, object?> { ["key"] = key },
+                    "Cached Helix snapshot entry is corrupt or not valid JSON."),
+                    ex);
+            }
+
+            return default;
+        }
     }
 
     // DTOs for JSON serialization of interface types

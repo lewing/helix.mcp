@@ -136,6 +136,7 @@ public class SnapshotCommands
         Console.Error.WriteLine("Snapshot is VALID.");
         Console.Error.WriteLine($"  Metadata entries: {result.MetadataEntries}");
         Console.Error.WriteLine($"  Artifact entries: {result.ArtifactEntries}");
+        Console.Error.WriteLine($"  Acquisition errors: {result.AcquisitionErrorEntries}");
         Console.Error.WriteLine($"  Missing files:    {result.MissingArtifactFiles}");
     }
 }

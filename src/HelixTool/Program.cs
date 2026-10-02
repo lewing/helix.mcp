@@ -7,6 +7,7 @@ using HelixTool;
 using HelixTool.Core;
 using HelixTool.Generated;
 using HelixTool.Core.CliSchema;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.Cache;
 using HelixTool.Core.Helix;
 using HelixTool.Core.AzDO;
@@ -55,7 +56,10 @@ if (!string.IsNullOrEmpty(evalSnapshotDir))
     services.AddEvalModeCore(evalOptions);
     services.AddSingleton(sp => new Lazy<HelixService>(() => sp.GetRequiredService<HelixService>()));
     services.AddSingleton<AzdoService>(sp =>
-        new AzdoService(sp.GetRequiredService<IAzdoApiClient>(), sp.GetRequiredService<IHelixApiClient>()));
+        new AzdoService(
+            sp.GetRequiredService<IAzdoApiClient>(),
+            sp.GetRequiredService<IHelixApiClient>(),
+            sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>()));
 }
 else
 {
@@ -101,16 +105,22 @@ services.AddSingleton<IAzdoApiClient>(sp =>
         sp.GetRequiredService<ICacheStore>(),
         sp.GetRequiredService<CacheOptions>(),
         sp.GetRequiredService<IAzdoTokenAccessor>()));
+services.AddSingleton<IAzdoAcquisitionFailureRecorder>(sp =>
+    new CachingAzdoAcquisitionFailureRecorder(
+        sp.GetRequiredService<ICacheStore>(),
+        sp.GetRequiredService<CacheOptions>()));
 // Inject IHelixApiClient so GetHelixJobsAsync can use the canonical Helix-side Job.ListAsync(source) path (#92)
 services.AddSingleton<AzdoService>(sp =>
     new AzdoService(
         sp.GetRequiredService<IAzdoApiClient>(),
-        sp.GetRequiredService<IHelixApiClient>()));
+        sp.GetRequiredService<IHelixApiClient>(),
+        sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>()));
 }
 
 ConsoleApp.ServiceProvider = services.BuildServiceProvider();
 
 var app = ConsoleApp.Create();
+app.UseFilter<AcquisitionErrorCliFilter>();
 app.Add<Commands>();
 app.Add<AzdoCommands>();
 app.Add<SnapshotCommands>();
@@ -118,12 +128,116 @@ app.Add<SnapshotCommands>();
 // (e.g. piped or launched by an MCP host), otherwise show help text for interactive use.
 app.Run(args.Length == 0 ? (Console.IsInputRedirected ? ["mcp"] : ["--help"]) : args);
 
+internal sealed class AcquisitionErrorCliFilter(ConsoleAppFilter next) : ConsoleAppFilter(next)
+{
+    public override async Task InvokeAsync(ConsoleAppContext context, CancellationToken cancellationToken)
+        => await CliAcquisitionErrorPipeline.InvokeAsync(
+            ct => Next.InvokeAsync(context, ct),
+            context.CommandArguments.ToArray(),
+            cancellationToken);
+}
+
+public static class CliAcquisitionErrorPipeline
+{
+    public static async Task InvokeAsync(
+        Func<CancellationToken, Task> next,
+        IReadOnlyList<string> commandArguments,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await next(cancellationToken);
+        }
+        catch (HlxAcquisitionException ex)
+        {
+            CliAcquisitionErrorWriter.Write(ex, IsJsonRequested(commandArguments));
+            Environment.ExitCode = 1;
+        }
+    }
+
+    private static bool IsJsonRequested(IReadOnlyList<string> arguments)
+    {
+        for (var i = 0; i < arguments.Count; i++)
+        {
+            var argument = arguments[i];
+            if (argument.Equals("--json", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 < arguments.Count && TryParseBoolean(arguments[i + 1], out var explicitValue))
+                    return explicitValue;
+                return true;
+            }
+
+            const string jsonPrefix = "--json=";
+            if (argument.StartsWith(jsonPrefix, StringComparison.OrdinalIgnoreCase)
+                && TryParseBoolean(argument[jsonPrefix.Length..], out var value))
+            {
+                return value;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryParseBoolean(string value, out bool parsed)
+    {
+        if (bool.TryParse(value, out parsed))
+            return true;
+        if (value == "1")
+        {
+            parsed = true;
+            return true;
+        }
+        if (value == "0")
+        {
+            parsed = false;
+            return true;
+        }
+
+        parsed = false;
+        return false;
+    }
+}
+
+internal static class CliAcquisitionErrorWriter
+{
+    private static readonly JsonSerializerOptions s_jsonOptions = new()
+    {
+        WriteIndented = true,
+        Converters = { new AcquisitionErrorKindJsonConverter() }
+    };
+
+    public static void Write(HlxAcquisitionException ex, bool json)
+    {
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(
+                new AcquisitionErrorCliEnvelope(false, ex.Error),
+                s_jsonOptions));
+            return;
+        }
+
+        Console.Error.WriteLine($"Error: {QuoteUntrusted(ex.Error.Message)}");
+    }
+
+    private static string QuoteUntrusted(string? value)
+    {
+        if (value is null)
+            return "(none)";
+
+        return JsonSerializer.Serialize(value);
+    }
+}
+
 /// <summary>
 /// CLI commands for interacting with .NET Helix test infrastructure.
 /// </summary>
 public class Commands
 {
-    private static readonly JsonSerializerOptions s_jsonOptions = new() { WriteIndented = true };
+    private static readonly JsonSerializerOptions s_jsonOptions = new()
+    {
+        WriteIndented = true,
+        Converters = { new AcquisitionErrorKindJsonConverter() }
+    };
 
     internal static bool TryPrintSchema<T>(bool schema)
     {
@@ -917,7 +1031,10 @@ Available as `failureCategory` in JSON and MCP output.
             };
             builder.Services.AddEvalModeCore(evalOptions);
             builder.Services.AddSingleton<AzdoService>(sp =>
-                new AzdoService(sp.GetRequiredService<IAzdoApiClient>(), sp.GetRequiredService<IHelixApiClient>()));
+                new AzdoService(
+                    sp.GetRequiredService<IAzdoApiClient>(),
+                    sp.GetRequiredService<IHelixApiClient>(),
+                    sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>()));
         }
         else
         {
@@ -959,11 +1076,16 @@ Available as `failureCategory` in JSON and MCP output.
                 sp.GetRequiredService<ICacheStore>(),
                 sp.GetRequiredService<CacheOptions>(),
                 sp.GetRequiredService<IAzdoTokenAccessor>()));
+        builder.Services.AddSingleton<IAzdoAcquisitionFailureRecorder>(sp =>
+            new CachingAzdoAcquisitionFailureRecorder(
+                sp.GetRequiredService<ICacheStore>(),
+                sp.GetRequiredService<CacheOptions>()));
         // Inject IHelixApiClient so GetHelixJobsAsync can use the canonical Helix-side Job.ListAsync(source) path (#92)
         builder.Services.AddSingleton<AzdoService>(sp =>
             new AzdoService(
                 sp.GetRequiredService<IAzdoApiClient>(),
-                sp.GetRequiredService<IHelixApiClient>()));
+                sp.GetRequiredService<IHelixApiClient>(),
+                sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>()));
         }
 
         builder.Services
@@ -978,6 +1100,7 @@ Available as `failureCategory` in JSON and MCP output.
                 // Intercepts unknown params with structured McpException + Levenshtein hints.
                 // Stage A's UnmappedMemberHandling.Disallow (below) remains as defense-in-depth.
                 options.AddUnknownParameterFilter(typeof(HelixMcpTools).Assembly);
+                options.AddAcquisitionErrorFilter();
             })
             .WithStdioServerTransport()
             .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly, new JsonSerializerOptions
@@ -1257,7 +1380,11 @@ Available as `failureCategory` in JSON and MCP output.
 /// </summary>
 public class AzdoCommands
 {
-    private static readonly JsonSerializerOptions s_jsonOptions = new() { WriteIndented = true };
+    private static readonly JsonSerializerOptions s_jsonOptions = new()
+    {
+        WriteIndented = true,
+        Converters = { new AcquisitionErrorKindJsonConverter() }
+    };
 
     private readonly AzdoService _svc;
     private readonly IAzdoTokenAccessor _tokenAccessor;
@@ -1267,7 +1394,6 @@ public class AzdoCommands
         _svc = svc;
         _tokenAccessor = tokenAccessor;
     }
-
 
     /// <summary>Show the currently resolved Azure DevOps authentication path without making an AzDO API request.</summary>
     /// <param name="json">Output as structured JSON instead of human-readable text.</param>
@@ -1430,12 +1556,7 @@ public class AzdoCommands
             throw new ArgumentException($"Invalid filter '{filter}'. Must be 'failed' or 'all'.", nameof(filter));
         }
 
-        var timeline = await _svc.GetTimelineAsync(buildId);
-        if (timeline is null)
-        {
-            Console.Error.WriteLine("No timeline available for this build.");
-            return;
-        }
+        var timeline = (await _svc.GetTimelineAsync(buildId))!;
 
         var records = timeline.Records;
         if (filter.Equals("failed", StringComparison.OrdinalIgnoreCase))
@@ -1507,17 +1628,17 @@ public class AzdoCommands
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
     /// <param name="logId">Log ID from the timeline record's log reference.</param>
     /// <param name="tailLines">Number of lines from the end to return.</param>
+    /// <param name="json">Emit JSON error envelope on acquisition failure.</param>
     [McpEquivalent("azdo_log")]
     [Command("azdo log")]
-    public async Task Log([Argument] string buildId, [Argument] int logId, int? tailLines = 500)
+    public async Task Log([Argument] string buildId, [Argument] int logId, int? tailLines = 500, bool json = false)
     {
         var content = await _svc.GetBuildLogAsync(buildId, logId, tailLines);
-        if (content is null)
-        {
-            Console.Error.WriteLine("Log not found.");
-            return;
-        }
-        Console.Write(content);
+
+        if (json)
+            Console.WriteLine(JsonSerializer.Serialize(content, s_jsonOptions));
+        else
+            Console.Write(content);
     }
 
     /// <summary>Search one build log or all ranked build logs for a pattern.</summary>
@@ -1991,12 +2112,43 @@ public class AzdoCommands
             }
         }
 
+        if (plan.HelixFailures.Count > 0)
+        {
+            Console.WriteLine();
+            var helixFailureRange = plan.HelixFailures.Count == 0
+                ? $"0 of {FormatInvariant(plan.HelixFailureTotal)}"
+                : $"{FormatInvariant(plan.HelixFailureOffset + 1)}-{FormatInvariant(plan.HelixFailureOffset + plan.HelixFailures.Count)} of {FormatInvariant(plan.HelixFailureTotal)}";
+            Console.WriteLine(
+                $"Helix monitor failures: {helixFailureRange}{(plan.HelixFailuresTruncated ? " (truncated)" : "")}");
+            foreach (var failure in plan.HelixFailures)
+            {
+                Console.WriteLine();
+                Console.WriteLine($"  Work item:        {QuoteUntrusted(failure.WorkItem)}");
+                Console.WriteLine($"    Helix job:      {QuoteUntrusted(failure.HelixJobId)}");
+                if (failure.HelixJobName is not null)
+                    Console.WriteLine($"    Helix job name: {QuoteUntrusted(failure.HelixJobName)}");
+                if (failure.Leg is not null || failure.Queue is not null)
+                    Console.WriteLine($"    Leg/queue:      {QuoteUntrusted(failure.Leg)} / {QuoteUntrusted(failure.Queue)}");
+                Console.WriteLine($"    State/exit code: {QuoteUntrusted(failure.State)} / {(failure.ExitCode.HasValue ? FormatInvariant(failure.ExitCode.Value) : "none")}");
+                Console.WriteLine($"    Monitor job/task: {QuoteUntrusted(failure.MonitorJobName)} ({QuoteUntrusted(failure.MonitorJobId)}) / {QuoteUntrusted(failure.MonitorTaskName)} ({QuoteUntrusted(failure.MonitorTaskId)})");
+                Console.WriteLine($"    Source format:  {QuoteUntrusted(failure.SourceFormat)}");
+            }
+        }
+
         if (plan.IncompleteReasons.Count > 0)
         {
             Console.WriteLine();
             Console.WriteLine("Incomplete reasons:");
-            foreach (var reason in plan.IncompleteReasons)
-                Console.WriteLine($"  - {QuoteUntrusted(reason)}");
+            if (plan.IncompleteDetails.Count > 0)
+            {
+                foreach (var detail in plan.IncompleteDetails)
+                    Console.WriteLine($"  - [{detail.Code}] {QuoteUntrusted(detail.Message)}");
+            }
+            else
+            {
+                foreach (var reason in plan.IncompleteReasons)
+                    Console.WriteLine($"  - {QuoteUntrusted(reason)}");
+            }
         }
 
         if (plan.Warnings.Count > 0)
@@ -2024,8 +2176,9 @@ public class AzdoCommands
         };
 
     /// <summary>
-    /// Plan CI evidence collection for a build: maps failed/canceled Job records to their artifact candidates.
-    /// Nothing is downloaded. Exits 0 when the plan is complete, 2 when incomplete (ambiguous/missing),
+    /// Plan CI evidence collection for a build: maps failed/canceled Job records to artifact candidates and
+    /// surfaces Helix monitor work-item failures from timeline issues. Nothing is downloaded and no Helix API
+    /// calls are made. Exits 0 when the plan is complete, 2 when incomplete (ambiguous/missing/truncated),
     /// 1 on hard errors.
     /// </summary>
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
@@ -2034,6 +2187,8 @@ public class AzdoCommands
     /// <param name="keepAttemptPrefix">Keep 'AttemptN_' in artifact names instead of stripping it. Default: strip and record the attempt number.</param>
     /// <param name="match">Matching strategy: 'auto' (default), 'source-id', 'normalized-exact', 'exact'.</param>
     /// <param name="jobResults">Comma-separated job results to target. Default: 'failed,canceled'.</param>
+    /// <param name="helixFailureOffset">Offset into parsed Helix monitor failures. Default: 0.</param>
+    /// <param name="helixFailureLimit">Maximum parsed Helix monitor failures to return. Default: 200, max: 1000.</param>
     /// <param name="json">Output as structured JSON.</param>
     [McpEquivalent("azdo_evidence_plan")]
     [Command("azdo evidence plan")]
@@ -2044,6 +2199,8 @@ public class AzdoCommands
         bool keepAttemptPrefix = false,
         string match = "auto",
         string jobResults = "failed,canceled",
+        int helixFailureOffset = 0,
+        int helixFailureLimit = AzdoEvidencePlan.DefaultHelixFailureLimit,
         bool json = false,
         bool schema = false)
     {
@@ -2085,7 +2242,9 @@ public class AzdoCommands
             ArtifactJobPrefix = artifactJobPrefix,
             StripAttemptPrefix = !keepAttemptPrefix,
             Match = match,
-            JobResults = resultList
+            JobResults = resultList,
+            HelixFailureOffset = helixFailureOffset,
+            HelixFailureLimit = helixFailureLimit
         };
 
         AzdoEvidencePlan plan;
@@ -2093,7 +2252,7 @@ public class AzdoCommands
         {
             plan = await _svc.GetEvidencePlanAsync(buildId, options);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException and not HlxAcquisitionException)
         {
             Console.Error.WriteLine($"Error: {QuoteUntrusted(ex.Message)}");
             Environment.ExitCode = 1;

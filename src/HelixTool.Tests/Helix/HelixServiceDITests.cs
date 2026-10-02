@@ -5,6 +5,7 @@
 using System.Net;
 using HelixTool.Core;
 using HelixTool.Core.Cache;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.Helix;
 using NSubstitute;
 using NSubstitute.ExceptionExtensions;
@@ -87,44 +88,44 @@ public class HelixServiceDITests
     // --- Error: 404 HttpRequestException → HelixException with "not found" ---
 
     [Fact]
-    public async Task GetJobStatusAsync_NotFound_ThrowsHelixExceptionWithNotFoundMessage()
+    public async Task GetJobStatusAsync_NotFound_ThrowsAcquisitionNotFound()
     {
         _mockApi.GetJobDetailsAsync(ValidJobId, Arg.Any<CancellationToken>())
             .ThrowsAsync(new HttpRequestException("Not Found", null, HttpStatusCode.NotFound));
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _svc.GetJobStatusAsync(ValidJobId));
 
-        Assert.Contains("not found", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "helix", "get_helix_job", 404);
     }
 
     // --- Error: non-404 HttpRequestException → HelixException with "API error" ---
 
     [Fact]
-    public async Task GetJobStatusAsync_ServerError_ThrowsHelixExceptionWithApiErrorMessage()
+    public async Task GetJobStatusAsync_ServerError_ThrowsTransportError()
     {
         _mockApi.GetJobDetailsAsync(ValidJobId, Arg.Any<CancellationToken>())
             .ThrowsAsync(new HttpRequestException("Internal Server Error", null, HttpStatusCode.InternalServerError));
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _svc.GetJobStatusAsync(ValidJobId));
 
-        Assert.Contains("API error", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.TransportError, "helix", "get_helix_job", 500);
     }
 
     // --- Error: TaskCanceledException (timeout, not cancellation) → HelixException with "timed out" ---
 
     [Fact]
-    public async Task GetJobStatusAsync_Timeout_ThrowsHelixExceptionWithTimedOutMessage()
+    public async Task GetJobStatusAsync_Timeout_ThrowsAcquisitionTimeout()
     {
         // TaskCanceledException with a non-matching CancellationToken = HTTP timeout
         _mockApi.GetJobDetailsAsync(ValidJobId, Arg.Any<CancellationToken>())
             .ThrowsAsync(new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout"));
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _svc.GetJobStatusAsync(ValidJobId));
 
-        Assert.Contains("timed out", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.Timeout, "helix", "get_helix_job");
     }
 
     // --- Cancellation: canceled CancellationToken → OperationCanceledException propagates ---
@@ -220,26 +221,26 @@ public class HelixServiceDITests
     // --- Error handling on GetWorkItemFilesAsync ---
 
     [Fact]
-    public async Task GetWorkItemFilesAsync_NotFound_ThrowsHelixExceptionWithNotFoundMessage()
+    public async Task GetWorkItemFilesAsync_NotFound_ThrowsAcquisitionNotFound()
     {
         _mockApi.ListWorkItemFilesAsync("wi1", ValidJobId, Arg.Any<CancellationToken>())
             .ThrowsAsync(new HttpRequestException("Not Found", null, HttpStatusCode.NotFound));
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _svc.GetWorkItemFilesAsync(ValidJobId, "wi1"));
 
-        Assert.Contains("not found", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "helix", "list_helix_work_item_files", 404);
     }
 
     [Fact]
-    public async Task GetWorkItemFilesAsync_ServerError_ThrowsHelixExceptionWithApiErrorMessage()
+    public async Task GetWorkItemFilesAsync_ServerError_ThrowsTransportError()
     {
         _mockApi.ListWorkItemFilesAsync("wi1", ValidJobId, Arg.Any<CancellationToken>())
             .ThrowsAsync(new HttpRequestException("Bad Gateway", null, HttpStatusCode.BadGateway));
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _svc.GetWorkItemFilesAsync(ValidJobId, "wi1"));
 
-        Assert.Contains("API error", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.TransportError, "helix", "list_helix_work_item_files", 502);
     }
 }
