@@ -151,3 +151,19 @@ See `.squad/agents/kane/history-archive.md` for detailed work on:
 - Folder restructuring analysis (Option A executed in PR #17)
 - Cache security review, HelixService refactoring
 - Knowledgebase refresh guidance
+
+## 2026-10-02T12:05:00Z — Session handoff: Evidence plan Helix + #152 acquisition errors
+
+Cross-agent context from Scribe:
+
+**For Kane (Documentation):**
+- Ripley's evidence-plan implementation is complete (commit 28beceb, 2047 tests pass)
+- Dallas approved the design; Lambert's tests report it works except for missing stable reason codes in human CLI output
+- Two test failures are implementation gaps (codes expected but not emitted): `CliEvidencePlan_UnparseableMonitorHumanOutput_ExitsTwoWithStableReasonCode`, `CliEvidencePlan_HelixFailurePaging_ReportsTruncationAndSecondPage`
+- Dallas also approved acquisition error contract (#152) as separate PR: stable `HlxAcquisitionException` with `AcquisitionError` record, MCP filter, CLI JSON envelope
+- Update MCP descriptions for both evidence-plan Helix features and acquisition error contract when Ripley adds missing reason codes to CLI output
+- Phasing: #152 error contract PR first (P0), then pagination/completeness, then `hlx collect` bundle writer
+
+**Coordination:**
+- Ash's scanner analysis supports phasing evidence-plan Helix + #152 error contract before scanner work
+- All five agents' decisions merged; ready for Larry's review gate

@@ -671,3 +671,161 @@ released by the store itself — expected, since a logic bug must not be launder
 and out of scope for #129. The test's own `finally` calls the same public
 `SqliteConnection.ClearAllPools()` API itself (not a new seam) before deleting its temp
 directory, to avoid a lingering pooled handle making cleanup flaky, particularly on Windows.
+
+---
+
+---
+date: 2026-10-02
+author: Ash
+status: proposed
+topic: Scanner scenarios gap analysis for hlx
+---
+
+# Proposal: make hlx scanner-safe without sacrificing agent defaults
+
+Vitek's scanner rewrite scenario is valid and broader than issue #152's concrete `azdo_log` example. The current surface is agent-friendly but not deterministic-collector-friendly: several AzDO 404/204/empty/malformed paths become `null` or `[]`, `azdo_log` MCP can return an empty string for a missing log, `azdo_helix_jobs` can hide primary Helix lookup failure behind timeline fallback, and most CLI commands lack stable JSON errors or exit-code semantics. Evidence plan is the strong counterexample: bounded output, completeness fields, and exit 2 for incomplete plans.
+
+Recommendation:
+
+1. Prioritize #152 as a shared Core acquisition outcome model with machine-readable kinds: `not_found`, `access_denied`, `rate_limited`, `timeout`, `transport_error`, `invalid_response`.
+2. Keep MCP caps and failure-first defaults for agent context, but add CLI `--all`/paging and JSON completeness fields for scanner scripts.
+3. Add a first-class `hlx collect` only after the error model exists. It should write a deterministic bundle directory plus manifest, driven initially by `azdo_evidence_plan`, and record acquisition facts rather than embedding retry/skip policy.
+4. Coordinate with Dallas's separate Helix-aware `azdo_evidence_plan` design so queue-monitor failed work items become evidence inputs and the monitor job itself is not treated as the missing artifact.
+
+Full analysis artifact: `/Users/lewing/.copilot/session-state/1b1a6aa5-b654-4dc2-9570-aff958b3d0d2/files/scanner-scenarios-gap-analysis.md`.
+
+---
+
+---
+date: 2026-10-02T11:29:27-05:00
+author: Dallas
+status: proposed
+topic: Acquisition error contract for lewing/helix.mcp#152
+---
+
+# Decision: classify provider acquisition failures before scanner work
+
+## Decision
+
+Implement #152 as a shared Core acquisition error contract first. Add `HlxAcquisitionException` carrying an `AcquisitionError` record with stable `kind`, `provider`, `operation`, `resource`, `httpStatus`, `retryAfterSeconds`, and human `message`. Stable kind wire strings are:
+
+- `not_found`
+- `access_denied`
+- `rate_limited`
+- `timeout`
+- `transport_error`
+- `invalid_response`
+
+Classification belongs in `AzdoApiClient` and Helix client/service wrappers, not in MCP or CLI text handling. HTTP 404/204/empty/malformed provider payloads must stop becoming unqualified `null`, `[]`, notes, or `string.Empty`. Successful empty provider payloads remain success only when the provider actually returned a valid success shape: HTTP-200 empty text log, JSON list wrapper with `value: []`, successful file list with zero files, or filtering/search yielding no matches after acquisition succeeded.
+
+## MCP contract
+
+The repo uses ModelContextProtocol 2.2.0. `CallToolResult` supports `IsError` and `StructuredContent`, but `McpException` is text-only. Therefore, add a `CallToolFilter` that catches `HlxAcquisitionException` and returns:
+
+- `isError: true`
+- text content containing the human message
+- `structuredContent: { "error": { ...AcquisitionError... } }`
+
+Keep existing `McpException` behavior for validation, binding, and non-acquisition domain errors. Update `McpExceptionHandler` to rethrow `HlxAcquisitionException` unchanged so the filter can see it.
+
+## CLI contract
+
+Keep evidence plan's exit-code convention:
+
+- `0`: complete success
+- `1`: hard validation/acquisition error
+- `2`: output produced but incomplete/truncated/skipped by policy
+
+Do not allocate one process exit code per error kind. Under `--json`, emit a stable JSON error envelope and let scripts inspect `error.kind`, `httpStatus`, and `retryAfterSeconds`. Preserve `azdo evidence plan` exit 2 for `complete=false`; use exit 1 only for hard acquisition failure.
+
+## P0 implementation scope
+
+Land in the first PR:
+
+1. Core error model and classifiers.
+2. AzDO classification in `GetBuildLogAsync`, generic object/list helpers, auth/unexpected HTTP handling, retry-after parsing, malformed/empty JSON handling.
+3. Helix classification for HTTP/SDK/timeouts in service wrappers, including `ListJobsByBuildAsync`.
+4. MCP acquisition error filter with structured content.
+5. CLI JSON error envelope for touched commands, especially `azdo log`, `azdo timeline`, and hard errors from `azdo evidence plan`.
+6. Recorded/offline tests using fake handlers and asserting structured fields, not exact wording.
+
+P0 behavior changes to call out: `azdo_log` 404 becomes an MCP error/nonzero CLI instead of empty success; missing timeline stops looking like zero records; `azdo_helix_jobs` should preserve fallback but report primary/timeline acquisition errors and incompleteness when evidence is inconclusive.
+
+## Cache rule
+
+Never cache acquisition failures as successful `null`, `[]`, or `""`. Valid empty successes may still be cached. Do not add negative-result caching in P0. Offline/eval cache misses should be structured `provider=cache` acquisition errors, and corrupt cached JSON should be `invalid_response`.
+
+## Phasing recommendation
+
+Approve #152 as an error-contract PR, not a scanner omnibus. For pagination, choose Ash's option A first: CLI `--all`/paging and completeness metadata while keeping MCP caps agent-safe. Defer MCP cursors unless real transcripts prove agents need them. Approve `hlx collect` as the long-term bundle writer, but only after acquisition errors and CLI pagination exist; otherwise the manifest will encode ambiguous failure states.
+
+Full design artifact: `/Users/lewing/.copilot/session-state/1b1a6aa5-b654-4dc2-9570-aff958b3d0d2/files/acquisition-errors-design.md`.
+
+---
+
+---
+date: 2026-10-02T11:29:27-05:00
+author: Dallas
+status: for-review
+topic: Helix-aware evidence plan (#152 coordination)
+---
+
+# Decision: Helix-aware evidence plan
+
+Implement `azdo_evidence_plan` Helix monitor awareness as a timeline-only extension. Parsed arcade monitor failures become top-level `helixFailures[]` rows carrying `monitorJobId`, `monitorTaskId`, `helixJobId`, `helixJobName`, `leg`, `queue`, `workItem`, `state`, `exitCode`, `details`, and `sourceFormat`. Keep `entries[]` artifact-only for backward compatibility.
+
+## Completeness
+
+A failed/canceled monitor job with parsed, untruncated Helix failures is represented and must not produce a missing-artifact entry or CLI exit 2. A monitor-like job with no parseable failures, unresolved failure-shaped rows, or truncated `helixFailures[]` remains incomplete with explicit reasons.
+
+Deterministic collector update from Larry/Vitek: add stable `incompleteDetails[].code` alongside human `incompleteReasons`, add `suggestedFetches[]` to each Helix failure so scripts can drive exact `helixJobId` + `workItem` collection, and expose `helixFailureOffset`/`helixFailureLimit`/`helixFailureTotal`/`helixFailuresTruncated` so caps are fail-closed. Empty `helixFailures[]` with monitor parse failures is incomplete, never "no failures."
+
+## Architecture
+
+Extract the existing monitor parser from `AzdoService` into a pure `AzdoMonitorFailureParser`; keep `AzdoEvidenceMatcher` pure by adding a selected-job overload. `GetEvidencePlanAsync` still performs exactly three cached AzDO GETs and makes no Helix API calls. MCP/CLI copy should route Helix drilldown to `azdo_helix_jobs` and `helix_*` tools rather than adding a new tool.
+
+Handoff artifact: `/Users/lewing/.copilot/session-state/1b1a6aa5-b654-4dc2-9570-aff958b3d0d2/files/evidence-plan-helix-design.md`.
+
+---
+
+---
+date: 2026-10-02T11:29:27-05:00
+author: Lambert
+status: for-review
+topic: Helix evidence plan test coverage
+---
+
+# Test status: Helix evidence plan
+
+Added Helix-aware evidence-plan tests covering the accepted Dallas design:
+
+- Pure parser coverage in `AzdoMonitorFailureParserTests`: legacy messages, arcade warnings, state-only details, console URL fallback, sibling-console isolation, tree lines, ambiguous fallback, and warning/tree dedupe.
+- Pure matcher coverage for `BuildPlanFromSelectedJobs`.
+- Service/JSON coverage in `AzdoEvidenceHelixPlanTests`: parsed monitor jobs become `helixFailures[]` and complete plans, unparseable and unresolved monitor rows fail closed with stable `incompleteDetails[].code`, mixed artifact plus Helix evidence, multiple monitor jobs, paging/truncation fields, suggested fetch coordinates, and backward-compatible JSON fields.
+- Surface coverage in existing AzDO tests: JSON-property reflection for the new DTOs, CLI/MCP schema parameters, MCP description requirements, and CLI JSON/human behavior.
+
+## Validation
+
+- Targeted suite: 255 passed / 2 failed.
+- Full suite: 2045 passed / 2 failed / 9 skipped.
+
+Implementation bugs (not test bugs):
+
+1. `CliEvidencePlan_UnparseableMonitorHumanOutput_ExitsTwoWithStableReasonCode` — Expected stable reason code `[monitor_unparseable]` in human output, but missing.
+2. `CliEvidencePlan_HelixFailurePaging_ReportsTruncationAndSecondPage` — Expected `[helix_failures_truncated]` reason code in first-page human output, but missing.
+
+Design basis: `evidence-plan-helix-design.md` requires human incomplete output to include stable reason codes (e.g. `- [monitor_unparseable] ...`) for deterministic collectors to key off stable codes.
+
+---
+
+---
+date: 2026-10-02T11:29:27-05:00
+author: Ripley
+status: resolved
+topic: Evidence plan Helix documentation scope
+---
+
+# Implementation note: evidence plan Helix documentation scope
+
+Implemented Dallas's Helix-aware evidence-plan behavior in Core, CLI help/XML comments, and MCP tool descriptions only. Did not update README.md or docs/cli-reference.md per charter scope (XML doc comments, MCP descriptions, and CLI help text only).
+

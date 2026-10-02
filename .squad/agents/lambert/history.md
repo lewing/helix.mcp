@@ -32,3 +32,27 @@ Added `src/HelixTool.Tests/AzDO/TestResultsSilentEmptyTests.cs` with 15 focused 
 ## Environment Note
 
 Local runtime may be .NET 11 preview only while projects target `net10.0`; use `DOTNET_ROLL_FORWARD=Major` for builds/tests when needed.
+
+## Learnings
+
+### 2026-10-02T11:29:27-05:00 — Helix evidence-plan monitor coverage
+
+- Live public timelines are compact enough to distill into deterministic unit fixtures: dotnet/runtime build 1621192 is monitor-only with a `Monitor Helix Jobs` warning for `System.Diagnostics.Process.Tests`; build 1621133 combines the same monitor shape with a canceled `osx-arm64 Debug Libraries_CheckedCoreCLR` leg and a real `Logs_Build_Attempt1_osx__arm64_Debug_Libraries_CheckedCoreCLR` artifact.
+- Human CLI output needs explicit `incompleteDetails[].code` rendering, not just human `incompleteReasons`; otherwise deterministic collector failures like `monitor_unparseable` and `helix_failures_truncated` are invisible in non-JSON mode even when JSON is machine-readable.
+- Parser tests should cover direct GUID extraction, console fallback scoping, tree-line parsing, and warning/tree dedupe separately from service tests; that isolates production parsing bugs from evidence-plan wiring bugs.
+
+## 2026-10-02T12:05:00Z — Session handoff: Test findings + #152 phasing
+
+Cross-agent context from Scribe:
+
+**For Lambert (Testing):**
+- Your evidence-plan Helix tests are high quality (255 targeted / 2 failed); the 2 failures are implementation gaps, not test bugs
+- Missing stable reason codes in human CLI output: Dallas's design requires them for deterministic collectors (`[monitor_unparseable]`, `[helix_failures_truncated]`)
+- Ripley's implementation calculated codes but did not emit them in human formatter
+- Recommendation: flag both test failures as "design-implementation gap" for Ripley to fix before merge
+- Dallas approved acquisition error contract (#152) in parallel; your error test patterns will scale to MCP + CLI JSON envelopes for acquisition failures
+- Phasing: error contract first, then scanner pagination/completeness, then bundle writer
+
+**Parallel work:**
+- Ash's scanner analysis aligns with Dallas's #152 phasing recommendation
+- All decisions merged and ready for Larry's review
