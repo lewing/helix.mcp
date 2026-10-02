@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using HelixTool.Core.Acquisition;
 using Microsoft.Data.Sqlite;
@@ -18,6 +19,7 @@ public sealed class SqliteCacheStore : ICacheStore
     private const int ErrorSharingViolation = unchecked((int)0x80070020);
     private const int ErrorAccessDenied = unchecked((int)0x80070005);
     private const int ArtifactFileRetryCount = 6;
+    private const string EncodedNulMetadataPrefix = "hlx:nul-base64\n";
 
     /// <summary>Bound on how long <see cref="Dispose"/> waits for startup maintenance to finish.</summary>
     private static readonly TimeSpan DisposeJoinTimeout = TimeSpan.FromSeconds(10);
@@ -227,8 +229,8 @@ public sealed class SqliteCacheStore : ICacheStore
             cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture));
         }
 
-        var result = cmd.ExecuteScalar();
-        return Task.FromResult(result as string);
+        var result = cmd.ExecuteScalar() as string;
+        return Task.FromResult(DecodeMetadataValue(result));
     }
 
     public Task SetMetadataAsync(string cacheKey, string jsonValue, TimeSpan ttl, CancellationToken ct = default)
@@ -249,7 +251,7 @@ public sealed class SqliteCacheStore : ICacheStore
             VALUES (@key, @value, @created, @expires, @jobId);
             """;
         cmd.Parameters.AddWithValue("@key", cacheKey);
-        cmd.Parameters.AddWithValue("@value", jsonValue);
+        cmd.Parameters.AddWithValue("@value", EncodeMetadataValue(jsonValue));
         cmd.Parameters.AddWithValue("@created", now.ToString(Iso8601Format, CultureInfo.InvariantCulture));
         cmd.Parameters.AddWithValue("@expires", (now + ttl).ToString(Iso8601Format, CultureInfo.InvariantCulture));
         cmd.Parameters.AddWithValue("@jobId", jobId);
@@ -262,6 +264,25 @@ public sealed class SqliteCacheStore : ICacheStore
 
         tx.Commit();
         return Task.CompletedTask;
+    }
+
+    private static string EncodeMetadataValue(string value)
+    {
+        if (value.IndexOf('\0') < 0)
+            return value;
+
+        return EncodedNulMetadataPrefix + Convert.ToBase64String(Encoding.UTF8.GetBytes(value));
+    }
+
+    private static string? DecodeMetadataValue(string? value)
+    {
+        if (value is null)
+            return null;
+        if (!value.StartsWith(EncodedNulMetadataPrefix, StringComparison.Ordinal))
+            return value;
+
+        var payload = value[EncodedNulMetadataPrefix.Length..];
+        return Encoding.UTF8.GetString(Convert.FromBase64String(payload));
     }
 
     public async Task<Stream?> GetArtifactAsync(string cacheKey, CancellationToken ct = default)

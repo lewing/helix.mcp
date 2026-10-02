@@ -14,10 +14,9 @@ namespace HelixTool.Core.AzDO;
 ///   - Test runs/results: 1h (stable after build)
 /// Pass-through when <see cref="CacheOptions.MaxSizeBytes"/> is 0 (disabled).
 /// </summary>
-public sealed class CachingAzdoApiClient : IAzdoApiClient
+public sealed class CachingAzdoApiClient : IAzdoApiClient, IAzdoCachedBuildLogReader
 {
-    private const string TestRunsCacheKeyPrefix = "testruns:v2";
-    private const string TestResultsCacheKeyPrefix = "testresults:v2";
+    private const int CompleteListTopSentinel = int.MaxValue;
 
     private static readonly TimeSpan CompletedTtl = TimeSpan.FromHours(4);
     private static readonly TimeSpan InProgressTtl = TimeSpan.FromSeconds(15);
@@ -274,29 +273,94 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         return result;
     }
 
+    public async Task<string?> TryGetCachedFullBuildLogAsync(
+        string org,
+        string project,
+        int buildId,
+        int logId,
+        CancellationToken ct = default)
+    {
+        if (!_enabled)
+            return null;
+
+        await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
+
+        var contentKey = BuildCacheKey(org, project, $"log:{buildId}:{logId}");
+        var cachedRaw = await _cache.GetMetadataAsync(contentKey, ct);
+        return DeserializeLogContent(cachedRaw, _options.EvalMode, contentKey);
+    }
+
     public async Task<IReadOnlyList<AzdoBuildChange>> GetBuildChangesAsync(string org, string project, int buildId, int? top = null, CancellationToken ct = default)
     {
         if (!_enabled) return await _inner.GetBuildChangesAsync(org, project, buildId, top, ct);
 
         await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
 
-        var key = BuildCacheKey(org, project, $"changes:{buildId}:{top}");
-        var cached = await _cache.GetMetadataAsync(key, ct);
-        var deserialized = TryDeserialize<List<AzdoBuildChange>>(cached, _options.EvalMode, key);
-        if (deserialized is not null)
-            return deserialized;
+        var completeRequest = top is null or <= 0;
+        var completeKey = AzdoListCacheKeys.ChangesComplete(_options, org, project, buildId);
+        if (completeRequest)
+        {
+            var cachedComplete = await ReadCachedListAsync<AzdoBuildChange>(completeKey, ct);
+            if (cachedComplete is not null)
+                return cachedComplete;
 
+            var legacyAllKey = AzdoListCacheKeys.ChangesLegacy(_options, org, project, buildId, top);
+            var cachedLegacyAll = await ReadCachedListAsync<AzdoBuildChange>(legacyAllKey, ct);
+            if (cachedLegacyAll is not null)
+                return cachedLegacyAll;
+
+            if (_options.EvalMode)
+                await ThrowFirstReplayedSnapshotErrorIfPresentAsync([completeKey, legacyAllKey], ct);
+
+            var completeResult = await CallAndMaybeRecordAsync(
+                () => _inner.GetBuildChangesAsync(org, project, buildId, top, ct),
+                completeKey,
+                ImmutableTtl,
+                () => IsBuildCompletedAsync(org, project, buildId, ct),
+                ct);
+            await _cache.SetMetadataAsync(completeKey, JsonSerializer.Serialize(completeResult), ImmutableTtl, ct);
+            return completeResult;
+        }
+
+        var limit = top.GetValueOrDefault();
+        var windowKey = AzdoListCacheKeys.ChangesWindow(_options, org, project, buildId, 0, limit);
+        var legacyKey = AzdoListCacheKeys.ChangesLegacy(_options, org, project, buildId, top);
         if (_options.EvalMode)
-            await ThrowReplayedSnapshotErrorIfPresentAsync(key, ct);
+        {
+            var cachedComplete = await ReadCachedListAsync<AzdoBuildChange>(completeKey, ct);
+            if (cachedComplete is not null)
+                return cachedComplete.Take(limit).ToList();
+
+            var cachedWindow = await ReadCachedListAsync<AzdoBuildChange>(windowKey, ct);
+            if (cachedWindow is not null)
+                return cachedWindow;
+
+            var cachedLegacy = await ReadCachedListAsync<AzdoBuildChange>(legacyKey, ct);
+            if (cachedLegacy is not null)
+                return cachedLegacy;
+
+            await ThrowFirstReplayedSnapshotErrorIfPresentAsync([completeKey, windowKey, legacyKey], ct);
+        }
+        else
+        {
+            var cachedWindow = await ReadCachedListAsync<AzdoBuildChange>(windowKey, ct);
+            if (cachedWindow is not null)
+                return cachedWindow;
+
+            var cachedLegacy = await ReadCachedListAsync<AzdoBuildChange>(legacyKey, ct);
+            if (cachedLegacy is not null)
+                return cachedLegacy;
+        }
 
         var result = await CallAndMaybeRecordAsync(
             () => _inner.GetBuildChangesAsync(org, project, buildId, top, ct),
-            key,
+            windowKey,
             ImmutableTtl,
             () => IsBuildCompletedAsync(org, project, buildId, ct),
             ct);
-        key = BuildCacheKey(org, project, $"changes:{buildId}:{top}");
-        await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), ImmutableTtl, ct);
+        var serialized = JsonSerializer.Serialize(result);
+        await _cache.SetMetadataAsync(windowKey, serialized, ImmutableTtl, ct);
+        await _cache.SetMetadataAsync(legacyKey, serialized, ImmutableTtl, ct);
 
         return result;
     }
@@ -307,23 +371,71 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
         await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
 
-        var key = BuildCacheKey(org, project, $"{TestRunsCacheKeyPrefix}:{buildId}:{top}");
-        var cached = await _cache.GetMetadataAsync(key, ct);
-        var deserialized = TryDeserialize<List<AzdoTestRun>>(cached, _options.EvalMode, key);
-        if (deserialized is not null)
-            return deserialized;
+        var completeRequest = top is null or <= 0 || top == CompleteListTopSentinel;
+        var completeKey = AzdoListCacheKeys.TestRunsComplete(_options, org, project, buildId);
+        if (completeRequest)
+        {
+            var cachedComplete = await ReadCachedListAsync<AzdoTestRun>(completeKey, ct);
+            if (cachedComplete is not null)
+                return cachedComplete;
 
+            var legacyAllKey = AzdoListCacheKeys.TestRunsLegacy(_options, org, project, buildId, top);
+            var cachedLegacyAll = await ReadCachedListAsync<AzdoTestRun>(legacyAllKey, ct);
+            if (cachedLegacyAll is not null)
+                return cachedLegacyAll;
+
+            if (_options.EvalMode)
+                await ThrowFirstReplayedSnapshotErrorIfPresentAsync([completeKey, legacyAllKey], ct);
+
+            var completeResult = await CallAndMaybeRecordAsync(
+                () => _inner.GetTestRunsAsync(org, project, buildId, top == CompleteListTopSentinel ? top : CompleteListTopSentinel, ct),
+                completeKey,
+                TestTtl,
+                () => IsBuildCompletedAsync(org, project, buildId, ct),
+                ct);
+            await _cache.SetMetadataAsync(completeKey, JsonSerializer.Serialize(completeResult), TestTtl, ct);
+            return completeResult;
+        }
+
+        var limit = top.GetValueOrDefault();
+        var windowKey = AzdoListCacheKeys.TestRunsWindow(_options, org, project, buildId, 0, limit);
+        var legacyKey = AzdoListCacheKeys.TestRunsLegacy(_options, org, project, buildId, top);
         if (_options.EvalMode)
-            await ThrowReplayedSnapshotErrorIfPresentAsync(key, ct);
+        {
+            var cachedComplete = await ReadCachedListAsync<AzdoTestRun>(completeKey, ct);
+            if (cachedComplete is not null)
+                return cachedComplete.Take(limit).ToList();
+
+            var cachedWindow = await ReadCachedListAsync<AzdoTestRun>(windowKey, ct);
+            if (cachedWindow is not null)
+                return cachedWindow;
+
+            var cachedLegacy = await ReadCachedListAsync<AzdoTestRun>(legacyKey, ct);
+            if (cachedLegacy is not null)
+                return cachedLegacy;
+
+            await ThrowFirstReplayedSnapshotErrorIfPresentAsync([completeKey, windowKey, legacyKey], ct);
+        }
+        else
+        {
+            var cachedWindow = await ReadCachedListAsync<AzdoTestRun>(windowKey, ct);
+            if (cachedWindow is not null)
+                return cachedWindow;
+
+            var cachedLegacy = await ReadCachedListAsync<AzdoTestRun>(legacyKey, ct);
+            if (cachedLegacy is not null)
+                return cachedLegacy;
+        }
 
         var result = await CallAndMaybeRecordAsync(
             () => _inner.GetTestRunsAsync(org, project, buildId, top, ct),
-            key,
+            windowKey,
             TestTtl,
             () => IsBuildCompletedAsync(org, project, buildId, ct),
             ct);
-        key = BuildCacheKey(org, project, $"{TestRunsCacheKeyPrefix}:{buildId}:{top}");
-        await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
+        var serialized = JsonSerializer.Serialize(result);
+        await _cache.SetMetadataAsync(windowKey, serialized, TestTtl, ct);
+        await _cache.SetMetadataAsync(legacyKey, serialized, TestTtl, ct);
 
         return result;
     }
@@ -335,26 +447,72 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
 
         var normalizedOutcomes = string.IsNullOrWhiteSpace(outcomes) ? null : outcomes.Trim();
-        var key = BuildCacheKey(org, project, $"{TestResultsCacheKeyPrefix}:{runId}:{top}:{normalizedOutcomes ?? AzdoBuildFilterDefaults.Outcomes}");
-        var cached = await _cache.GetMetadataAsync(key, ct);
-        var deserialized = TryDeserialize<List<AzdoTestResult>>(cached, _options.EvalMode, key);
-        if (deserialized is { Count: > 0 })
-            return deserialized;
+        var completeRequest = top == CompleteListTopSentinel;
+        var completeKey = AzdoListCacheKeys.TestResultsComplete(_options, org, project, runId, normalizedOutcomes);
+        if (completeRequest)
+        {
+            var cachedComplete = await ReadCachedListAsync<AzdoTestResult>(completeKey, ct, acceptEmpty: true);
+            if (cachedComplete is not null)
+                return cachedComplete;
 
+            var legacyAllKey = AzdoListCacheKeys.TestResultsLegacy(_options, org, project, runId, top, normalizedOutcomes);
+            var cachedLegacyAll = await ReadCachedListAsync<AzdoTestResult>(legacyAllKey, ct, acceptEmpty: false);
+            if (cachedLegacyAll is not null)
+                return cachedLegacyAll;
+
+            if (_options.EvalMode)
+                await ThrowFirstReplayedSnapshotErrorIfPresentAsync([completeKey, legacyAllKey], ct);
+
+            var completeResult = await CallAndMaybeRecordAsync(
+                () => _inner.GetTestResultsAsync(org, project, runId, top, normalizedOutcomes, ct),
+                completeKey,
+                TestTtl,
+                static () => Task.FromResult(true),
+                ct);
+            await _cache.SetMetadataAsync(completeKey, JsonSerializer.Serialize(completeResult), TestTtl, ct);
+            return completeResult;
+        }
+
+        var limit = top > 0 ? top : 200;
+        var windowKey = AzdoListCacheKeys.TestResultsWindow(_options, org, project, runId, normalizedOutcomes, 0, limit);
+        var legacyKey = AzdoListCacheKeys.TestResultsLegacy(_options, org, project, runId, limit, normalizedOutcomes);
         if (_options.EvalMode)
-            await ThrowReplayedSnapshotErrorIfPresentAsync(key, ct);
+        {
+            var cachedComplete = await ReadCachedListAsync<AzdoTestResult>(completeKey, ct, acceptEmpty: true);
+            if (cachedComplete is not null)
+                return cachedComplete.Take(limit).ToList();
+
+            var cachedWindow = await ReadCachedListAsync<AzdoTestResult>(windowKey, ct, acceptEmpty: true);
+            if (cachedWindow is not null)
+                return cachedWindow;
+
+            var cachedLegacy = await ReadCachedListAsync<AzdoTestResult>(legacyKey, ct, acceptEmpty: false);
+            if (cachedLegacy is not null)
+                return cachedLegacy;
+
+            await ThrowFirstReplayedSnapshotErrorIfPresentAsync([completeKey, windowKey, legacyKey], ct);
+        }
+        else
+        {
+            var cachedWindow = await ReadCachedListAsync<AzdoTestResult>(windowKey, ct, acceptEmpty: true);
+            if (cachedWindow is not null)
+                return cachedWindow;
+
+            var cachedLegacy = await ReadCachedListAsync<AzdoTestResult>(legacyKey, ct, acceptEmpty: false);
+            if (cachedLegacy is not null)
+                return cachedLegacy;
+        }
 
         var result = await CallAndMaybeRecordAsync(
-            () => _inner.GetTestResultsAsync(org, project, runId, top, normalizedOutcomes, ct),
-            key,
+            () => _inner.GetTestResultsAsync(org, project, runId, limit, normalizedOutcomes, ct),
+            windowKey,
             TestTtl,
             static () => Task.FromResult(true),
             ct);
+        var serialized = JsonSerializer.Serialize(result);
+        await _cache.SetMetadataAsync(windowKey, serialized, TestTtl, ct);
         if (result.Count > 0)
-        {
-            key = BuildCacheKey(org, project, $"{TestResultsCacheKeyPrefix}:{runId}:{top}:{normalizedOutcomes ?? AzdoBuildFilterDefaults.Outcomes}");
-            await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
-        }
+            await _cache.SetMetadataAsync(legacyKey, serialized, TestTtl, ct);
 
         return result;
     }
@@ -393,23 +551,71 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
 
         await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
 
-        var key = BuildCacheKey(org, project, $"testattachments:{runId}:{resultId}:{top}");
-        var cached = await _cache.GetMetadataAsync(key, ct);
-        var deserialized = TryDeserialize<List<AzdoTestAttachment>>(cached, _options.EvalMode, key);
-        if (deserialized is not null)
-            return deserialized;
+        var completeRequest = top == CompleteListTopSentinel;
+        var completeKey = AzdoListCacheKeys.TestAttachmentsComplete(_options, org, project, runId, resultId);
+        if (completeRequest)
+        {
+            var cachedComplete = await ReadCachedListAsync<AzdoTestAttachment>(completeKey, ct);
+            if (cachedComplete is not null)
+                return cachedComplete;
 
+            var legacyAllKey = AzdoListCacheKeys.TestAttachmentsLegacy(_options, org, project, runId, resultId, top);
+            var cachedLegacyAll = await ReadCachedListAsync<AzdoTestAttachment>(legacyAllKey, ct);
+            if (cachedLegacyAll is not null)
+                return cachedLegacyAll;
+
+            if (_options.EvalMode)
+                await ThrowFirstReplayedSnapshotErrorIfPresentAsync([completeKey, legacyAllKey], ct);
+
+            var completeResult = await CallAndMaybeRecordAsync(
+                () => _inner.GetTestAttachmentsAsync(org, project, runId, resultId, top, ct),
+                completeKey,
+                TestTtl,
+                static () => Task.FromResult(true),
+                ct);
+            await _cache.SetMetadataAsync(completeKey, JsonSerializer.Serialize(completeResult), TestTtl, ct);
+            return completeResult;
+        }
+
+        var limit = top > 0 ? top : 50;
+        var windowKey = AzdoListCacheKeys.TestAttachmentsWindow(_options, org, project, runId, resultId, 0, limit);
+        var legacyKey = AzdoListCacheKeys.TestAttachmentsLegacy(_options, org, project, runId, resultId, limit);
         if (_options.EvalMode)
-            await ThrowReplayedSnapshotErrorIfPresentAsync(key, ct);
+        {
+            var cachedComplete = await ReadCachedListAsync<AzdoTestAttachment>(completeKey, ct);
+            if (cachedComplete is not null)
+                return cachedComplete.Take(limit).ToList();
+
+            var cachedWindow = await ReadCachedListAsync<AzdoTestAttachment>(windowKey, ct);
+            if (cachedWindow is not null)
+                return cachedWindow;
+
+            var cachedLegacy = await ReadCachedListAsync<AzdoTestAttachment>(legacyKey, ct);
+            if (cachedLegacy is not null)
+                return cachedLegacy;
+
+            await ThrowFirstReplayedSnapshotErrorIfPresentAsync([completeKey, windowKey, legacyKey], ct);
+        }
+        else
+        {
+            var cachedWindow = await ReadCachedListAsync<AzdoTestAttachment>(windowKey, ct);
+            if (cachedWindow is not null)
+                return cachedWindow;
+
+            var cachedLegacy = await ReadCachedListAsync<AzdoTestAttachment>(legacyKey, ct);
+            if (cachedLegacy is not null)
+                return cachedLegacy;
+        }
 
         var result = await CallAndMaybeRecordAsync(
-            () => _inner.GetTestAttachmentsAsync(org, project, runId, resultId, top, ct),
-            key,
+            () => _inner.GetTestAttachmentsAsync(org, project, runId, resultId, limit, ct),
+            windowKey,
             TestTtl,
             static () => Task.FromResult(true),
             ct);
-        key = BuildCacheKey(org, project, $"testattachments:{runId}:{resultId}:{top}");
-        await _cache.SetMetadataAsync(key, JsonSerializer.Serialize(result), TestTtl, ct);
+        var serialized = JsonSerializer.Serialize(result);
+        await _cache.SetMetadataAsync(windowKey, serialized, TestTtl, ct);
+        await _cache.SetMetadataAsync(legacyKey, serialized, TestTtl, ct);
 
         return result;
     }
@@ -527,6 +733,29 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         var error = await _cache.GetAcquisitionErrorAsync(key, ct);
         if (error is not null)
             throw new HlxAcquisitionException(AcquisitionFailureRecorderPolicy.ReplayFromSnapshot(error));
+    }
+
+    private async Task ThrowFirstReplayedSnapshotErrorIfPresentAsync(IReadOnlyList<string> keys, CancellationToken ct)
+    {
+        foreach (var key in keys)
+        {
+            var error = await _cache.GetAcquisitionErrorAsync(key, ct);
+            if (error is not null)
+                throw new HlxAcquisitionException(AcquisitionFailureRecorderPolicy.ReplayFromSnapshot(error));
+        }
+
+        await ThrowReplayedSnapshotErrorIfPresentAsync(keys[0], ct);
+    }
+
+    private async Task<List<T>?> ReadCachedListAsync<T>(string key, CancellationToken ct, bool acceptEmpty = true)
+    {
+        var cached = await _cache.GetMetadataAsync(key, ct);
+        var deserialized = TryDeserialize<List<T>>(cached, _options.EvalMode, key);
+        if (deserialized is null)
+            return null;
+        if (!acceptEmpty && deserialized.Count == 0)
+            return null;
+        return deserialized;
     }
 
     private async Task<T> CallAndMaybeRecordAsync<T>(

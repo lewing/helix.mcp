@@ -115,7 +115,8 @@ builder.Services.AddScoped<AzdoService>(sp =>
 new AzdoService(
     sp.GetRequiredService<IAzdoApiClient>(),
     sp.GetRequiredService<IHelixApiClient>(),
-    sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>()));
+    sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>(),
+    sp.GetRequiredService<CacheOptions>()));
 
 builder.Services
     .AddMcpServer(options =>

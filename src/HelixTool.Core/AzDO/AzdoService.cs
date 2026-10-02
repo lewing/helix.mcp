@@ -1,8 +1,11 @@
 using System.Buffers;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using HelixTool.Core.Acquisition;
+using HelixTool.Core.Cache;
 using HelixTool.Core.Helix;
+using HelixTool.Core.Paging;
 
 namespace HelixTool.Core.AzDO;
 
@@ -16,6 +19,7 @@ public class AzdoService
     private readonly IAzdoApiClient _client;
     private readonly IHelixApiClient? _helixApi;
     private readonly IAzdoAcquisitionFailureRecorder _failureRecorder;
+    private readonly CacheOptions _cacheOptions;
     private const string ValidFilterValues = "'failed', 'all', 'running', 'pending', 'incomplete', or 'issues'";
     private static readonly HashSet<string> s_validFilters = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -64,11 +68,13 @@ public class AzdoService
     public AzdoService(
         IAzdoApiClient client,
         IHelixApiClient? helixApi,
-        IAzdoAcquisitionFailureRecorder? failureRecorder = null)
+        IAzdoAcquisitionFailureRecorder? failureRecorder = null,
+        CacheOptions? cacheOptions = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _helixApi = helixApi;
         _failureRecorder = failureRecorder ?? NoOpAzdoAcquisitionFailureRecorder.Instance;
+        _cacheOptions = cacheOptions ?? new CacheOptions();
     }
 
     public static string NormalizeFilter(string filter)
@@ -196,20 +202,36 @@ public class AzdoService
         var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
         IReadOnlyList<AzdoBuildLogEntry>? logsList = null;
 
+        if (tailLines is > 0 && _client is IAzdoCachedBuildLogReader cachedLogReader)
+        {
+            var cachedFullLog = await cachedLogReader.TryGetCachedFullBuildLogAsync(org, project, buildId, logId, ct);
+            if (cachedFullLog is { Length: > 0 })
+                return StringHelpers.TailLines(cachedFullLog, tailLines.Value);
+        }
+
         // Optimization: use lineCount metadata to fetch only the tail
         if (tailLines is > 0)
         {
-            logsList = await _client.GetBuildLogsListAsync(org, project, buildId, ct);
-            var logEntry = logsList.FirstOrDefault(e => e.Id == logId);
-
-            if (logEntry is not null && logEntry.LineCount > (long)tailLines.Value * 2)
+            try
             {
-                var startLine = logEntry.LineCount - tailLines.Value;
-                if (startLine > 0 && startLine <= int.MaxValue)
+                logsList = await _client.GetBuildLogsListAsync(org, project, buildId, ct);
+                var logEntry = logsList.FirstOrDefault(e => e.Id == logId);
+
+                if (logEntry is not null && logEntry.LineCount > (long)tailLines.Value * 2)
                 {
-                    return await _client.GetBuildLogAsync(org, project, buildId, logId,
-                        startLine: (int)startLine, ct: ct);
+                    var startLine = logEntry.LineCount - tailLines.Value;
+                    if (startLine > 0 && startLine <= int.MaxValue)
+                    {
+                        return await _client.GetBuildLogAsync(org, project, buildId, logId,
+                            startLine: (int)startLine, ct: ct);
+                    }
                 }
+            }
+            catch (HlxAcquisitionException ex) when (
+                ex.Error.Kind == AcquisitionErrorKind.NotInSnapshot &&
+                string.Equals(ex.Error.Provider, "cache", StringComparison.OrdinalIgnoreCase))
+            {
+                logsList = null;
             }
         }
 
@@ -304,6 +326,25 @@ public class AzdoService
     }
 
     /// <summary>
+    /// Get a paged envelope of build changes. The complete result set is fetched and sliced in memory
+    /// so scripts receive stable total/truncation metadata.
+    /// </summary>
+    public async Task<HlxListEnvelope<AzdoBuildChange>> GetBuildChangesPageAsync(
+        string buildIdOrUrl, HlxPageRequest page, int defaultLimit = 20, CancellationToken ct = default)
+    {
+        var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
+        var all = await _client.GetBuildChangesAsync(org, project, buildId, top: null, ct);
+        return CreateEnvelope(
+            all,
+            page,
+            defaultLimit,
+            AzdoListCacheKeys.ChangesComplete(_cacheOptions, org, project, buildId),
+            request => AzdoListCacheKeys.ChangesWindow(_cacheOptions, org, project, buildId, request.Offset, request.EffectiveLimit(defaultLimit)),
+            "azdo changes",
+            "Re-run with --all or --offset {0} --limit {1}.");
+    }
+
+    /// <summary>
     /// Get test runs for a build.
     /// </summary>
     public async Task<IReadOnlyList<AzdoTestRun>> GetTestRunsAsync(
@@ -311,6 +352,22 @@ public class AzdoService
     {
         var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
         return await _client.GetTestRunsAsync(org, project, buildId, top, ct);
+    }
+
+    /// <summary>Get a paged envelope of test runs for a build.</summary>
+    public async Task<HlxListEnvelope<AzdoTestRun>> GetTestRunsPageAsync(
+        string buildIdOrUrl, HlxPageRequest page, int defaultLimit = 50, CancellationToken ct = default)
+    {
+        var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
+        var all = await _client.GetTestRunsAsync(org, project, buildId, int.MaxValue, ct);
+        return CreateEnvelope(
+            all,
+            page,
+            defaultLimit,
+            AzdoListCacheKeys.TestRunsComplete(_cacheOptions, org, project, buildId),
+            request => AzdoListCacheKeys.TestRunsWindow(_cacheOptions, org, project, buildId, request.Offset, request.EffectiveLimit(defaultLimit)),
+            "azdo test-runs",
+            "Re-run with --all or --offset {0} --limit {1}.");
     }
 
     /// <summary>
@@ -322,6 +379,27 @@ public class AzdoService
     {
         var (org, project, _) = AzdoIdResolver.Resolve(buildIdOrUrl);
         return await _client.GetTestResultsAsync(org, project, runId, top, outcomes, ct);
+    }
+
+    /// <summary>Get a paged envelope of test results for a test run.</summary>
+    public async Task<HlxListEnvelope<AzdoTestResult>> GetTestResultsPageAsync(
+        string buildIdOrUrl,
+        int runId,
+        HlxPageRequest page,
+        string? outcomes = null,
+        int defaultLimit = 200,
+        CancellationToken ct = default)
+    {
+        var (org, project, _) = AzdoIdResolver.Resolve(buildIdOrUrl);
+        var all = await _client.GetTestResultsAsync(org, project, runId, int.MaxValue, outcomes, ct);
+        return CreateEnvelope(
+            all,
+            page,
+            defaultLimit,
+            AzdoListCacheKeys.TestResultsComplete(_cacheOptions, org, project, runId, outcomes),
+            request => AzdoListCacheKeys.TestResultsWindow(_cacheOptions, org, project, runId, outcomes, request.Offset, request.EffectiveLimit(defaultLimit)),
+            "azdo test-results",
+            "Re-run with --all or --offset {0} --limit {1}.");
     }
 
     /// <summary>
@@ -341,6 +419,29 @@ public class AzdoService
             results = results.Take(top).ToList();
 
         return results;
+    }
+
+    /// <summary>Get a paged envelope of build artifacts, filtered by artifact name pattern.</summary>
+    public async Task<HlxListEnvelope<AzdoBuildArtifact>> GetBuildArtifactsPageAsync(
+        string buildIdOrUrl,
+        string pattern,
+        HlxPageRequest page,
+        int defaultLimit = 100,
+        CancellationToken ct = default)
+    {
+        var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
+        var all = await _client.GetBuildArtifactsAsync(org, project, buildId, ct);
+        if (pattern != "*")
+            all = all.Where(a => StringHelpers.MatchesPattern(a.Name ?? string.Empty, pattern)).ToList();
+
+        return CreateEnvelope(
+            all,
+            page,
+            defaultLimit,
+            AzdoListCacheKeys.ArtifactsComplete(_cacheOptions, org, project, buildId),
+            _ => AzdoListCacheKeys.ArtifactsComplete(_cacheOptions, org, project, buildId),
+            "azdo artifacts",
+            "Re-run with --all or --offset {0} --limit {1}.");
     }
 
     /// <summary>
@@ -718,6 +819,83 @@ public class AzdoService
         if (results.Count <= top)
             return results;
         return results.Take(top).ToList();
+    }
+
+    /// <summary>Get a paged envelope of attachments for a test result.</summary>
+    public async Task<HlxListEnvelope<AzdoTestAttachment>> GetTestAttachmentsPageAsync(
+        string org,
+        string project,
+        int runId,
+        int resultId,
+        HlxPageRequest page,
+        int defaultLimit = 100,
+        CancellationToken ct = default)
+    {
+        var all = await _client.GetTestAttachmentsAsync(org, project, runId, resultId, int.MaxValue, ct);
+        return CreateEnvelope(
+            all,
+            page,
+            defaultLimit,
+            AzdoListCacheKeys.TestAttachmentsComplete(_cacheOptions, org, project, runId, resultId),
+            request => AzdoListCacheKeys.TestAttachmentsWindow(_cacheOptions, org, project, runId, resultId, request.Offset, request.EffectiveLimit(defaultLimit)),
+            "azdo test-attachments",
+            "Re-run with --all or --offset {0} --limit {1}.");
+    }
+
+    private static HlxListEnvelope<T> CreateEnvelope<T>(
+        IReadOnlyList<T> all,
+        HlxPageRequest page,
+        int defaultLimit,
+        string completeKey,
+        Func<HlxPageRequest, string> windowKey,
+        string commandName,
+        string truncatedNoteFormat)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(page.Offset);
+
+        if (!page.All)
+            ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(page.EffectiveLimit(defaultLimit), 0);
+
+        var total = all.Count;
+        var offset = page.All ? 0 : page.Offset;
+        var limit = page.All ? (int?)null : page.EffectiveLimit(defaultLimit);
+        var results = page.All
+            ? all.ToList()
+            : all.Skip(offset).Take(limit.GetValueOrDefault()).ToList();
+        var complete = page.All || (offset == 0 && results.Count == total);
+        var truncated = !complete;
+
+        HlxNextPage? next = null;
+        if (truncated && limit.HasValue)
+        {
+            var nextOffset = offset + results.Count;
+            if (nextOffset < total)
+                next = new HlxNextPage(nextOffset, limit.Value);
+        }
+
+        var note = truncated && next is not null
+            ? $"Showing {results.Count} of {total} from {commandName}. " + string.Format(CultureInfo.InvariantCulture, truncatedNoteFormat, next.Offset, next.Limit)
+            : truncated
+                ? $"Showing {results.Count} of {total} from {commandName}. Re-run with --all."
+                : null;
+
+        return new HlxListEnvelope<T>
+        {
+            Results = results,
+            Returned = results.Count,
+            Total = total,
+            Offset = offset,
+            Limit = limit,
+            Complete = complete,
+            Truncated = truncated,
+            Next = next,
+            Cache = new HlxCacheProvenance
+            {
+                Key = page.All ? completeKey : windowKey(page),
+                CompleteKey = completeKey
+            },
+            Note = note
+        };
     }
 
     private static readonly Regex s_gitHubIssueUrlRegex = new(

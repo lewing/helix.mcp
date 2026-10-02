@@ -11,6 +11,7 @@ using HelixTool.Core.Acquisition;
 using HelixTool.Core.Cache;
 using HelixTool.Core.Helix;
 using HelixTool.Core.AzDO;
+using HelixTool.Core.Paging;
 using HelixTool.Mcp.Tools;
 using FilesJsonResult = HelixTool.Mcp.Tools.CliFilesJsonResult;
 using HelixFileJsonResult = HelixTool.Mcp.Tools.CliHelixFileJsonResult;
@@ -59,7 +60,8 @@ if (!string.IsNullOrEmpty(evalSnapshotDir))
         new AzdoService(
             sp.GetRequiredService<IAzdoApiClient>(),
             sp.GetRequiredService<IHelixApiClient>(),
-            sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>()));
+            sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>(),
+            sp.GetRequiredService<CacheOptions>()));
 }
 else
 {
@@ -114,7 +116,8 @@ services.AddSingleton<AzdoService>(sp =>
     new AzdoService(
         sp.GetRequiredService<IAzdoApiClient>(),
         sp.GetRequiredService<IHelixApiClient>(),
-        sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>()));
+        sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>(),
+        sp.GetRequiredService<CacheOptions>()));
 }
 
 ConsoleApp.ServiceProvider = services.BuildServiceProvider();
@@ -926,14 +929,16 @@ public class Commands
 - `hlx azdo build <buildId> [--json]` — Get build details (status, result, branch, timing, URL)
 - `hlx azdo builds [--org ORG] [--project PROJ] [--top N] [--branch B] [--pr-number N] [--definition-id N] [--status S] [--json]` — List builds (default top 20)
 - `hlx azdo timeline <buildId> [--filter failed|all] [--json]` — Build timeline (stages, jobs, tasks with log IDs)
-- `hlx azdo log <buildId> <logId> [--tail-lines N]` — Get build log content (last N lines, default 500)
+- `hlx azdo log <buildId> <logId> [--tail-lines N] [--full]` — Get build log content (last N lines by default, or the full log)
 - `hlx azdo search-log <buildId> [--log-id N] [--pattern P] [--context-lines N] [--max-matches N] [--max-logs N] [--min-lines N] [--json]` — Search one build log or all ranked logs (defaults: 100 matches, 50 logs)
 - `hlx azdo search-timeline <buildId> <pattern> [--type Stage|Job|Task] [--result failed|all] [--json]` — Search timeline records by name/issue pattern
-- `hlx azdo changes <buildId> [--top N] [--json]` — Commits/changes associated with a build
-- `hlx azdo test-runs <buildId> [--top N] [--json]` — List test runs for a build
-- `hlx azdo test-results <buildId> <runId> [--top N] [--json]` — Test results for a test run (defaults to failed)
-- `hlx azdo artifacts <buildId> [--pattern P] [--top N] [--json]` — List build artifacts with optional pattern filter (default top 100)
-- `hlx azdo test-attachments <runId> <resultId> [--org ORG] [--project PROJ] [--top N] [--json]` — Test result attachments (default top 100)
+- `hlx azdo changes <buildId> [--limit N|--top N] [--offset N] [--all] [--allow-truncated] [--json]` — Commits/changes associated with a build
+- `hlx azdo test-runs <buildId> [--limit N|--top N] [--offset N] [--all] [--allow-truncated] [--json]` — List test runs for a build
+- `hlx azdo test-results <buildId> <runId> [--limit N|--top N] [--offset N] [--all] [--allow-truncated] [--json]` — Test results for a test run (defaults to failed)
+- `hlx azdo artifacts <buildId> [--pattern P] [--limit N|--top N] [--offset N] [--all] [--allow-truncated] [--json]` — List build artifacts with optional pattern filter
+- `hlx azdo test-attachments <runId> <resultId> [--org ORG] [--project PROJ] [--limit N|--top N] [--offset N] [--all] [--allow-truncated] [--json]` — Test result attachments
+
+Updated AzDO list commands emit `{ ok, results, returned, total, offset, limit, complete, truncated, next, cache, note }` with `--json`; truncated output exits 2 unless `--allow-truncated` is supplied.
 
 ## MCP Server
 - `hlx mcp` — Start MCP server over stdio (for VS Code, Claude Desktop, etc.)
@@ -1034,7 +1039,8 @@ Available as `failureCategory` in JSON and MCP output.
                 new AzdoService(
                     sp.GetRequiredService<IAzdoApiClient>(),
                     sp.GetRequiredService<IHelixApiClient>(),
-                    sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>()));
+                    sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>(),
+                    sp.GetRequiredService<CacheOptions>()));
         }
         else
         {
@@ -1085,7 +1091,8 @@ Available as `failureCategory` in JSON and MCP output.
             new AzdoService(
                 sp.GetRequiredService<IAzdoApiClient>(),
                 sp.GetRequiredService<IHelixApiClient>(),
-                sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>()));
+                sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>(),
+                sp.GetRequiredService<CacheOptions>()));
         }
 
         builder.Services
@@ -1395,6 +1402,70 @@ public class AzdoCommands
         _tokenAccessor = tokenAccessor;
     }
 
+    private static bool TryCreatePageRequest(
+        bool all,
+        int offset,
+        int? limit,
+        int? top,
+        out HlxPageRequest request)
+    {
+        request = new HlxPageRequest();
+        if (offset < 0)
+        {
+            Console.Error.WriteLine("--offset must be greater than or equal to 0.");
+            Environment.ExitCode = 1;
+            return false;
+        }
+
+        if (limit is <= 0)
+        {
+            Console.Error.WriteLine("--limit must be greater than 0.");
+            Environment.ExitCode = 1;
+            return false;
+        }
+
+        if (top is <= 0)
+        {
+            Console.Error.WriteLine("--top must be greater than 0.");
+            Environment.ExitCode = 1;
+            return false;
+        }
+
+        if (limit.HasValue && top.HasValue)
+        {
+            Console.Error.WriteLine("--limit and --top are aliases; specify only one.");
+            Environment.ExitCode = 1;
+            return false;
+        }
+
+        if (all && (offset != 0 || limit.HasValue || top.HasValue))
+        {
+            Console.Error.WriteLine("--all is mutually exclusive with --offset, --limit, and --top.");
+            Environment.ExitCode = 1;
+            return false;
+        }
+
+        request = new HlxPageRequest
+        {
+            All = all,
+            Offset = offset,
+            Limit = limit ?? top
+        };
+        return true;
+    }
+
+    private static void ApplyTruncatedExit<T>(HlxListEnvelope<T> envelope, bool allowTruncated)
+    {
+        if (envelope.Truncated && !allowTruncated)
+            Environment.ExitCode = 2;
+    }
+
+    private static void PrintPagingWarning<T>(HlxListEnvelope<T> envelope)
+    {
+        if (envelope.Truncated && envelope.Note is not null)
+            Console.WriteLine($"Warning: {envelope.Note}");
+    }
+
     /// <summary>Show the currently resolved Azure DevOps authentication path without making an AzDO API request.</summary>
     /// <param name="json">Output as structured JSON instead of human-readable text.</param>
     [Command("azdo auth-status")]
@@ -1628,12 +1699,13 @@ public class AzdoCommands
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
     /// <param name="logId">Log ID from the timeline record's log reference.</param>
     /// <param name="tailLines">Number of lines from the end to return.</param>
+    /// <param name="full">Fetch the complete log instead of the default tail.</param>
     /// <param name="json">Emit JSON error envelope on acquisition failure.</param>
     [McpEquivalent("azdo_log")]
     [Command("azdo log")]
-    public async Task Log([Argument] string buildId, [Argument] int logId, int? tailLines = 500, bool json = false)
+    public async Task Log([Argument] string buildId, [Argument] int logId, int? tailLines = 500, bool full = false, bool json = false)
     {
-        var content = await _svc.GetBuildLogAsync(buildId, logId, tailLines);
+        var content = await _svc.GetBuildLogAsync(buildId, logId, full ? null : tailLines);
 
         if (json)
             Console.WriteLine(JsonSerializer.Serialize(content, s_jsonOptions));
@@ -1747,26 +1819,38 @@ public class AzdoCommands
 
     /// <summary>Get the commits/changes associated with a build.</summary>
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
-    /// <param name="top">Maximum number of changes to return.</param>
+    /// <param name="top">Compatibility alias for --limit.</param>
+    /// <param name="offset">Zero-based offset into the complete change list.</param>
+    /// <param name="limit">Maximum number of changes to return.</param>
+    /// <param name="all">Return the complete selected change list.</param>
+    /// <param name="allowTruncated">Exit 0 even when the output is truncated.</param>
     /// <param name="json">Output as structured JSON.</param>
     [McpEquivalent("azdo_changes")]
     [Command("azdo changes")]
-    public async Task Changes([Argument] string buildId, int top = 20, bool json = false, bool schema = false)
+    public async Task Changes([Argument] string buildId, int? top = null, int offset = 0, int? limit = null,
+        bool all = false, bool allowTruncated = false, bool json = false, bool schema = false)
     {
-        if (Commands.TryPrintSchema<IReadOnlyList<AzdoBuildChange>>(schema))
+        if (Commands.TryPrintSchema<HlxListEnvelope<AzdoBuildChange>>(schema))
             return;
 
-        var changes = await _svc.GetBuildChangesAsync(buildId, top);
+        if (!TryCreatePageRequest(all, offset, limit, top, out var page))
+            return;
+
+        var envelope = await _svc.GetBuildChangesPageAsync(buildId, page);
 
         if (json)
         {
-            Console.WriteLine(JsonSerializer.Serialize(changes, s_jsonOptions));
+            Console.WriteLine(JsonSerializer.Serialize(envelope, s_jsonOptions));
+            ApplyTruncatedExit(envelope, allowTruncated);
             return;
         }
 
+        var changes = envelope.Results;
         if (changes.Count == 0)
         {
             Console.WriteLine("No changes found.");
+            PrintPagingWarning(envelope);
+            ApplyTruncatedExit(envelope, allowTruncated);
             return;
         }
 
@@ -1777,30 +1861,44 @@ public class AzdoCommands
             var msg = c.Message?.Split('\n')[0] ?? "";
             Console.WriteLine($"  {sha}  {author}  {msg}");
         }
+        PrintPagingWarning(envelope);
+        ApplyTruncatedExit(envelope, allowTruncated);
     }
 
     /// <summary>List test runs for a build.</summary>
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
-    /// <param name="top">Maximum number of test runs to return.</param>
+    /// <param name="top">Compatibility alias for --limit.</param>
+    /// <param name="offset">Zero-based offset into the complete test-run list.</param>
+    /// <param name="limit">Maximum number of test runs to return.</param>
+    /// <param name="all">Return the complete selected test-run list.</param>
+    /// <param name="allowTruncated">Exit 0 even when the output is truncated.</param>
     /// <param name="json">Output as structured JSON.</param>
     [McpEquivalent("azdo_test_runs")]
     [Command("azdo test-runs")]
-    public async Task TestRuns([Argument] string buildId, int top = 50, bool json = false, bool schema = false)
+    public async Task TestRuns([Argument] string buildId, int? top = null, int offset = 0, int? limit = null,
+        bool all = false, bool allowTruncated = false, bool json = false, bool schema = false)
     {
-        if (Commands.TryPrintSchema<IReadOnlyList<AzdoTestRun>>(schema))
+        if (Commands.TryPrintSchema<HlxListEnvelope<AzdoTestRun>>(schema))
             return;
 
-        var runs = await _svc.GetTestRunsAsync(buildId, top);
+        if (!TryCreatePageRequest(all, offset, limit, top, out var page))
+            return;
+
+        var envelope = await _svc.GetTestRunsPageAsync(buildId, page);
 
         if (json)
         {
-            Console.WriteLine(JsonSerializer.Serialize(runs, s_jsonOptions));
+            Console.WriteLine(JsonSerializer.Serialize(envelope, s_jsonOptions));
+            ApplyTruncatedExit(envelope, allowTruncated);
             return;
         }
 
+        var runs = envelope.Results;
         if (runs.Count == 0)
         {
             Console.WriteLine("No test runs found.");
+            PrintPagingWarning(envelope);
+            ApplyTruncatedExit(envelope, allowTruncated);
             return;
         }
 
@@ -1826,33 +1924,47 @@ public class AzdoCommands
                 Console.Write($"  NotApplicable: {r.NotApplicableTests}");
             Console.WriteLine();
         }
+        PrintPagingWarning(envelope);
+        ApplyTruncatedExit(envelope, allowTruncated);
     }
 
     /// <summary>Get test results for a specific test run.</summary>
     /// <param name="buildId">AzDO build ID or URL — used to resolve org/project context.</param>
     /// <param name="runId">Test run ID from azdo-test-runs output.</param>
-    /// <param name="top">Maximum number of test results to return.</param>
+    /// <param name="top">Compatibility alias for --limit.</param>
+    /// <param name="offset">Zero-based offset into the complete test-result list.</param>
+    /// <param name="limit">Maximum number of test results to return.</param>
+    /// <param name="all">Return the complete selected test-result list.</param>
+    /// <param name="allowTruncated">Exit 0 even when the output is truncated.</param>
     /// <param name="outcomes">Comma-separated AzDO test outcomes to include (e.g. 'Failed', 'Passed,Failed'). Default: Failed.</param>
     /// <param name="json">Output as structured JSON.</param>
     [McpEquivalent("azdo_test_results")]
     [Command("azdo test-results")]
     public async Task TestResults([Argument] string buildId, [Argument] int runId,
-        int top = 200, string? outcomes = null, bool json = false, bool schema = false)
+        int? top = null, int offset = 0, int? limit = null, bool all = false,
+        bool allowTruncated = false, string? outcomes = null, bool json = false, bool schema = false)
     {
-        if (Commands.TryPrintSchema<IReadOnlyList<AzdoTestResult>>(schema))
+        if (Commands.TryPrintSchema<HlxListEnvelope<AzdoTestResult>>(schema))
             return;
 
-        var results = await _svc.GetTestResultsAsync(buildId, runId, top, outcomes);
+        if (!TryCreatePageRequest(all, offset, limit, top, out var page))
+            return;
+
+        var envelope = await _svc.GetTestResultsPageAsync(buildId, runId, page, outcomes);
 
         if (json)
         {
-            Console.WriteLine(JsonSerializer.Serialize(results, s_jsonOptions));
+            Console.WriteLine(JsonSerializer.Serialize(envelope, s_jsonOptions));
+            ApplyTruncatedExit(envelope, allowTruncated);
             return;
         }
 
+        var results = envelope.Results;
         if (results.Count == 0)
         {
             Console.WriteLine("No test results found.");
+            PrintPagingWarning(envelope);
+            ApplyTruncatedExit(envelope, allowTruncated);
             return;
         }
 
@@ -1880,32 +1992,46 @@ public class AzdoCommands
                 Console.ResetColor();
             }
         }
+        PrintPagingWarning(envelope);
+        ApplyTruncatedExit(envelope, allowTruncated);
     }
 
     /// <summary>List artifacts produced by a build.</summary>
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
     /// <param name="pattern">Filter artifacts by name using glob-style matching.</param>
-    /// <param name="top">Maximum number of artifacts to return (default 100).</param>
+    /// <param name="top">Compatibility alias for --limit.</param>
+    /// <param name="offset">Zero-based offset into the complete artifact list.</param>
+    /// <param name="limit">Maximum number of artifacts to return.</param>
+    /// <param name="all">Return the complete selected artifact list.</param>
+    /// <param name="allowTruncated">Exit 0 even when the output is truncated.</param>
     /// <param name="json">Output as structured JSON.</param>
     [McpEquivalent("azdo_artifacts")]
     [Command("azdo artifacts")]
     public async Task Artifacts([Argument] string buildId, string pattern = "*",
-        int top = 100, bool json = false, bool schema = false)
+        int? top = null, int offset = 0, int? limit = null, bool all = false,
+        bool allowTruncated = false, bool json = false, bool schema = false)
     {
-        if (Commands.TryPrintSchema<IReadOnlyList<AzdoBuildArtifact>>(schema))
+        if (Commands.TryPrintSchema<HlxListEnvelope<AzdoBuildArtifact>>(schema))
             return;
 
-        var artifacts = await _svc.GetBuildArtifactsAsync(buildId, pattern, top);
+        if (!TryCreatePageRequest(all, offset, limit, top, out var page))
+            return;
+
+        var envelope = await _svc.GetBuildArtifactsPageAsync(buildId, pattern, page);
 
         if (json)
         {
-            Console.WriteLine(JsonSerializer.Serialize(artifacts, s_jsonOptions));
+            Console.WriteLine(JsonSerializer.Serialize(envelope, s_jsonOptions));
+            ApplyTruncatedExit(envelope, allowTruncated);
             return;
         }
 
+        var artifacts = envelope.Results;
         if (artifacts.Count == 0)
         {
             Console.WriteLine("No artifacts found.");
+            PrintPagingWarning(envelope);
+            ApplyTruncatedExit(envelope, allowTruncated);
             return;
         }
 
@@ -1916,6 +2042,8 @@ public class AzdoCommands
                 Console.Write($" [{a.Resource.Type}]");
             Console.WriteLine();
         }
+        PrintPagingWarning(envelope);
+        ApplyTruncatedExit(envelope, allowTruncated);
     }
 
     /// <summary>Search build timeline for records matching a pattern.</summary>
@@ -2003,28 +2131,40 @@ public class AzdoCommands
     /// <param name="resultId">Test result ID from azdo-test-results output.</param>
     /// <param name="org">Azure DevOps organization (default: dnceng-public).</param>
     /// <param name="project">Azure DevOps project (default: public).</param>
-    /// <param name="top">Maximum number of attachments to return (default 100).</param>
+    /// <param name="top">Compatibility alias for --limit.</param>
+    /// <param name="offset">Zero-based offset into the complete attachment list.</param>
+    /// <param name="limit">Maximum number of attachments to return.</param>
+    /// <param name="all">Return the complete selected attachment list.</param>
+    /// <param name="allowTruncated">Exit 0 even when the output is truncated.</param>
     /// <param name="json">Output as structured JSON.</param>
     [McpEquivalent("azdo_test_attachments")]
     [Command("azdo test-attachments")]
     public async Task TestAttachments([Argument] int runId, [Argument] int resultId,
         string org = "dnceng-public", string project = "public",
-        int top = 100, bool json = false, bool schema = false)
+        int? top = null, int offset = 0, int? limit = null, bool all = false,
+        bool allowTruncated = false, bool json = false, bool schema = false)
     {
-        if (Commands.TryPrintSchema<IReadOnlyList<AzdoTestAttachment>>(schema))
+        if (Commands.TryPrintSchema<HlxListEnvelope<AzdoTestAttachment>>(schema))
             return;
 
-        var attachments = await _svc.GetTestAttachmentsAsync(org, project, runId, resultId, top);
+        if (!TryCreatePageRequest(all, offset, limit, top, out var page))
+            return;
+
+        var envelope = await _svc.GetTestAttachmentsPageAsync(org, project, runId, resultId, page);
 
         if (json)
         {
-            Console.WriteLine(JsonSerializer.Serialize(attachments, s_jsonOptions));
+            Console.WriteLine(JsonSerializer.Serialize(envelope, s_jsonOptions));
+            ApplyTruncatedExit(envelope, allowTruncated);
             return;
         }
 
+        var attachments = envelope.Results;
         if (attachments.Count == 0)
         {
             Console.WriteLine("No attachments found.");
+            PrintPagingWarning(envelope);
+            ApplyTruncatedExit(envelope, allowTruncated);
             return;
         }
 
@@ -2037,6 +2177,8 @@ public class AzdoCommands
                 Console.Write($" — {a.Comment}");
             Console.WriteLine();
         }
+        PrintPagingWarning(envelope);
+        ApplyTruncatedExit(envelope, allowTruncated);
     }
 
     private static string FormatExpirationStatus(bool? looksExpired)
