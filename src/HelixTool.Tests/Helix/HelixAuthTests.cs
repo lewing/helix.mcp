@@ -1,5 +1,6 @@
 using System.Net;
 using HelixTool.Core;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.Helix;
 using NSubstitute;
 using NSubstitute.ExceptionExtensions;
@@ -44,7 +45,7 @@ public class HelixAuthTests
     // --- HelixService: 401 Unauthorized → HelixException with "Access denied" and "HELIX_ACCESS_TOKEN" ---
 
     [Fact]
-    public async Task GetJobStatusAsync_Unauthorized_ThrowsHelixExceptionWithAccessDeniedMessage()
+    public async Task GetJobStatusAsync_Unauthorized_ThrowsAcquisitionAccessDenied()
     {
         var mockApi = Substitute.For<IHelixApiClient>();
         var svc = new HelixService(mockApi, new HttpClient());
@@ -52,15 +53,14 @@ public class HelixAuthTests
         mockApi.GetJobDetailsAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new HttpRequestException("Unauthorized", null, HttpStatusCode.Unauthorized));
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => svc.GetJobStatusAsync(ValidJobId));
 
-        Assert.Contains("Access denied", ex.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("HELIX_ACCESS_TOKEN", ex.Message);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.AccessDenied, "helix", "get_helix_job", 401);
     }
 
     [Fact]
-    public async Task GetJobStatusAsync_Forbidden_ThrowsHelixExceptionWithAccessDeniedMessage()
+    public async Task GetJobStatusAsync_Forbidden_ThrowsAcquisitionAccessDenied()
     {
         var mockApi = Substitute.For<IHelixApiClient>();
         var svc = new HelixService(mockApi, new HttpClient());
@@ -68,15 +68,14 @@ public class HelixAuthTests
         mockApi.GetJobDetailsAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new HttpRequestException("Forbidden", null, HttpStatusCode.Forbidden));
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => svc.GetJobStatusAsync(ValidJobId));
 
-        Assert.Contains("Access denied", ex.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("HELIX_ACCESS_TOKEN", ex.Message);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.AccessDenied, "helix", "get_helix_job", 403);
     }
 
     [Fact]
-    public async Task GetWorkItemFilesAsync_Unauthorized_ThrowsHelixExceptionWithAccessDeniedMessage()
+    public async Task GetWorkItemFilesAsync_Unauthorized_ThrowsAcquisitionAccessDenied()
     {
         var mockApi = Substitute.For<IHelixApiClient>();
         var svc = new HelixService(mockApi, new HttpClient());
@@ -84,15 +83,14 @@ public class HelixAuthTests
         mockApi.ListWorkItemFilesAsync("wi1", Arg.Any<string>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new HttpRequestException("Unauthorized", null, HttpStatusCode.Unauthorized));
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => svc.GetWorkItemFilesAsync(ValidJobId, "wi1"));
 
-        Assert.Contains("Access denied", ex.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("HELIX_ACCESS_TOKEN", ex.Message);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.AccessDenied, "helix", "list_helix_work_item_files", 401);
     }
 
     [Fact]
-    public async Task GetWorkItemFilesAsync_Forbidden_ThrowsHelixExceptionWithAccessDeniedMessage()
+    public async Task GetWorkItemFilesAsync_Forbidden_ThrowsAcquisitionAccessDenied()
     {
         var mockApi = Substitute.For<IHelixApiClient>();
         var svc = new HelixService(mockApi, new HttpClient());
@@ -100,11 +98,10 @@ public class HelixAuthTests
         mockApi.ListWorkItemFilesAsync("wi1", Arg.Any<string>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new HttpRequestException("Forbidden", null, HttpStatusCode.Forbidden));
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => svc.GetWorkItemFilesAsync(ValidJobId, "wi1"));
 
-        Assert.Contains("Access denied", ex.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("HELIX_ACCESS_TOKEN", ex.Message);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.AccessDenied, "helix", "list_helix_work_item_files", 403);
     }
 
     // --- Verify inner exception is preserved ---
@@ -119,7 +116,7 @@ public class HelixAuthTests
         mockApi.GetJobDetailsAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(inner);
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => svc.GetJobStatusAsync(ValidJobId));
 
         Assert.Same(inner, ex.InnerException);
@@ -135,7 +132,7 @@ public class HelixAuthTests
         mockApi.ListWorkItemFilesAsync("wi1", Arg.Any<string>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(inner);
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => svc.GetWorkItemFilesAsync(ValidJobId, "wi1"));
 
         Assert.Same(inner, ex.InnerException);

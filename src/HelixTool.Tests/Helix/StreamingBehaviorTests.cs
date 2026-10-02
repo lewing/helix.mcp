@@ -4,6 +4,7 @@
 using System.Net;
 using System.Text;
 using HelixTool.Core;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.Helix;
 using NSubstitute;
 using NSubstitute.ExceptionExtensions;
@@ -139,27 +140,27 @@ public class StreamingBehaviorTests
     // ── Connection error handling ────────────────────────────────────
 
     [Fact]
-    public async Task GetConsoleLogContentAsync_HttpError_WrapsInHelixException()
+    public async Task GetConsoleLogContentAsync_HttpError_ThrowsTransportError()
     {
         _mockApi.GetConsoleLogAsync(WorkItem, ValidJobId, Arg.Any<CancellationToken>())
             .ThrowsAsync(new HttpRequestException("Connection refused", null, HttpStatusCode.ServiceUnavailable));
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _svc.GetConsoleLogContentAsync(ValidJobId, WorkItem));
 
-        Assert.Contains("API error", ex.Message);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.TransportError, "helix", "get_helix_console_log", 503);
     }
 
     [Fact]
-    public async Task GetConsoleLogContentAsync_NotFound_WrapsInHelixException()
+    public async Task GetConsoleLogContentAsync_NotFound_ThrowsAcquisitionNotFound()
     {
         _mockApi.GetConsoleLogAsync(WorkItem, ValidJobId, Arg.Any<CancellationToken>())
             .ThrowsAsync(new HttpRequestException("Not Found", null, HttpStatusCode.NotFound));
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _svc.GetConsoleLogContentAsync(ValidJobId, WorkItem));
 
-        Assert.Contains("not found", ex.Message);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "helix", "get_helix_console_log", 404);
     }
 
     [Fact]
@@ -168,10 +169,10 @@ public class StreamingBehaviorTests
         _mockApi.GetConsoleLogAsync(WorkItem, ValidJobId, Arg.Any<CancellationToken>())
             .ThrowsAsync(new HttpRequestException("Unauthorized", null, HttpStatusCode.Unauthorized));
 
-        var ex = await Assert.ThrowsAsync<HelixException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _svc.GetConsoleLogContentAsync(ValidJobId, WorkItem));
 
-        Assert.Contains("login", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.AccessDenied, "helix", "get_helix_console_log", 401);
     }
 
     // ── Stream disposal ──────────────────────────────────────────────

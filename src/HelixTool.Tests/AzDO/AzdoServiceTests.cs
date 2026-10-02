@@ -1,4 +1,5 @@
 using HelixTool.Core.AzDO;
+using HelixTool.Core.Acquisition;
 using NSubstitute;
 using Xunit;
 
@@ -299,46 +300,67 @@ public class AzdoServiceTests
     // ── Null handling ────────────────────────────────────────────────
 
     [Fact]
-    public async Task GetBuildSummaryAsync_NullBuild_ThrowsInvalidOperation()
+    public async Task GetBuildSummaryAsync_AcquisitionNotFound_PropagatesError()
     {
         _mockApi.GetBuildAsync("dnceng-public", "public", 999, Arg.Any<CancellationToken>())
-            .Returns((AzdoBuild?)null);
+            .Returns(_ => Task.FromException<AzdoBuild?>(AcquisitionAssertions.Exception(
+                AcquisitionErrorKind.NotFound,
+                "azdo",
+                "get_build",
+                new Dictionary<string, object?> { ["buildId"] = 999 },
+                httpStatus: 404)));
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => _svc.GetBuildSummaryAsync("999"));
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() => _svc.GetBuildSummaryAsync("999"));
+
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "get_build", 404);
     }
 
     [Fact]
-    public async Task GetTimelineAsync_NullResult_ReturnsNull()
+    public async Task GetTimelineAsync_AcquisitionNotFound_PropagatesError()
     {
         _mockApi.GetTimelineAsync("dnceng-public", "public", 1, Arg.Any<CancellationToken>())
-            .Returns((AzdoTimeline?)null);
+            .Returns(_ => Task.FromException<AzdoTimeline?>(AcquisitionAssertions.Exception(
+                AcquisitionErrorKind.NotFound,
+                "azdo",
+                "get_timeline",
+                new Dictionary<string, object?> { ["buildId"] = 1 },
+                httpStatus: 404)));
 
-        var result = await _svc.GetTimelineAsync("1");
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() => _svc.GetTimelineAsync("1"));
 
-        Assert.Null(result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "get_timeline", 404);
     }
 
     [Fact]
-    public async Task GetBuildLogAsync_NullContent_ReturnsNull()
+    public async Task GetBuildLogAsync_AcquisitionNotFound_PropagatesError()
     {
         _mockApi.GetBuildLogAsync("dnceng-public", "public", 1, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
-            .Returns((string?)null);
+            .Returns(_ => Task.FromException<string?>(AcquisitionAssertions.Exception(
+                AcquisitionErrorKind.NotFound,
+                "azdo",
+                "get_build_log",
+                new Dictionary<string, object?> { ["buildId"] = 1, ["logId"] = 5 },
+                httpStatus: 404)));
 
-        var result = await _svc.GetBuildLogAsync("1", 5);
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() => _svc.GetBuildLogAsync("1", 5));
 
-        Assert.Null(result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "get_build_log", 404);
     }
 
     [Fact]
-    public async Task GetBuildLogAsync_NullContent_IgnoresTailLines()
+    public async Task GetBuildLogAsync_AcquisitionNotFound_IgnoresTailLines()
     {
         _mockApi.GetBuildLogAsync("dnceng-public", "public", 1, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
-            .Returns((string?)null);
+            .Returns(_ => Task.FromException<string?>(AcquisitionAssertions.Exception(
+                AcquisitionErrorKind.NotFound,
+                "azdo",
+                "get_build_log",
+                new Dictionary<string, object?> { ["buildId"] = 1, ["logId"] = 5 },
+                httpStatus: 404)));
 
-        var result = await _svc.GetBuildLogAsync("1", 5, tailLines: 10);
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() => _svc.GetBuildLogAsync("1", 5, tailLines: 10));
 
-        Assert.Null(result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "get_build_log", 404);
     }
 
     [Fact]

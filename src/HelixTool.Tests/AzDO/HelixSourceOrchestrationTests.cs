@@ -2,6 +2,7 @@
 // orchestration (CCA coverage gap identified in PR #96).
 
 using HelixTool.Core.AzDO;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.Helix;
 using NSubstitute;
 using NSubstitute.ExceptionExtensions;
@@ -501,12 +502,17 @@ public class GetHelixJobsOrchestrationTests
     // ── Helix throws non-cancellation → fallback ─────────────────────────────
 
     [Fact]
-    public async Task GetHelixJobsAsync_HelixThrowsHttpException_FallsBackToTimeline()
+    public async Task GetHelixJobsAsync_HelixAcquisitionError_FallsBackToTimeline()
     {
         var jobGuid = "22222222-3333-4444-5555-666666666666";
         _helix.ListJobsByBuildAsync(
                 Arg.Any<string>(), BuildIdStr, Arg.Any<int>(), Arg.Any<CancellationToken>())
-              .ThrowsAsync(new HttpRequestException("Helix auth failure (403)"));
+              .ThrowsAsync(AcquisitionAssertions.Exception(
+                  AcquisitionErrorKind.AccessDenied,
+                  "helix",
+                  "list_helix_jobs_by_build",
+                  new Dictionary<string, object?> { ["buildId"] = BuildIdStr },
+                  httpStatus: 403));
 
         _azdo.GetTimelineAsync("dnceng-public", "public", BuildId, Arg.Any<CancellationToken>())
              .Returns(TimelineWithOneJob(jobGuid));
@@ -516,6 +522,8 @@ public class GetHelixJobsOrchestrationTests
         // Timeline result is returned despite Helix throwing.
         Assert.Equal(1, result.TotalHelixJobs);
         Assert.Equal(jobGuid, result.Jobs[0].HelixJobId);
+        Assert.NotNull(result.PrimaryAcquisitionError);
+        Assert.Equal(AcquisitionErrorKind.AccessDenied, result.PrimaryAcquisitionError.Kind);
 
         await _azdo.Received(1)
                    .GetTimelineAsync("dnceng-public", "public", BuildId, Arg.Any<CancellationToken>());
@@ -793,15 +801,20 @@ public class GetHelixJobsOrchestrationTests
                 Arg.Any<string>(), BuildIdStr, Arg.Any<int>(), Arg.Any<CancellationToken>())
               .Returns(Task.FromResult<IReadOnlyList<IHelixJobSummary>>([summary]));
         _azdo.GetTimelineAsync("dnceng-public", "public", BuildId, Arg.Any<CancellationToken>())
-             .ThrowsAsync(new HttpRequestException("timeline offline"));
+             .ThrowsAsync(AcquisitionAssertions.Exception(
+                 AcquisitionErrorKind.TransportError,
+                 "azdo",
+                 "get_timeline",
+                 new Dictionary<string, object?> { ["buildId"] = BuildId },
+                 httpStatus: 503));
 
         var result = await _svc.GetHelixJobsAsync(BuildIdStr, filter: "all");
 
         Assert.Equal("helix", result.Strategy);
         Assert.Single(result.Jobs);
         Assert.Null(result.TimelineIssues);
-        Assert.Contains("timeline issue evidence is unavailable", result.Note,
-            StringComparison.OrdinalIgnoreCase);
+        Assert.NotNull(result.TimelineAcquisitionError);
+        Assert.Equal(AcquisitionErrorKind.TransportError, result.TimelineAcquisitionError.Kind);
         using var json = JsonDocument.Parse(JsonSerializer.Serialize(result));
         Assert.False(json.RootElement.TryGetProperty("timelineIssues", out _));
     }
@@ -823,8 +836,7 @@ public class GetHelixJobsOrchestrationTests
         Assert.Equal("helix", result.Strategy);
         Assert.Single(result.Jobs);
         Assert.Null(result.TimelineIssues);
-        Assert.Contains("timeline issue evidence is unavailable", result.Note,
-            StringComparison.OrdinalIgnoreCase);
+        Assert.NotNull(result.TimelineAcquisitionError);
         using var json = JsonDocument.Parse(JsonSerializer.Serialize(result));
         Assert.False(json.RootElement.TryGetProperty("timelineIssues", out _));
         await _helix.Received(1).ListJobsByBuildAsync(
@@ -836,8 +848,17 @@ public class GetHelixJobsOrchestrationTests
 
     public static TheoryData<Exception> ExpectedTimelineEnrichmentFailures => new()
     {
-        new JsonException("invalid timeline JSON"),
-        new InvalidOperationException("Network blocked: eval mode. Cache key not found in snapshot.")
+        AcquisitionAssertions.Exception(
+            AcquisitionErrorKind.InvalidResponse,
+            "azdo",
+            "get_timeline",
+            new Dictionary<string, object?> { ["buildId"] = BuildId },
+            httpStatus: 200),
+        AcquisitionAssertions.Exception(
+            AcquisitionErrorKind.NotFound,
+            "cache",
+            "get_timeline",
+            new Dictionary<string, object?> { ["buildId"] = BuildId })
     };
 
     [Theory]
@@ -856,7 +877,12 @@ public class GetHelixJobsOrchestrationTests
                 Arg.Any<string>(), BuildIdStr, Arg.Any<int>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<IHelixJobSummary>>([summary]));
         _azdo.GetTimelineAsync("dnceng-public", "public", BuildId, Arg.Any<CancellationToken>())
-            .ThrowsAsync(new HttpRequestException("timeline offline"));
+            .ThrowsAsync(AcquisitionAssertions.Exception(
+                AcquisitionErrorKind.TransportError,
+                "azdo",
+                "get_timeline",
+                new Dictionary<string, object?> { ["buildId"] = BuildId },
+                httpStatus: 503));
 
         var result = await _svc.GetHelixJobsAsync(BuildIdStr, filter);
 
@@ -864,8 +890,8 @@ public class GetHelixJobsOrchestrationTests
         Assert.Equal(0, result.FailedHelixJobs);
         Assert.Equal(expectedTotal, result.OutcomeUnknownHelixJobs);
         Assert.Null(result.TimelineIssues);
-        Assert.Contains("timeline issue evidence is unavailable", result.Note,
-            StringComparison.OrdinalIgnoreCase);
+        Assert.NotNull(result.TimelineAcquisitionError);
+        Assert.Equal(AcquisitionErrorKind.TransportError, result.TimelineAcquisitionError.Kind);
         if (filter is "failed" or "issues")
         {
             Assert.Empty(result.Jobs);

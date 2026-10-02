@@ -124,6 +124,7 @@ builder.Services
         // Intercepts unknown params with structured McpException + Levenshtein hints.
         // Stage A's UnmappedMemberHandling.Disallow (below) remains as defense-in-depth.
         options.AddUnknownParameterFilter(typeof(HelixMcpTools).Assembly);
+        options.AddAcquisitionErrorFilter();
     })
     .WithHttpTransport(options =>
     {

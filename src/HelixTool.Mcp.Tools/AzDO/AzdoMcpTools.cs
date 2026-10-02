@@ -347,7 +347,7 @@ public sealed class AzdoMcpTools
         // the sibling 'outcomes' parameter on azdo_test_results; per-token validation is below.
         [Description("Comma-separated job results to include (e.g. 'failed', 'failed,canceled', 'succeeded,succeededWithIssues'). Any combination of: failed, canceled, abandoned, skipped, succeededWithIssues, succeeded, none. Unknown values are rejected. Default: 'failed,canceled'.")] string jobResults = "failed,canceled",
         [Description("Offset into parsed Helix monitor failures for deterministic collectors. Default: 0.")] int helixFailureOffset = 0,
-        [Description("Maximum Helix monitor failures to return. Default: 200, max: 1000. Use paging when helixFailuresTruncated is true.")] int helixFailureLimit = AzdoEvidencePlan.DefaultHelixFailureLimit)
+        [Description("Maximum Helix monitor failures to return. Default: 200, max: 1000. Any partial page returns complete=false with helixFailuresTruncated=true; request the full set when a complete plan is required.")] int helixFailureLimit = AzdoEvidencePlan.DefaultHelixFailureLimit)
     {
         // Parse and validate jobResults
         var resultList = jobResults

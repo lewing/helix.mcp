@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.AzDO;
 using NSubstitute;
 using Xunit;
@@ -81,15 +82,16 @@ public class AzdoApiClientRangeTests
         Assert.Contains("api-version=7.0", url);
     }
 
-    // A-5: Range request returning 404 → returns null
+    // A-5: Range request returning 404 → acquisition error, not empty success
     [Fact]
-    public async Task GetBuildLogAsync_Range404_ReturnsNull()
+    public async Task GetBuildLogAsync_Range404_ThrowsNotFound()
     {
         _handler.StatusCode = HttpStatusCode.NotFound;
 
-        var result = await _client.GetBuildLogAsync("org", "proj", 42, 5, startLine: 100, endLine: 200);
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() =>
+            _client.GetBuildLogAsync("org", "proj", 42, 5, startLine: 100, endLine: 200));
 
-        Assert.Null(result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "get_build_log", 404);
     }
 
     private class FakeHttpMessageHandler : HttpMessageHandler

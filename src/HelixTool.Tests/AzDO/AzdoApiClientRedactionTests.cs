@@ -2,6 +2,7 @@
 
 using System.Net;
 using System.Text;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.AzDO;
 using NSubstitute;
 using Xunit;
@@ -15,7 +16,7 @@ public class AzdoApiClientRedactionTests
     {
         const string jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature_value_123";
 
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => CreateClient($"Request failed with token {jwt}").GetBuildAsync("dnceng", "internal", 1));
 
         Assert.Contains("[REDACTED-JWT]", ex.Message);
@@ -29,7 +30,7 @@ public class AzdoApiClientRedactionTests
     [InlineData("secret", "secret-value-123")]
     public async Task GetBuildAsync_500_RedactsSecretAssignments(string name, string value)
     {
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => CreateClient($"Auth failure: {name}={value}").GetBuildAsync("dnceng", "internal", 1));
 
         Assert.Contains($"{name}=[REDACTED]", ex.Message);
@@ -41,7 +42,7 @@ public class AzdoApiClientRedactionTests
     {
         const string base64Secret = "QWxhZGRpbjpPcGVuU2VzYW1lMTIzNDU2Nzg5MDEyMzQ1Njc4OTA=";
 
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => CreateClient($"Credential blob: {base64Secret}").GetBuildAsync("dnceng", "internal", 1));
 
         Assert.Contains("[REDACTED-SECRET]", ex.Message);
@@ -53,7 +54,7 @@ public class AzdoApiClientRedactionTests
     {
         const string body = "Build validation failed for pipeline 123 because reason=timeout.";
 
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => CreateClient(body).GetBuildAsync("dnceng", "internal", 1));
 
         Assert.Contains(body, ex.Message);
@@ -69,7 +70,7 @@ public class AzdoApiClientRedactionTests
         const string base64Secret = "QWxhZGRpbjpPcGVuU2VzYW1lMTIzNDU2Nzg5MDEyMzQ1Njc4OTA=";
         var body = $"Failed deployment for run 42; token=abc123; detail=missing permission; payload={base64Secret}; session={jwt}";
 
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => CreateClient(body).GetBuildAsync("dnceng", "internal", 1));
 
         Assert.Contains("Failed deployment for run 42", ex.Message);

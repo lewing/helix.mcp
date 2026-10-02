@@ -1,6 +1,7 @@
 // Ensures GetHelixJobsAsync extracts Helix job IDs and failed work items from timeline issue messages.
 
 using HelixTool.Core.AzDO;
+using HelixTool.Core.Acquisition;
 using NSubstitute;
 using System.Text.Json;
 using Xunit;
@@ -120,16 +121,26 @@ public class AzdoHelixJobsTests
     // ── Null timeline returns friendly note ─────────────────────────
 
     [Fact]
-    public async Task GetHelixJobsAsync_NullTimeline_ReturnsFriendlyNote()
+    public async Task GetHelixJobsAsync_TimelineAcquisitionNotFound_ReturnsIncompleteResult()
     {
-        SetupTimeline(null);
+        _client.GetTimelineAsync("dnceng-public", "public", 42, Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromException<AzdoTimeline?>(AcquisitionAssertions.Exception(
+                AcquisitionErrorKind.NotFound,
+                "azdo",
+                "get_timeline",
+                new Dictionary<string, object?> { ["buildId"] = 42 },
+                httpStatus: 404)));
 
         var result = await _svc.GetHelixJobsAsync("42");
 
-        Assert.NotNull(result);
-        Assert.Contains("No timeline available", result.Note, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(0, result.TotalHelixJobs);
+        Assert.False(result.Complete);
         Assert.Empty(result.Jobs);
+        Assert.Equal("timeline", result.Strategy);
+        Assert.NotNull(result.TimelineAcquisitionError);
+        Assert.Equal(AcquisitionErrorKind.NotFound, result.TimelineAcquisitionError.Kind);
+        Assert.Equal("azdo", result.TimelineAcquisitionError.Provider);
+        Assert.Equal("get_timeline", result.TimelineAcquisitionError.Operation);
+        Assert.Equal(404, result.TimelineAcquisitionError.HttpStatus);
     }
 
     // ── Invalid filter throws ───────────────────────────────────────

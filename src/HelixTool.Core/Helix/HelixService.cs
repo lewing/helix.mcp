@@ -1,4 +1,3 @@
-using System.Net;
 using System.Xml;
 using System.Xml.Linq;
 using HelixTool.Core.Cache;
@@ -37,19 +36,6 @@ public class HelixService
     {
         _api = api ?? throw new ArgumentNullException(nameof(api));
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
-    }
-
-    /// <summary>Convert a Helix SDK <see cref="RestApiException"/> to a <see cref="HelixException"/>
-    /// using the HTTP status code from the response.</summary>
-    private static HelixException ConvertRestApiException(RestApiException ex, string context)
-    {
-        return ex.Response?.Status switch
-        {
-            401 or 403 => new HelixException(
-                "Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex),
-            404 => new HelixException($"{context} not found.", ex),
-            _ => new HelixException($"Helix API error: {ex.Message}", ex),
-        };
     }
 
     /// <summary>Represents a single work item's name and exit code. <see cref="IsCompleted"/> is false
@@ -138,21 +124,13 @@ public class HelixService
             static string BuildConsoleLogUrl(string resolvedJobId, string workItemName)
                 => $"https://helix.dot.net/api/2019-06-17/jobs/{resolvedJobId}/workitems/{workItemName}/console";
         }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
-        {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            throw new HelixException($"Job '{id}' not found.", ex);
-        }
         catch (HttpRequestException ex)
         {
-            throw new HelixException($"Helix API error: {ex.Message}", ex);
+            throw HelixAcquisition.FromHttp(ex, "get_helix_job", HelixAcquisition.Resource(("jobId", id)));
         }
         catch (RestApiException ex)
         {
-            throw ConvertRestApiException(ex, $"Job '{id}'");
+            throw HelixAcquisition.FromRestApi(ex, "get_helix_job", HelixAcquisition.Resource(("jobId", id)));
         }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -160,7 +138,7 @@ public class HelixService
         }
         catch (TaskCanceledException ex)
         {
-            throw new HelixException("Helix API request timed out.", ex);
+            throw HelixAcquisition.Timeout(ex, "get_helix_job", HelixAcquisition.Resource(("jobId", id)));
         }
     }
 
@@ -189,21 +167,13 @@ public class HelixService
                 f.Name, f.Link ?? ""
             )).ToList();
         }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
-        {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            throw new HelixException($"Work item '{workItem}' in job '{id}' not found.", ex);
-        }
         catch (HttpRequestException ex)
         {
-            throw new HelixException($"Helix API error: {ex.Message}", ex);
+            throw HelixAcquisition.FromHttp(ex, "list_helix_work_item_files", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
         catch (RestApiException ex)
         {
-            throw ConvertRestApiException(ex, $"Work item '{workItem}' in job '{id}'");
+            throw HelixAcquisition.FromRestApi(ex, "list_helix_work_item_files", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -211,7 +181,7 @@ public class HelixService
         }
         catch (TaskCanceledException ex)
         {
-            throw new HelixException("Helix API request timed out.", ex);
+            throw HelixAcquisition.Timeout(ex, "list_helix_work_item_files", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
     }
 
@@ -238,21 +208,13 @@ public class HelixService
             await stream.CopyToAsync(file, cancellationToken);
             return path;
         }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
-        {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            throw new HelixException($"Console log for '{workItem}' in job '{id}' not found.", ex);
-        }
         catch (HttpRequestException ex)
         {
-            throw new HelixException($"Helix API error: {ex.Message}", ex);
+            throw HelixAcquisition.FromHttp(ex, "get_helix_console_log", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
         catch (RestApiException ex)
         {
-            throw ConvertRestApiException(ex, $"Console log for '{workItem}' in job '{id}'");
+            throw HelixAcquisition.FromRestApi(ex, "get_helix_console_log", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -260,7 +222,7 @@ public class HelixService
         }
         catch (TaskCanceledException ex)
         {
-            throw new HelixException("Helix API request timed out.", ex);
+            throw HelixAcquisition.Timeout(ex, "get_helix_console_log", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
     }
 
@@ -288,21 +250,13 @@ public class HelixService
 
             return content;
         }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
-        {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            throw new HelixException($"Console log for '{workItem}' in job '{id}' not found.", ex);
-        }
         catch (HttpRequestException ex)
         {
-            throw new HelixException($"Helix API error: {ex.Message}", ex);
+            throw HelixAcquisition.FromHttp(ex, "get_helix_console_log", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
         catch (RestApiException ex)
         {
-            throw ConvertRestApiException(ex, $"Console log for '{workItem}' in job '{id}'");
+            throw HelixAcquisition.FromRestApi(ex, "get_helix_console_log", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -310,7 +264,7 @@ public class HelixService
         }
         catch (TaskCanceledException ex)
         {
-            throw new HelixException("Helix API request timed out.", ex);
+            throw HelixAcquisition.Timeout(ex, "get_helix_console_log", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
     }
 
@@ -383,21 +337,15 @@ public class HelixService
 
             return new FindFilesResults(scanResults, totalWorkItems > maxItems, totalWorkItems);
         }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
-        {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            throw new HelixException($"Job '{id}' not found.", ex);
-        }
         catch (HttpRequestException ex)
         {
-            throw new HelixException($"Helix API error: {ex.Message}", ex);
+            var operation = string.IsNullOrWhiteSpace(workItem) ? "list_helix_work_items" : "list_helix_work_item_files";
+            throw HelixAcquisition.FromHttp(ex, operation, HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
         catch (RestApiException ex)
         {
-            throw ConvertRestApiException(ex, $"Job '{id}'");
+            var operation = string.IsNullOrWhiteSpace(workItem) ? "list_helix_work_items" : "list_helix_work_item_files";
+            throw HelixAcquisition.FromRestApi(ex, operation, HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -405,7 +353,8 @@ public class HelixService
         }
         catch (TaskCanceledException ex)
         {
-            throw new HelixException("Helix API request timed out.", ex);
+            var operation = string.IsNullOrWhiteSpace(workItem) ? "list_helix_work_items" : "list_helix_work_item_files";
+            throw HelixAcquisition.Timeout(ex, operation, HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
     }
 
@@ -461,21 +410,13 @@ public class HelixService
 
             return paths;
         }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
-        {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            throw new HelixException($"Work item '{workItem}' in job '{id}' not found.", ex);
-        }
         catch (HttpRequestException ex)
         {
-            throw new HelixException($"Helix API error: {ex.Message}", ex);
+            throw HelixAcquisition.FromHttp(ex, "list_helix_work_item_files", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem), ("pattern", pattern)));
         }
         catch (RestApiException ex)
         {
-            throw ConvertRestApiException(ex, $"Work item '{workItem}' in job '{id}'");
+            throw HelixAcquisition.FromRestApi(ex, "list_helix_work_item_files", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem), ("pattern", pattern)));
         }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -483,7 +424,7 @@ public class HelixService
         }
         catch (TaskCanceledException ex)
         {
-            throw new HelixException("Helix API request timed out.", ex);
+            throw HelixAcquisition.Timeout(ex, "list_helix_work_item_files", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem), ("pattern", pattern)));
         }
     }
 
@@ -525,21 +466,13 @@ public class HelixService
 
             return path;
         }
-        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized || ex.StatusCode == System.Net.HttpStatusCode.Forbidden)
-        {
-            throw new HelixException("Access denied downloading file. The URL may require authentication.", ex);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
-        {
-            throw new HelixException($"File not found at URL: {url}", ex);
-        }
         catch (HttpRequestException ex)
         {
-            throw new HelixException($"Download error: {ex.Message}", ex);
+            throw HelixAcquisition.FromHttp(ex, "download_url", HelixAcquisition.Resource(("url", url)));
         }
         catch (RestApiException ex)
         {
-            throw ConvertRestApiException(ex, $"Resource");
+            throw HelixAcquisition.FromRestApi(ex, "download_url", HelixAcquisition.Resource(("url", url)));
         }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -547,7 +480,7 @@ public class HelixService
         }
         catch (TaskCanceledException ex)
         {
-            throw new HelixException("Download request timed out.", ex);
+            throw HelixAcquisition.Timeout(ex, "download_url", HelixAcquisition.Resource(("url", url)));
         }
     }
 
@@ -589,21 +522,13 @@ public class HelixService
 
             return new WorkItemDetail(workItem, exitCode, details.State, details.MachineName, duration, consoleLogUrl, fileEntries, category, IsCompleted: isCompleted);
         }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
-        {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            throw new HelixException($"Work item '{workItem}' in job '{id}' not found.", ex);
-        }
         catch (HttpRequestException ex)
         {
-            throw new HelixException($"Helix API error: {ex.Message}", ex);
+            throw HelixAcquisition.FromHttp(ex, "get_helix_work_item", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
         catch (RestApiException ex)
         {
-            throw ConvertRestApiException(ex, $"Work item '{workItem}' in job '{id}'");
+            throw HelixAcquisition.FromRestApi(ex, "get_helix_work_item", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
         catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -611,7 +536,7 @@ public class HelixService
         }
         catch (TaskCanceledException ex)
         {
-            throw new HelixException("Helix API request timed out.", ex);
+            throw HelixAcquisition.Timeout(ex, "get_helix_work_item", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
     }
 
@@ -1023,21 +948,13 @@ public class HelixService
         {
             allFiles = (await _api.ListWorkItemFilesAsync(workItem, id, cancellationToken)).ToList();
         }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Unauthorized || ex.StatusCode == HttpStatusCode.Forbidden)
-        {
-            throw new HelixException("Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.", ex);
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            throw new HelixException($"Work item '{workItem}' in job '{id}' not found.", ex);
-        }
         catch (HttpRequestException ex)
         {
-            throw new HelixException($"Helix API error: {ex.Message}", ex);
+            throw HelixAcquisition.FromHttp(ex, "list_helix_work_item_files", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
         catch (RestApiException ex)
         {
-            throw ConvertRestApiException(ex, $"Work item '{workItem}' in job '{id}'");
+            throw HelixAcquisition.FromRestApi(ex, "list_helix_work_item_files", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
 
         // Find test result files matching known patterns

@@ -8,6 +8,14 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+### Helix-aware evidence plan — arcade queue-monitor parsing
+
+- **Evidence plan Helix support:** `azdo_evidence_plan` now parses arcade queue-monitor timeline issues into structured `helixFailures[]` rows (helixJobId, helixJobName, workItem, state, exitCode, sourceFormat, suggestedFetches) instead of reporting the monitor job as a missing artifact. A failed/canceled monitor job with parseable work-item failures is no longer incomplete just because no `Logs_Build_*` artifact exists for the monitor itself.
+- **Paging for deterministic collectors:** Added `helixFailureOffset` / `helixFailureLimit` / `helixFailureTotal` / `helixFailuresTruncated` fields and CLI flags to support pagination. Default page size: 200, max: 1000. Use paging when `helixFailuresTruncated` is `true`.
+- **Machine-readable failure semantics:** Added stable `incompleteDetails[].code` values alongside human `incompleteReasons[]`. Codes: `artifact_ambiguous` = multiple artifact candidates for one selected job; `artifact_missing` = no matching artifact candidate; `candidates_truncated` = a job's candidate list exceeded the per-entry bound; `entries_truncated` = selected jobs exceeded the plan entry bound; `helix_failures_truncated` = more parsed Helix failures remain after the current page; `monitor_unparseable` = a selected monitor-like job had no parseable Helix work-item failures; `monitor_unresolved_job_id` = failure-shaped monitor entries lacked a recoverable Helix job ID.
+- **Deterministic drilldown:** Each `helixFailures[]` row includes `suggestedFetches[]` with tool names, Helix IDs, and work-item selectors. Scripts can read the plan, decide completeness, and use emitted `helix_work_item`, `helix_logs`, and `helix_files` fetch intents for deep investigation.
+- **Backward compatible:** The artifact plan (`entries[]`) remains unchanged for non-monitor jobs. Monitor jobs without parseable failures remain selectable and report incompleteness with explicit codes. Empty `helixFailures[]` with failures unparseable is never reported as "no failures."
+
 ## [v0.10.2] — 2026-09-11
 
 ### SQLite cache store isolation and snapshot export concurrency (#130)

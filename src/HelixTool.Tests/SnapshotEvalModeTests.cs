@@ -6,6 +6,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using HelixTool.Core;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.AzDO;
 using HelixTool.Core.Cache;
 using HelixTool.Core.Helix;
@@ -218,82 +219,88 @@ public class OfflineAzdoApiClientTests
     [Fact]
     public async Task GetBuildAsync_ThrowsWithEvalModeMessage()
     {
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _sut.GetBuildAsync("org", "proj", 1));
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("snapshot", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AssertOfflineCacheMiss(ex, "get_build");
     }
 
     [Fact]
     public async Task ListBuildsAsync_ThrowsWithEvalModeMessage()
     {
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _sut.ListBuildsAsync("org", "proj", new AzdoBuildFilter()));
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AssertOfflineCacheMiss(ex, "list_builds");
     }
 
     [Fact]
     public async Task GetTimelineAsync_ThrowsWithEvalModeMessage()
     {
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _sut.GetTimelineAsync("org", "proj", 1));
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AssertOfflineCacheMiss(ex, "get_timeline");
     }
 
     [Fact]
     public async Task GetBuildLogAsync_ThrowsWithEvalModeMessage()
     {
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _sut.GetBuildLogAsync("org", "proj", 1, 1));
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AssertOfflineCacheMiss(ex, "get_build_log");
     }
 
     [Fact]
     public async Task GetBuildChangesAsync_ThrowsWithEvalModeMessage()
     {
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _sut.GetBuildChangesAsync("org", "proj", 1));
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AssertOfflineCacheMiss(ex, "list_build_changes");
     }
 
     [Fact]
     public async Task GetTestRunsAsync_ThrowsWithEvalModeMessage()
     {
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _sut.GetTestRunsAsync("org", "proj", 1));
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AssertOfflineCacheMiss(ex, "list_test_runs");
     }
 
     [Fact]
     public async Task GetTestResultsAsync_ThrowsWithEvalModeMessage()
     {
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _sut.GetTestResultsAsync("org", "proj", 1));
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AssertOfflineCacheMiss(ex, "list_test_results");
     }
 
     [Fact]
     public async Task GetBuildArtifactsAsync_ThrowsWithEvalModeMessage()
     {
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _sut.GetBuildArtifactsAsync("org", "proj", 1));
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AssertOfflineCacheMiss(ex, "list_artifacts");
     }
 
     [Fact]
     public async Task GetTestAttachmentsAsync_ThrowsWithEvalModeMessage()
     {
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _sut.GetTestAttachmentsAsync("org", "proj", 1, 1));
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AssertOfflineCacheMiss(ex, "list_test_attachments");
     }
 
     [Fact]
     public async Task GetBuildLogsListAsync_ThrowsWithEvalModeMessage()
     {
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _sut.GetBuildLogsListAsync("org", "proj", 1));
+        AssertOfflineCacheMiss(ex, "list_build_logs");
+    }
+
+    private static void AssertOfflineCacheMiss(HlxAcquisitionException ex, string operation)
+    {
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "cache", operation);
         Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("snapshot", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 }
 
@@ -308,56 +315,62 @@ public class OfflineHelixApiClientTests
     [Fact]
     public async Task GetJobDetailsAsync_ThrowsWithEvalModeMessage()
     {
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _sut.GetJobDetailsAsync("job-abc"));
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AssertOfflineCacheMiss(ex, "get_helix_job");
     }
 
     [Fact]
     public async Task ListWorkItemsAsync_ThrowsWithEvalModeMessage()
     {
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _sut.ListWorkItemsAsync("job-abc"));
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AssertOfflineCacheMiss(ex, "list_helix_work_items");
     }
 
     [Fact]
     public async Task GetWorkItemDetailsAsync_ThrowsWithEvalModeMessage()
     {
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _sut.GetWorkItemDetailsAsync("wi", "job-abc"));
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AssertOfflineCacheMiss(ex, "get_helix_work_item");
     }
 
     [Fact]
     public async Task ListWorkItemFilesAsync_ThrowsWithEvalModeMessage()
     {
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _sut.ListWorkItemFilesAsync("wi", "job-abc"));
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AssertOfflineCacheMiss(ex, "list_helix_work_item_files");
     }
 
     [Fact]
     public async Task GetConsoleLogAsync_ThrowsWithEvalModeMessage()
     {
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _sut.GetConsoleLogAsync("wi", "job-abc"));
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AssertOfflineCacheMiss(ex, "get_helix_console_log");
     }
 
     [Fact]
     public async Task GetFileAsync_ThrowsWithEvalModeMessage()
     {
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _sut.GetFileAsync("file.txt", "wi", "job-abc"));
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AssertOfflineCacheMiss(ex, "download_helix_file");
     }
 
     [Fact]
     public async Task ListJobsByBuildAsync_ThrowsWithEvalModeMessage()
     {
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _sut.ListJobsByBuildAsync("source", "123"));
+        AssertOfflineCacheMiss(ex, "list_helix_jobs_by_build");
+    }
+
+    private static void AssertOfflineCacheMiss(HlxAcquisitionException ex, string operation)
+    {
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "cache", operation);
         Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("snapshot", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
@@ -433,15 +446,15 @@ public class EvalModeCompositionTests : IDisposable
     // ── Cache miss: offline stub throws with "eval mode" ─────────────
 
     [Fact]
-    public async Task CacheMiss_ThrowsInvalidOperationException_WithEvalModeMessage()
+    public async Task CacheMiss_ThrowsAcquisitionNotFound_WithEvalModeMessage()
     {
         // Snapshot is empty — cache miss must throw, NOT call live AzDO.
         var (store, client) = BuildEvalComposition();
         using (store)
         {
-            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
                 () => client.GetBuildAsync("dnceng-public", "public", 9999));
-            Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+            AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "cache", "get_build");
         }
     }
 
@@ -451,9 +464,9 @@ public class EvalModeCompositionTests : IDisposable
         var (store, client) = BuildEvalComposition();
         using (store)
         {
-            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
                 () => client.GetTimelineAsync("dnceng-public", "public", 9999));
-            Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+            AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "cache", "get_timeline");
         }
     }
 
@@ -595,10 +608,10 @@ public class SnapshotCiEvidenceScenarioTests : IDisposable
         using var evalStore = new SqliteCacheStore(evalOpts);
         var evalAzdo = new CachingAzdoApiClient(new OfflineAzdoApiClient(), evalStore, evalOpts);
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => evalAzdo.GetBuildAsync("dnceng-public", "public", 999));
 
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "cache", "get_build");
     }
 
     [Fact]
@@ -699,10 +712,9 @@ public class EvalModeAzdoAuthTests : IDisposable
         Assert.False(status.IsAuthenticated);
         Assert.Null(evalOptions.AuthTokenHash);
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => provider.GetRequiredService<IAzdoApiClient>().GetBuildAsync("org", "proj", 42));
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("snapshot", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "cache", "get_build");
         Assert.Null(evalOptions.AuthTokenHash);
     }
 }
@@ -1047,10 +1059,9 @@ public class EvalModePrimaryEvidenceTests : IDisposable
         using var evalStore = new SqliteCacheStore(evalOpts);
         var client = new CachingAzdoApiClient(new OfflineAzdoApiClient(), evalStore, evalOpts);
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => client.GetBuildLogsListAsync("dnceng-public", "public", 17));
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("snapshot", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "cache", "list_build_logs");
     }
 
     /// <summary>
@@ -1304,9 +1315,9 @@ public class EvalModeHelixServiceCompositionTests : IDisposable
         using var provider = services.BuildServiceProvider();
         var client = provider.GetRequiredService<IAzdoApiClient>();
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => client.GetBuildAsync("org", "project", 1));
-        Assert.Contains("eval mode", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "cache", "get_build");
     }
 
     // ── Negative: verify a factory-resolved client would pass through (non-blocking) ──

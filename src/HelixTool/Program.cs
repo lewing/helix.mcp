@@ -7,6 +7,7 @@ using HelixTool;
 using HelixTool.Core;
 using HelixTool.Generated;
 using HelixTool.Core.CliSchema;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.Cache;
 using HelixTool.Core.Helix;
 using HelixTool.Core.AzDO;
@@ -123,7 +124,11 @@ app.Run(args.Length == 0 ? (Console.IsInputRedirected ? ["mcp"] : ["--help"]) : 
 /// </summary>
 public class Commands
 {
-    private static readonly JsonSerializerOptions s_jsonOptions = new() { WriteIndented = true };
+    private static readonly JsonSerializerOptions s_jsonOptions = new()
+    {
+        WriteIndented = true,
+        Converters = { new AcquisitionErrorKindJsonConverter() }
+    };
 
     internal static bool TryPrintSchema<T>(bool schema)
     {
@@ -978,6 +983,7 @@ Available as `failureCategory` in JSON and MCP output.
                 // Intercepts unknown params with structured McpException + Levenshtein hints.
                 // Stage A's UnmappedMemberHandling.Disallow (below) remains as defense-in-depth.
                 options.AddUnknownParameterFilter(typeof(HelixMcpTools).Assembly);
+                options.AddAcquisitionErrorFilter();
             })
             .WithStdioServerTransport()
             .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly, new JsonSerializerOptions
@@ -1257,7 +1263,11 @@ Available as `failureCategory` in JSON and MCP output.
 /// </summary>
 public class AzdoCommands
 {
-    private static readonly JsonSerializerOptions s_jsonOptions = new() { WriteIndented = true };
+    private static readonly JsonSerializerOptions s_jsonOptions = new()
+    {
+        WriteIndented = true,
+        Converters = { new AcquisitionErrorKindJsonConverter() }
+    };
 
     private readonly AzdoService _svc;
     private readonly IAzdoTokenAccessor _tokenAccessor;
@@ -1266,6 +1276,22 @@ public class AzdoCommands
     {
         _svc = svc;
         _tokenAccessor = tokenAccessor;
+    }
+
+    private static void PrintAcquisitionError(HlxAcquisitionException ex, bool json)
+    {
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(
+                new AcquisitionErrorCliEnvelope(false, ex.Error),
+                s_jsonOptions));
+        }
+        else
+        {
+            Console.Error.WriteLine($"Error: {QuoteUntrusted(ex.Error.Message)}");
+        }
+
+        Environment.ExitCode = 1;
     }
 
 
@@ -1309,7 +1335,16 @@ public class AzdoCommands
         if (Commands.TryPrintSchema<AzdoBuildSummary>(schema))
             return;
 
-        var summary = await _svc.GetBuildSummaryAsync(buildId);
+        AzdoBuildSummary summary;
+        try
+        {
+            summary = await _svc.GetBuildSummaryAsync(buildId);
+        }
+        catch (HlxAcquisitionException ex)
+        {
+            PrintAcquisitionError(ex, json);
+            return;
+        }
 
         if (json)
         {
@@ -1430,10 +1465,14 @@ public class AzdoCommands
             throw new ArgumentException($"Invalid filter '{filter}'. Must be 'failed' or 'all'.", nameof(filter));
         }
 
-        var timeline = await _svc.GetTimelineAsync(buildId);
-        if (timeline is null)
+        AzdoTimeline timeline;
+        try
         {
-            Console.Error.WriteLine("No timeline available for this build.");
+            timeline = (await _svc.GetTimelineAsync(buildId))!;
+        }
+        catch (HlxAcquisitionException ex)
+        {
+            PrintAcquisitionError(ex, json);
             return;
         }
 
@@ -1507,17 +1546,26 @@ public class AzdoCommands
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
     /// <param name="logId">Log ID from the timeline record's log reference.</param>
     /// <param name="tailLines">Number of lines from the end to return.</param>
+    /// <param name="json">Emit JSON error envelope on acquisition failure.</param>
     [McpEquivalent("azdo_log")]
     [Command("azdo log")]
-    public async Task Log([Argument] string buildId, [Argument] int logId, int? tailLines = 500)
+    public async Task Log([Argument] string buildId, [Argument] int logId, int? tailLines = 500, bool json = false)
     {
-        var content = await _svc.GetBuildLogAsync(buildId, logId, tailLines);
-        if (content is null)
+        string? content;
+        try
         {
-            Console.Error.WriteLine("Log not found.");
+            content = await _svc.GetBuildLogAsync(buildId, logId, tailLines);
+        }
+        catch (HlxAcquisitionException ex)
+        {
+            PrintAcquisitionError(ex, json);
             return;
         }
-        Console.Write(content);
+
+        if (json)
+            Console.WriteLine(JsonSerializer.Serialize(content, s_jsonOptions));
+        else
+            Console.Write(content);
     }
 
     /// <summary>Search one build log or all ranked build logs for a pattern.</summary>
@@ -1994,8 +2042,11 @@ public class AzdoCommands
         if (plan.HelixFailures.Count > 0)
         {
             Console.WriteLine();
+            var helixFailureRange = plan.HelixFailures.Count == 0
+                ? $"0 of {FormatInvariant(plan.HelixFailureTotal)}"
+                : $"{FormatInvariant(plan.HelixFailureOffset + 1)}-{FormatInvariant(plan.HelixFailureOffset + plan.HelixFailures.Count)} of {FormatInvariant(plan.HelixFailureTotal)}";
             Console.WriteLine(
-                $"Helix monitor failures: {FormatInvariant(plan.HelixFailures.Count)} of {FormatInvariant(plan.HelixFailureTotal)}{(plan.HelixFailuresTruncated ? " (truncated)" : "")}");
+                $"Helix monitor failures: {helixFailureRange}{(plan.HelixFailuresTruncated ? " (truncated)" : "")}");
             foreach (var failure in plan.HelixFailures)
             {
                 Console.WriteLine();
@@ -2127,6 +2178,11 @@ public class AzdoCommands
         try
         {
             plan = await _svc.GetEvidencePlanAsync(buildId, options);
+        }
+        catch (HlxAcquisitionException ex)
+        {
+            PrintAcquisitionError(ex, json);
+            return;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

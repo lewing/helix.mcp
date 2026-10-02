@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.Cache;
 
 namespace HelixTool.Core.AzDO;
@@ -139,7 +140,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         if (_options.EvalMode)
         {
             var cachedEval = await _cache.GetMetadataAsync(key, ct);
-            var deserializedEval = TryDeserialize<AzdoTimeline>(cachedEval);
+            var deserializedEval = TryDeserialize<AzdoTimeline>(cachedEval, throwOnCorrupt: true, key);
             if (deserializedEval is not null)
                 return deserializedEval;
             return await _inner.GetTimelineAsync(org, project, buildId, ct);
@@ -176,7 +177,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         var freshKey = BuildCacheKey(org, project, $"log-fresh:{buildId}:{logId}");
 
         var cachedRaw = await _cache.GetMetadataAsync(contentKey, ct);
-        string? fullContent = DeserializeLogContent(cachedRaw);
+        string? fullContent = DeserializeLogContent(cachedRaw, _options.EvalMode, contentKey);
 
         if (fullContent is not null)
         {
@@ -366,7 +367,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         if (_options.EvalMode)
         {
             var cachedEval = await _cache.GetMetadataAsync(key, ct);
-            var deserializedEval = TryDeserialize<List<AzdoBuildLogEntry>>(cachedEval);
+            var deserializedEval = TryDeserialize<List<AzdoBuildLogEntry>>(cachedEval, throwOnCorrupt: true, key);
             if (deserializedEval is not null)
                 return deserializedEval;
 
@@ -440,28 +441,39 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
     /// JSON-wrapped (legacy) entries for backward compatibility.
     /// Returns null on corrupt entries (treated as cache miss).
     /// </summary>
-    private static string? DeserializeLogContent(string? cached)
+    private static string? DeserializeLogContent(string? cached, bool throwOnCorrupt = false, string? key = null)
     {
         if (cached is null) return null;
         if (cached.StartsWith(RawTextPrefix, StringComparison.Ordinal))
             return cached[RawTextPrefix.Length..];
         // Legacy JSON-wrapped format — graceful migration
-        return TryDeserialize<string>(cached);
+        return TryDeserialize<string>(cached, throwOnCorrupt, key);
     }
 
     /// <summary>
     /// Safely deserialize a cached JSON value. Returns default(T) if the cached
     /// data is corrupt or unparseable, treating it as a cache miss rather than crashing.
     /// </summary>
-    private static T? TryDeserialize<T>(string? cached)
+    private static T? TryDeserialize<T>(string? cached, bool throwOnCorrupt = false, string? key = null)
     {
         if (cached is null) return default;
         try
         {
             return JsonSerializer.Deserialize<T>(cached);
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
+            if (throwOnCorrupt)
+            {
+                throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                    AcquisitionErrorKind.InvalidResponse,
+                    "cache",
+                    "deserialize_cache_entry",
+                    new Dictionary<string, object?> { ["key"] = key ?? "(unknown)" },
+                    "Cached AzDO snapshot entry is corrupt or not valid JSON."),
+                    ex);
+            }
+
             return default;
         }
     }

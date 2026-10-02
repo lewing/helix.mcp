@@ -216,9 +216,9 @@ hlx azdo search-timeline 12345678 "test"
 hlx azdo search-timeline 12345678 "build" --type Task --result all
 ```
 
-### `hlx azdo evidence plan <buildId> [--job-results RESULTS] [--artifact-pattern PAT] [--artifact-job-prefix PREFIX] [--keep-attempt-prefix] [--match MODE] [--json]`
+### `hlx azdo evidence plan <buildId> [--job-results RESULTS] [--artifact-pattern PAT] [--artifact-job-prefix PREFIX] [--keep-attempt-prefix] [--match MODE] [--helix-failure-offset N] [--helix-failure-limit N] [--json]`
 
-Plan failed/canceled job → artifact evidence mapping. Returns a bounded plan with candidate artifacts (if any) for each selected job, ranked by attempt number. It never silently chooses: ambiguous matches retain ranked candidates and report the full candidate count.
+Plan failed/canceled job → artifact evidence mapping. Returns a bounded plan with candidate artifacts (if any) for each selected job, ranked by attempt number. It never silently chooses: ambiguous matches retain ranked candidates and report the full candidate count. If the build contains arcade queue-monitor jobs, also parses Helix work-item failures from timeline issues into deterministic `helixFailures[]` rows suitable for fetching with Helix tools.
 
 ```bash
 # Map failed and canceled jobs to evidence artifacts
@@ -233,6 +233,9 @@ hlx azdo evidence plan 12345678 --artifact-pattern "Logs_Build_*" --artifact-job
 
 # Keep the literal AttemptN_ segment (this is a bare presence flag)
 hlx azdo evidence plan 12345678 --keep-attempt-prefix
+
+# Page through Helix monitor failures (when present)
+hlx azdo evidence plan 12345678 --helix-failure-limit 50 --helix-failure-offset 0
 
 # Output as JSON
 hlx azdo evidence plan 12345678 --json
@@ -256,12 +259,16 @@ The MCP equivalent keeps its positive `stripAttemptPrefix` boolean, which defaul
   - `normalized-exact` — Name-only matching (dotnet/runtime PR #132609 parity). Note: 12.7% miss rate on real builds with matrix variants, and 100% ambiguous on retried jobs. Kept for reproduction/audit purposes.
   - `exact` — Ordinal-ignore-case equality after prefix stripping, with no normalization.
 
+- `--helix-failure-offset N` — Offset into parsed Helix monitor failures (for deterministic collectors). Default: `0`. Used with `--helix-failure-limit` to page through `helixFailures[]` when the total exceeds the limit.
+
+- `--helix-failure-limit N` — Maximum parsed Helix monitor failures to return. Default: `200`, max: `1000`. When `helixFailuresTruncated` is `true`, use `--helix-failure-offset` with the same limit to fetch the next page. Helix failures are parsed from timeline issues in arcade queue-monitor jobs; returned only when the monitor job is selected by `--job-results` and its timeline issues contain parseable work-item failures. A monitor job with unparseable failures, unresolved Helix job IDs, or failures exceeding the page limit remains incomplete with explicit `incompleteDetails[].code` reasons.
+
 **Exit Codes:**
 
 | Code | Meaning |
 |------|---------|
-| `0` | Plan produced and all selected jobs have exactly one mapped artifact (`complete == true`). |
-| `2` | Plan produced but contains ambiguous, missing, or truncated results (`complete == false`). **The bounded plan is still written to stdout.** This is informational, not a hard error. |
+| `0` | Plan produced and `complete == true`: selected artifact jobs are mapped, monitor failures (if any) are parseable, and no evidence-plan output was truncated. |
+| `2` | Plan produced but `complete == false` because of ambiguous/missing artifacts, truncation, unparseable monitor output, or unresolved monitor Helix job IDs. **The bounded plan is still written to stdout.** This is informational, not a hard error. |
 | `1` | Hard error: invalid argument, build not found, timeline unavailable, or network error. |
 
 **Output Structure (JSON):**
@@ -285,14 +292,47 @@ Without `--json`, the CLI prints a deterministic human-readable plan. With `--js
   - `candidateTotal` — Total matching candidates before the returned list was bounded.
   - `candidatesTruncated` — `true` when `candidateTotal` exceeds the number returned in `candidates`.
   - `candidateNote` — Human-readable candidate truncation summary, present when `candidatesTruncated` is `true`.
-- `complete` — `true` only if all entries have `status: "mapped"` and no output was truncated.
-- `incompleteReasons[]` — Human-readable lines (present only if `complete == false`) explaining ambiguities, gaps, or entry truncation.
+- `helixFailures[]` — Parsed Helix work-item failures from arcade queue-monitor timeline issues (returned only when a monitor job is selected by `--job-results` and parseable failures are found). **Not artifacts.** Each contains:
+  - `monitorJobId`, `monitorJobName` — The AzDO queue-monitor job GUID and name that published the failures.
+  - `monitorJobResult` — The monitor job's result (e.g., `"failed"`, `"canceled"`).
+  - `monitorJobOrder`, `monitorJobAttempt` — Timeline record order and attempt (if present).
+  - `monitorTaskId`, `monitorTaskName` — AzDO task GUID and name that ran the monitor (if available).
+  - `helixJobId` — Helix job ID (used by the suggested Helix fetch tools).
+  - `helixJobName` — Helix job display name (if parsed).
+  - `leg`, `queue` — Helix job leg and queue names (if parsed).
+  - `workItem` — Helix work-item name (used with `helixJobId` by work-item-scoped fetches).
+  - `state` — Work-item state (e.g., `"Finished"`, `"Active"`).
+  - `exitCode` — Work-item exit code (if available).
+  - `details` — Raw work-item failure details or error message.
+  - `sourceFormat` — Parsing source: `"legacy"` (dotnet arcade v5 format), `"monitor-warning"`, or `"monitor-tree"`.
+  - `suggestedFetches[]` — Deterministic drilldown fetch intents for scripts. Each contains:
+    - `tool` — MCP/CLI tool name. Emitted values are `"helix_work_item"`, `"helix_logs"`, and `"helix_files"`.
+    - `helixJobId` — Job ID to pass to the tool.
+    - `workItem` — Work-item name (if applicable for this fetch).
+    - `purpose` — Human-readable description of why this fetch is suggested.
+- `helixFailureOffset`, `helixFailureLimit` — Echo of paging parameters from `--helix-failure-offset` / `--helix-failure-limit`.
+- `helixFailureTotal` — Total parsed Helix monitor failures before paging bounds were applied.
+- `helixFailuresTruncated` — `true` when `helixFailureOffset + helixFailures.length < helixFailureTotal` (indicating more pages available via `--helix-failure-offset`).
+- `incompleteDetails[]` — Machine-readable completeness diagnostics (present only if `complete == false`). Each contains:
+  - `code` — Stable machine-readable reason:
+    - `"artifact_ambiguous"` — A selected artifact job matched multiple candidate artifacts, so none was selected.
+    - `"artifact_missing"` — A selected artifact job had no matching artifact candidate.
+    - `"candidates_truncated"` — A job's candidate artifact list exceeded the per-entry bound and was truncated.
+    - `"entries_truncated"` — Selected artifact jobs exceeded the plan entry bound, so some jobs are not represented.
+    - `"helix_failures_truncated"` — Parsed Helix monitor failures exceeded the current `--helix-failure-offset`/`--helix-failure-limit` page.
+    - `"monitor_unparseable"` — A selected Helix-monitor-like job failed but timeline issues contained no parseable Helix work-item failures.
+    - `"monitor_unresolved_job_id"` — Failure-shaped monitor timeline entries were found, but their Helix job ID could not be recovered.
+  - `message` — Human-readable explanation.
+  - `jobId`, `jobName` — Associated job GUID and name (present for job-specific issues).
+  - `count`, `total` — When applicable (e.g., for truncation): count returned, total available.
+- `complete` — `true` only when selected artifact jobs are complete (`status == "mapped"`) and `incompleteDetails[]` is empty (no monitor parse/unresolved/truncation diagnostics).
+- `incompleteReasons[]` — Human-readable lines (present only if `complete == false`) explaining ambiguities, gaps, entry truncation, or monitor parsing issues. Human output prints `incompleteDetails[]` as bracketed stable codes, e.g. `- [monitor_unparseable] ...`.
 - `warnings[]` — Non-fatal planning diagnostics in deterministic order, capped at 10. Always present (empty when there are no warnings).
 - `warningTotal` — Total warnings before the 10-item bound. Always present.
 - `warningsTruncated` — `true` when `warningTotal` exceeds the number returned in `warnings`; otherwise `false`. Always present.
-- `truncated` — `true` if either the 200-entry limit or any entry's 10-candidate limit was exceeded.
-- `totalEntries` — Total selected jobs (present whenever `truncated` is `true`, whether entry or candidate overflow caused it).
-- `note` — Present on truncation; summarizes entry truncation, candidate-list truncation, or both.
+- `truncated` — `true` if either the 200-entry limit, any entry's 10-candidate limit, or the Helix failure page limit was exceeded.
+- `totalEntries` — Total selected artifact jobs (present when artifact entry/candidate planning was truncated; omitted for Helix-only truncation).
+- `note` — Present on truncation; summarizes entry truncation, candidate-list truncation, or Helix failure truncation.
 - `generatedAt` — ISO 8601 timestamp when the plan was generated.
 
 **Why `auto` is the default:** Testing on real AzDO builds reveals:
@@ -318,6 +358,11 @@ hlx azdo evidence plan "$BUILD_ID" --json | \
 
 # Validate completeness before fetching
 hlx azdo evidence plan "$BUILD_ID" --json | jq '.complete'
+
+# Convert parsed Helix failures into suggested Helix fetch commands for a script
+hlx azdo evidence plan "$BUILD_ID" --json | \
+  jq -r '.helixFailures[] | .suggestedFetches[] | "\(.tool) \(.helixJobId) \(.workItem // "")  # \(.purpose)"' | \
+  while read cmd; do echo "# $cmd"; done
 ```
 
 ### `hlx azdo test-attachments <runId> <resultId> [--top N]`

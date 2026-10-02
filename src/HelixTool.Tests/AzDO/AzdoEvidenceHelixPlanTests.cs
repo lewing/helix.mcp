@@ -265,6 +265,9 @@ public class AzdoEvidenceHelixPlanTests
         SetupTimeline(RuntimeMonitorOnlyBuildId, TimelineWithMonitorIssues(CreateMonitorWarnings(3)));
         SetupArtifacts(RuntimeMonitorOnlyBuildId, []);
 
+        var full = await _svc.GetEvidencePlanAsync(
+            RuntimeMonitorOnlyBuildId.ToString(),
+            DefaultOptions() with { HelixFailureLimit = 3 });
         var first = await _svc.GetEvidencePlanAsync(
             RuntimeMonitorOnlyBuildId.ToString(),
             DefaultOptions() with { HelixFailureLimit = 2 });
@@ -272,15 +275,25 @@ public class AzdoEvidenceHelixPlanTests
             RuntimeMonitorOnlyBuildId.ToString(),
             DefaultOptions() with { HelixFailureOffset = 2, HelixFailureLimit = 2 });
 
+        Assert.Equal(3, full.HelixFailureTotal);
         Assert.Equal(3, first.HelixFailureTotal);
         Assert.Equal(3, second.HelixFailureTotal);
+        Assert.Equal(["WorkItem000", "WorkItem001", "WorkItem002"], full.HelixFailures.Select(f => f.WorkItem));
         Assert.Equal(["WorkItem000", "WorkItem001"], first.HelixFailures.Select(f => f.WorkItem));
         Assert.Equal(["WorkItem002"], second.HelixFailures.Select(f => f.WorkItem));
         Assert.Empty(first.HelixFailures.Select(f => f.WorkItem).Intersect(second.HelixFailures.Select(f => f.WorkItem), StringComparer.Ordinal));
+        Assert.False(full.HelixFailuresTruncated);
         Assert.True(first.HelixFailuresTruncated);
-        Assert.False(second.HelixFailuresTruncated);
+        Assert.True(second.HelixFailuresTruncated);
+        Assert.True(full.Complete);
         Assert.False(first.Complete);
-        Assert.True(second.Complete);
+        Assert.False(second.Complete);
+
+        var secondDetail = Assert.Single(second.IncompleteDetails, detail => detail.Code == "helix_failures_truncated");
+        Assert.Equal(1, secondDetail.Count);
+        Assert.Equal(3, secondDetail.Total);
+        Assert.Contains(second.Warnings, warning => warning.Contains("showing 3-3 of 3", StringComparison.Ordinal));
+        Assert.DoesNotContain(second.Warnings, warning => warning.Contains("showing first", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

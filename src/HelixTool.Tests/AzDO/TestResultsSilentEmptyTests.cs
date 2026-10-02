@@ -1,6 +1,7 @@
 using System.Net;
 using System.Globalization;
 using System.Text;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.AzDO;
 using HelixTool.Core.Cache;
 using NSubstitute;
@@ -50,7 +51,7 @@ public sealed class TestResultsSilentEmptyTests
     {
         var client = CreateClient(new SequenceHttpMessageHandler(_ => responseFactory()));
 
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(() =>
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() =>
             client.GetTestResultsAsync("dnceng-public", "public", runId: 44793916));
 
         AssertAuthGuidance(name, ex);
@@ -62,7 +63,7 @@ public sealed class TestResultsSilentEmptyTests
     {
         var client = CreateClient(new SequenceHttpMessageHandler(_ => responseFactory()));
 
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(() =>
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() =>
             client.GetTestRunsAsync("dnceng-public", "public", buildId: 1618757));
 
         AssertAuthGuidance(name, ex);
@@ -74,7 +75,7 @@ public sealed class TestResultsSilentEmptyTests
     {
         var client = CreateClient(new SequenceHttpMessageHandler(_ => responseFactory()));
 
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(() =>
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() =>
             client.GetBuildAsync("dnceng-public", "public", buildId: 1618757));
 
         AssertAuthGuidance(name, ex);
@@ -87,10 +88,10 @@ public sealed class TestResultsSilentEmptyTests
             """{"message":"The test run was not found or has been deleted."}""",
             HttpStatusCode.NotFound)));
 
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(() =>
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() =>
             client.GetTestResultsAsync("dnceng-public", "public", runId: 44793916));
 
-        Assert.Contains("not found", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "list_test_results", 404);
     }
 
     [Fact]
@@ -204,8 +205,10 @@ public sealed class TestResultsSilentEmptyTests
     private static HttpRequestException CreateAuthException()
         => new("Can't access org/proj — authentication required. Run 'az login' or set AZDO_TOKEN.", inner: null, statusCode: HttpStatusCode.Unauthorized);
 
-    private static void AssertAuthGuidance(string name, HttpRequestException ex)
+    private static void AssertAuthGuidance(string name, HlxAcquisitionException ex)
     {
+        Assert.Equal(AcquisitionErrorKind.AccessDenied, ex.Error.Kind);
+        Assert.Equal("azdo", ex.Error.Provider);
         Assert.True(
             ex.Message.Contains("auth", StringComparison.OrdinalIgnoreCase) ||
             ex.Message.Contains("sign", StringComparison.OrdinalIgnoreCase),

@@ -3,6 +3,7 @@
 // Ensures build log search returns expected matches, line numbers, and surrounding context.
 
 using HelixTool.Core;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.AzDO;
 using NSubstitute;
 using Xunit;
@@ -219,14 +220,20 @@ public class AzdoSearchLogTests
     // ── Null log content ────────────────────────────────────────────
 
     [Fact]
-    public async Task SearchBuildLog_NullLogContent_ThrowsInvalidOperation()
+    public async Task SearchBuildLog_MissingLogContent_ThrowsAcquisitionNotFound()
     {
         _mockApi.GetBuildLogAsync("dnceng-public", "public", 42, 7, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
-            .Returns((string?)null);
+            .Returns(_ => Task.FromException<string?>(AcquisitionAssertions.Exception(
+                AcquisitionErrorKind.NotFound,
+                "azdo",
+                "get_build_log",
+                new Dictionary<string, object?> { ["buildId"] = 42, ["logId"] = 7 },
+                httpStatus: 404)));
 
-        // Ripley's implementation throws InvalidOperationException for null log content
-        await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _svc.SearchBuildLogAsync("42", 7, "error"));
+
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "get_build_log", 404);
     }
 
     // ── Search disabled ─────────────────────────────────────────────

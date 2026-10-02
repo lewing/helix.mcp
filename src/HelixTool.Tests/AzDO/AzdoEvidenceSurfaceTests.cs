@@ -375,7 +375,7 @@ public class AzdoEvidenceSurfaceTests
                 typeof(int),
                 hasDefault: true,
                 defaultValue: 200,
-                "Maximum Helix monitor failures to return. Default: 200, max: 1000. Use paging when helixFailuresTruncated is true."));
+                "Maximum Helix monitor failures to return. Default: 200, max: 1000. Any partial page returns complete=false with helixFailuresTruncated=true; request the full set when a complete plan is required."));
 
         Assert.Equal(
             new object[] { "auto", "source-id", "normalized-exact", "exact" },
@@ -750,7 +750,7 @@ public class AzdoEvidenceSurfaceTests
                 json: false));
 
             Assert.Equal(0, Environment.ExitCode);
-            Assert.Contains("Helix monitor failures: 1 of 1", output, StringComparison.Ordinal);
+            Assert.Contains("Helix monitor failures: 1-1 of 1", output, StringComparison.Ordinal);
             Assert.Contains("Work item:", output, StringComparison.Ordinal);
             Assert.Contains("\"System.Diagnostics.Process.Tests\"", output, StringComparison.Ordinal);
             Assert.DoesNotContain("[\"missing\"] Job \"Monitor Helix Jobs\"", output, StringComparison.Ordinal);
@@ -825,7 +825,7 @@ public class AzdoEvidenceSurfaceTests
                 json: false));
 
             Assert.Equal(2, Environment.ExitCode);
-            Assert.Contains("Helix monitor failures: 1 of 2 (truncated)", firstPage, StringComparison.Ordinal);
+            Assert.Contains("Helix monitor failures: 1-1 of 2 (truncated)", firstPage, StringComparison.Ordinal);
             Assert.Contains("[helix_failures_truncated]", firstPage, StringComparison.Ordinal);
             Assert.Contains("\"First.Tests\"", firstPage, StringComparison.Ordinal);
             Assert.DoesNotContain("\"Second.Tests\"", firstPage, StringComparison.Ordinal);
@@ -838,14 +838,18 @@ public class AzdoEvidenceSurfaceTests
                 helixFailureLimit: 1,
                 json: true));
 
-            Assert.Equal(0, Environment.ExitCode);
+            Assert.Equal(2, Environment.ExitCode);
             using var json = JsonDocument.Parse(secondPage);
             var failure = Assert.Single(json.RootElement.GetProperty("helixFailures").EnumerateArray());
             Assert.Equal("Second.Tests", failure.GetProperty("workItem").GetString());
             Assert.Equal(1, json.RootElement.GetProperty("helixFailureOffset").GetInt32());
             Assert.Equal(1, json.RootElement.GetProperty("helixFailureLimit").GetInt32());
             Assert.Equal(2, json.RootElement.GetProperty("helixFailureTotal").GetInt32());
-            Assert.False(json.RootElement.GetProperty("helixFailuresTruncated").GetBoolean());
+            Assert.True(json.RootElement.GetProperty("helixFailuresTruncated").GetBoolean());
+            Assert.False(json.RootElement.GetProperty("complete").GetBoolean());
+            Assert.Contains(
+                json.RootElement.GetProperty("incompleteDetails").EnumerateArray(),
+                detail => detail.GetProperty("code").GetString() == "helix_failures_truncated");
         }
         finally
         {

@@ -4,6 +4,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.AzDO;
 using HelixTool.Core.Cache;
 using NSubstitute;
@@ -395,63 +396,69 @@ public class AzdoApiClientTests
     // ── Error Handling ───────────────────────────────────────────────
 
     [Fact]
-    public async Task GetBuildAsync_404_ReturnsNull()
+    public async Task GetBuildAsync_404_ThrowsNotFound()
     {
         _handler.StatusCode = HttpStatusCode.NotFound;
 
-        var result = await _client.GetBuildAsync("dnceng", "internal", 999);
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => _client.GetBuildAsync("dnceng", "internal", 999));
 
-        Assert.Null(result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "get_build", 404);
     }
 
     [Fact]
-    public async Task GetTimelineAsync_404_ReturnsNull()
+    public async Task GetTimelineAsync_404_ThrowsNotFound()
     {
         _handler.StatusCode = HttpStatusCode.NotFound;
 
-        var result = await _client.GetTimelineAsync("dnceng", "internal", 999);
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => _client.GetTimelineAsync("dnceng", "internal", 999));
 
-        Assert.Null(result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "get_timeline", 404);
     }
 
     [Fact]
-    public async Task GetBuildLogAsync_404_ReturnsNull()
+    public async Task GetBuildLogAsync_404_ThrowsNotFound()
     {
         _handler.StatusCode = HttpStatusCode.NotFound;
 
-        var result = await _client.GetBuildLogAsync("dnceng", "internal", 999, 1);
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => _client.GetBuildLogAsync("dnceng", "internal", 999, 1));
 
-        Assert.Null(result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "get_build_log", 404);
     }
 
     [Fact]
-    public async Task ListBuildsAsync_404_ReturnsEmptyList()
+    public async Task ListBuildsAsync_404_ThrowsNotFound()
     {
         _handler.StatusCode = HttpStatusCode.NotFound;
 
-        var result = await _client.ListBuildsAsync("dnceng", "internal", new AzdoBuildFilter());
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => _client.ListBuildsAsync("dnceng", "internal", new AzdoBuildFilter()));
 
-        Assert.Empty(result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "list_builds", 404);
     }
 
     [Fact]
-    public async Task GetBuildChangesAsync_404_ReturnsEmptyList()
+    public async Task GetBuildChangesAsync_404_ThrowsNotFound()
     {
         _handler.StatusCode = HttpStatusCode.NotFound;
 
-        var result = await _client.GetBuildChangesAsync("dnceng", "internal", 999);
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => _client.GetBuildChangesAsync("dnceng", "internal", 999));
 
-        Assert.Empty(result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "list_build_changes", 404);
     }
 
     [Fact]
-    public async Task GetTestRunsAsync_404_ReturnsEmptyList()
+    public async Task GetTestRunsAsync_404_ThrowsNotFound()
     {
         _handler.StatusCode = HttpStatusCode.NotFound;
 
-        var result = await _client.GetTestRunsAsync("dnceng", "internal", 999);
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => _client.GetTestRunsAsync("dnceng", "internal", 999));
 
-        Assert.Empty(result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "list_test_runs", 404);
     }
 
     [Fact]
@@ -459,72 +466,78 @@ public class AzdoApiClientTests
     {
         _handler.StatusCode = HttpStatusCode.NotFound;
 
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _client.GetTestResultsAsync("dnceng", "internal", 999));
 
-        Assert.Contains("not found", ex.Message, StringComparison.OrdinalIgnoreCase);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "list_test_results", 404);
     }
 
     // ── HTTP 204 and empty-body handling ────────────────────────────
 
     [Fact]
-    public async Task GetAsync_204_ReturnsNull()
+    public async Task GetAsync_204_ThrowsNotFound()
     {
         _handler.StatusCode = HttpStatusCode.NoContent;
 
-        var result = await _client.GetTimelineAsync("dnceng", "internal", 999);
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => _client.GetTimelineAsync("dnceng", "internal", 999));
 
-        Assert.Null(result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "get_timeline", 204);
     }
 
     [Fact]
-    public async Task GetListAsync_204_ReturnsEmpty()
+    public async Task GetListAsync_204_ThrowsInvalidResponse()
     {
         _handler.StatusCode = HttpStatusCode.NoContent;
 
-        var result = await _client.ListBuildsAsync("dnceng", "internal", new AzdoBuildFilter());
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => _client.ListBuildsAsync("dnceng", "internal", new AzdoBuildFilter()));
 
-        Assert.Empty(result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.InvalidResponse, "azdo", "list_builds", 204);
     }
 
     [Fact]
-    public async Task GetAsync_200_EmptyBodyWithContentLength_ReturnsNull()
+    public async Task GetAsync_200_EmptyBodyWithContentLength_ThrowsInvalidResponse()
     {
         _handler.ResponseHttpContent = new ByteArrayContent([]);
 
-        var result = await _client.GetTimelineAsync("dnceng", "internal", 999);
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => _client.GetTimelineAsync("dnceng", "internal", 999));
 
-        Assert.Null(result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.InvalidResponse, "azdo", "get_timeline", 200);
     }
 
     [Fact]
-    public async Task GetListAsync_200_EmptyBodyWithContentLength_ReturnsEmpty()
+    public async Task GetListAsync_200_EmptyBodyWithContentLength_ThrowsInvalidResponse()
     {
         _handler.ResponseHttpContent = new ByteArrayContent([]);
 
-        var result = await _client.ListBuildsAsync("dnceng", "internal", new AzdoBuildFilter());
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => _client.ListBuildsAsync("dnceng", "internal", new AzdoBuildFilter()));
 
-        Assert.Empty(result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.InvalidResponse, "azdo", "list_builds", 200);
     }
 
     [Fact]
-    public async Task GetAsync_200_EmptyBodyNoContentLength_ReturnsNull()
+    public async Task GetAsync_200_EmptyBodyNoContentLength_ThrowsInvalidResponse()
     {
         _handler.ResponseHttpContent = new EmptyNoLengthContent();
 
-        var result = await _client.GetTimelineAsync("dnceng", "internal", 999);
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => _client.GetTimelineAsync("dnceng", "internal", 999));
 
-        Assert.Null(result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.InvalidResponse, "azdo", "get_timeline", 200);
     }
 
     [Fact]
-    public async Task GetListAsync_200_EmptyBodyNoContentLength_ReturnsEmpty()
+    public async Task GetListAsync_200_EmptyBodyNoContentLength_ThrowsInvalidResponse()
     {
         _handler.ResponseHttpContent = new EmptyNoLengthContent();
 
-        var result = await _client.ListBuildsAsync("dnceng", "internal", new AzdoBuildFilter());
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => _client.ListBuildsAsync("dnceng", "internal", new AzdoBuildFilter()));
 
-        Assert.Empty(result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.InvalidResponse, "azdo", "list_builds", 200);
     }
 
     [Fact]
@@ -551,23 +564,25 @@ public class AzdoApiClientTests
     }
 
     [Fact]
-    public async Task GetAsync_404_ReturnsNull_RegressionGuard()
+    public async Task GetAsync_404_ThrowsNotFound_RegressionGuard()
     {
         _handler.StatusCode = HttpStatusCode.NotFound;
 
-        var result = await _client.GetTimelineAsync("dnceng", "internal", 999);
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => _client.GetTimelineAsync("dnceng", "internal", 999));
 
-        Assert.Null(result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "get_timeline", 404);
     }
 
     [Fact]
-    public async Task GetListAsync_404_ReturnsEmpty_RegressionGuard()
+    public async Task GetListAsync_404_ThrowsNotFound_RegressionGuard()
     {
         _handler.StatusCode = HttpStatusCode.NotFound;
 
-        var result = await _client.ListBuildsAsync("dnceng", "internal", new AzdoBuildFilter());
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => _client.ListBuildsAsync("dnceng", "internal", new AzdoBuildFilter()));
 
-        Assert.Empty(result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "list_builds", 404);
     }
 
     [Theory]
@@ -578,9 +593,10 @@ public class AzdoApiClientTests
         _mockToken.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns(BearerCredential("entra-token", "AzureCliCredential"));
         _handler.StatusCode = statusCode;
 
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _client.GetBuildAsync("dnceng", "internal", 1));
 
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.AccessDenied, "azdo", "get_build", (int)statusCode);
         Assert.Contains("Can't access dnceng/internal", ex.Message);
         Assert.Contains(((int)statusCode).ToString(), ex.Message);
         Assert.Contains("Current auth: AzureCliCredential", ex.Message);
@@ -632,9 +648,10 @@ public class AzdoApiClientTests
     {
         _handler.StatusCode = HttpStatusCode.Unauthorized;
 
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _client.ListBuildsAsync("dnceng", "internal", new AzdoBuildFilter()));
 
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.AccessDenied, "azdo", "list_builds", 401);
         Assert.Contains("Authentication failed", ex.Message);
     }
 
@@ -643,9 +660,10 @@ public class AzdoApiClientTests
     {
         _handler.StatusCode = HttpStatusCode.Unauthorized;
 
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _client.GetBuildLogAsync("dnceng", "internal", 1, 1));
 
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.AccessDenied, "azdo", "get_build_log", 401);
         Assert.Contains("Authentication failed", ex.Message);
     }
 
@@ -655,9 +673,10 @@ public class AzdoApiClientTests
         _handler.StatusCode = HttpStatusCode.InternalServerError;
         _handler.ResponseContent = "Internal server error details";
 
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _client.GetBuildAsync("dnceng", "internal", 1));
 
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.TransportError, "azdo", "get_build", 500);
         Assert.Contains("500", ex.Message);
         Assert.Contains("Internal server error details", ex.Message);
     }
@@ -668,9 +687,10 @@ public class AzdoApiClientTests
         _handler.StatusCode = HttpStatusCode.InternalServerError;
         _handler.ResponseContent = new string('x', 1000);
 
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _client.GetBuildAsync("dnceng", "internal", 1));
 
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.TransportError, "azdo", "get_build", 500);
         // Body is truncated at 500 chars + ellipsis character
         Assert.Contains("500", ex.Message);
         Assert.DoesNotContain(new string('x', 600), ex.Message);
@@ -683,9 +703,10 @@ public class AzdoApiClientTests
         _handler.StatusCode = HttpStatusCode.InternalServerError;
         _handler.ResponseContent = "short error";
 
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _client.GetBuildAsync("dnceng", "internal", 1));
 
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.TransportError, "azdo", "get_build", 500);
         Assert.Contains("short error", ex.Message);
         Assert.DoesNotContain("…", ex.Message);
     }
@@ -696,9 +717,10 @@ public class AzdoApiClientTests
         _handler.StatusCode = HttpStatusCode.InternalServerError;
         _handler.ResponseContent = "server error";
 
-        var ex = await Assert.ThrowsAsync<HttpRequestException>(
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
             () => _client.ListBuildsAsync("dnceng", "internal", new AzdoBuildFilter()));
 
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.TransportError, "azdo", "list_builds", 500);
         Assert.Contains("500", ex.Message);
         Assert.Contains("server error", ex.Message);
     }
@@ -883,13 +905,14 @@ public class AzdoApiClientTests
     }
 
     [Fact]
-    public async Task ListBuildsAsync_NullValueProperty_ReturnsEmptyList()
+    public async Task ListBuildsAsync_NullValueProperty_ThrowsInvalidResponse()
     {
         _handler.ResponseContent = """{"value":null,"count":0}""";
 
-        var result = await _client.ListBuildsAsync("dnceng", "internal", new AzdoBuildFilter());
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => _client.ListBuildsAsync("dnceng", "internal", new AzdoBuildFilter()));
 
-        Assert.Empty(result);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.InvalidResponse, "azdo", "list_builds", 200);
     }
 
     [Fact]

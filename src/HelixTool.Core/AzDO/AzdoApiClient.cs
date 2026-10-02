@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.Cache;
 
 namespace HelixTool.Core.AzDO;
@@ -48,7 +49,13 @@ public sealed class AzdoApiClient : IAzdoApiClient
     public async Task<AzdoBuild?> GetBuildAsync(string org, string project, int buildId, CancellationToken ct = default)
     {
         var url = BuildUrl(org, project, $"build/builds/{buildId}");
-        return await GetAsync<AzdoBuild>(org, project, url, ct);
+        return await GetAsync<AzdoBuild>(
+            org,
+            project,
+            url,
+            "get_build",
+            Resource(org, project, ("buildId", buildId)),
+            ct);
     }
 
     public async Task<IReadOnlyList<AzdoBuild>> ListBuildsAsync(string org, string project, AzdoBuildFilter filter, CancellationToken ct = default)
@@ -90,13 +97,25 @@ public sealed class AzdoApiClient : IAzdoApiClient
 
         var path = "build/builds?" + string.Join("&", queryParams);
         var url = BuildUrl(org, project, path);
-        return await GetListAsync<AzdoBuild>(org, project, url, ct);
+        return await GetListAsync<AzdoBuild>(
+            org,
+            project,
+            url,
+            "list_builds",
+            Resource(org, project),
+            ct);
     }
 
     public async Task<AzdoTimeline?> GetTimelineAsync(string org, string project, int buildId, CancellationToken ct = default)
     {
         var url = BuildUrl(org, project, $"build/builds/{buildId}/timeline");
-        return await GetAsync<AzdoTimeline>(org, project, url, ct);
+        return await GetAsync<AzdoTimeline>(
+            org,
+            project,
+            url,
+            "get_timeline",
+            Resource(org, project, ("buildId", buildId)),
+            ct);
     }
 
     public async Task<string?> GetBuildLogAsync(string org, string project, int buildId, int logId, int? startLine = null, int? endLine = null, CancellationToken ct = default)
@@ -111,13 +130,10 @@ public sealed class AzdoApiClient : IAzdoApiClient
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         var credential = await ApplyAuthAsync(request, ct).ConfigureAwait(false);
 
-        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        using var response = await SendAsync(request, "get_build_log", Resource(org, project, ("buildId", buildId), ("logId", logId)), ct).ConfigureAwait(false);
 
-        if (response.StatusCode == HttpStatusCode.NotFound)
-            return null;
-
-        ThrowOnAuthFailure(response, org, project, credential);
-        await ThrowOnUnexpectedError(response, ct).ConfigureAwait(false);
+        ThrowOnAuthFailure(response, org, project, credential, "get_build_log", Resource(org, project, ("buildId", buildId), ("logId", logId)));
+        await ThrowOnUnexpectedError(response, "get_build_log", Resource(org, project, ("buildId", buildId), ("logId", logId)), ct).ConfigureAwait(false);
 
         await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
         using var reader = new StreamReader(stream);
@@ -128,7 +144,13 @@ public sealed class AzdoApiClient : IAzdoApiClient
     {
         var topParam = top is > 0 ? $"?$top={top}" : "";
         var url = BuildUrl(org, project, $"build/builds/{buildId}/changes{topParam}");
-        return await GetListAsync<AzdoBuildChange>(org, project, url, ct);
+        return await GetListAsync<AzdoBuildChange>(
+            org,
+            project,
+            url,
+            "list_build_changes",
+            Resource(org, project, ("buildId", buildId)),
+            ct);
     }
 
     public async Task<IReadOnlyList<AzdoTestRun>> GetTestRunsAsync(string org, string project, int buildId, int? top = null, CancellationToken ct = default)
@@ -138,7 +160,13 @@ public sealed class AzdoApiClient : IAzdoApiClient
         {
             var topParam = top is > 0 ? $"&$top={top}" : "";
             var url = BuildUrl(org, project, $"test/runs?buildUri={buildUri}{topParam}");
-            return await GetListAsync<AzdoTestRun>(org, project, url, ct);
+            return await GetListAsync<AzdoTestRun>(
+                org,
+                project,
+                url,
+                "list_test_runs",
+                Resource(org, project, ("buildId", buildId)),
+                ct);
         }
 
         var remaining = top.Value;
@@ -149,7 +177,13 @@ public sealed class AzdoApiClient : IAzdoApiClient
             var pageSize = Math.Min(remaining, MaxTestRunsPerRequest);
             var skipParam = skip > 0 ? $"&$skip={skip}" : "";
             var url = BuildUrl(org, project, $"test/runs?buildUri={buildUri}&$top={pageSize}{skipParam}");
-            var page = await GetListAsync<AzdoTestRun>(org, project, url, ct).ConfigureAwait(false);
+            var page = await GetListAsync<AzdoTestRun>(
+                org,
+                project,
+                url,
+                "list_test_runs",
+                Resource(org, project, ("buildId", buildId)),
+                ct).ConfigureAwait(false);
             runs.AddRange(page);
 
             if (page.Count < pageSize)
@@ -179,6 +213,8 @@ public sealed class AzdoApiClient : IAzdoApiClient
                 org,
                 project,
                 url,
+                "list_test_results",
+                Resource(org, project, ("runId", runId), ("top", pageSize)),
                 ct,
                 notFoundMessage: $"Test run {runId} not found in {org}/{project} — it may have been deleted.").ConfigureAwait(false);
             results.AddRange(page);
@@ -196,20 +232,38 @@ public sealed class AzdoApiClient : IAzdoApiClient
     public async Task<IReadOnlyList<AzdoBuildArtifact>> GetBuildArtifactsAsync(string org, string project, int buildId, CancellationToken ct = default)
     {
         var url = BuildUrl(org, project, $"build/builds/{buildId}/artifacts");
-        return await GetListAsync<AzdoBuildArtifact>(org, project, url, ct);
+        return await GetListAsync<AzdoBuildArtifact>(
+            org,
+            project,
+            url,
+            "list_artifacts",
+            Resource(org, project, ("buildId", buildId)),
+            ct);
     }
 
     public async Task<IReadOnlyList<AzdoTestAttachment>> GetTestAttachmentsAsync(string org, string project, int runId, int resultId, int top = 50, CancellationToken ct = default)
     {
         var topParam = top > 0 ? $"?$top={top}" : "";
         var url = BuildUrl(org, project, $"test/runs/{runId}/results/{resultId}/attachments{topParam}");
-        return await GetListAsync<AzdoTestAttachment>(org, project, url, ct);
+        return await GetListAsync<AzdoTestAttachment>(
+            org,
+            project,
+            url,
+            "list_test_attachments",
+            Resource(org, project, ("runId", runId), ("resultId", resultId)),
+            ct);
     }
 
     public async Task<IReadOnlyList<AzdoBuildLogEntry>> GetBuildLogsListAsync(string org, string project, int buildId, CancellationToken ct = default)
     {
         var url = BuildUrl(org, project, $"build/builds/{buildId}/logs");
-        return await GetListAsync<AzdoBuildLogEntry>(org, project, url, ct);
+        return await GetListAsync<AzdoBuildLogEntry>(
+            org,
+            project,
+            url,
+            "list_build_logs",
+            Resource(org, project, ("buildId", buildId)),
+            ct);
     }
 
     private static string BuildUrl(string org, string project, string path)
@@ -235,121 +289,156 @@ public sealed class AzdoApiClient : IAzdoApiClient
         return credential;
     }
 
-    private async Task<T?> GetAsync<T>(string org, string project, string url, CancellationToken ct) where T : class
+    private async Task<T?> GetAsync<T>(
+        string org,
+        string project,
+        string url,
+        string operation,
+        IReadOnlyDictionary<string, object?> resource,
+        CancellationToken ct) where T : class
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         var credential = await ApplyAuthAsync(request, ct).ConfigureAwait(false);
 
-        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        using var response = await SendAsync(request, operation, resource, ct).ConfigureAwait(false);
 
-        if (response.StatusCode == HttpStatusCode.NotFound ||
-            response.StatusCode == HttpStatusCode.NoContent)
-            return null;
+        if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.NoContent)
+            throw CreateHttpException(response, operation, resource, messageOverride: null);
 
-        ThrowOnAuthFailure(response, org, project, credential);
-        await ThrowOnUnexpectedError(response, ct).ConfigureAwait(false);
-        ThrowOnNonJsonSuccess(response, org, project, credential);
+        ThrowOnAuthFailure(response, org, project, credential, operation, resource);
+        await ThrowOnUnexpectedError(response, operation, resource, ct).ConfigureAwait(false);
+        ThrowOnNonJsonSuccess(response, org, project, credential, operation, resource);
 
-        // Guard against empty-body 2xx (e.g. server returns 200 with Content-Length: 0).
-        // Check the header first; if absent, buffer the body to detect an empty response.
-        var contentLength = response.Content.Headers.ContentLength;
-        if (contentLength == 0)
-            return null;
+        var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(body))
+            throw InvalidResponse(operation, resource, "AzDO returned an empty JSON response.", httpStatus: response.StatusCode);
 
-        if (contentLength is null)
+        try
         {
-            // No Content-Length header — buffer to detect an empty body before deserializing.
-            var bytes = await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
-            return bytes.Length == 0 ? null : JsonSerializer.Deserialize<T>(bytes, s_jsonOptions);
+            ValidateRequiredObjectFields(body, operation, resource, response.StatusCode);
+            var value = JsonSerializer.Deserialize<T>(body, s_jsonOptions);
+            return value ?? throw InvalidResponse(operation, resource, "AzDO returned a JSON null response.", httpStatus: response.StatusCode);
         }
-
-        await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-        return await JsonSerializer.DeserializeAsync<T>(stream, s_jsonOptions, ct).ConfigureAwait(false);
+        catch (JsonException ex)
+        {
+            throw InvalidResponse(operation, resource, $"AzDO returned malformed JSON for {operation}: {SafeSnippet(body)}", ex, response.StatusCode);
+        }
     }
 
-    private async Task<IReadOnlyList<T>> GetListAsync<T>(string org, string project, string url, CancellationToken ct, string? notFoundMessage = null)
+    private async Task<IReadOnlyList<T>> GetListAsync<T>(
+        string org,
+        string project,
+        string url,
+        string operation,
+        IReadOnlyDictionary<string, object?> resource,
+        CancellationToken ct,
+        string? notFoundMessage = null)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         var credential = await ApplyAuthAsync(request, ct).ConfigureAwait(false);
 
-        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        using var response = await SendAsync(request, operation, resource, ct).ConfigureAwait(false);
 
         if (response.StatusCode == HttpStatusCode.NotFound)
-        {
-            if (notFoundMessage is not null)
-                throw new HttpRequestException(notFoundMessage, inner: null, statusCode: HttpStatusCode.NotFound);
-            return [];
-        }
+            throw CreateHttpException(response, operation, resource, notFoundMessage);
 
         if (response.StatusCode == HttpStatusCode.NoContent)
-            return [];
+            throw InvalidResponse(operation, resource, "AzDO list API returned no content (HTTP 204).", httpStatus: response.StatusCode);
 
-        ThrowOnAuthFailure(response, org, project, credential);
-        await ThrowOnUnexpectedError(response, ct).ConfigureAwait(false);
-        ThrowOnNonJsonSuccess(response, org, project, credential);
+        ThrowOnAuthFailure(response, org, project, credential, operation, resource);
+        await ThrowOnUnexpectedError(response, operation, resource, ct).ConfigureAwait(false);
+        ThrowOnNonJsonSuccess(response, org, project, credential, operation, resource);
 
-        var contentLength = response.Content.Headers.ContentLength;
-        if (contentLength == 0)
-            return [];
+        var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(body))
+            throw InvalidResponse(operation, resource, "AzDO list API returned an empty JSON response.", httpStatus: response.StatusCode);
 
-        if (contentLength is null)
+        try
         {
-            var bytes = await response.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
-            if (bytes.Length == 0)
-                return [];
-            var wrapper = JsonSerializer.Deserialize<AzdoListResponse<T>>(bytes, s_jsonOptions);
-            return wrapper?.Value ?? [];
-        }
+            using var document = JsonDocument.Parse(body);
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !TryGetPropertyCaseInsensitive(document.RootElement, "value", out var valueElement) ||
+                valueElement.ValueKind != JsonValueKind.Array)
+            {
+                throw InvalidResponse(operation, resource, "AzDO list API response is missing the required array property 'value'.", httpStatus: response.StatusCode);
+            }
 
-        await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-        var wrapperDirect = await JsonSerializer.DeserializeAsync<AzdoListResponse<T>>(stream, s_jsonOptions, ct).ConfigureAwait(false);
-        return wrapperDirect?.Value ?? [];
+            var wrapper = JsonSerializer.Deserialize<AzdoListResponse<T>>(body, s_jsonOptions);
+            return wrapper?.Value ?? throw InvalidResponse(operation, resource, "AzDO list API response deserialized to null.", httpStatus: response.StatusCode);
+        }
+        catch (JsonException ex)
+        {
+            throw InvalidResponse(operation, resource, $"AzDO returned malformed JSON for {operation}: {SafeSnippet(body)}", ex, response.StatusCode);
+        }
     }
 
-    private void ThrowOnAuthFailure(HttpResponseMessage response, string org, string project, AzdoCredential? credential)
+    private void ThrowOnAuthFailure(
+        HttpResponseMessage response,
+        string org,
+        string project,
+        AzdoCredential? credential,
+        string operation,
+        IReadOnlyDictionary<string, object?> resource)
     {
         if (response.StatusCode is not (HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden) &&
             !IsRedirect(response.StatusCode))
             return;
 
-        ThrowAuthenticationRequired(response.StatusCode, org, project, credential);
+        ThrowAuthenticationRequired(response.StatusCode, org, project, credential, operation, resource);
     }
 
-    private void ThrowOnNonJsonSuccess(HttpResponseMessage response, string org, string project, AzdoCredential? credential)
+    private void ThrowOnNonJsonSuccess(
+        HttpResponseMessage response,
+        string org,
+        string project,
+        AzdoCredential? credential,
+        string operation,
+        IReadOnlyDictionary<string, object?> resource)
     {
         if (response.StatusCode == HttpStatusCode.NonAuthoritativeInformation)
-            ThrowAuthenticationRequired(response.StatusCode, org, project, credential);
+            ThrowAuthenticationRequired(response.StatusCode, org, project, credential, operation, resource);
 
         var mediaType = response.Content.Headers.ContentType?.MediaType;
         if (mediaType is null)
             return;
 
         if (mediaType.Equals("text/html", StringComparison.OrdinalIgnoreCase))
-            ThrowAuthenticationRequired(response.StatusCode, org, project, credential);
+            ThrowAuthenticationRequired(response.StatusCode, org, project, credential, operation, resource);
 
         if (!mediaType.EndsWith("/json", StringComparison.OrdinalIgnoreCase) &&
             !mediaType.EndsWith("+json", StringComparison.OrdinalIgnoreCase))
         {
-            ThrowAuthenticationRequired(response.StatusCode, org, project, credential);
+            throw InvalidResponse(operation, resource, $"AzDO returned content type '{mediaType}' for JSON operation {operation}.", httpStatus: response.StatusCode);
         }
     }
 
-    private void ThrowAuthenticationRequired(HttpStatusCode statusCode, string org, string project, AzdoCredential? credential)
+    private void ThrowAuthenticationRequired(
+        HttpStatusCode statusCode,
+        string org,
+        string project,
+        AzdoCredential? credential,
+        string operation,
+        IReadOnlyDictionary<string, object?> resource)
     {
         if (credential is not null)
             _tokenAccessor.InvalidateCachedCredential();
 
         var currentAuth = credential?.Source ?? "anonymous (no credentials found)";
-        throw new HttpRequestException(
+        var message =
             $"Can't access {org}/{project} — authentication required ({(int)statusCode}). Authentication failed.\n\n" +
             $"Current auth: {currentAuth}\n\n" +
             "To resolve:\n" +
             "• Run 'az login' (if your Azure identity has access to this org)\n" +
             "• Set AZDO_TOKEN to a Personal Access Token with Build(read) + Test(read) scopes\n" +
             "• Set AZDO_TOKEN to an Entra access token: az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv\n" +
-            "• If AZDO_TOKEN is being misclassified, set AZDO_TOKEN_TYPE to 'pat' or 'bearer' to override detection",
-            inner: null,
-            statusCode: statusCode);
+            "• If AZDO_TOKEN is being misclassified, set AZDO_TOKEN_TYPE to 'pat' or 'bearer' to override detection";
+        throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+            AcquisitionErrorKind.AccessDenied,
+            "azdo",
+            operation,
+            resource,
+            message,
+            statusCode));
     }
 
     private static bool IsRedirect(HttpStatusCode statusCode)
@@ -358,7 +447,11 @@ public sealed class AzdoApiClient : IAzdoApiClient
         return code is >= 300 and < 400;
     }
 
-    private static async Task ThrowOnUnexpectedError(HttpResponseMessage response, CancellationToken ct)
+    private static async Task ThrowOnUnexpectedError(
+        HttpResponseMessage response,
+        string operation,
+        IReadOnlyDictionary<string, object?> resource,
+        CancellationToken ct)
     {
         if (response.IsSuccessStatusCode)
             return;
@@ -366,10 +459,189 @@ public sealed class AzdoApiClient : IAzdoApiClient
         var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         var snippet = body.Length > ErrorBodySnippetLimit ? body[..ErrorBodySnippetLimit] + "…" : body;
         snippet = RedactSensitiveContent(snippet);
-        throw new HttpRequestException(
-            $"AzDO API returned {(int)response.StatusCode}: {snippet}",
-            inner: null,
-            statusCode: response.StatusCode);
+        throw CreateHttpException(response, operation, resource, messageOverride: null, safeBodySnippet: snippet);
+    }
+
+    private async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        string operation,
+        IReadOnlyDictionary<string, object?> resource,
+        CancellationToken ct)
+    {
+        try
+        {
+            return await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TaskCanceledException ex)
+        {
+            throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                AcquisitionErrorKind.Timeout,
+                "azdo",
+                operation,
+                resource,
+                $"AzDO {operation} timed out."),
+                ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            if (ex.StatusCode.HasValue)
+            {
+                throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                    AcquisitionErrorFactory.KindFromStatus(ex.StatusCode.Value),
+                    "azdo",
+                    operation,
+                    resource,
+                    $"AzDO {operation} failed with HTTP {(int)ex.StatusCode.Value}: {ex.Message}",
+                    ex.StatusCode),
+                    ex);
+            }
+
+            throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                AcquisitionErrorKind.TransportError,
+                "azdo",
+                operation,
+                resource,
+                $"AzDO {operation} transport error: {ex.Message}"),
+                ex);
+        }
+    }
+
+    private static HlxAcquisitionException CreateHttpException(
+        HttpResponseMessage response,
+        string operation,
+        IReadOnlyDictionary<string, object?> resource,
+        string? messageOverride,
+        string? safeBodySnippet = null)
+    {
+        var kind = AcquisitionErrorFactory.KindFromStatus(response.StatusCode);
+        var message = messageOverride ?? BuildHttpMessage(kind, operation, resource, response.StatusCode, safeBodySnippet);
+        return new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+            kind,
+            "azdo",
+            operation,
+            resource,
+            message,
+            response.StatusCode,
+            ParseRetryAfter(response.Headers, DateTimeOffset.UtcNow)));
+    }
+
+    private static string BuildHttpMessage(
+        AcquisitionErrorKind kind,
+        string operation,
+        IReadOnlyDictionary<string, object?> resource,
+        HttpStatusCode statusCode,
+        string? safeBodySnippet)
+    {
+        var target = ResourceDescription(resource);
+        var message = $"AzDO {operation} {AcquisitionErrorFactory.KindLabel(kind)} for {target} (HTTP {(int)statusCode}).";
+        if (!string.IsNullOrWhiteSpace(safeBodySnippet))
+            message += $" Response: {safeBodySnippet}";
+        return message;
+    }
+
+    private static HlxAcquisitionException InvalidResponse(
+        string operation,
+        IReadOnlyDictionary<string, object?> resource,
+        string message,
+        Exception? inner = null,
+        HttpStatusCode? httpStatus = null)
+        => new(AcquisitionErrorFactory.Create(
+            AcquisitionErrorKind.InvalidResponse,
+            "azdo",
+            operation,
+            resource,
+            message,
+            httpStatus),
+            inner);
+
+    private static void ValidateRequiredObjectFields(
+        string body,
+        string operation,
+        IReadOnlyDictionary<string, object?> resource,
+        HttpStatusCode statusCode)
+    {
+        using var document = JsonDocument.Parse(body);
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+            throw InvalidResponse(operation, resource, $"AzDO {operation} response root is not a JSON object.", httpStatus: statusCode);
+
+        if (operation == "get_build" && !TryGetPropertyCaseInsensitive(document.RootElement, "id", out _))
+            throw InvalidResponse(operation, resource, "AzDO build response is missing required property 'id'.", httpStatus: statusCode);
+
+        if (operation == "get_timeline")
+        {
+            if (!TryGetPropertyCaseInsensitive(document.RootElement, "records", out var records))
+                throw InvalidResponse(operation, resource, "AzDO timeline response is missing required property 'records'.", httpStatus: statusCode);
+
+            if (records.ValueKind != JsonValueKind.Array)
+                throw InvalidResponse(operation, resource, "AzDO timeline response property 'records' is not an array.", httpStatus: statusCode);
+        }
+    }
+
+    private static bool TryGetPropertyCaseInsensitive(
+        JsonElement element,
+        string name,
+        out JsonElement value)
+    {
+        if (element.TryGetProperty(name, out value))
+            return true;
+
+        foreach (var property in element.EnumerateObject())
+        {
+            if (property.NameEquals(name) ||
+                string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
+    }
+
+    private static int? ParseRetryAfter(HttpResponseHeaders headers, DateTimeOffset now)
+    {
+        var retryAfter = headers.RetryAfter;
+        if (retryAfter is null)
+            return null;
+
+        if (retryAfter.Delta.HasValue)
+            return Math.Max(0, (int)Math.Ceiling(retryAfter.Delta.Value.TotalSeconds));
+
+        if (retryAfter.Date.HasValue)
+            return Math.Max(0, (int)Math.Ceiling((retryAfter.Date.Value - now).TotalSeconds));
+
+        return null;
+    }
+
+    private static IReadOnlyDictionary<string, object?> Resource(
+        string org,
+        string project,
+        params (string Name, object? Value)[] values)
+    {
+        var resource = new Dictionary<string, object?>
+        {
+            ["org"] = org,
+            ["project"] = project
+        };
+
+        foreach (var (name, value) in values)
+            resource[name] = value;
+
+        return resource;
+    }
+
+    private static string ResourceDescription(IReadOnlyDictionary<string, object?> resource)
+        => string.Join(", ", resource.Select(kvp => $"{kvp.Key}={kvp.Value}"));
+
+    private static string SafeSnippet(string body)
+    {
+        var snippet = body.Length > ErrorBodySnippetLimit ? body[..ErrorBodySnippetLimit] + "…" : body;
+        return RedactSensitiveContent(snippet);
     }
 
     private static string RedactSensitiveContent(string snippet)

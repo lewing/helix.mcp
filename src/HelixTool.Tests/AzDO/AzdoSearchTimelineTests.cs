@@ -1,6 +1,7 @@
 // Ensures timeline search returns expected matches by name and issue message patterns.
 
 using HelixTool.Core.AzDO;
+using HelixTool.Core.Acquisition;
 using NSubstitute;
 using Xunit;
 
@@ -216,15 +217,19 @@ public class AzdoSearchTimelineTests
     }
 
     [Fact]
-    public async Task SearchTimelineAsync_NullTimeline_ReturnsFriendlyNote()
+    public async Task SearchTimelineAsync_AcquisitionNotFound_PropagatesError()
     {
-        SetupTimeline(null);
+        _client.GetTimelineAsync("dnceng-public", "public", 42, Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromException<AzdoTimeline?>(AcquisitionAssertions.Exception(
+                AcquisitionErrorKind.NotFound,
+                "azdo",
+                "get_timeline",
+                new Dictionary<string, object?> { ["buildId"] = 42 },
+                httpStatus: 404)));
 
-        var result = await _svc.SearchTimelineAsync("42", "error");
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() => _svc.SearchTimelineAsync("42", "error"));
 
-        Assert.NotNull(result);
-        Assert.Contains("No timeline available", result.Note, StringComparison.OrdinalIgnoreCase);
-        Assert.Empty(result.Matches);
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "get_timeline", 404);
     }
 
     // ── Parent context ──────────────────────────────────────────────
