@@ -6,6 +6,7 @@ using Xunit;
 
 namespace HelixTool.Tests.AzDO;
 
+[Collection("AzdoTokenEnv")]
 public sealed class AzdoCliAcquisitionErrorTests
 {
     [Fact]

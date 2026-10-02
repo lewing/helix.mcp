@@ -16,6 +16,7 @@ using Xunit;
 
 namespace HelixTool.Tests.Collect;
 
+[Collection("AzdoTokenEnv")]
 public sealed partial class IndependentReviewRegressionTests
 {
     private const int BuildId = 1621466;
@@ -521,13 +522,15 @@ public sealed partial class IndependentReviewRegressionTests
         private readonly ServiceProvider _services;
         private readonly HttpClient _http;
 
-        public Fixture(long maxSizeBytes = 128 * 1024 * 1024, IHelixApiClient? liveHelix = null)
+        public Fixture(long maxSizeBytes = 128 * 1024 * 1024, IHelixApiClient? liveHelix = null,
+            Func<ICacheStore, ICacheStore>? collectorCacheStore = null)
         {
             Directory.CreateDirectory(_root);
             Options = new CacheOptions { CacheRoot = Path.Combine(_root, "cache"), MaxSizeBytes = maxSizeBytes };
             Handler = new AzdoHandler();
             _http = new HttpClient(Handler);
             var azdoToken = Substitute.For<IAzdoTokenAccessor>();
+            AzdoToken = azdoToken;
             azdoToken.AuthStatusAsync(Arg.Any<CancellationToken>())
                 .Returns(new AzdoAuthStatus { IsAuthenticated = false, Source = "anonymous", Path = "anonymous" });
             var helixToken = Substitute.For<IHelixTokenAccessor>();
@@ -556,7 +559,11 @@ public sealed partial class IndependentReviewRegressionTests
             services.AddSingleton(p => new AzdoService(p.GetRequiredService<IAzdoApiClient>(), p.GetRequiredService<IHelixApiClient>(),
                 new CachingAzdoAcquisitionFailureRecorder(p.GetRequiredService<ICacheStore>(), Options), Options));
             services.AddSingleton(p => new HelixService(p.GetRequiredService<IHelixApiClient>(), _http));
-            services.AddSingleton<AzdoBuildCollector>();
+            services.AddSingleton(p => new AzdoBuildCollector(
+                p.GetRequiredService<AzdoService>(), p.GetRequiredService<IAzdoApiClient>(),
+                p.GetRequiredService<HelixService>(), p.GetRequiredService<IHelixApiClient>(),
+                azdoToken, helixToken, Options,
+                collectorCacheStore?.Invoke(p.GetRequiredService<ICacheStore>()) ?? p.GetRequiredService<ICacheStore>()));
             _services = services.BuildServiceProvider();
             Policy = new CollectPolicy
             {
@@ -573,8 +580,9 @@ public sealed partial class IndependentReviewRegressionTests
         public CacheOptions Options { get; }
         public AzdoHandler Handler { get; }
         public AzdoApiClient Azdo { get; }
+        public IAzdoTokenAccessor AzdoToken { get; }
         public IHelixApiClient Helix { get; }
-        public CollectPolicy Policy { get; }
+        public CollectPolicy Policy { get; set; }
         public SqliteCacheStore Store => (SqliteCacheStore)_services.GetRequiredService<ICacheStore>();
         public IHelixApiClient CachedHelix => _services.GetRequiredService<IHelixApiClient>();
         public AzdoBuildCollector Collector => _services.GetRequiredService<AzdoBuildCollector>();
@@ -585,7 +593,8 @@ public sealed partial class IndependentReviewRegressionTests
         public async Task<CollectManifest> InvokeCliAsync(
             string? cacheDir, string? export, string testScope = "failed", long? maxTestResults = null,
             string testAttachmentScope = "diagnostic", long? maxTestAttachments = null,
-            bool allowIncomplete = false, int expectedExit = 0, bool resume = false)
+            bool allowIncomplete = false, int expectedExit = 0, bool resume = false,
+            bool useDefaultManifest = false, string helixScope = "suggested", CancellationToken ct = default)
         {
             await TestConsoleCapture.Lock.WaitAsync();
             var originalOut = Console.Out;
@@ -599,10 +608,11 @@ public sealed partial class IndependentReviewRegressionTests
                 Console.SetError(stderr);
                 Environment.ExitCode = 0;
                 await new global::CollectCommands(_services).AzdoBuild(BuildId.ToString(),
-                    cacheDir: cacheDir, manifest: Policy.ManifestPath, export: export, json: true,
+                    cacheDir: cacheDir, manifest: useDefaultManifest ? null : Policy.ManifestPath, export: export, json: true,
                     testScope: testScope, maxTestResults: maxTestResults, testAttachmentScope: testAttachmentScope,
                     maxTestAttachments: maxTestAttachments, allowIncomplete: allowIncomplete, resume: resume,
-                    retryInitialDelay: "00:00:00", retryMaxDelay: "00:00:00", maxConcurrency: 1);
+                    retryInitialDelay: "00:00:00", retryMaxDelay: "00:00:00", maxConcurrency: 1,
+                    helixScope: helixScope, ct: ct);
                 LastStdout = stdout.ToString();
                 LastStderr = stderr.ToString();
                 Assert.True(Environment.ExitCode == expectedExit,

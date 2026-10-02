@@ -11,7 +11,7 @@ using Xunit;
 
 namespace HelixTool.Tests.AzDO;
 
-[Collection("FileSearchConfig")]
+[Collection("AzdoTokenEnv")]
 public class SearchBuildLogAcrossStepsTests
 {
     private readonly IAzdoApiClient _client;

@@ -12,6 +12,7 @@ using Xunit;
 
 namespace HelixTool.Tests;
 
+[Collection("AzdoTokenEnv")]
 public sealed class AcquisitionRedactionRegressionTests
 {
     private const string Secret = "SECRET-SAS-SIGNATURE";

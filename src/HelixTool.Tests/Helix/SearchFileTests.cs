@@ -6,7 +6,7 @@ using Xunit;
 
 namespace HelixTool.Tests;
 
-[Collection("FileSearchConfig")]
+[Collection("AzdoTokenEnv")]
 public class SearchFileTests
 {
     private const string ValidJobId = "a3b4c5d6-1234-5678-9abc-def012345678";
@@ -87,32 +87,34 @@ public class SearchFileTests
     [Fact]
     public async Task SearchFile_ThrowsWhenDisabledByConfig()
     {
-        Environment.SetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH", "true");
+        var original = Environment.GetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH");
         try
         {
+            Environment.SetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH", "true");
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => _svc.SearchFileAsync(ValidJobId, WorkItem, FileName, "pattern"));
             Assert.Contains("disabled", ex.Message);
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH", null);
+            Environment.SetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH", original);
         }
     }
 
     [Fact]
     public async Task SearchConsoleLog_ThrowsWhenDisabledByConfig()
     {
-        Environment.SetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH", "true");
+        var original = Environment.GetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH");
         try
         {
+            Environment.SetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH", "true");
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => _svc.SearchConsoleLogAsync(ValidJobId, WorkItem, "pattern"));
             Assert.Contains("disabled", ex.Message);
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH", null);
+            Environment.SetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH", original);
         }
     }
 

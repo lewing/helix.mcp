@@ -5,18 +5,32 @@ using Xunit;
 
 namespace HelixTool.Tests.AzDO;
 
+[Collection("AzdoTokenEnv")]
 public sealed class AzdoCacheKeyReviewRegressionTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"hlx-cache-key-review-{Guid.NewGuid():N}");
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable, null);
         TryDelete(_root);
     }
 
     [Fact]
     public async Task AuthenticatedSnapshotWithSuffixNamedProject_ReplaysFromAuthPartition_Finding4169759118()
+    {
+        var originalPartition = Environment.GetEnvironmentVariable(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable, null);
+            await AssertAuthenticatedSnapshotReplayAsync();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable, originalPartition);
+        }
+    }
+
+    private async Task AssertAuthenticatedSnapshotReplayAsync()
     {
         const string authHash = "abcdef12";
         const string org = "dnceng-public";

@@ -24,10 +24,16 @@ public sealed class CollectCommands
     /// <summary>
     /// Collect deterministic evidence for an Azure DevOps build into the hlx cache and optionally export a replayable snapshot.
     /// The exported snapshot is consumed with <c>HLX_EVAL_SNAPSHOT=/path/to/snapshot hlx mcp</c>.
+    /// A manifest is guaranteed for any non-cancellation failure once the collector begins running:
+    /// auth resolution, the final auth-status lookup, and final evidence verification all persist a
+    /// manifest (incompleteDetails code <c>collector_hard_error</c>, exit code 1) instead of crashing.
+    /// The only exceptions are argument/policy validation and the "caching disabled" precondition,
+    /// which fail before any manifest location is known and are reported as a plain usage error
+    /// (exit 1, no manifest).
     /// </summary>
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
     /// <param name="cacheDir">Cache base directory to populate. Omit to use the normal hlx cache root, unless --export is set: then an isolated per-run temp cache directory is used so the snapshot can't leak other builds or other AzDO auth partitions' cached data.</param>
-    /// <param name="manifest">Manifest output path. Defaults to hlx-collect-manifest.json next to the cache directory being populated (not the current working directory).</param>
+    /// <param name="manifest">Manifest output path. Defaults to hlx-collect-manifest.json next to the cache directory being populated (not the current working directory). This path is always written, even on hard failure (see summary).</param>
     /// <param name="resume">Reuse successful entries from the previous manifest when cache evidence still exists.</param>
     /// <param name="export">Destination snapshot directory. Must not already exist. Without --cache-dir, collects into an isolated per-run cache directory so the snapshot only ever contains this run's evidence.</param>
     /// <param name="json">Output the manifest as JSON.</param>
@@ -194,17 +200,25 @@ public sealed class CollectCommands
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
         {
+            // Policy validation (bad --option values) and the "caching disabled" precondition are
+            // rejected by AzdoBuildCollector before any manifest location can be resolved, so they
+            // stay plain CLI usage errors with no manifest - this is a deliberate exception to the
+            // "every failure writes a manifest" rule documented on AzdoBuildCollector.CollectAzdoBuildAsync.
             Console.Error.WriteLine($"Error: {ex.Message}");
             Environment.ExitCode = 1;
             return;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // Last-resort net: AzdoBuildCollector.RunAsync already classifies and records
-            // per-attempt failures into the manifest. This catches any remaining failure that
-            // occurs before/outside a collected attempt (e.g. during auth resolution) so the CLI
-            // never crashes with an unhandled stack trace and no manifest.
-            Console.Error.WriteLine($"Error: hlx collect failed unexpectedly: {ex.Message}");
+            // Should be unreachable: AzdoBuildCollector.CollectAzdoBuildAsync wraps its entire
+            // lifecycle (auth resolution, final auth-status lookup, final verification, etc.) in a
+            // hard-error handler that always persists a manifest (incompleteDetails code
+            // "collector_hard_error") and returns normally instead of throwing. This remains only
+            // as an absolute last-resort net against a defect in that guarantee, so the CLI never
+            // crashes with an unhandled stack trace and no manifest. Deliberately never prints
+            // ex.Message: if this guarantee did fail, the escaping exception is unclassified and
+            // could carry secrets or a raw stack trace, and this text goes straight to stderr.
+            Console.Error.WriteLine("Error: hlx collect failed unexpectedly due to an unclassified internal error.");
             Environment.ExitCode = 1;
             return;
         }

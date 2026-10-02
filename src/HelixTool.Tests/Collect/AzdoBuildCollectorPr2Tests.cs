@@ -44,6 +44,7 @@ public sealed class AzdoBuildCollectorPr2ContractTests
     }
 }
 
+[Collection("AzdoTokenEnv")]
 public sealed class AzdoBuildCollectorPr2Tests : IDisposable
 {
     private const int BuildId = 1621466;
@@ -52,12 +53,22 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
     private const string WorkItem = "System.Diagnostics.Process.Tests";
     private const string SecondWorkItem = "System.Net.Http.Tests";
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"hlx-collect-pr2-{Guid.NewGuid():N}");
+    private readonly string? _originalPartition = Environment.GetEnvironmentVariable(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable);
+    private readonly string? _originalToken = Environment.GetEnvironmentVariable("AZDO_TOKEN");
+    private readonly string? _originalTokenType = Environment.GetEnvironmentVariable("AZDO_TOKEN_TYPE");
 
-    public void Dispose()
+    public AzdoBuildCollectorPr2Tests()
     {
         Environment.SetEnvironmentVariable(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable, null);
         Environment.SetEnvironmentVariable("AZDO_TOKEN", null);
         Environment.SetEnvironmentVariable("AZDO_TOKEN_TYPE", null);
+    }
+
+    public void Dispose()
+    {
+        Environment.SetEnvironmentVariable(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable, _originalPartition);
+        Environment.SetEnvironmentVariable("AZDO_TOKEN", _originalToken);
+        Environment.SetEnvironmentVariable("AZDO_TOKEN_TYPE", _originalTokenType);
         TryDelete(_root);
     }
 

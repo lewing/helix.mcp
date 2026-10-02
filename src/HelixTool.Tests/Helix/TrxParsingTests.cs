@@ -11,7 +11,7 @@ namespace HelixTool.Tests;
 /// Tests for ParseTrxResultsAsync — TRX file parsing (US-32).
 /// Written proactively against the spec; may need small adjustments once Ripley's code lands.
 /// </summary>
-[Collection("FileSearchConfig")]
+[Collection("AzdoTokenEnv")]
 public class TrxParsingTests
 {
     private const string ValidJobId = "b2c3d4e5-6789-abcd-ef01-234567890abc";
@@ -113,16 +113,17 @@ public class TrxParsingTests
     [Fact]
     public async Task ParseTrx_ThrowsWhenDisabledByConfig()
     {
-        Environment.SetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH", "true");
+        var original = Environment.GetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH");
         try
         {
+            Environment.SetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH", "true");
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => _svc.ParseTrxResultsAsync(ValidJobId, WorkItem));
             Assert.Contains("disabled", ex.Message);
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH", null);
+            Environment.SetEnvironmentVariable("HLX_DISABLE_FILE_SEARCH", original);
         }
     }
 

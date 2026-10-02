@@ -8,6 +8,7 @@ using Xunit;
 
 namespace HelixTool.Tests;
 
+[Collection("AzdoTokenEnv")]
 public sealed class CliJsonAcquisitionEnvelopeRegressionTests
 {
     private const string JobId = "d1f9a7c3-2b4e-4f8a-9c0d-e5f6a7b8c9d0";

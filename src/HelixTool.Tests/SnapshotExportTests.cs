@@ -3783,10 +3783,7 @@ public class SnapshotValidatorTests : IDisposable
     }
 }
 
-[CollectionDefinition("SnapshotProcessGlobals", DisableParallelization = true)]
-public sealed class SnapshotProcessGlobalsCollection;
-
-[Collection("SnapshotProcessGlobals")]
+[Collection("AzdoTokenEnv")]
 public class SnapshotCommandOutputTests : IDisposable
 {
     private readonly string _workspace = SnapshotTestHelper.CreateWorkspace("command-output");

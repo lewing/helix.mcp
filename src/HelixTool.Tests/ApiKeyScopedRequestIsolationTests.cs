@@ -61,12 +61,12 @@ namespace HelixTool.Tests;
 /// test key in its constructor (before the host is ever built) and restores whatever the ambient
 /// value was on disposal, so this class's outcome never depends on whether the process's real
 /// <c>HLX_API_KEY</c> happens to be set. It still joins the shared non-parallel
-/// <c>HlxApiKeyEnv</c> collection (<see cref="HlxApiKeyEnvCollection"/>) so no other class can
+/// <c>AzdoTokenEnv</c> collection so no other class can
 /// observe or race this mutation. Verified green with the suite run twice: once with
 /// <c>HLX_API_KEY</c> exported, once with it unset (see
 /// .squad/decisions/inbox/lambert-csharp-mcp-sdk-final-gates.md).</para>
 /// </summary>
-[Collection("HlxApiKeyEnv")]
+[Collection("AzdoTokenEnv")]
 public class ApiKeyScopedRequestIsolationTests : IClassFixture<ApiKeyScopedRequestIsolationTests.ApiKeySmokeTestFactory>
 {
     private const string JobId = "d1f9a7c3-2b4e-4f8a-9c0d-e5f6a7b8c9d0";
@@ -328,8 +328,14 @@ public class ApiKeyScopedRequestIsolationTests : IClassFixture<ApiKeyScopedReque
 
         protected override void Dispose(bool disposing)
         {
-            base.Dispose(disposing);
-            Environment.SetEnvironmentVariable(ApiKeyMiddleware.EnvVarName, _originalApiKey);
+            try
+            {
+                base.Dispose(disposing);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(ApiKeyMiddleware.EnvVarName, _originalApiKey);
+            }
         }
     }
 }

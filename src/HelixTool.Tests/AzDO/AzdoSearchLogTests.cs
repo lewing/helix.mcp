@@ -10,7 +10,7 @@ using Xunit;
 
 namespace HelixTool.Tests.AzDO;
 
-[Collection("FileSearchConfig")]
+[Collection("AzdoTokenEnv")]
 public class AzdoSearchLogTests
 {
     private readonly IAzdoApiClient _mockApi;

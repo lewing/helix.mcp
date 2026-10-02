@@ -11,6 +11,7 @@ using Xunit;
 
 namespace HelixTool.Tests.AzDO;
 
+[Collection("AzdoTokenEnv")]
 public sealed class AzdoPagingPr1CliTests
 {
     private const string BuildId = "42";
@@ -561,6 +562,7 @@ public sealed class AzdoPagingPr1CliTests
     }
 }
 
+[Collection("AzdoTokenEnv")]
 public sealed class AzdoPagingPr1CacheCompatibilityTests : IDisposable
 {
     private readonly string _cacheRoot = Path.Combine(Path.GetTempPath(), $"hlx-paging-cache-{Guid.NewGuid():N}");
