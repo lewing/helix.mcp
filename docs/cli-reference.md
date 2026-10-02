@@ -511,8 +511,8 @@ The command cannot run when `HLX_EVAL_SNAPSHOT` is set or when caching is disabl
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `--cache-dir <dir>` | `null` | Cache base directory to populate. Omit to use the normal hlx cache root. |
-| `--manifest <path>` | `null` | Manifest output path. When omitted, writes `hlx-collect-manifest.json` in the current directory. |
+| `--cache-dir <dir>` | `null` | Cache base directory to populate. Omit to use the normal hlx cache root, except with `--export`, which uses a fresh isolated per-run temporary cache to avoid exporting other builds or auth partitions. |
+| `--manifest <path>` | `null` | Manifest output path. When omitted, writes `hlx-collect-manifest.json` inside the effective cache directory (which includes the auth-partition subdirectory, e.g. `public/`), not CWD. |
 | `--resume` | `false` | Reuse successful entries from the previous manifest when the referenced cache evidence still exists. |
 | `--export <snapshot-dir>` | `null` | Destination snapshot directory. Must not already exist. |
 | `--json` | `false` | Print the complete manifest JSON to stdout after collection. |
@@ -528,7 +528,10 @@ The command cannot run when `HLX_EVAL_SNAPSHOT` is set or when caching is disabl
 | `--match <mode>` | `auto` | Evidence match strategy: `auto`, `source-id`, `normalized-exact`, or `exact`. |
 | `--job-results <csv>` | `failed,canceled` | Timeline job results targeted by evidence planning. Empty CSV falls back to `failed,canceled`. |
 | `--log-scope <failed\|all\|none>` | `failed` | `failed` collects logs for failed/non-succeeded timeline records, records with issues, and monitor records referenced by Helix failures; `all` collects every build log; `none` records a policy skip. |
-| `--test-scope <failed\|all\|none>` | `failed` | `failed` collects all test-run summaries, failed test results, and failed-result attachment metadata; `all` collects `Passed,Failed,NotExecuted,Inconclusive,Timeout,Aborted,Error,NotRunnable,NotApplicable`; `none` records a policy skip. |
+| `--test-scope <failed\|all\|none>` | `failed` | `failed` collects all test-run summaries and failed results; `all` collects every supported AzDO outcome, subject to the build-wide result guard; `none` records a policy skip. Attachment selection is independent. Supported outcomes include `Unspecified,None,Passed,Failed,Inconclusive,Timeout,Aborted,Blocked,NotExecuted,Warning,Error,NotApplicable,Paused,InProgress,NotImpacted`. |
+| `--max-test-results <long>` | `10000` (implicit) | All-result budget checked against the sum of run `totalTests` before result acquisition, including on resume. Above 10,000 estimated results, supply an explicit budget at least as large as the estimate. An insufficient budget records `test_result_limit`, `complete=false`, and exit 2; `--allow-incomplete` may change policy-only exit status to 0. Failed-only collection is unchanged. |
+| `--test-attachment-scope <diagnostic\|all\|none>` | `diagnostic` | Select attachment metadata independently of result scope. Diagnostic selects `Failed,Error,Timeout,Aborted,Inconclusive,Blocked,Warning`; other rows are recorded as aggregate policy exclusions. `all` requires an explicit positive `--max-test-attachments`; `none` excludes all attachment metadata. |
+| `--max-test-attachments <long>` | `1000` (implicit) | Build-wide cap on selected attachment-list requests. Eligible rows are selected deterministically by run/result ID. Remaining eligible coverage is recorded as `test_attachment_limit`, `complete=false`, and exit 2 by default. Resume/cache reads count toward selected coverage but avoid additional provider calls. |
 | `--helix-scope <suggested\|none>` | `suggested` | `suggested` follows Helix `suggestedFetches[]` from the evidence plan; `none` records a policy skip. |
 | `--download-helix-files <glob>` | `null` | Downloads matching Helix uploaded files by glob after metadata is listed. Bytes stream through `--max-file-bytes` and cumulative `--max-total-bytes` caps before cache writes; over-cap files are deleted, recorded as skipped with `size_limit` or `total_size_limit`, and never cached. In-cap files are cached and replay offline. Unmatched files are recorded as policy-excluded skips. |
 | `--max-file-bytes <long>` | `52428800` | Per-file byte cap for `--download-helix-files`; files over the cap are skipped with `size_limit`. |
@@ -538,6 +541,8 @@ The command cannot run when `HLX_EVAL_SNAPSHOT` is set or when caching is disabl
 **Default collection policy:**
 
 By default, the collector gathers build metadata, the full timeline, artifact metadata matching `--artifact-pattern`, the build logs list, the evidence plan, all Helix failure pages from that plan, full AzDO logs for failed/non-succeeded records, records with issues, and monitor records referenced by Helix failures, all test-run summaries, failed test results and their attachment metadata, and the evidence-plan Helix `suggestedFetches[]` (`helix_work_item`, full `helix_logs`, and `helix_files` metadata). The manifest also records source build fields, auth/replay metadata, cache root, policy, summary counts, and every attempt.
+
+For large builds, opt into all result rows explicitly, for example `--test-scope all --max-test-results 2000000`. This does **not** select attachment lists for every passed result: the default diagnostic attachment policy remains in effect. The collector reports run counts, estimated/acquired rows, guard decisions, attachment completion/exclusion/limit counts, and five-second elapsed heartbeats during long acquisitions to stderr. `--json` prints only the final manifest to stdout.
 
 By default, it does not download AzDO artifact ZIP/file bytes, binlogs, dumps, arbitrary Helix uploaded-file bytes, parsed TRX/xUnit derived summaries, search-result precomputations, MCP cursor/window variants, or any live fallback during offline replay. Helix uploaded-file metadata can still be collected through `helix_files`; pass `--download-helix-files <glob>` to cache and replay matching uploaded-file bytes offline.
 
@@ -553,9 +558,9 @@ Each `attempts[]` entry has `id`, optional `parentId`, `phase`, `required`, `pro
 - `failed` — A retried/transient acquisition exhausted the retry budget or an acquisition failed without a recordable provider error.
 - `skipped` — The resource was intentionally not fetched by policy or cap.
 
-`paging`, when present, contains `returned`, nullable `total`, `offset`, nullable `limit`, `complete`, `truncated`, and `next`. `skip.kind` is emitted as `policy_excluded`, `not_selected`, `size_limit`, or `total_size_limit` by the current collector. `bytes` is `null` for skips. `error` reuses the `AcquisitionError` shape from [Errors and exit codes](#errors-and-exit-codes): `kind`, `provider`, `operation`, `resource`, optional `httpStatus`, optional `retryAfterSeconds`, optional `source`, optional `replayed`, optional `recordedAt`, and `message`.
+`paging`, when present, contains `returned`, nullable `total`, `offset`, nullable `limit`, `complete`, `truncated`, and `next`. `skip.kind` is emitted as `policy_excluded`, `not_selected`, `size_limit`, `total_size_limit`, `test_result_limit`, or `test_attachment_limit`. Test-volume skips include requested counts, effective budgets, and remediation text; attachment exclusions are aggregated per run rather than adding one manifest row for every passed test. `policy.caps` records effective `maxTestResults` and `maxTestAttachments`, `policy.maxTestResultsExplicit` distinguishes consent from the default, and `policy.testAttachmentScope` records selected coverage. These additive fields preserve older manifest readability. `bytes` is `null` for skips. `error` reuses the `AcquisitionError` shape from [Errors and exit codes](#errors-and-exit-codes): `kind`, `provider`, `operation`, `resource`, optional `httpStatus`, optional `retryAfterSeconds`, optional `source`, optional `replayed`, optional `recordedAt`, and `message`.
 
-`summary` contains `attempted`, `ok`, `cached`, `recordedFailure`, `failed`, `skipped`, and `bytes`. `auth.azdo.cachePartition` is the non-secret replay partition (`public` or `cache-xxxxxxxx`); `auth.azdo.replay` is `public` or `snapshot_partition`; `auth.helix.path` is `anonymous`, `environment`, or `stored-credential`. `snapshot.manifestPath` is `manifest/hlx-collect-manifest.json` when `--export` succeeds; the standalone manifest path is the `--manifest` value or `hlx-collect-manifest.json` in the current directory.
+`summary` contains `attempted`, `ok`, `cached`, `recordedFailure`, `failed`, `skipped`, and `bytes`. `auth.azdo.cachePartition` is the non-secret replay partition (`public` or `cache-xxxxxxxx`); `auth.azdo.replay` is `public` or `snapshot_partition`; `auth.helix.path` is `anonymous`, `environment`, or `stored-credential`. `snapshot.manifestPath` is `manifest/hlx-collect-manifest.json` when `--export` succeeds; the standalone manifest path is the `--manifest` value or `hlx-collect-manifest.json` inside the effective cache directory (which includes the auth-partition subdirectory, e.g. `public/`).
 
 Before writing the final manifest/export result, the collector re-reads every `ok`/`cached` cache entry that has a `cacheKey`. Missing metadata, empty/corrupt raw AzDO log rows, and byte-count mismatches are downgraded to failed cache verification and make the manifest incomplete; missing Helix artifact evidence is reported as `artifact_missing`, while corrupt/size-mismatched evidence is reported as `fetch_failed` with `provider: "cache"`.
 
@@ -673,6 +678,26 @@ Trimmed real manifest example, generated from public build `1621192` with `--log
 
 **Resume behavior:** `--resume` reads the existing manifest at the resolved manifest path. Prior `ok`/`cached` attempts are recorded as `cached` only if the referenced cache key still exists, and final cache verification still runs before export/manifest completion. Prior provider failures are reused as `recorded_failure` only when the matching negative-cache entry still exists and its kind is not selected by the current retry policy; otherwise they are refetched/retried. Policy changes are reflected in the newly written manifest.
 
+**Resuming a run that used an implicit isolated cache:** if the original run was `--export` without `--cache-dir`, the collector populated a fresh, per-run temporary cache directory instead of the normal hlx cache root (see `--cache-dir` above), and that temporary directory is not reused automatically on a later invocation. Supplying `--manifest <path>` alone is not enough to resume it: the manifest only tells `--resume` which prior attempts to consider, while cache evidence is read from whatever `--cache-dir` resolves to on the new run (the normal hlx cache root by default — but a new invocation that again passes `--export` with no `--cache-dir` gets another fresh isolated root, not the original temporary directory or the normal root). To resume such a run, pass the original `--cache-dir`, which the prior run recorded in the manifest at `command.options.cacheDir` (and in the isolated-cache message printed to stderr: `No --cache-dir given with --export; collecting into an isolated cache directory: <path>`), together with `--resume --manifest <path-to-prior-manifest> --export <new-destination>`:
+
+```bash
+# Original run: no --cache-dir, so hlx used an isolated temp cache and reported it on stderr
+hlx collect azdo-build 1621192 --export /tmp/snap-v1
+# /tmp/hlx-collect-cache/<guid>/public/hlx-collect-manifest.json is the standalone manifest
+# written inside that isolated cache directory's effective (partition) subdirectory
+# (command.options.cacheDir records the <guid> root, not the partition subdirectory, in both copies)
+
+# Resuming: reuse that recorded cache directory; passing the original --cache-dir alone makes
+# hlx resolve the standalone manifest automatically, so --manifest can be omitted. Export to a
+# NEW destination — never reuse /tmp/snap-v1/manifest/hlx-collect-manifest.json, which would
+# overwrite snap-v1's exported manifest while leaving its database/artifacts stale.
+hlx collect azdo-build 1621192 \
+  --cache-dir /tmp/hlx-collect-cache/<guid> \
+  --resume --export /tmp/snap-v2
+```
+
+If the temporary cache directory was already deleted (for example by OS temp-directory cleanup), no cache evidence remains to resume from, and the collector refetches everything as a fresh run. Runs started with an explicit `--cache-dir` do not have this limitation: pass the same `--cache-dir` again to resume.
+
 ## Snapshot Commands
 
 ### `hlx snapshot export <destination>`
@@ -708,7 +733,15 @@ The snapshot preserves AzDO cache keys and replays them without AzDO credentials
 - `public` for anonymous/public AzDO entries.
 - `cache-xxxxxxxx` for entries collected with an authenticated AzDO identity such as `AZDO_TOKEN`, `AzureCliCredential`, or `az` CLI fallback.
 
-Collector exports also record that partition in `manifest/hlx-collect-manifest.json` as `auth.azdo.cachePartition`; authenticated collector snapshots use `auth.azdo.replay: "snapshot_partition"`. If a snapshot contains exactly one AzDO partition, hlx selects it automatically. If it contains multiple AzDO partitions, hlx fails closed until `HLX_EVAL_AZDO_PARTITION=public` or `HLX_EVAL_AZDO_PARTITION=cache-xxxxxxxx` selects one.
+Collector exports also record that partition in `manifest/hlx-collect-manifest.json` as `auth.azdo.cachePartition`; authenticated collector snapshots use `auth.azdo.replay: "snapshot_partition"`. Selection follows this precedence:
+
+1. `HLX_EVAL_AZDO_PARTITION=public` or `HLX_EVAL_AZDO_PARTITION=cache-xxxxxxxx`, if set. If the snapshot's cache contains any discovered AzDO partitions and the requested one isn't among them, selection fails.
+2. Otherwise, the partition recorded in `manifest/hlx-collect-manifest.json` (`auth.azdo.cachePartition`), if a manifest is present. This is the common case for collector-exported snapshots and needs no environment variable.
+3. Otherwise, if the snapshot's `cache.db` contains exactly one AzDO partition, hlx selects it automatically.
+4. Otherwise, if it contains more than one AzDO partition with no explicit selector or manifest to disambiguate, hlx fails closed until `HLX_EVAL_AZDO_PARTITION` selects one.
+5. Otherwise (no partitions discovered and nothing else matched), hlx defaults to `public`.
+
+`HLX_EVAL_AZDO_PARTITION` is only *required* for case 4: an ambiguous snapshot with multiple AzDO partitions and no recorded manifest selection.
 
 ### `hlx snapshot validate <snapshotPath>`
 

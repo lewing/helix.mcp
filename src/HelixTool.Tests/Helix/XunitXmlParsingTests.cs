@@ -12,7 +12,7 @@ namespace HelixTool.Tests;
 /// Covers IsTestResultFile pattern matching, xUnit XML parsing, multi-assembly files,
 /// empty assemblies, skip reasons, error messages, and XXE rejection.
 /// </summary>
-[Collection("FileSearchConfig")]
+[Collection("AzdoTokenEnv")]
 public class XunitXmlParsingTests
 {
     // Unique GUID per test class to avoid parallel temp dir collisions

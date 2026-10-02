@@ -10,6 +10,11 @@ using Xunit;
 
 namespace HelixTool.Tests.AzDO;
 
+/// <summary>
+/// Serializes all process-environment and static-selector readers/writers, including
+/// AzDO auth, eval partition selection, Helix auth, API-key middleware, and file-search policy.
+/// Mutations must restore the original value even when an assertion or host disposal fails.
+/// </summary>
 [CollectionDefinition("AzdoTokenEnv", DisableParallelization = true)]
 public class AzdoTokenEnvCollection { }
 

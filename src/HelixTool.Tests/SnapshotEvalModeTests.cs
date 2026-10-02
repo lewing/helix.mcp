@@ -648,23 +648,25 @@ public class EvalModeAzdoAuthTests : IDisposable
 {
     private readonly string? _originalToken = Environment.GetEnvironmentVariable("AZDO_TOKEN");
     private readonly string? _originalTokenType = Environment.GetEnvironmentVariable("AZDO_TOKEN_TYPE");
+    private readonly string? _originalPartition = Environment.GetEnvironmentVariable(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable);
     private readonly string _parentDir;
     private readonly string _snapshotDir;
 
     public EvalModeAzdoAuthTests()
     {
-        Environment.SetEnvironmentVariable("AZDO_TOKEN", null);
-        Environment.SetEnvironmentVariable("AZDO_TOKEN_TYPE", null);
         _parentDir = Path.Combine(Path.GetTempPath(), $"hlx-eval-auth-{Guid.NewGuid():N}");
         _snapshotDir = Path.Combine(_parentDir, "public");
         Directory.CreateDirectory(_snapshotDir);
+        Environment.SetEnvironmentVariable("AZDO_TOKEN", null);
+        Environment.SetEnvironmentVariable("AZDO_TOKEN_TYPE", null);
+        Environment.SetEnvironmentVariable(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable, null);
     }
 
     public void Dispose()
     {
         Environment.SetEnvironmentVariable("AZDO_TOKEN", _originalToken);
         Environment.SetEnvironmentVariable("AZDO_TOKEN_TYPE", _originalTokenType);
-        Environment.SetEnvironmentVariable(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable, null);
+        Environment.SetEnvironmentVariable(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable, _originalPartition);
         try { Directory.Delete(_parentDir, recursive: true); } catch { }
     }
 

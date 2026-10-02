@@ -22,57 +22,83 @@ public sealed class HelixApiClient : IHelixApiClient
         _api = new HelixApi(options);
     }
 
+    private HelixApiClient(HelixApi api)
+    {
+        _api = api;
+    }
+
+    /// <summary>
+    /// Test-only injection seam: constructs the client around caller-supplied
+    /// <see cref="HelixApiOptions"/> (e.g. a fake <c>HttpPipelineTransport</c> and
+    /// <c>Retry.MaxRetries = 0</c>) so tests can exercise the real <see cref="HelixApi"/> SDK and
+    /// this class's exception classification without reflection into a private field.
+    /// </summary>
+    internal static HelixApiClient CreateForTesting(HelixApiOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return new HelixApiClient(new HelixApi(options));
+    }
+
     /// <inheritdoc />
     public async Task<IJobDetails> GetJobDetailsAsync(string jobId, CancellationToken ct = default)
     {
-        var details = await _api.Job.DetailsAsync(jobId, ct);
+        var resource = HelixAcquisition.Resource(("jobId", jobId));
+        var details = await ClassifyAsync(() => _api.Job.DetailsAsync(jobId, ct), "get_helix_job", resource, ct);
         return new JobDetailsAdapter(details);
     }
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<IWorkItemSummary>> ListWorkItemsAsync(string jobId, CancellationToken ct = default)
     {
-        var items = await _api.WorkItem.ListAsync(jobId, ct);
+        var resource = HelixAcquisition.Resource(("jobId", jobId));
+        var items = await ClassifyAsync(() => _api.WorkItem.ListAsync(jobId, ct), "list_helix_work_items", resource, ct);
         return items.Select(wi => (IWorkItemSummary)new WorkItemSummaryAdapter(wi)).ToList();
     }
 
     /// <inheritdoc />
     public async Task<IWorkItemDetails> GetWorkItemDetailsAsync(string workItemName, string jobId, CancellationToken ct = default)
     {
-        var details = await _api.WorkItem.DetailsAsync(workItemName, jobId, ct);
+        var resource = HelixAcquisition.Resource(("jobId", jobId), ("workItem", workItemName));
+        var details = await ClassifyAsync(() => _api.WorkItem.DetailsAsync(workItemName, jobId, ct), "get_helix_work_item", resource, ct);
         return new WorkItemDetailsAdapter(details);
     }
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<IWorkItemFile>> ListWorkItemFilesAsync(string workItemName, string jobId, CancellationToken ct = default)
     {
-        var files = await _api.WorkItem.ListFilesAsync(workItemName, jobId, cancellationToken: ct);
+        var resource = HelixAcquisition.Resource(("jobId", jobId), ("workItem", workItemName));
+        var files = await ClassifyAsync(() => _api.WorkItem.ListFilesAsync(workItemName, jobId, cancellationToken: ct), "list_helix_work_item_files", resource, ct);
         return files.Select(f => (IWorkItemFile)new WorkItemFileAdapter(f)).ToList();
     }
 
     /// <inheritdoc />
     public Task<Stream> GetConsoleLogAsync(string workItemName, string jobId, CancellationToken ct = default)
-        => _api.WorkItem.ConsoleLogAsync(workItemName, jobId, ct);
+    {
+        var resource = HelixAcquisition.Resource(("jobId", jobId), ("workItem", workItemName));
+        return ClassifyAsync(() => _api.WorkItem.ConsoleLogAsync(workItemName, jobId, ct), "get_helix_console_log", resource, ct);
+    }
 
     /// <inheritdoc />
     public Task<Stream> GetFileAsync(string fileName, string workItemName, string jobId, CancellationToken ct = default)
-        => _api.WorkItem.GetFileAsync(fileName, workItemName, jobId, cancellationToken: ct);
-
-    /// <inheritdoc />
-    public async Task<IReadOnlyList<IHelixJobSummary>> ListJobsByBuildAsync(
-        string source, string buildId, int count = 100_000, CancellationToken ct = default)
     {
-        var resource = HelixAcquisition.Resource(("source", source), ("buildId", buildId), ("count", count));
+        var resource = HelixAcquisition.Resource(("jobId", jobId), ("workItem", workItemName), ("fileName", fileName));
+        return ClassifyAsync(() => _api.WorkItem.GetFileAsync(fileName, workItemName, jobId, cancellationToken: ct), "download_helix_file", resource, ct);
+    }
+
+    /// <summary>
+    /// Classifies raw SDK/HTTP exceptions from any Helix API call into <see cref="HlxAcquisitionException"/>
+    /// at the client boundary, so decorators (caching) and callers never see provider-specific exception types.
+    /// Caller cancellation (<paramref name="ct"/> signaled) still propagates as <see cref="OperationCanceledException"/>.
+    /// </summary>
+    private static async Task<T> ClassifyAsync<T>(
+        Func<Task<T>> call,
+        string operation,
+        IReadOnlyDictionary<string, object?> resource,
+        CancellationToken ct)
+    {
         try
         {
-            // count: 100_000 cap mirrors the arcade HelixService reference implementation.
-            // In practice a single AzDO build submits ~1k–5k Helix jobs; the cap is generous.
-            var jobs = await _api.Job.ListAsync(source: source, count: count, cancellationToken: ct);
-            return jobs
-                .Select(j => new JobSummaryAdapter(j))
-                .Where(j => j.HasBuildId(buildId))
-                .Select(j => (IHelixJobSummary)j)
-                .ToList();
+            return await call();
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -80,16 +106,41 @@ public sealed class HelixApiClient : IHelixApiClient
         }
         catch (TaskCanceledException ex)
         {
-            throw HelixAcquisition.Timeout(ex, "list_helix_jobs_by_build", resource);
+            throw HelixAcquisition.Timeout(ex, operation, resource);
         }
         catch (HttpRequestException ex)
         {
-            throw HelixAcquisition.FromHttp(ex, "list_helix_jobs_by_build", resource);
+            throw HelixAcquisition.FromHttp(ex, operation, resource);
         }
         catch (RestApiException ex)
         {
-            throw HelixAcquisition.FromRestApi(ex, "list_helix_jobs_by_build", resource);
+            throw HelixAcquisition.FromRestApi(ex, operation, resource);
         }
+        catch (Azure.RequestFailedException ex)
+        {
+            // The underlying Azure.Core pipeline can surface transport-level failures (e.g. a raw
+            // HttpRequestException from the handler) wrapped as RequestFailedException instead of
+            // the Helix SDK's own RestApiException. Classify those too so none of them escape as
+            // an unclassified provider exception.
+            throw HelixAcquisition.FromRequestFailed(ex, operation, resource);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<IHelixJobSummary>> ListJobsByBuildAsync(
+        string source, string buildId, int count = 100_000, CancellationToken ct = default)
+    {
+        var resource = HelixAcquisition.Resource(("source", source), ("buildId", buildId), ("count", count));
+        // count: 100_000 cap mirrors the arcade HelixService reference implementation.
+        // In practice a single AzDO build submits ~1k–5k Helix jobs; the cap is generous.
+        var jobs = await ClassifyAsync(
+            () => _api.Job.ListAsync(source: source, count: count, cancellationToken: ct),
+            "list_helix_jobs_by_build", resource, ct);
+        return jobs
+            .Select(j => new JobSummaryAdapter(j))
+            .Where(j => j.HasBuildId(buildId))
+            .Select(j => (IHelixJobSummary)j)
+            .ToList();
     }
 
     // Adapters to bridge SDK concrete types to our mockable interfaces

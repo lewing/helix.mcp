@@ -120,53 +120,7 @@ public static class EvalSnapshotAzdoPartitionSelector
     }
 
     private static string? TryParsePartition(string key)
-    {
-        var parts = key.Split(':');
-        if (parts.Length < 2)
-            return null;
-
-        if (parts[0] == "azdo")
-        {
-            if (parts.Length >= 4 && IsAzdoMetadataSuffixStart(parts[3]))
-                return "public";
-
-            if (parts.Length >= 5 &&
-                IsAuthHash(parts[1]) &&
-                IsAzdoMetadataSuffixStart(parts[4]))
-            {
-                return $"cache-{parts[1].ToLowerInvariant()}";
-            }
-
-            return null;
-        }
-
-        if (parts[0] == "azdo-build")
-        {
-            if (parts.Length == 4)
-                return "public";
-
-            if (parts.Length == 5 && IsAuthHash(parts[1]))
-                return $"cache-{parts[1].ToLowerInvariant()}";
-        }
-
-        return null;
-    }
-
-    private static bool IsAuthHash(string value)
-        => value.Length == 8 && value.All(Uri.IsHexDigit);
-
-    private static bool IsAzdoMetadataSuffixStart(string value)
-        => value is "build"
-            or "builds"
-            or "timeline"
-            or "log"
-            or "log-fresh"
-            or "changes"
-            or "testruns"
-            or "testresults"
-            or "testattachments"
-            or "artifacts"
-            or "logslist";
+        => AzdoCacheKeys.TryParse(key, out var parsed) ? parsed.Partition : null;
 
     private static string? ReadManifestPartition(string snapshotPath)
     {

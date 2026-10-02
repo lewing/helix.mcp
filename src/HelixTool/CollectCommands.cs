@@ -24,12 +24,18 @@ public sealed class CollectCommands
     /// <summary>
     /// Collect deterministic evidence for an Azure DevOps build into the hlx cache and optionally export a replayable snapshot.
     /// The exported snapshot is consumed with <c>HLX_EVAL_SNAPSHOT=/path/to/snapshot hlx mcp</c>.
+    /// A manifest is guaranteed for any non-cancellation failure once the collector begins running:
+    /// auth resolution, the final auth-status lookup, and final evidence verification all persist a
+    /// manifest (incompleteDetails code <c>collector_hard_error</c>, exit code 1) instead of crashing.
+    /// The only exceptions are argument/policy validation and the "caching disabled" precondition,
+    /// which fail before any manifest location is known and are reported as a plain usage error
+    /// (exit 1, no manifest).
     /// </summary>
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
-    /// <param name="cacheDir">Cache base directory to populate. Omit to use the normal hlx cache root.</param>
-    /// <param name="manifest">Manifest output path. Defaults to hlx-collect-manifest.json in the current directory.</param>
+    /// <param name="cacheDir">Cache base directory to populate. Omit to use the normal hlx cache root, unless --export is set: then an isolated per-run temp cache directory is used so the snapshot can't leak other builds or other AzDO auth partitions' cached data.</param>
+    /// <param name="manifest">Manifest output path. Defaults to hlx-collect-manifest.json next to the cache directory being populated (not the current working directory). This path is always written, even on hard failure (see summary).</param>
     /// <param name="resume">Reuse successful entries from the previous manifest when cache evidence still exists.</param>
-    /// <param name="export">Destination snapshot directory. Must not already exist.</param>
+    /// <param name="export">Destination snapshot directory. Must not already exist. Without --cache-dir, collects into an isolated per-run cache directory so the snapshot only ever contains this run's evidence.</param>
     /// <param name="json">Output the manifest as JSON.</param>
     /// <param name="allowIncomplete">Exit 0 only when incompleteness is limited to policy-allowed skips.</param>
     /// <param name="maxConcurrency">Maximum concurrent resource fetches. Default: 6.</param>
@@ -44,10 +50,13 @@ public sealed class CollectCommands
     /// <param name="jobResults">Comma-separated timeline job results targeted by evidence planning.</param>
     /// <param name="logScope">AzDO log scope: failed, all, or none. Default: failed.</param>
     /// <param name="testScope">AzDO test scope: failed, all, or none. Default: failed.</param>
+    /// <param name="maxTestResults">Build-wide all-outcome result budget. Default: 10000. Larger builds require an explicit budget at least as large as the estimated result count; refusal is a manifested policy skip (exit 2).</param>
+    /// <param name="testAttachmentScope">Attachment metadata selection, independent of test scope: diagnostic (default), all, or none. Diagnostic selects Failed, Error, Timeout, Aborted, Inconclusive, Blocked, and Warning. All requires an explicit --max-test-attachments.</param>
+    /// <param name="maxTestAttachments">Build-wide attachment-list request cap. Default: 1000 for diagnostic scope. Scope all requires an explicit positive cap; over-cap coverage is manifested as incomplete.</param>
     /// <param name="helixScope">Helix scope: suggested or none. Default: suggested.</param>
     /// <param name="downloadHelixFiles">Glob for Helix uploaded files to stream with byte caps; over-cap files are skipped (size_limit/total_size_limit), and in-cap files replay offline.</param>
     /// <param name="maxFileBytes">Maximum bytes per downloaded file. Default: 52428800.</param>
-    /// <param name="maxTotalBytes">Maximum total downloaded bytes. Default: 2147483648.</param>
+    /// <param name="maxTotalBytes">Maximum total optional Helix file bytes, including resumed files. Default: 2147483648. Required evidence is acquired and verified first; new downloads share the remaining cache capacity after all existing artifacts, so this run's optional writes cannot cause cache-cap eviction. The manifest records the requested limit, not cache-derived headroom.</param>
     [Command("collect azdo-build")]
     public async Task AzdoBuild(
         [Argument] string buildId,
@@ -69,6 +78,9 @@ public sealed class CollectCommands
         string jobResults = "failed,canceled",
         string logScope = "failed",
         string testScope = "failed",
+        long? maxTestResults = null,
+        string testAttachmentScope = "diagnostic",
+        long? maxTestAttachments = null,
         string helixScope = "suggested",
         string? downloadHelixFiles = null,
         long maxFileBytes = 50L * 1024 * 1024,
@@ -88,7 +100,21 @@ public sealed class CollectCommands
         }
 
         if (!string.IsNullOrWhiteSpace(cacheDir))
+        {
             cacheOptions.CacheRoot = Path.GetFullPath(cacheDir);
+        }
+        else if (!string.IsNullOrWhiteSpace(export))
+        {
+            // --export without --cache-dir would otherwise export the entire shared cache —
+            // including other builds and other AzDO auth partitions' private data — because the
+            // shared cache has no key filtering on export. Isolate to a fresh per-run cache
+            // directory instead so the snapshot can only ever contain this run's evidence.
+            var isolatedCacheDir = Path.Combine(Path.GetTempPath(), "hlx-collect-cache", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(isolatedCacheDir);
+            cacheOptions.CacheRoot = isolatedCacheDir;
+            cacheDir = isolatedCacheDir;
+            Console.Error.WriteLine($"No --cache-dir given with --export; collecting into an isolated cache directory: {isolatedCacheDir}");
+        }
 
         if (!TryParseRetryKinds(retryKinds, out var retryKindSet, out var retryError))
         {
@@ -126,6 +152,9 @@ public sealed class CollectCommands
             JobResults = jobResults,
             LogScope = logScope,
             TestScope = testScope,
+            MaxTestResults = maxTestResults,
+            TestAttachmentScope = testAttachmentScope,
+            MaxTestAttachments = maxTestAttachments,
             HelixScope = helixScope,
             DownloadHelixFiles = downloadHelixFiles,
             MaxFileBytes = maxFileBytes,
@@ -150,6 +179,9 @@ public sealed class CollectCommands
                 ["jobResults"] = jobResults,
                 ["logScope"] = logScope,
                 ["testScope"] = testScope,
+                ["maxTestResults"] = maxTestResults,
+                ["testAttachmentScope"] = testAttachmentScope,
+                ["maxTestAttachments"] = maxTestAttachments,
                 ["helixScope"] = helixScope,
                 ["downloadHelixFiles"] = downloadHelixFiles,
                 ["maxFileBytes"] = maxFileBytes,
@@ -168,7 +200,29 @@ public sealed class CollectCommands
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
         {
+            // Policy validation (bad --option values) and the "caching disabled" precondition are
+            // rejected by AzdoBuildCollector before any manifest location can be resolved, so they
+            // stay plain CLI usage errors with no manifest - this is a deliberate exception to the
+            // "every failure writes a manifest" rule documented on AzdoBuildCollector.CollectAzdoBuildAsync.
             Console.Error.WriteLine($"Error: {ex.Message}");
+            Environment.ExitCode = 1;
+            return;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            // Should be unreachable: AzdoBuildCollector.CollectAzdoBuildAsync wraps its entire
+            // lifecycle (auth resolution, final auth-status lookup, final verification, etc.) in a
+            // hard-error handler that always persists a manifest (incompleteDetails code
+            // "collector_hard_error") and returns normally instead of throwing. This remains only
+            // as an absolute last-resort net against a defect in that guarantee, so the CLI never
+            // crashes with an unhandled stack trace and no manifest. Uses the same caller-cancellation
+            // ownership predicate as the collector: excluded (left to propagate) only for genuine
+            // caller cancellation of our own ct, so a non-caller OperationCanceledException/
+            // TaskCanceledException (e.g. a provider-internal timeout) still gets this message
+            // instead of silently crashing the process. Deliberately never prints ex.Message: if
+            // this guarantee did fail, the escaping exception is unclassified and could carry
+            // secrets or a raw stack trace, and this text goes straight to stderr.
+            Console.Error.WriteLine("Error: hlx collect failed unexpectedly due to an unclassified internal error.");
             Environment.ExitCode = 1;
             return;
         }

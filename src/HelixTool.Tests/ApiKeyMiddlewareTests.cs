@@ -11,10 +11,9 @@ namespace HelixTool.Tests;
 /// <summary>
 /// Reads/mutates the ambient <c>HLX_API_KEY</c> environment variable (via the
 /// <c>UseApiKeyAuthIfConfigured_*</c> extension-method tests below), so this class shares the
-/// non-parallel <c>HlxApiKeyEnv</c> collection with every other test that observes that
-/// variable — see <see cref="HlxApiKeyEnvCollection"/>.
+/// non-parallel <c>AzdoTokenEnv</c> collection with every other environment-sensitive test.
 /// </summary>
-[Collection("HlxApiKeyEnv")]
+[Collection("AzdoTokenEnv")]
 public class ApiKeyMiddlewareTests : IDisposable
 {
     private string? _savedApiKey;

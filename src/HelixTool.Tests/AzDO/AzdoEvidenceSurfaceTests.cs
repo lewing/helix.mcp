@@ -18,14 +18,11 @@ using Xunit;
 
 namespace HelixTool.Tests.AzDO;
 
-[CollectionDefinition("AzdoEvidenceConsole", DisableParallelization = true)]
-public sealed class AzdoEvidenceConsoleCollection;
-
 /// <summary>
 /// E-group surface tests: CLI route registration, MCP tool attributes, exit codes,
 /// incomplete-plan handling, cancellation, and no-download / no-write assertions.
 /// </summary>
-[Collection("AzdoEvidenceConsole")]
+[Collection("AzdoTokenEnv")]
 public class AzdoEvidenceSurfaceTests
 {
     private readonly IAzdoApiClient _mockApi;

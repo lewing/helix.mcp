@@ -310,6 +310,12 @@ public class HelixService
         {
             throw HelixAcquisition.Timeout(ex, "get_helix_console_log", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
         }
+        catch (IOException ex)
+        {
+            // The stream copy/read (not the initial SDK call) failed mid-body — e.g. a
+            // connection reset while streaming the console log content.
+            throw HelixAcquisition.Transport(ex, "get_helix_console_log", HelixAcquisition.Resource(("jobId", id), ("workItem", workItem)));
+        }
     }
 
     /// <summary>A work item and the matching files it contains.</summary>

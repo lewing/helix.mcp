@@ -45,12 +45,12 @@ namespace HelixTool.Tests;
 /// under test. The fix: read the same ambient variable the middleware reads and attach the
 /// matching header when it is set, so the request always exercises the actual transport-mode
 /// behavior instead of failing at the auth gate. This class also joins the shared
-/// non-parallel <c>HlxApiKeyEnv</c> collection (<see cref="HlxApiKeyEnvCollection"/>) so no
+/// non-parallel <c>AzdoTokenEnv</c> collection so no
 /// other test can mutate that variable between this class's host being built and its requests
 /// being sent. Verified green with the suite run twice: once with <c>HLX_API_KEY</c> exported,
 /// once with it unset (see .squad/decisions/inbox/lambert-csharp-mcp-sdk-final-gates.md).</para>
 /// </summary>
-[Collection("HlxApiKeyEnv")]
+[Collection("AzdoTokenEnv")]
 public class HttpTransportSessionModeTests : IClassFixture<WebApplicationFactory<Program>>
 {
     private readonly WebApplicationFactory<Program> _factory;

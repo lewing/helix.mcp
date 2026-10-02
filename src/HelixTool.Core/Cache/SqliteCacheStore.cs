@@ -215,11 +215,18 @@ public sealed class SqliteCacheStore : ICacheStore
     }
 
     public Task<string?> GetMetadataAsync(string cacheKey, CancellationToken ct = default)
+        => GetMetadataAsync(cacheKey, ignoreTtl: false, ct);
+
+    /// <inheritdoc />
+    public Task<string?> GetMetadataIgnoringTtlAsync(string cacheKey, CancellationToken ct = default)
+        => GetMetadataAsync(cacheKey, ignoreTtl: true, ct);
+
+    private Task<string?> GetMetadataAsync(string cacheKey, bool ignoreTtl, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         using var conn = OpenConnection();
         using var cmd = conn.CreateCommand();
-        if (_options.EvalMode)
+        if (_options.EvalMode || ignoreTtl)
         {
             cmd.CommandText = "SELECT json_value FROM cache_metadata WHERE cache_key = @key;";
             AddTextParameter(cmd, "@key", cacheKey);

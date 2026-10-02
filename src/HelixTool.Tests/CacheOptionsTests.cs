@@ -8,6 +8,7 @@ using Xunit;
 
 namespace HelixTool.Tests;
 
+[Collection("AzdoTokenEnv")]
 public class CacheOptionsTests
 {
     // =========================================================================

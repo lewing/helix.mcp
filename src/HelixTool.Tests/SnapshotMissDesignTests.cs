@@ -15,6 +15,7 @@ using Xunit;
 
 namespace HelixTool.Tests;
 
+[Collection("AzdoTokenEnv")]
 public sealed class SnapshotMissErrorShapeTests
 {
     [Fact]

@@ -11,6 +11,16 @@ public interface ICacheStore : IDisposable
     /// <summary>Get cached JSON metadata by key, or null if missing/expired.</summary>
     Task<string?> GetMetadataAsync(string cacheKey, CancellationToken ct = default);
 
+    /// <summary>
+    /// Get cached JSON metadata by key regardless of TTL expiry — the row is still physically
+    /// present and exportable/replayable even if its TTL lapsed mid-collection. Used by
+    /// post-write verification so long-running collections don't falsely report evidence as
+    /// missing just because it outlived its TTL. Default implementation falls back to the
+    /// TTL-respecting read for any store that doesn't override it.
+    /// </summary>
+    Task<string?> GetMetadataIgnoringTtlAsync(string cacheKey, CancellationToken ct = default)
+        => GetMetadataAsync(cacheKey, ct);
+
     /// <summary>Store JSON metadata with a TTL.</summary>
     Task SetMetadataAsync(string cacheKey, string jsonValue, TimeSpan ttl, CancellationToken ct = default);
 

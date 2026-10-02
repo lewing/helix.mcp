@@ -163,3 +163,23 @@ Completed background research into public dotnet queue-monitor adoption and comp
 **Revised product direction:** Prioritize `hlx collect` / `hlx snapshot populate` as evidence-plan-driven snapshot population plus a manifest/completeness ledger. Keep MCP responses capped for agents; let the collector do uncapped/paged acquisition, persist acquisition errors, and prove what was or was not fetched.
 
 **Decision artifact:** Filed `.squad/decisions/inbox/ash-bundle-is-snapshot.md`. Revised session artifact `scanner-scenarios-gap-analysis.md` with "Message for Vitek" and snapshot-centered priorities.
+
+### Post-#153 scanner analysis revision
+
+**Update absorbed:** PR #153 merged and closes #152, but is not released yet; latest release remains v0.10.3. It added `not_in_snapshot` for uncollected snapshot keys, schema-v2 replay of deterministic recorded failures (`not_found`, `access_denied`, provider `invalid_response`) with `replayed=true` and `recordedAt`, transient-negative non-recording, live-mode non-serving of recorded negatives, completed-build-only negative recording, cache corrupt-entry `invalid_response`, SAS/query redaction, central CLI JSON error envelopes, and per-call Helix classification.
+
+**Product distinction:** `not_in_snapshot` is a collector gap or deliberate skip; `replayed=true` is a provider fact observed during live collection and preserved offline. Scanner manifests must represent both separately and should record transient attempts in the manifest rather than relying on snapshot negative entries.
+
+**Reprioritized remaining work:** No P0 error-foundation blocker remains after #153. Remaining work is P1 CLI pagination/`--all`, P1 `hlx collect` / `hlx snapshot populate` with manifest and transient-attempt records, P1 snapshot MCP launch recipe, P2 `ListJobsByBuildAsync` caching, and P2 cache-status negative counts.
+
+### hlx usage audit across local Copilot sessions
+
+**Audit input:** 372 findings from 199 local sessions (2026-06-17 through 2026-10-02), clustered against current code and releases through #156.
+
+**Key update:** #153-#156 close the error/collection foundation I previously ranked as first-order: acquisition errors, `not_in_snapshot`, recorded failures, CLI list paging for changes/test-runs/test-results/artifacts/attachments, `hlx collect azdo-build`, manifest verification, credential-free replay, Retry-After handling, and NUL raw-log corruption handling are now present on the branch.
+
+**Remaining offline-critical gaps:** build-set discovery before collection, AzDO artifact bytes/binlogs, AzDO test attachment/dump bytes, timeline/log/search cursors and selectors, cross-build history, and Helix bulk/file collection beyond selected globs. These are worse in snapshot mode because direct AzDO/Helix/GitHub fallback is impossible; uncollected evidence becomes `not_in_snapshot`.
+
+**No verified current-code regressions:** late findings for failed AzDO counts/auth redirects/empty result caching are the sessions that produced v0.10.3/#150, not fresh failures after the fix. No post-#153/#156 regression was verified against current code.
+
+**Decision artifact:** Filed `.squad/decisions/inbox/ash-hlx-usage-audit.md`. Full report written to session artifact `/Users/lewing/.copilot/session-state/1b1a6aa5-b654-4dc2-9570-aff958b3d0d2/files/hlx-audit/hlx-usage-audit.md`.

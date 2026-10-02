@@ -22,6 +22,7 @@ public sealed class AzdoApiClient : IAzdoApiClient
     public const int MaxContinuationPages = 1000;
     private const int MaxTestResultsPerRequest = 10_000;
     private const int MaxTestRunsPerRequest = 10_000;
+    private const int MaxTestAttachmentsPerRequest = 10_000;
     private static readonly JsonSerializerOptions s_jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -133,17 +134,56 @@ public sealed class AzdoApiClient : IAzdoApiClient
         if (queryParts.Count > 0)
             path += "?" + string.Join("&", queryParts);
         var url = BuildUrl(org, project, path);
+        var operation = "get_build_log";
+        var resource = Resource(org, project, ("buildId", buildId), ("logId", logId));
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         var credential = await ApplyAuthAsync(request, ct).ConfigureAwait(false);
 
-        using var response = await SendAsync(request, "get_build_log", Resource(org, project, ("buildId", buildId), ("logId", logId)), ct).ConfigureAwait(false);
+        using var response = await SendAsync(request, operation, resource, ct).ConfigureAwait(false);
 
-        ThrowOnAuthFailure(response, org, project, credential, "get_build_log", Resource(org, project, ("buildId", buildId), ("logId", logId)));
-        await ThrowOnUnexpectedError(response, "get_build_log", Resource(org, project, ("buildId", buildId), ("logId", logId)), ct).ConfigureAwait(false);
+        ThrowOnAuthFailure(response, org, project, credential, operation, resource);
+        await ThrowOnUnexpectedError(response, operation, resource, ct).ConfigureAwait(false);
 
-        await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-        using var reader = new StreamReader(stream);
-        return await reader.ReadToEndAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            using var reader = new StreamReader(stream);
+            return await reader.ReadToEndAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TaskCanceledException ex)
+        {
+            throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                AcquisitionErrorKind.Timeout,
+                "azdo",
+                operation,
+                resource,
+                $"AzDO {operation} timed out while reading the log body: {ex.Message}"),
+                ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                AcquisitionErrorKind.TransportError,
+                "azdo",
+                operation,
+                resource,
+                $"AzDO {operation} failed while reading the log body: {ex.Message}"),
+                ex);
+        }
+        catch (IOException ex)
+        {
+            throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                AcquisitionErrorKind.TransportError,
+                "azdo",
+                operation,
+                resource,
+                $"AzDO {operation} failed while reading the log body: {ex.Message}"),
+                ex);
+        }
     }
 
     public async Task<IReadOnlyList<AzdoBuildChange>> GetBuildChangesAsync(string org, string project, int buildId, int? top = null, CancellationToken ct = default)
@@ -156,16 +196,17 @@ public sealed class AzdoApiClient : IAzdoApiClient
             url,
             "list_build_changes",
             Resource(org, project, ("buildId", buildId)),
-            ct);
+            ct,
+            requestedLimit: top is > 0 ? top : null);
     }
 
     public async Task<IReadOnlyList<AzdoTestRun>> GetTestRunsAsync(string org, string project, int buildId, int? top = null, CancellationToken ct = default)
     {
         var buildUri = Uri.EscapeDataString($"vstfs:///Build/Build/{buildId}");
-        if (top is not > MaxTestRunsPerRequest)
+        var requestedTop = top is > 0 ? top.Value : (int?)null;
+        if (requestedTop is null)
         {
-            var topParam = top is > 0 ? $"&$top={top}" : "";
-            var url = BuildUrl(org, project, $"test/runs?buildUri={buildUri}{topParam}");
+            var url = BuildUrl(org, project, $"test/runs?buildUri={buildUri}");
             return await GetListAsync<AzdoTestRun>(
                 org,
                 project,
@@ -175,9 +216,9 @@ public sealed class AzdoApiClient : IAzdoApiClient
                 ct);
         }
 
-        var remaining = top.Value;
+        var remaining = requestedTop.Value;
         var skip = 0;
-        var runs = new List<AzdoTestRun>(Math.Min(top.Value, MaxTestRunsPerRequest));
+        var runs = new List<AzdoTestRun>(Math.Min(requestedTop.Value, MaxTestRunsPerRequest));
         while (remaining > 0)
         {
             var pageSize = Math.Min(remaining, MaxTestRunsPerRequest);
@@ -189,14 +230,15 @@ public sealed class AzdoApiClient : IAzdoApiClient
                 url,
                 "list_test_runs",
                 Resource(org, project, ("buildId", buildId)),
-                ct).ConfigureAwait(false);
+                ct,
+                requestedLimit: remaining).ConfigureAwait(false);
             runs.AddRange(page);
 
-            if (page.Count < pageSize)
+            if (page.Count < pageSize || page.Count >= remaining)
                 break;
 
-            remaining -= pageSize;
-            skip += pageSize;
+            remaining -= page.Count;
+            skip += page.Count;
         }
 
         return runs;
@@ -220,16 +262,17 @@ public sealed class AzdoApiClient : IAzdoApiClient
                 project,
                 url,
                 "list_test_results",
-                Resource(org, project, ("runId", runId), ("top", pageSize)),
+                Resource(org, project, ("runId", runId), ("top", requestedTop)),
                 ct,
-                notFoundMessage: $"Test run {runId} not found in {org}/{project} — it may have been deleted.").ConfigureAwait(false);
+                notFoundMessage: $"Test run {runId} not found in {org}/{project} — it may have been deleted.",
+                requestedLimit: remaining).ConfigureAwait(false);
             results.AddRange(page);
 
-            if (page.Count < pageSize)
+            if (page.Count < pageSize || page.Count >= remaining)
                 break;
 
-            remaining -= pageSize;
-            skip += pageSize;
+            remaining -= page.Count;
+            skip += page.Count;
         }
 
         return results;
@@ -249,15 +292,33 @@ public sealed class AzdoApiClient : IAzdoApiClient
 
     public async Task<IReadOnlyList<AzdoTestAttachment>> GetTestAttachmentsAsync(string org, string project, int runId, int resultId, int top = 50, CancellationToken ct = default)
     {
-        var topParam = top > 0 ? $"?$top={top}" : "";
-        var url = BuildUrl(org, project, $"test/runs/{runId}/results/{resultId}/attachments{topParam}");
-        return await GetListAsync<AzdoTestAttachment>(
-            org,
-            project,
-            url,
-            "list_test_attachments",
-            Resource(org, project, ("runId", runId), ("resultId", resultId)),
-            ct);
+        var requestedTop = top > 0 ? top : 50;
+        var remaining = requestedTop;
+        var skip = 0;
+        var attachments = new List<AzdoTestAttachment>(Math.Min(requestedTop, MaxTestAttachmentsPerRequest));
+        while (remaining > 0)
+        {
+            var pageSize = Math.Min(remaining, MaxTestAttachmentsPerRequest);
+            var skipParam = skip > 0 ? $"&$skip={skip}" : "";
+            var url = BuildUrl(org, project, $"test/runs/{runId}/results/{resultId}/attachments?$top={pageSize}{skipParam}");
+            var page = await GetListAsync<AzdoTestAttachment>(
+                org,
+                project,
+                url,
+                "list_test_attachments",
+                Resource(org, project, ("runId", runId), ("resultId", resultId)),
+                ct,
+                requestedLimit: remaining).ConfigureAwait(false);
+            attachments.AddRange(page);
+
+            if (page.Count < pageSize || page.Count >= remaining)
+                break;
+
+            remaining -= page.Count;
+            skip += page.Count;
+        }
+
+        return attachments;
     }
 
     public async Task<IReadOnlyList<AzdoBuildLogEntry>> GetBuildLogsListAsync(string org, string project, int buildId, CancellationToken ct = default)
@@ -315,7 +376,7 @@ public sealed class AzdoApiClient : IAzdoApiClient
         await ThrowOnUnexpectedError(response, operation, resource, ct).ConfigureAwait(false);
         ThrowOnNonJsonSuccess(response, org, project, credential, operation, resource);
 
-        var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        var body = await ReadResponseBodyAsync(response, operation, resource, ct).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(body))
             throw InvalidResponse(operation, resource, "AzDO returned an empty JSON response.", httpStatus: response.StatusCode);
 
@@ -338,7 +399,8 @@ public sealed class AzdoApiClient : IAzdoApiClient
         string operation,
         IReadOnlyDictionary<string, object?> resource,
         CancellationToken ct,
-        string? notFoundMessage = null)
+        string? notFoundMessage = null,
+        int? requestedLimit = null)
     {
         var results = new List<T>();
         string? continuationToken = null;
@@ -346,6 +408,8 @@ public sealed class AzdoApiClient : IAzdoApiClient
         var seenContinuationTokens = new HashSet<string>(StringComparer.Ordinal);
         var seenUrls = new HashSet<string>(StringComparer.Ordinal);
         var pageCount = 0;
+        var pageTop = ReadPositiveIntQueryParameter(url, "$top");
+        var overallLimit = requestedLimit is > 0 ? requestedLimit : pageTop;
 
         do
         {
@@ -381,7 +445,7 @@ public sealed class AzdoApiClient : IAzdoApiClient
             await ThrowOnUnexpectedError(response, operation, resource, ct).ConfigureAwait(false);
             ThrowOnNonJsonSuccess(response, org, project, credential, operation, resource);
 
-            var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var body = await ReadResponseBodyAsync(response, operation, resource, ct).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(body))
                 throw InvalidResponse(operation, resource, "AzDO list API returned an empty JSON response.", httpStatus: response.StatusCode);
 
@@ -396,12 +460,25 @@ public sealed class AzdoApiClient : IAzdoApiClient
                 }
 
                 var wrapper = JsonSerializer.Deserialize<AzdoListResponse<T>>(body, s_jsonOptions);
-                results.AddRange(wrapper?.Value ?? throw InvalidResponse(operation, resource, "AzDO list API response deserialized to null.", httpStatus: response.StatusCode));
+                var pageValues = wrapper?.Value ?? throw InvalidResponse(operation, resource, "AzDO list API response deserialized to null.", httpStatus: response.StatusCode);
+                if (overallLimit is { } limit)
+                {
+                    var remaining = Math.Max(0, limit - results.Count);
+                    if (remaining > 0)
+                        results.AddRange(pageValues.Take(remaining));
+                }
+                else
+                {
+                    results.AddRange(pageValues);
+                }
             }
             catch (JsonException ex)
             {
                 throw InvalidResponse(operation, resource, $"AzDO returned malformed JSON for {operation}: {SafeSnippet(body)}", ex, response.StatusCode);
             }
+
+            if (overallLimit is { } maxRows && results.Count >= maxRows)
+                break;
 
             continuationToken = ReadContinuationToken(response);
             if (!string.IsNullOrWhiteSpace(continuationToken))
@@ -415,6 +492,11 @@ public sealed class AzdoApiClient : IAzdoApiClient
                 }
 
                 nextUrl = WithQueryParameter(url, "continuationToken", continuationToken);
+                if (overallLimit is { } limit && pageTop is { } requestedPageSize)
+                {
+                    var remaining = Math.Max(0, limit - results.Count);
+                    nextUrl = WithQueryParameter(nextUrl, "$top", Math.Min(requestedPageSize, remaining).ToString(System.Globalization.CultureInfo.InvariantCulture));
+                }
             }
         }
         while (!string.IsNullOrWhiteSpace(continuationToken));
@@ -448,11 +530,43 @@ public sealed class AzdoApiClient : IAzdoApiClient
         var uri = new Uri(url, UriKind.Absolute);
         var query = uri.Query.Length > 1 ? uri.Query[1..] : string.Empty;
         var parameters = query.Split('&', StringSplitOptions.RemoveEmptyEntries)
-            .Where(part => !part.StartsWith($"{name}=", StringComparison.OrdinalIgnoreCase))
+            .Where(part => !QueryParameterNameEquals(part, name))
             .ToList();
         parameters.Add($"{Uri.EscapeDataString(name)}={Uri.EscapeDataString(value)}");
         var builder = new UriBuilder(uri) { Query = string.Join("&", parameters) };
         return builder.Uri.AbsoluteUri;
+    }
+
+    private static int? ReadPositiveIntQueryParameter(string url, string name)
+    {
+        var uri = new Uri(url, UriKind.Absolute);
+        var query = uri.Query.Length > 1 ? uri.Query[1..] : string.Empty;
+        foreach (var part in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = part.IndexOf('=');
+            if (separator <= 0)
+                continue;
+
+            var parameterName = Uri.UnescapeDataString(part[..separator]);
+            if (!parameterName.Equals(name, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var value = Uri.UnescapeDataString(part[(separator + 1)..]);
+            if (int.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var parsed) &&
+                parsed > 0)
+            {
+                return parsed;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool QueryParameterNameEquals(string queryPart, string name)
+    {
+        var separator = queryPart.IndexOf('=');
+        var parameterName = separator < 0 ? queryPart : queryPart[..separator];
+        return Uri.UnescapeDataString(parameterName).Equals(name, StringComparison.OrdinalIgnoreCase);
     }
 
     private void ThrowOnAuthFailure(
@@ -539,7 +653,7 @@ public sealed class AzdoApiClient : IAzdoApiClient
         if (response.IsSuccessStatusCode)
             return;
 
-        var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        var body = await ReadResponseBodyAsync(response, operation, resource, ct).ConfigureAwait(false);
         var snippet = body.Length > ErrorBodySnippetLimit ? body[..ErrorBodySnippetLimit] + "…" : body;
         snippet = RedactSensitiveContent(snippet);
         throw CreateHttpException(response, operation, resource, messageOverride: null, safeBodySnippet: snippet);
@@ -640,6 +754,60 @@ public sealed class AzdoApiClient : IAzdoApiClient
             message,
             httpStatus),
             inner);
+
+    /// <summary>
+    /// Reads a response body, classifying transport failures (connection reset, premature EOF,
+    /// etc.) that occur while streaming the body — after <see cref="SendAsync"/>'s own try/catch
+    /// has already returned the response headers — into <see cref="HlxAcquisitionException"/>.
+    /// Caller cancellation still propagates as <see cref="OperationCanceledException"/>.
+    /// </summary>
+    private static async Task<string> ReadResponseBodyAsync(
+        HttpResponseMessage response,
+        string operation,
+        IReadOnlyDictionary<string, object?> resource,
+        CancellationToken ct)
+    {
+        try
+        {
+            return await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TaskCanceledException ex)
+        {
+            // A body-read timeout (e.g. HttpClient.Timeout elapsing mid-stream) surfaces as
+            // TaskCanceledException even though the caller never requested cancellation.
+            throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                AcquisitionErrorKind.Timeout,
+                "azdo",
+                operation,
+                resource,
+                $"AzDO {operation} timed out while reading the response body: {ex.Message}"),
+                ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                AcquisitionErrorKind.TransportError,
+                "azdo",
+                operation,
+                resource,
+                $"AzDO {operation} failed while reading the response body: {ex.Message}"),
+                ex);
+        }
+        catch (IOException ex)
+        {
+            throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                AcquisitionErrorKind.TransportError,
+                "azdo",
+                operation,
+                resource,
+                $"AzDO {operation} failed while reading the response body: {ex.Message}"),
+                ex);
+        }
+    }
 
     private static void ValidateRequiredObjectFields(
         string body,

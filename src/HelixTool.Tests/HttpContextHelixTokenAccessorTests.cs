@@ -11,6 +11,7 @@ using Xunit;
 
 namespace HelixTool.Tests;
 
+[Collection("AzdoTokenEnv")]
 public class HttpContextHelixTokenAccessorTests : IDisposable
 {
     private readonly IHttpContextAccessor _httpContextAccessor;
