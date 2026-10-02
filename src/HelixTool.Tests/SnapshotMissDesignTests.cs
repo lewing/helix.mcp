@@ -263,15 +263,13 @@ public sealed class SnapshotMissCacheStoreTests : IDisposable
                 TimeSpan.Zero);
         }
 
-        using (var liveStore = new SqliteCacheStore(writerOptions))
-        {
-            Assert.Null(await SnapshotMissTestSupport.GetAcquisitionErrorAsync(liveStore, key));
-        }
-
         using var evalStore = new SqliteCacheStore(new CacheOptions { CacheRoot = writerOptions.GetEffectiveCacheRoot(), EvalMode = true });
         var replayed = await SnapshotMissTestSupport.GetAcquisitionErrorAsync(evalStore, key);
         Assert.NotNull(replayed);
         Assert.Equal(AcquisitionErrorKind.NotFound, replayed!.Kind);
+
+        using var liveStore = new SqliteCacheStore(writerOptions);
+        Assert.Null(await SnapshotMissTestSupport.GetAcquisitionErrorAsync(liveStore, key));
     }
 
     [Fact]
