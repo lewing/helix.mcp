@@ -500,14 +500,14 @@ public class CachingAzdoApiClientTests
 
         await _sut.GetTestResultsAsync("org", "proj", 77);
 
-        await _cache.Received(1).SetMetadataAsync(
+        await _cache.Received(2).SetMetadataAsync(
             Arg.Any<string>(), Arg.Any<string>(),
             TimeSpan.FromHours(1), // test TTL
             Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task GetTestResultsAsync_EmptyResults_AreNotCached()
+    public async Task GetTestResultsAsync_EmptyResults_CachesWindowButNotLegacyCappedKey()
     {
         _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns((string?)null);
@@ -517,16 +517,28 @@ public class CachingAzdoApiClientTests
 
         await _sut.GetTestResultsAsync("org", "proj", 77);
 
+        await _cache.Received(1).SetMetadataAsync(
+            "azdo:org:proj:testresults:v3:77:Failed:window:0:200",
+            "[]",
+            Arg.Any<TimeSpan>(),
+            Arg.Any<CancellationToken>());
         await _cache.DidNotReceive().SetMetadataAsync(
-            Arg.Any<string>(), Arg.Any<string>(),
+            "azdo:org:proj:testresults:v2:77:200:Failed",
+            Arg.Any<string>(),
             Arg.Any<TimeSpan>(),
             Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task GetTestResultsAsync_EmptyCachedResults_AreTreatedAsCacheMiss()
+    public async Task GetTestResultsAsync_LegacyEmptyCachedResults_AreTreatedAsCacheMiss()
     {
-        _cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+        _cache.GetMetadataAsync(
+                Arg.Is<string>(k => k == "azdo:org:proj:testresults:v3:77:Failed:window:0:200"),
+                Arg.Any<CancellationToken>())
+            .Returns((string?)null);
+        _cache.GetMetadataAsync(
+                Arg.Is<string>(k => k == "azdo:org:proj:testresults:v2:77:200:Failed"),
+                Arg.Any<CancellationToken>())
             .Returns(JsonSerializer.Serialize(new List<AzdoTestResult>()));
 
         var freshResults = new List<AzdoTestResult> { new() { Id = 1, Outcome = "Failed" } };
@@ -571,7 +583,7 @@ public class CachingAzdoApiClientTests
             Arg.Is<string>(k => k == "azdo:org:proj:testruns:1:"),
             Arg.Any<CancellationToken>());
         await _cache.Received(1).SetMetadataAsync(
-            Arg.Is<string>(k => k == "azdo:org:proj:testruns:v2:1:"),
+            Arg.Is<string>(k => k == "azdo:org:proj:testruns:v3:1:all"),
             Arg.Any<string>(),
             Arg.Any<TimeSpan>(),
             Arg.Any<CancellationToken>());

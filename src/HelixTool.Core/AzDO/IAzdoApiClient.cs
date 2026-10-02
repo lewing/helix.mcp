@@ -19,3 +19,13 @@ public interface IAzdoApiClient
     /// <summary>List all build logs with metadata (line counts) without downloading content.</summary>
     Task<IReadOnlyList<AzdoBuildLogEntry>> GetBuildLogsListAsync(string org, string project, int buildId, CancellationToken ct = default);
 }
+
+internal interface IAzdoCachedBuildLogReader
+{
+    Task<string?> TryGetCachedFullBuildLogAsync(
+        string org,
+        string project,
+        int buildId,
+        int logId,
+        CancellationToken ct = default);
+}

@@ -297,7 +297,11 @@ public class AzdoArtifactTests
         Assert.Equal("trace.log", result[0].FileName);
         await inner.Received(1).GetTestAttachmentsAsync("org", "proj", 5, 10, Arg.Any<int>(), Arg.Any<CancellationToken>());
         await cache.Received(1).SetMetadataAsync(
-            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
+            "azdo:org:proj:testattachments:v2:5:10:window:0:50",
+            Arg.Any<string>(), Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
+        await cache.Received(1).SetMetadataAsync(
+            "azdo:org:proj:testattachments:5:10:50",
+            Arg.Any<string>(), Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -339,7 +343,7 @@ public class AzdoArtifactTests
         await sut.GetTestAttachmentsAsync("org", "proj", 5, 10);
 
         // Test attachments use 1h TTL (stable after test run)
-        await cache.Received(1).SetMetadataAsync(
+        await cache.Received(2).SetMetadataAsync(
             Arg.Any<string>(), Arg.Any<string>(),
             TimeSpan.FromHours(1),
             Arg.Any<CancellationToken>());

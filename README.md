@@ -27,6 +27,7 @@ Every tool is designed to minimize token consumption in agent context windows:
 | Technique | How it helps |
 |-----------|-------------|
 | **Tail limits** | `helix_logs` and `azdo_log` return the last N lines (default 500), not the full log |
+| **Complete collection on demand** | CLI list commands such as `azdo test-runs --all` and `azdo test-results --all` populate complete-list cache keys for deterministic scanner snapshots while MCP defaults stay capped |
 | **Pattern search** | `helix_search` and `azdo_search_log` search outside agent context and return matching lines with configurable context — no full ingestion |
 | **Failure-first defaults** | `helix_status`, `azdo_timeline`, `azdo_test_results` default to showing only failures |
 | **Structured JSON** | Failure summaries, test results, and timeline data come pre-parsed — no agent-side text extraction |
@@ -96,7 +97,7 @@ hlx snapshot validate /tmp/my-snapshot       # Verify integrity
 HLX_EVAL_SNAPSHOT=/tmp/my-snapshot hlx status <jobId>  # Use snapshot
 ```
 
-Snapshots preserve all cached data and artifact files. When `HLX_EVAL_SNAPSHOT` is set, `hlx` runs entirely offline against the snapshot's SQLite database. See the [CLI reference](docs/cli-reference.md#snapshot-commands) for auth-scoped replay limitations and the complete workflow.
+Snapshots preserve all cached data and artifact files. When `HLX_EVAL_SNAPSHOT` is set, `hlx` runs entirely offline against the snapshot's SQLite database. For scanner bundles, populate live data with AzDO list commands using `--all` and build logs using `azdo log --full` before export; capped MCP calls can replay from those complete keys offline. See the [CLI reference](docs/cli-reference.md#snapshot-commands) for auth-scoped replay limitations and the complete workflow.
 
 Schema v2 snapshots also preserve deterministic acquisition failures (`not_found`, `access_denied`, `invalid_response`) recorded during live collection. Offline replay returns the original provider failure with `source: "snapshot"`, `replayed: true`, and `recordedAt`; keys never collected into the snapshot return `kind: "not_in_snapshot"`, `provider: "cache"`.
 
@@ -142,7 +143,7 @@ Schema v2 snapshots also preserve deterministic acquisition failures (`not_found
 
 CLI JSON hard failures use `{ "ok": false, "error": { ... } }`; MCP tool failures set `isError: true` and put the same object under `structuredContent.error`. `error.kind` is one of `not_found`, `access_denied`, `rate_limited`, `timeout`, `transport_error`, `invalid_response`, or `not_in_snapshot`; `provider` is `azdo`, `helix`, or `cache`; fields are `kind`, `provider`, `operation`, `resource`, optional `httpStatus`, optional `retryAfterSeconds`, optional snapshot replay fields (`source`, `replayed`, `recordedAt`), and `message`. Resource URL values redact query strings and fragments.
 
-Exit codes are `0` for success (including genuinely empty successes), `1` for hard command/acquisition errors, and `2` for incomplete evidence plans that still wrote bounded output. Callers own retry/skip policy. When a direct build-log body is empty, hlx validates the logId against the build's logs list and timeline record.log.id; if absent from both, it fails with kind=not_found. Empty full logs are not cached as successes. See the [CLI reference](docs/cli-reference.md#errors-and-exit-codes) for examples.
+Exit codes are `0` for success (including genuinely empty successes), `1` for hard command/acquisition errors, and `2` when bounded output was written but is incomplete/truncated (for example an AzDO list JSON envelope with `truncated=true`, unless `--allow-truncated` is supplied, or an incomplete evidence plan). Callers own retry/skip policy. When a direct build-log body is empty, hlx validates the logId against the build's logs list and timeline record.log.id; if absent from both, it fails with kind=not_found. Empty full logs are not cached as successes. See the [CLI reference](docs/cli-reference.md#errors-and-exit-codes) for examples.
 
 ## MCP Resources
 

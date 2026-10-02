@@ -8,6 +8,13 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+### CLI complete-list paging for AzDO scanners (BREAKING)
+
+- **BREAKING — JSON list shape:** `hlx azdo changes`, `azdo test-runs`, `azdo test-results`, `azdo artifacts`, and `azdo test-attachments` now emit a JSON envelope with `{ ok, results, returned, total, offset, limit, complete, truncated, next, cache, note }` instead of a bare JSON array. Migration: read rows from `.results[]`; the old array length is now `.returned`, and the complete selected-list count is `.total`.
+- **BREAKING — truncated pages fail closed:** bounded list output exits `2` when `truncated == true` unless `--allow-truncated` is supplied. Migration: fetch `next`, rerun with `--all`, or add `--allow-truncated` if the caller intentionally accepts a partial page and needs legacy success semantics.
+- **New paging flags:** the same AzDO list commands now accept `--all`, `--offset`, `--limit`, and `--allow-truncated`; existing `--top` remains a compatibility alias for `--limit`.
+- **Complete collection cache keys:** `--all` populates complete-list cache keys so eval-mode capped MCP/list calls can replay offline from scanner snapshots without changing MCP defaults. `azdo log --full` fetches/cache-populates complete build logs for the same workflow.
+
 ### Machine-readable acquisition errors and fail-closed evidence paging (#152)
 
 - **Structured acquisition errors:** CLI JSON hard failures now emit `{ "ok": false, "error": { ... } }` from a central CLI filter, and MCP tool failures return `isError: true` with the same `structuredContent.error` object. The stable `kind` values are `not_found`, `access_denied`, `rate_limited`, `timeout`, `transport_error`, `invalid_response`, and `not_in_snapshot`; providers are `azdo`, `helix`, and `cache`.

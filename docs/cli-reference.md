@@ -152,50 +152,159 @@ hlx azdo timeline 12345678
 hlx azdo timeline 12345678 --filter all
 ```
 
-### `hlx azdo log <buildId> <logId> [--tail-lines N]`
+### `hlx azdo log <buildId> <logId> [--tail-lines N] [--full]`
 
-Get log content for a build log entry. Use log IDs from `timeline` output. Default tail: 500 lines.
+Get log content for a build log entry. Use log IDs from `timeline` output. Default tail: 500 lines; `--full` fetches the complete log.
 
 ```bash
 hlx azdo log 12345678 42
 hlx azdo log 12345678 42 --tail-lines 100
+hlx azdo log 12345678 42 --full
 ```
 
-### `hlx azdo changes <buildId> [--top N]`
+### Paging and complete collection
 
-List commits/changes associated with a build.
+The AzDO list commands `changes`, `test-runs`, `test-results`, `artifacts`, and `test-attachments` support deterministic paging for scanners and offline snapshot population.
+
+**Flags:**
+
+- `--limit N` — Maximum rows to return for this page. Defaults are command-specific: `changes` 20, `test-runs` 50, `test-results` 200, `artifacts` 100, and `test-attachments` 100.
+- `--top N` — Compatibility alias for `--limit` on commands that previously accepted `--top`; specify only one of `--limit` or `--top`.
+- `--offset N` — Zero-based offset into the complete selected list. Default: `0`.
+- `--all` — Return the complete selected list and write/read the complete-list cache key. Mutually exclusive with `--offset`, `--limit`, and `--top`.
+- `--allow-truncated` — Keep exit code `0` when a bounded page is truncated. Without it, truncated output exits `2` after writing the usable JSON/human output.
+
+**JSON envelope:**
+
+With `--json`, these commands emit:
+
+```json
+{
+  "ok": true,
+  "results": [],
+  "returned": 0,
+  "total": 0,
+  "offset": 0,
+  "limit": 100,
+  "complete": true,
+  "truncated": false,
+  "next": null,
+  "cache": {
+    "key": "azdo:...",
+    "completeKey": "azdo:..."
+  },
+  "note": null
+}
+```
+
+Envelope fields:
+
+- `ok` — `true` for successful list output. Hard acquisition failures use the error envelope described in [Errors and exit codes](#errors-and-exit-codes).
+- `results[]` — The returned page or complete selected list. Scripts migrating from the old JSON array shape should read `.results`.
+- `returned` — Number of rows in `results[]`.
+- `total` — Total rows in the complete selected list before paging.
+- `offset` — Zero-based offset represented by this response (`0` for `--all`).
+- `limit` — Requested page size, or `null` for `--all`.
+- `complete` — `true` when this response contains the complete selected list.
+- `truncated` — `true` when this response is a bounded page rather than the complete selected list.
+- `next` — `{ "offset": N, "limit": N }` when another page exists after this response; otherwise `null`.
+- `cache.key` — Cache key for the exact response (`--all` uses the complete key; windows use window keys where the backing endpoint supports them).
+- `cache.completeKey` — Cache key for the complete selected list. In eval mode, capped MCP/list calls can be served from this complete key.
+- `note` — Human-readable truncation guidance, present only when `truncated` is `true`.
+
+Exit codes for these list commands:
+
+| Code | Meaning |
+|------|---------|
+| `0` | The response is complete, or `--allow-truncated` was supplied. |
+| `2` | A bounded response was written with `truncated == true` and `--allow-truncated` was not supplied. Fetch `next`, rerun with `--all`, or opt into legacy success semantics with `--allow-truncated`. |
+| `1` | Invalid arguments or hard acquisition/command failure. |
+
+Example generated from a live public AzDO run:
+
+```bash
+cd src/HelixTool
+DOTNET_ROLL_FORWARD=Major dotnet run -- azdo test-runs 1621192 --limit 1 --json
+echo exit=$?
+```
+
+```json
+{
+  "ok": true,
+  "results": [
+    {
+      "id": 44915306,
+      "name": "build_linux_x64_checked_CLR_R2R_Tests_ios_arm64-xunit",
+      "state": "Completed",
+      "totalTests": 49,
+      "passedTests": 36,
+      "unanalyzedTests": 0,
+      "failedTests": 0,
+      "incompleteTests": 0,
+      "notApplicableTests": 13,
+      "startedDate": null,
+      "completedDate": null,
+      "buildConfiguration": null
+    }
+  ],
+  "returned": 1,
+  "total": 49,
+  "offset": 0,
+  "limit": 1,
+  "complete": false,
+  "truncated": true,
+  "next": {
+    "offset": 1,
+    "limit": 1
+  },
+  "cache": {
+    "key": "azdo:7af1ee30:dnceng-public:public:testruns:v3:1621192:window:0:1",
+    "completeKey": "azdo:7af1ee30:dnceng-public:public:testruns:v3:1621192:all"
+  },
+  "note": "Showing 1 of 49 from azdo test-runs. Re-run with --all or --offset 1 --limit 1."
+}
+exit=2
+```
+
+### `hlx azdo changes <buildId> [--limit N|--top N] [--offset N] [--all] [--allow-truncated]`
+
+List commits/changes associated with a build. Default limit: 20.
 
 ```bash
 hlx azdo changes 12345678
+hlx azdo changes 12345678 --all
 ```
 
-### `hlx azdo test-runs <buildId> [--top N]`
+### `hlx azdo test-runs <buildId> [--limit N|--top N] [--offset N] [--all] [--allow-truncated]`
 
-List test runs for a build (total, passed, failed counts).
+List test runs for a build (total, passed, failed counts). Default limit: 50.
 
 ```bash
 hlx azdo test-runs 12345678
+hlx azdo test-runs 12345678 --limit 100 --offset 100
 ```
 
-### `hlx azdo test-results <buildId> <runId> [--top N] [--outcomes OUTCOMES]`
+### `hlx azdo test-results <buildId> <runId> [--limit N|--top N] [--offset N] [--all] [--allow-truncated] [--outcomes OUTCOMES]`
 
 Get test results for a specific test run. Defaults to failed tests (top 200).
 
 ```bash
 hlx azdo test-results 12345678 98765
+hlx azdo test-results 12345678 98765 --all
 hlx azdo test-results 12345678 98765 --outcomes "Passed,Failed"
 hlx azdo test-results 12345678 98765 --outcomes NotExecuted
 ```
 
 `--outcomes` accepts a comma-separated list of AzDO test outcome names (e.g. `Failed`, `Passed`, `NotExecuted`). Default: `Failed`.
 
-### `hlx azdo artifacts <buildId> [--pattern PAT] [--top N]`
+### `hlx azdo artifacts <buildId> [--pattern PAT] [--limit N|--top N] [--offset N] [--all] [--allow-truncated]`
 
-List build artifacts. Supports glob-style filtering.
+List build artifacts. Supports glob-style filtering. Default limit: 100 after `--pattern` filtering.
 
 ```bash
 hlx azdo artifacts 12345678
 hlx azdo artifacts 12345678 --pattern "*.binlog"
+hlx azdo artifacts 12345678 --pattern "Logs_Build_*" --all
 ```
 
 ### `hlx azdo search-log <buildId> [--log-id N] [--pattern P] [--context-lines N] [--max-matches N] [--max-logs N] [--min-lines N]`
@@ -374,12 +483,13 @@ if [ "$status" -eq 2 ]; then
 fi
 ```
 
-### `hlx azdo test-attachments <runId> <resultId> [--top N]`
+### `hlx azdo test-attachments <runId> <resultId> [--org ORG] [--project PROJ] [--limit N|--top N] [--offset N] [--all] [--allow-truncated]`
 
-List attachments for a test result (screenshots, logs, dumps).
+List attachments for a test result (screenshots, logs, dumps). Defaults: `--org dnceng-public --project public --limit 100`.
 
 ```bash
 hlx azdo test-attachments 98765 1234
+hlx azdo test-attachments 98765 1234 --all
 ```
 
 ## Snapshot Commands
@@ -451,7 +561,18 @@ Schema v1 snapshots remain valid, but validation prints a compatibility warning 
 
 Treat a scanner "bundle" as the existing offline cache snapshot, not a separate artifact format:
 
-1. Populate the cache by running the needed CLI commands live, for example `hlx azdo build <buildId> --json`, `hlx azdo timeline <buildId> --json`, `hlx azdo log <buildId> <logId> --json`, and Helix drilldown commands surfaced by `azdo evidence plan`.
+1. Populate the cache by running the needed CLI commands live. Use complete-list commands and full logs when the scanner needs offline replay without later live calls:
+
+   ```bash
+   hlx azdo build "$BUILD_ID" --json
+   hlx azdo timeline "$BUILD_ID" --json
+   hlx azdo changes "$BUILD_ID" --all --json
+   hlx azdo test-runs "$BUILD_ID" --all --json
+   hlx azdo artifacts "$BUILD_ID" --all --json
+   hlx azdo log "$BUILD_ID" "$LOG_ID" --full --json
+   ```
+
+   Add `hlx azdo test-results "$BUILD_ID" "$RUN_ID" --all --json`, `hlx azdo test-attachments "$RUN_ID" "$RESULT_ID" --all --json`, and Helix drilldown commands surfaced by `azdo evidence plan` for any selected runs/results/work items. The capped MCP defaults are unchanged, but in eval mode they can be served offline from the complete-list keys populated by `--all`.
 2. Export and validate the snapshot:
 
    ```bash
@@ -598,7 +719,7 @@ Exit codes:
 |------|---------|
 | `0` | Success. Genuinely empty successful results remain successes: for example, a real empty work-item file list or an empty successful search/list result is not converted into an error. |
 | `1` | Hard command or acquisition error, including validation failures, provider errors, auth failures, invalid/corrupt cache entries, malformed provider JSON, and empty provider responses where a JSON object/list was required. |
-| `2` | Evidence-plan only: a bounded plan was written, but `complete == false` because artifact mapping is ambiguous/missing, output was truncated, monitor data was unparseable/unresolved, or Helix-failure paging returned a partial page. |
+| `2` | Bounded output was written but is incomplete/truncated. For AzDO list commands, this means the JSON envelope has `truncated == true` and `--allow-truncated` was not supplied. For evidence plans, this means `complete == false` because artifact mapping is ambiguous/missing, output was truncated, monitor data was unparseable/unresolved, or Helix-failure paging returned a partial page. |
 
 When a direct build-log body is empty, hlx validates the logId against the build's logs list and timeline record.log.id; if the logId exists in neither, the operation fails with kind=not_found, provider=azdo, operation=get_build_log. If the logId exists, an empty log is a successful result. Empty full logs are not cached.
 
