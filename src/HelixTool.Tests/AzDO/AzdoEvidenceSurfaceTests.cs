@@ -73,6 +73,8 @@ public class AzdoEvidenceSurfaceTests
             parameter => AssertCliParameter(parameter, "keepAttemptPrefix", "Boolean", "false", isPositional: false),
             parameter => AssertCliParameter(parameter, "match", "String", "auto", isPositional: false),
             parameter => AssertCliParameter(parameter, "jobResults", "String", "failed,canceled", isPositional: false),
+            parameter => AssertCliParameter(parameter, "helixFailureOffset", "Int32", "0", isPositional: false),
+            parameter => AssertCliParameter(parameter, "helixFailureLimit", "Int32", "200", isPositional: false),
             parameter => AssertCliParameter(parameter, "json", "Boolean", "false", isPositional: false),
             parameter => AssertCliParameter(parameter, "schema", "Boolean", "false", isPositional: false));
     }
@@ -261,6 +263,21 @@ public class AzdoEvidenceSurfaceTests
         Assert.False(string.IsNullOrWhiteSpace(desc));
     }
 
+    [Fact]
+    public void McpTool_AzdoEvidencePlan_DescriptionMentionsHelixMonitorAndNoHelixApi()
+    {
+        var method = GetMcpToolMethod("azdo_evidence_plan");
+        Assert.NotNull(method);
+
+        var desc = method!.GetCustomAttribute<DescriptionAttribute>()?.Description;
+        Assert.Contains("Helix monitor work-item failures", desc, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("No downloads or Helix API calls", desc, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Helix IDs", desc, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("azdo_helix_jobs", desc, StringComparison.Ordinal);
+        Assert.Contains("helix_*", desc, StringComparison.Ordinal);
+        Assert.True(desc!.Length < 500, "azdo_evidence_plan description should stay compact.");
+    }
+
     // ════════════════════════════════════════════════════════════════════════
     // E7 — No IProgress parameter (D7: single-shot fetch, not long-running)
     // ════════════════════════════════════════════════════════════════════════
@@ -344,7 +361,21 @@ public class AzdoEvidenceSurfaceTests
                 typeof(string),
                 hasDefault: true,
                 defaultValue: "failed,canceled",
-                "Comma-separated job results to include (e.g. 'failed', 'failed,canceled', 'succeeded,succeededWithIssues'). Any combination of: failed, canceled, abandoned, skipped, succeededWithIssues, succeeded, none. Unknown values are rejected. Default: 'failed,canceled'."));
+                "Comma-separated job results to include (e.g. 'failed', 'failed,canceled', 'succeeded,succeededWithIssues'). Any combination of: failed, canceled, abandoned, skipped, succeededWithIssues, succeeded, none. Unknown values are rejected. Default: 'failed,canceled'."),
+            parameter => AssertMcpParameter(
+                parameter,
+                "helixFailureOffset",
+                typeof(int),
+                hasDefault: true,
+                defaultValue: 0,
+                "Offset into parsed Helix monitor failures for deterministic collectors. Default: 0."),
+            parameter => AssertMcpParameter(
+                parameter,
+                "helixFailureLimit",
+                typeof(int),
+                hasDefault: true,
+                defaultValue: 200,
+                "Maximum Helix monitor failures to return. Default: 200, max: 1000. Use paging when helixFailuresTruncated is true."));
 
         Assert.Equal(
             new object[] { "auto", "source-id", "normalized-exact", "exact" },
@@ -366,6 +397,8 @@ public class AzdoEvidenceSurfaceTests
         AssertSchemaProperty(properties, "stripAttemptPrefix", ["boolean"], true, hasDefault: true);
         AssertSchemaProperty(properties, "match", ["string"], "auto", hasDefault: true);
         AssertSchemaProperty(properties, "jobResults", ["string"], "failed,canceled", hasDefault: true);
+        AssertSchemaProperty(properties, "helixFailureOffset", ["integer"], 0, hasDefault: true);
+        AssertSchemaProperty(properties, "helixFailureLimit", ["integer"], 200, hasDefault: true);
         Assert.Equal(
             ["auto", "source-id", "normalized-exact", "exact"],
             properties.GetProperty("match").GetProperty("enum").EnumerateArray().Select(item => item.GetString()));
@@ -636,6 +669,183 @@ public class AzdoEvidenceSurfaceTests
             Assert.DoesNotContain('\r', textOutput);
             Assert.DoesNotContain('\u0007', textOutput);
             Assert.DoesNotContain('\u001b', textOutput);
+        }
+        finally
+        {
+            Environment.ExitCode = originalExitCode;
+        }
+    }
+
+    [Fact]
+    public async Task CliEvidencePlan_MonitorFailureJson_ExitsZeroAndIncludesHelixFailures()
+    {
+        const int buildId = 1621192;
+        SetupMonitorParsedMockPlan(
+            buildId,
+            [
+                new()
+                {
+                    Type = "warning",
+                    Category = "General",
+                    Message = "Work item 'System.Diagnostics.Process.Tests' in job 'windows-x86 Debug Libraries_CheckedCoreCLR - windows.10.amd64.open.rt (d0b6dc7c-c1e1-4fe3-953d-2c97a59d024a)' failed (Finished, exit code -3)."
+                }
+            ]);
+
+        var commands = new AzdoCommands(_svc, Substitute.For<IAzdoTokenAccessor>());
+        var originalExitCode = Environment.ExitCode;
+        try
+        {
+            Environment.ExitCode = 0;
+            var output = await CaptureStdoutAsync(() => commands.EvidencePlan(
+                buildId.ToString(CultureInfo.InvariantCulture),
+                artifactJobPrefix: "Logs_Build_",
+                helixFailureOffset: 0,
+                helixFailureLimit: 200,
+                json: true));
+
+            Assert.Equal(0, Environment.ExitCode);
+            using var json = JsonDocument.Parse(output);
+            var root = json.RootElement;
+            Assert.True(root.GetProperty("complete").GetBoolean());
+            Assert.Empty(root.GetProperty("entries").EnumerateArray());
+
+            var failure = Assert.Single(root.GetProperty("helixFailures").EnumerateArray());
+            Assert.Equal(-3, failure.GetProperty("exitCode").GetInt32());
+            Assert.Equal("System.Diagnostics.Process.Tests", failure.GetProperty("workItem").GetString());
+            Assert.Equal("d0b6dc7c-c1e1-4fe3-953d-2c97a59d024a", failure.GetProperty("helixJobId").GetString());
+            Assert.True(failure.TryGetProperty("suggestedFetches", out var suggestedFetches));
+            Assert.Equal(3, suggestedFetches.GetArrayLength());
+        }
+        finally
+        {
+            Environment.ExitCode = originalExitCode;
+        }
+    }
+
+    [Fact]
+    public async Task CliEvidencePlan_MonitorFailureHumanOutput_DoesNotPrintMonitorMissingEntry()
+    {
+        const int buildId = 1621192;
+        SetupMonitorParsedMockPlan(
+            buildId,
+            [
+                new()
+                {
+                    Type = "warning",
+                    Category = "General",
+                    Message = "Work item 'System.Diagnostics.Process.Tests' in job 'windows-x86 Debug Libraries_CheckedCoreCLR - windows.10.amd64.open.rt (d0b6dc7c-c1e1-4fe3-953d-2c97a59d024a)' failed (Finished, exit code -3)."
+                }
+            ]);
+
+        var commands = new AzdoCommands(_svc, Substitute.For<IAzdoTokenAccessor>());
+        var originalExitCode = Environment.ExitCode;
+        try
+        {
+            Environment.ExitCode = 0;
+            var output = await CaptureStdoutAsync(() => commands.EvidencePlan(
+                buildId.ToString(CultureInfo.InvariantCulture),
+                artifactJobPrefix: "Logs_Build_",
+                helixFailureOffset: 0,
+                helixFailureLimit: 200,
+                json: false));
+
+            Assert.Equal(0, Environment.ExitCode);
+            Assert.Contains("Helix monitor failures: 1 of 1", output, StringComparison.Ordinal);
+            Assert.Contains("Work item:", output, StringComparison.Ordinal);
+            Assert.Contains("\"System.Diagnostics.Process.Tests\"", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("[\"missing\"] Job \"Monitor Helix Jobs\"", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.ExitCode = originalExitCode;
+        }
+    }
+
+    [Fact]
+    public async Task CliEvidencePlan_UnparseableMonitorHumanOutput_ExitsTwoWithStableReasonCode()
+    {
+        const int buildId = 1621193;
+        SetupMonitorParsedMockPlan(
+            buildId,
+            [new() { Type = "error", Category = "General", Message = "Failed work item information:" }]);
+
+        var commands = new AzdoCommands(_svc, Substitute.For<IAzdoTokenAccessor>());
+        var originalExitCode = Environment.ExitCode;
+        try
+        {
+            Environment.ExitCode = 0;
+            var output = await CaptureStdoutAsync(() => commands.EvidencePlan(
+                buildId.ToString(CultureInfo.InvariantCulture),
+                artifactJobPrefix: "Logs_Build_",
+                helixFailureOffset: 0,
+                helixFailureLimit: 200,
+                json: false));
+
+            Assert.Equal(2, Environment.ExitCode);
+            Assert.Contains("[monitor_unparseable]", output, StringComparison.Ordinal);
+            Assert.Contains("no parseable Helix work-item failures", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.ExitCode = originalExitCode;
+        }
+    }
+
+    [Fact]
+    public async Task CliEvidencePlan_HelixFailurePaging_ReportsTruncationAndSecondPage()
+    {
+        const int buildId = 1621194;
+        SetupMonitorParsedMockPlan(
+            buildId,
+            [
+                new()
+                {
+                    Type = "warning",
+                    Category = "General",
+                    Message = "Work item 'First.Tests' in job 'First Leg - queue.one (11111111-1111-1111-1111-111111111111)' failed (Finished, exit code 1)."
+                },
+                new()
+                {
+                    Type = "warning",
+                    Category = "General",
+                    Message = "Work item 'Second.Tests' in job 'Second Leg - queue.two (22222222-2222-2222-2222-222222222222)' failed (Finished, exit code 2)."
+                }
+            ]);
+
+        var commands = new AzdoCommands(_svc, Substitute.For<IAzdoTokenAccessor>());
+        var originalExitCode = Environment.ExitCode;
+        try
+        {
+            Environment.ExitCode = 0;
+            var firstPage = await CaptureStdoutAsync(() => commands.EvidencePlan(
+                buildId.ToString(CultureInfo.InvariantCulture),
+                artifactJobPrefix: "Logs_Build_",
+                helixFailureOffset: 0,
+                helixFailureLimit: 1,
+                json: false));
+
+            Assert.Equal(2, Environment.ExitCode);
+            Assert.Contains("Helix monitor failures: 1 of 2 (truncated)", firstPage, StringComparison.Ordinal);
+            Assert.Contains("[helix_failures_truncated]", firstPage, StringComparison.Ordinal);
+            Assert.Contains("\"First.Tests\"", firstPage, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"Second.Tests\"", firstPage, StringComparison.Ordinal);
+
+            Environment.ExitCode = 0;
+            var secondPage = await CaptureStdoutAsync(() => commands.EvidencePlan(
+                buildId.ToString(CultureInfo.InvariantCulture),
+                artifactJobPrefix: "Logs_Build_",
+                helixFailureOffset: 1,
+                helixFailureLimit: 1,
+                json: true));
+
+            Assert.Equal(0, Environment.ExitCode);
+            using var json = JsonDocument.Parse(secondPage);
+            var failure = Assert.Single(json.RootElement.GetProperty("helixFailures").EnumerateArray());
+            Assert.Equal("Second.Tests", failure.GetProperty("workItem").GetString());
+            Assert.Equal(1, json.RootElement.GetProperty("helixFailureOffset").GetInt32());
+            Assert.Equal(1, json.RootElement.GetProperty("helixFailureLimit").GetInt32());
+            Assert.Equal(2, json.RootElement.GetProperty("helixFailureTotal").GetInt32());
+            Assert.False(json.RootElement.GetProperty("helixFailuresTruncated").GetBoolean());
         }
         finally
         {
@@ -1635,6 +1845,55 @@ public class AzdoEvidenceSurfaceTests
 
         // No artifact with matching source → missing entry
         _mockApi.GetBuildArtifactsAsync("dnceng-public", "public", 1570501, Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuildArtifact>());
+    }
+
+    private void SetupMonitorParsedMockPlan(int buildId, IReadOnlyList<AzdoIssue> monitorIssues)
+    {
+        const string monitorJobId = "078edc60-2a90-5618-e72d-426a045b11f0";
+        const string monitorTaskId = "0ca3371c-1de8-59d8-daef-35ea5811e911";
+
+        _mockApi.GetBuildAsync("dnceng-public", "public", buildId, Arg.Any<CancellationToken>())
+            .Returns(new AzdoBuild
+            {
+                Id = buildId,
+                BuildNumber = $"runtime-{buildId}",
+                Status = "completed",
+                Result = "failed",
+                Definition = new AzdoBuildDefinition { Id = 666, Name = "runtime" }
+            });
+
+        _mockApi.GetTimelineAsync("dnceng-public", "public", buildId, Arg.Any<CancellationToken>())
+            .Returns(new AzdoTimeline
+            {
+                Records =
+                [
+                    new()
+                    {
+                        Id = monitorJobId,
+                        Type = "Job",
+                        Name = "Monitor Helix Jobs",
+                        State = "completed",
+                        Result = "failed",
+                        Order = 1,
+                        Attempt = 1
+                    },
+                    new()
+                    {
+                        Id = monitorTaskId,
+                        ParentId = monitorJobId,
+                        Type = "Task",
+                        Name = "Monitor Helix Jobs",
+                        State = "completed",
+                        Result = "failed",
+                        Order = 4,
+                        Attempt = 1,
+                        Issues = monitorIssues
+                    }
+                ]
+            });
+
+        _mockApi.GetBuildArtifactsAsync("dnceng-public", "public", buildId, Arg.Any<CancellationToken>())
             .Returns(new List<AzdoBuildArtifact>());
     }
 

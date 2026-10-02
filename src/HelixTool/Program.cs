@@ -1991,12 +1991,40 @@ public class AzdoCommands
             }
         }
 
+        if (plan.HelixFailures.Count > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine(
+                $"Helix monitor failures: {FormatInvariant(plan.HelixFailures.Count)} of {FormatInvariant(plan.HelixFailureTotal)}{(plan.HelixFailuresTruncated ? " (truncated)" : "")}");
+            foreach (var failure in plan.HelixFailures)
+            {
+                Console.WriteLine();
+                Console.WriteLine($"  Work item:        {QuoteUntrusted(failure.WorkItem)}");
+                Console.WriteLine($"    Helix job:      {QuoteUntrusted(failure.HelixJobId)}");
+                if (failure.HelixJobName is not null)
+                    Console.WriteLine($"    Helix job name: {QuoteUntrusted(failure.HelixJobName)}");
+                if (failure.Leg is not null || failure.Queue is not null)
+                    Console.WriteLine($"    Leg/queue:      {QuoteUntrusted(failure.Leg)} / {QuoteUntrusted(failure.Queue)}");
+                Console.WriteLine($"    State/exit code: {QuoteUntrusted(failure.State)} / {(failure.ExitCode.HasValue ? FormatInvariant(failure.ExitCode.Value) : "none")}");
+                Console.WriteLine($"    Monitor job/task: {QuoteUntrusted(failure.MonitorJobName)} ({QuoteUntrusted(failure.MonitorJobId)}) / {QuoteUntrusted(failure.MonitorTaskName)} ({QuoteUntrusted(failure.MonitorTaskId)})");
+                Console.WriteLine($"    Source format:  {QuoteUntrusted(failure.SourceFormat)}");
+            }
+        }
+
         if (plan.IncompleteReasons.Count > 0)
         {
             Console.WriteLine();
             Console.WriteLine("Incomplete reasons:");
-            foreach (var reason in plan.IncompleteReasons)
-                Console.WriteLine($"  - {QuoteUntrusted(reason)}");
+            if (plan.IncompleteDetails.Count > 0)
+            {
+                foreach (var detail in plan.IncompleteDetails)
+                    Console.WriteLine($"  - [{detail.Code}] {QuoteUntrusted(detail.Message)}");
+            }
+            else
+            {
+                foreach (var reason in plan.IncompleteReasons)
+                    Console.WriteLine($"  - {QuoteUntrusted(reason)}");
+            }
         }
 
         if (plan.Warnings.Count > 0)
@@ -2024,8 +2052,9 @@ public class AzdoCommands
         };
 
     /// <summary>
-    /// Plan CI evidence collection for a build: maps failed/canceled Job records to their artifact candidates.
-    /// Nothing is downloaded. Exits 0 when the plan is complete, 2 when incomplete (ambiguous/missing),
+    /// Plan CI evidence collection for a build: maps failed/canceled Job records to artifact candidates and
+    /// surfaces Helix monitor work-item failures from timeline issues. Nothing is downloaded and no Helix API
+    /// calls are made. Exits 0 when the plan is complete, 2 when incomplete (ambiguous/missing/truncated),
     /// 1 on hard errors.
     /// </summary>
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
@@ -2034,6 +2063,8 @@ public class AzdoCommands
     /// <param name="keepAttemptPrefix">Keep 'AttemptN_' in artifact names instead of stripping it. Default: strip and record the attempt number.</param>
     /// <param name="match">Matching strategy: 'auto' (default), 'source-id', 'normalized-exact', 'exact'.</param>
     /// <param name="jobResults">Comma-separated job results to target. Default: 'failed,canceled'.</param>
+    /// <param name="helixFailureOffset">Offset into parsed Helix monitor failures. Default: 0.</param>
+    /// <param name="helixFailureLimit">Maximum parsed Helix monitor failures to return. Default: 200, max: 1000.</param>
     /// <param name="json">Output as structured JSON.</param>
     [McpEquivalent("azdo_evidence_plan")]
     [Command("azdo evidence plan")]
@@ -2044,6 +2075,8 @@ public class AzdoCommands
         bool keepAttemptPrefix = false,
         string match = "auto",
         string jobResults = "failed,canceled",
+        int helixFailureOffset = 0,
+        int helixFailureLimit = AzdoEvidencePlan.DefaultHelixFailureLimit,
         bool json = false,
         bool schema = false)
     {
@@ -2085,7 +2118,9 @@ public class AzdoCommands
             ArtifactJobPrefix = artifactJobPrefix,
             StripAttemptPrefix = !keepAttemptPrefix,
             Match = match,
-            JobResults = resultList
+            JobResults = resultList,
+            HelixFailureOffset = helixFailureOffset,
+            HelixFailureLimit = helixFailureLimit
         };
 
         AzdoEvidencePlan plan;

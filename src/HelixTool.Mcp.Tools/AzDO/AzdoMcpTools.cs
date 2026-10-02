@@ -334,7 +334,7 @@ public sealed class AzdoMcpTools
     }
 
     [McpServerTool(Name = "azdo_evidence_plan", Title = "AzDO Evidence Plan", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
-     Description("Plan CI evidence collection for an Azure DevOps build: maps failed/canceled Job records to their artifact candidates. Nothing is downloaded. Use azdo_artifacts / azdo_timeline first to explore; use this tool to produce a deterministic, complete artifact-job mapping. Primary strategy ('auto') uses artifact.source GUID join, then normalized-name fallback. Set match='normalized-exact' for PR #132609 parity.")]
+     Description("Plan CI evidence for an Azure DevOps build: maps failed/canceled jobs to artifact candidates and surfaces Helix monitor work-item failures from timeline issues. No downloads or Helix API calls. Use Helix IDs from helixFailures with azdo_helix_jobs/helix_* for drilldown.")]
     public async Task<AzdoEvidencePlan> EvidencePlan(
         [Description("AzDO build ID as a JSON string (for example, '1570501') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
         [Description("Glob pattern for artifact names to include. Supports '*' (all), '*.ext' (suffix), 'Prefix*' (prefix), or substring. Default: '*'")] string artifactPattern = "*",
@@ -345,7 +345,9 @@ public sealed class AzdoMcpTools
         // No [AllowedValues]: this is a comma-separated multi-value string, so a JSON-schema enum
         // would reject every valid combination (including the 'failed,canceled' default). Matches
         // the sibling 'outcomes' parameter on azdo_test_results; per-token validation is below.
-        [Description("Comma-separated job results to include (e.g. 'failed', 'failed,canceled', 'succeeded,succeededWithIssues'). Any combination of: failed, canceled, abandoned, skipped, succeededWithIssues, succeeded, none. Unknown values are rejected. Default: 'failed,canceled'.")] string jobResults = "failed,canceled")
+        [Description("Comma-separated job results to include (e.g. 'failed', 'failed,canceled', 'succeeded,succeededWithIssues'). Any combination of: failed, canceled, abandoned, skipped, succeededWithIssues, succeeded, none. Unknown values are rejected. Default: 'failed,canceled'.")] string jobResults = "failed,canceled",
+        [Description("Offset into parsed Helix monitor failures for deterministic collectors. Default: 0.")] int helixFailureOffset = 0,
+        [Description("Maximum Helix monitor failures to return. Default: 200, max: 1000. Use paging when helixFailuresTruncated is true.")] int helixFailureLimit = AzdoEvidencePlan.DefaultHelixFailureLimit)
     {
         // Parse and validate jobResults
         var resultList = jobResults
@@ -371,7 +373,9 @@ public sealed class AzdoMcpTools
             ArtifactJobPrefix = artifactJobPrefix,
             StripAttemptPrefix = stripAttemptPrefix,
             Match = match,
-            JobResults = resultList
+            JobResults = resultList,
+            HelixFailureOffset = helixFailureOffset,
+            HelixFailureLimit = helixFailureLimit
         };
 
         return await McpExceptionHandler.RunServiceCallAsync(
