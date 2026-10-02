@@ -240,6 +240,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient
         // Full log first fetch
         var result = await _inner.GetBuildLogAsync(org, project, buildId, logId, ct: ct);
         if (result is null) return null;
+        if (result.Length == 0) return result;
 
         var completed = await IsBuildCompletedAsync(org, project, buildId, ct);
         contentKey = BuildCacheKey(org, project, $"log:{buildId}:{logId}");

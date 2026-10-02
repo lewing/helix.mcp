@@ -91,6 +91,8 @@ public sealed class AcquisitionErrorMcpTests
         var api = Substitute.For<IAzdoApiClient>();
         api.GetBuildLogAsync("dnceng-public", "public", 12345, 7, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
             .Returns(string.Empty);
+        api.GetBuildLogsListAsync("dnceng-public", "public", 12345, Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuildLogEntry> { new() { Id = 7, LineCount = 0 } });
 
         using var host = await CreateAzdoMcpHostAsync(api);
         using var httpClient = host.GetTestServer().CreateClient();
@@ -108,6 +110,45 @@ public sealed class AcquisitionErrorMcpTests
         var text = Assert.IsType<TextContentBlock>(Assert.Single(result.Content));
         Assert.Equal(string.Empty, text.Text);
         Assert.False(result.StructuredContent.HasValue);
+    }
+
+    [Fact]
+    public async Task AzdoLog_EmptyBodyAbsentFromMetadata_ReturnsMcpErrorWithStructuredContent()
+    {
+        var api = Substitute.For<IAzdoApiClient>();
+        api.GetBuildLogAsync("dnceng-public", "public", 12345, 999999, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
+            .Returns(string.Empty);
+        api.GetBuildLogsListAsync("dnceng-public", "public", 12345, Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuildLogEntry> { new() { Id = 1, LineCount = 10 } });
+        api.GetTimelineAsync("dnceng-public", "public", 12345, Arg.Any<CancellationToken>())
+            .Returns(new AzdoTimeline
+            {
+                Records =
+                [
+                    new AzdoTimelineRecord { Id = "task1", Log = new AzdoLogReference { Id = 2 } }
+                ]
+            });
+
+        using var host = await CreateAzdoMcpHostAsync(api);
+        using var httpClient = host.GetTestServer().CreateClient();
+        await using var transport = new HttpClientTransport(
+            new HttpClientTransportOptions { Endpoint = new Uri("http://localhost/") }, httpClient);
+        await using var client = await McpClient.CreateAsync(transport);
+
+        var result = await client.CallToolAsync("azdo_log", new Dictionary<string, object?>
+        {
+            ["buildIdOrUrl"] = "12345",
+            ["logId"] = 999999
+        });
+
+        Assert.True(result.IsError);
+        Assert.True(result.StructuredContent.HasValue);
+        var error = result.StructuredContent.Value.GetProperty("error");
+        Assert.Equal("not_found", error.GetProperty("kind").GetString());
+        Assert.Equal("azdo", error.GetProperty("provider").GetString());
+        Assert.Equal("get_build_log", error.GetProperty("operation").GetString());
+        Assert.Equal(12345, error.GetProperty("resource").GetProperty("buildId").GetInt32());
+        Assert.Equal(999999, error.GetProperty("resource").GetProperty("logId").GetInt32());
     }
 
     private static void AssertStructuredError(

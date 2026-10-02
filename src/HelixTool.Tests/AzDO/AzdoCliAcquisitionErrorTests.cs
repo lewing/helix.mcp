@@ -42,6 +42,38 @@ public sealed class AzdoCliAcquisitionErrorTests
     }
 
     [Fact]
+    public async Task AzdoLog_JsonEmptyBodyAbsentFromMetadata_WritesNotFoundEnvelopeAndExitsOne()
+    {
+        var api = Substitute.For<IAzdoApiClient>();
+        api.GetBuildLogAsync("dnceng-public", "public", 12345, 999999, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
+            .Returns(string.Empty);
+        api.GetBuildLogsListAsync("dnceng-public", "public", 12345, Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuildLogEntry> { new() { Id = 1, LineCount = 10 } });
+        api.GetTimelineAsync("dnceng-public", "public", 12345, Arg.Any<CancellationToken>())
+            .Returns(new AzdoTimeline
+            {
+                Records =
+                [
+                    new AzdoTimelineRecord { Id = "task1", Log = new AzdoLogReference { Id = 2 } }
+                ]
+            });
+        var commands = new global::AzdoCommands(new AzdoService(api), Substitute.For<IAzdoTokenAccessor>());
+
+        var (stdout, _, exitCode) = await CaptureConsoleAsync(() => commands.Log("12345", 999999, json: true));
+
+        Assert.Equal(1, exitCode);
+        using var document = JsonDocument.Parse(stdout);
+        var root = document.RootElement;
+        Assert.False(root.GetProperty("ok").GetBoolean());
+        var error = root.GetProperty("error");
+        Assert.Equal("not_found", error.GetProperty("kind").GetString());
+        Assert.Equal("azdo", error.GetProperty("provider").GetString());
+        Assert.Equal("get_build_log", error.GetProperty("operation").GetString());
+        Assert.Equal(12345, error.GetProperty("resource").GetProperty("buildId").GetInt32());
+        Assert.Equal(999999, error.GetProperty("resource").GetProperty("logId").GetInt32());
+    }
+
+    [Fact]
     public async Task AzdoTimeline_JsonInvalidResponse_WritesEnvelopeToStdoutAndExitsOne()
     {
         var api = Substitute.For<IAzdoApiClient>();

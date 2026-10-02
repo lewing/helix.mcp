@@ -189,11 +189,12 @@ public class AzdoService
         string buildIdOrUrl, int logId, int? tailLines = null, CancellationToken ct = default)
     {
         var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
+        IReadOnlyList<AzdoBuildLogEntry>? logsList = null;
 
         // Optimization: use lineCount metadata to fetch only the tail
         if (tailLines is > 0)
         {
-            var logsList = await _client.GetBuildLogsListAsync(org, project, buildId, ct);
+            logsList = await _client.GetBuildLogsListAsync(org, project, buildId, ct);
             var logEntry = logsList.FirstOrDefault(e => e.Id == logId);
 
             if (logEntry is not null && logEntry.LineCount > (long)tailLines.Value * 2)
@@ -221,10 +222,50 @@ public class AzdoService
                 ("logId", logId));
         }
 
+        if (content.Length == 0)
+            await ValidateEmptyBuildLogReferenceAsync(org, project, buildId, logId, logsList, ct);
+
         if (tailLines is null or <= 0)
             return content;
 
         return StringHelpers.TailLines(content, tailLines.Value);
+    }
+
+    private async Task ValidateEmptyBuildLogReferenceAsync(
+        string org,
+        string project,
+        int buildId,
+        int logId,
+        IReadOnlyList<AzdoBuildLogEntry>? logsList,
+        CancellationToken ct)
+    {
+        logsList ??= await _client.GetBuildLogsListAsync(org, project, buildId, ct);
+        if (logsList.Any(entry => entry.Id == logId))
+            return;
+
+        var timeline = await _client.GetTimelineAsync(org, project, buildId, ct);
+        if (timeline is null)
+        {
+            throw CreateAzdoAcquisitionError(
+                AcquisitionErrorKind.NotFound,
+                "get_timeline",
+                org,
+                project,
+                buildId,
+                $"Timeline for build {buildId} in {org}/{project} was not found.");
+        }
+
+        if (timeline.Records.Any(record => record.Log?.Id == logId))
+            return;
+
+        throw CreateAzdoAcquisitionError(
+            AcquisitionErrorKind.NotFound,
+            "get_build_log",
+            org,
+            project,
+            buildId,
+            $"Build log {logId} for build {buildId} returned an empty body, but the log ID was absent from the build log metadata and timeline log references.",
+            ("logId", logId));
     }
 
     /// <summary>

@@ -22,6 +22,96 @@ public sealed class AzdoAcquisitionErrorTests
     }
 
     [Fact]
+    public async Task AzdoService_GetBuildLogAsync_EmptyBodyAbsentFromMetadata_ThrowsNotFoundWithLogId()
+    {
+        var api = Substitute.For<IAzdoApiClient>();
+        api.GetBuildLogAsync("dnceng-public", "public", 12345, 999999, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
+            .Returns(string.Empty);
+        api.GetBuildLogsListAsync("dnceng-public", "public", 12345, Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuildLogEntry>
+            {
+                new() { Id = 1, LineCount = 10 },
+                new() { Id = 2, LineCount = 20 }
+            });
+        api.GetTimelineAsync("dnceng-public", "public", 12345, Arg.Any<CancellationToken>())
+            .Returns(new AzdoTimeline
+            {
+                Records =
+                [
+                    new AzdoTimelineRecord { Id = "task1", Log = new AzdoLogReference { Id = 3 } }
+                ]
+            });
+        var service = new AzdoService(api);
+
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() =>
+            service.GetBuildLogAsync("12345", 999999));
+
+        var error = AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "get_build_log");
+        AcquisitionAssertions.Resource(error, "buildId", 12345);
+        AcquisitionAssertions.Resource(error, "logId", 999999);
+    }
+
+    [Fact]
+    public async Task AzdoService_GetBuildLogAsync_EmptyBodyPresentInLogsList_ReturnsEmptyString()
+    {
+        var api = Substitute.For<IAzdoApiClient>();
+        api.GetBuildLogAsync("dnceng-public", "public", 12345, 7, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
+            .Returns(string.Empty);
+        api.GetBuildLogsListAsync("dnceng-public", "public", 12345, Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuildLogEntry> { new() { Id = 7, LineCount = 0 } });
+        var service = new AzdoService(api);
+
+        var content = await service.GetBuildLogAsync("12345", 7);
+
+        Assert.Equal(string.Empty, content);
+        await api.DidNotReceive().GetTimelineAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task AzdoService_GetBuildLogAsync_EmptyBodyPresentOnlyInTimeline_ReturnsEmptyString()
+    {
+        var api = Substitute.For<IAzdoApiClient>();
+        api.GetBuildLogAsync("dnceng-public", "public", 12345, 7, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
+            .Returns(string.Empty);
+        api.GetBuildLogsListAsync("dnceng-public", "public", 12345, Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuildLogEntry> { new() { Id = 1, LineCount = 10 } });
+        api.GetTimelineAsync("dnceng-public", "public", 12345, Arg.Any<CancellationToken>())
+            .Returns(new AzdoTimeline
+            {
+                Records =
+                [
+                    new AzdoTimelineRecord { Id = "task1", Log = new AzdoLogReference { Id = 7 } }
+                ]
+            });
+        var service = new AzdoService(api);
+
+        var content = await service.GetBuildLogAsync("12345", 7);
+
+        Assert.Equal(string.Empty, content);
+    }
+
+    [Fact]
+    public async Task AzdoService_GetBuildLogAsync_EmptyBodyMetadataFailure_PropagatesMetadataError()
+    {
+        var api = Substitute.For<IAzdoApiClient>();
+        api.GetBuildLogAsync("dnceng-public", "public", 12345, 7, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
+            .Returns(string.Empty);
+        api.GetBuildLogsListAsync("dnceng-public", "public", 12345, Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromException<IReadOnlyList<AzdoBuildLogEntry>>(AcquisitionAssertions.Exception(
+                AcquisitionErrorKind.AccessDenied,
+                "azdo",
+                "list_build_logs",
+                new Dictionary<string, object?> { ["buildId"] = 12345 },
+                403)));
+        var service = new AzdoService(api);
+
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() =>
+            service.GetBuildLogAsync("12345", 7));
+
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.AccessDenied, "azdo", "list_build_logs", 403);
+    }
+
+    [Fact]
     public async Task GetBuildLogAsync_404_ThrowsNotFoundWithResource()
     {
         var client = CreateClient(_ => JsonResponse("""{"message":"missing"}""", HttpStatusCode.NotFound));
@@ -260,6 +350,27 @@ public sealed class AzdoAcquisitionErrorTests
 
         await inner.Received(2).GetBuildLogAsync("org", "proj", 1, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>());
         await cache.DidNotReceive().SetMetadataAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task CachingAzdoApiClient_DoesNotStoreEmptyFullLogAsSuccess()
+    {
+        var inner = Substitute.For<IAzdoApiClient>();
+        var cache = Substitute.For<ICacheStore>();
+        cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns((string?)null);
+        inner.GetBuildLogAsync("org", "proj", 1, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
+            .Returns(string.Empty);
+        var sut = new CachingAzdoApiClient(inner, cache, new CacheOptions { MaxSizeBytes = 1024 * 1024 });
+
+        Assert.Equal(string.Empty, await sut.GetBuildLogAsync("org", "proj", 1, 5));
+        Assert.Equal(string.Empty, await sut.GetBuildLogAsync("org", "proj", 1, 5));
+
+        await inner.Received(2).GetBuildLogAsync("org", "proj", 1, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>());
+        await cache.DidNotReceive().SetMetadataAsync(
+            Arg.Is<string>(key => key.Contains("log:1:5") || key.Contains("log-fresh:1:5")),
+            Arg.Any<string>(),
+            Arg.Any<TimeSpan>(),
+            Arg.Any<CancellationToken>());
     }
 
     [Fact]
