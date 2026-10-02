@@ -158,6 +158,12 @@ public sealed record CollectPolicyInfo
     [JsonPropertyName("testScope")]
     public string TestScope { get; init; } = "";
 
+    [JsonPropertyName("maxTestResultsExplicit")]
+    public bool MaxTestResultsExplicit { get; init; }
+
+    [JsonPropertyName("testAttachmentScope")]
+    public string TestAttachmentScope { get; init; } = "diagnostic";
+
     [JsonPropertyName("helixScope")]
     public string HelixScope { get; init; } = "";
 }
@@ -179,6 +185,12 @@ public sealed record CollectRetryPolicyInfo
 
 public sealed record CollectCapsInfo
 {
+    [JsonPropertyName("maxTestResults")]
+    public long MaxTestResults { get; init; } = CollectPolicy.DefaultMaxTestResults;
+
+    [JsonPropertyName("maxTestAttachments")]
+    public long MaxTestAttachments { get; init; } = CollectPolicy.DefaultMaxTestAttachments;
+
     [JsonPropertyName("maxFileBytes")]
     public long MaxFileBytes { get; init; }
 

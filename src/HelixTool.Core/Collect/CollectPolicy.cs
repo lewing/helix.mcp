@@ -4,6 +4,9 @@ namespace HelixTool.Core.Collect;
 
 public sealed record CollectPolicy
 {
+    public const long DefaultMaxTestResults = 10_000;
+    public const long DefaultMaxTestAttachments = 1_000;
+
     public string BuildIdOrUrl { get; init; } = "";
     public string? ManifestPath { get; init; }
     public bool Resume { get; init; }
@@ -27,6 +30,9 @@ public sealed record CollectPolicy
     public string JobResults { get; init; } = "failed,canceled";
     public string LogScope { get; init; } = "failed";
     public string TestScope { get; init; } = "failed";
+    public long? MaxTestResults { get; init; }
+    public string TestAttachmentScope { get; init; } = "diagnostic";
+    public long? MaxTestAttachments { get; init; }
     public string HelixScope { get; init; } = "suggested";
     public string? DownloadHelixFiles { get; init; }
     public long MaxFileBytes { get; init; } = 50L * 1024 * 1024;

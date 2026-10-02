@@ -58,6 +58,42 @@ internal static class HelixAcquisition
             ex);
     }
 
+    /// <summary>
+    /// Classifies <see cref="Azure.RequestFailedException"/> — the general Azure.Core pipeline
+    /// exception that can surface instead of the Helix SDK's own <see cref="RestApiException"/>,
+    /// including when the pipeline wraps a lower-level transport failure.
+    /// </summary>
+    public static HlxAcquisitionException FromRequestFailed(
+        Azure.RequestFailedException ex,
+        string operation,
+        IReadOnlyDictionary<string, object?> resource)
+    {
+        // RequestFailedException.Status is 0 when the Azure.Core pipeline wrapped a transport
+        // failure (e.g. a raw HttpRequestException from the handler) rather than an actual HTTP
+        // response; the original status code survives on the inner exception in that case.
+        HttpStatusCode? statusCode = ex.Status > 0
+            ? (HttpStatusCode)ex.Status
+            : (ex.InnerException as HttpRequestException)?.StatusCode;
+        var kind = statusCode.HasValue
+            ? AcquisitionErrorFactory.KindFromStatus(statusCode.Value)
+            : AcquisitionErrorKind.TransportError;
+        var message = statusCode.HasValue
+            ? $"Helix {operation} {AcquisitionErrorFactory.KindLabel(kind)} for {ResourceDescription(resource)} (HTTP {(int)statusCode.Value})."
+            : $"Helix {operation} transport error: {ex.Message}";
+
+        if (kind == AcquisitionErrorKind.AccessDenied)
+            message = "Access denied. Run 'hlx login' to authenticate, or set the HELIX_ACCESS_TOKEN environment variable.";
+
+        return new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+            kind,
+            "helix",
+            operation,
+            resource,
+            message,
+            statusCode),
+            ex);
+    }
+
     public static HlxAcquisitionException Timeout(
         Exception ex,
         string operation,

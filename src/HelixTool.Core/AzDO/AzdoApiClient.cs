@@ -134,17 +134,56 @@ public sealed class AzdoApiClient : IAzdoApiClient
         if (queryParts.Count > 0)
             path += "?" + string.Join("&", queryParts);
         var url = BuildUrl(org, project, path);
+        var operation = "get_build_log";
+        var resource = Resource(org, project, ("buildId", buildId), ("logId", logId));
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         var credential = await ApplyAuthAsync(request, ct).ConfigureAwait(false);
 
-        using var response = await SendAsync(request, "get_build_log", Resource(org, project, ("buildId", buildId), ("logId", logId)), ct).ConfigureAwait(false);
+        using var response = await SendAsync(request, operation, resource, ct).ConfigureAwait(false);
 
-        ThrowOnAuthFailure(response, org, project, credential, "get_build_log", Resource(org, project, ("buildId", buildId), ("logId", logId)));
-        await ThrowOnUnexpectedError(response, "get_build_log", Resource(org, project, ("buildId", buildId), ("logId", logId)), ct).ConfigureAwait(false);
+        ThrowOnAuthFailure(response, org, project, credential, operation, resource);
+        await ThrowOnUnexpectedError(response, operation, resource, ct).ConfigureAwait(false);
 
-        await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-        using var reader = new StreamReader(stream);
-        return await reader.ReadToEndAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            using var reader = new StreamReader(stream);
+            return await reader.ReadToEndAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TaskCanceledException ex)
+        {
+            throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                AcquisitionErrorKind.Timeout,
+                "azdo",
+                operation,
+                resource,
+                $"AzDO {operation} timed out while reading the log body: {ex.Message}"),
+                ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                AcquisitionErrorKind.TransportError,
+                "azdo",
+                operation,
+                resource,
+                $"AzDO {operation} failed while reading the log body: {ex.Message}"),
+                ex);
+        }
+        catch (IOException ex)
+        {
+            throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                AcquisitionErrorKind.TransportError,
+                "azdo",
+                operation,
+                resource,
+                $"AzDO {operation} failed while reading the log body: {ex.Message}"),
+                ex);
+        }
     }
 
     public async Task<IReadOnlyList<AzdoBuildChange>> GetBuildChangesAsync(string org, string project, int buildId, int? top = null, CancellationToken ct = default)
@@ -337,7 +376,7 @@ public sealed class AzdoApiClient : IAzdoApiClient
         await ThrowOnUnexpectedError(response, operation, resource, ct).ConfigureAwait(false);
         ThrowOnNonJsonSuccess(response, org, project, credential, operation, resource);
 
-        var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        var body = await ReadResponseBodyAsync(response, operation, resource, ct).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(body))
             throw InvalidResponse(operation, resource, "AzDO returned an empty JSON response.", httpStatus: response.StatusCode);
 
@@ -406,7 +445,7 @@ public sealed class AzdoApiClient : IAzdoApiClient
             await ThrowOnUnexpectedError(response, operation, resource, ct).ConfigureAwait(false);
             ThrowOnNonJsonSuccess(response, org, project, credential, operation, resource);
 
-            var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var body = await ReadResponseBodyAsync(response, operation, resource, ct).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(body))
                 throw InvalidResponse(operation, resource, "AzDO list API returned an empty JSON response.", httpStatus: response.StatusCode);
 
@@ -614,7 +653,7 @@ public sealed class AzdoApiClient : IAzdoApiClient
         if (response.IsSuccessStatusCode)
             return;
 
-        var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        var body = await ReadResponseBodyAsync(response, operation, resource, ct).ConfigureAwait(false);
         var snippet = body.Length > ErrorBodySnippetLimit ? body[..ErrorBodySnippetLimit] + "…" : body;
         snippet = RedactSensitiveContent(snippet);
         throw CreateHttpException(response, operation, resource, messageOverride: null, safeBodySnippet: snippet);
@@ -715,6 +754,60 @@ public sealed class AzdoApiClient : IAzdoApiClient
             message,
             httpStatus),
             inner);
+
+    /// <summary>
+    /// Reads a response body, classifying transport failures (connection reset, premature EOF,
+    /// etc.) that occur while streaming the body — after <see cref="SendAsync"/>'s own try/catch
+    /// has already returned the response headers — into <see cref="HlxAcquisitionException"/>.
+    /// Caller cancellation still propagates as <see cref="OperationCanceledException"/>.
+    /// </summary>
+    private static async Task<string> ReadResponseBodyAsync(
+        HttpResponseMessage response,
+        string operation,
+        IReadOnlyDictionary<string, object?> resource,
+        CancellationToken ct)
+    {
+        try
+        {
+            return await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TaskCanceledException ex)
+        {
+            // A body-read timeout (e.g. HttpClient.Timeout elapsing mid-stream) surfaces as
+            // TaskCanceledException even though the caller never requested cancellation.
+            throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                AcquisitionErrorKind.Timeout,
+                "azdo",
+                operation,
+                resource,
+                $"AzDO {operation} timed out while reading the response body: {ex.Message}"),
+                ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                AcquisitionErrorKind.TransportError,
+                "azdo",
+                operation,
+                resource,
+                $"AzDO {operation} failed while reading the response body: {ex.Message}"),
+                ex);
+        }
+        catch (IOException ex)
+        {
+            throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                AcquisitionErrorKind.TransportError,
+                "azdo",
+                operation,
+                resource,
+                $"AzDO {operation} failed while reading the response body: {ex.Message}"),
+                ex);
+        }
+    }
 
     private static void ValidateRequiredObjectFields(
         string body,

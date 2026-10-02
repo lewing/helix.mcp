@@ -114,6 +114,8 @@ HLX_EVAL_SNAPSHOT=/tmp/my-snapshot hlx mcp
 
 The exported manifest lives at `manifest/hlx-collect-manifest.json`; read it to distinguish complete snapshots from declared gaps before handing the snapshot to an offline scanner. See the [scanner workflow](docs/cli-reference.md#scanner-workflow) and [collect command reference](docs/cli-reference.md#collect-commands).
 
+All-result collection is opt-in for large builds: `--test-scope all` checks the build-wide test-run totals before acquiring results and skips estimates above 10,000 unless an explicit sufficient `--max-test-results` is supplied. For example, use `--test-scope all --max-test-results 2000000` for a build with up to two million estimated results. Attachment metadata remains limited to diagnostic outcomes by default (at most 1,000 requests), independently of result scope. Broader coverage requires `--test-attachment-scope all --max-test-attachments <budget>`. Refused/limited coverage stays `complete=false` with a policy skip and exit 2; `--allow-incomplete` only changes the exit code for policy-only gaps. Collection progress and five-second acquisition heartbeats go to stderr, keeping `--json` stdout clean.
+
 ## MCP Tools
 
 ### Helix Tools (9)

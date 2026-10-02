@@ -1589,6 +1589,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
             if (name.Contains("jobResults", StringComparison.OrdinalIgnoreCase)) return options.JobResults;
             if (name.Contains("logScope", StringComparison.OrdinalIgnoreCase)) return options.LogScope;
             if (name.Contains("testScope", StringComparison.OrdinalIgnoreCase)) return options.TestScope;
+            if (name.Contains("testAttachmentScope", StringComparison.OrdinalIgnoreCase)) return "diagnostic";
             if (name.Contains("helixScope", StringComparison.OrdinalIgnoreCase)) return options.HelixScope;
             if (name.Contains("downloadHelixFiles", StringComparison.OrdinalIgnoreCase)) return options.DownloadHelixFiles;
             return null;

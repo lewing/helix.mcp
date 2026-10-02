@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
 using System.Security.Cryptography;
@@ -21,6 +22,10 @@ public sealed class AzdoBuildCollector
     private static readonly TimeSpan RecordedFailureTtl = TimeSpan.FromHours(4);
     private static readonly TimeSpan TestMetadataTtl = TimeSpan.FromHours(1);
     private static readonly TimeSpan RetryAfterSafetyCeiling = TimeSpan.FromHours(1);
+    private static readonly HashSet<string> s_diagnosticTestOutcomes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Failed", "Error", "Timeout", "Aborted", "Inconclusive", "Blocked", "Warning"
+    };
 
     private readonly AzdoService _azdoService;
     private readonly IAzdoApiClient _azdoClient;
@@ -188,7 +193,7 @@ public sealed class AzdoBuildCollector
         }
 
         progress?.Invoke("Collecting selected AzDO tests...");
-        await CollectTestsAsync(attempts, priorAttempts, policy, org, project, buildId, ct);
+        await CollectTestsAsync(attempts, priorAttempts, policy, org, project, buildId, progress, ct);
 
         if (evidencePlan is not null)
         {
@@ -222,7 +227,9 @@ public sealed class AzdoBuildCollector
             {
                 incomplete.Add(new CollectIncompleteDetail
                 {
-                    Code = "fetch_skipped",
+                    Code = attempt.Skip?.Kind is "test_result_limit" or "test_attachment_limit"
+                        ? attempt.Skip.Kind
+                        : "fetch_skipped",
                     Message = attempt.Skip?.Message ?? $"{attempt.Operation} skipped.",
                     Operation = attempt.Operation,
                     Resource = attempt.Resource
@@ -263,9 +270,24 @@ public sealed class AzdoBuildCollector
                 var snapshotManifestPath = Path.Combine(export.Destination, manifestRelativePath);
                 Directory.CreateDirectory(Path.GetDirectoryName(snapshotManifestPath)!);
                 File.Copy(manifestPath, snapshotManifestPath, overwrite: false);
+                progress?.Invoke("Validating exported snapshot...");
                 var validation = await SnapshotValidator.ValidateAsync(export.Destination, ct);
+                if (!validation.IsValid)
+                {
+                    incomplete.Add(new CollectIncompleteDetail
+                    {
+                        Code = "snapshot_validation_failed",
+                        Message = validation.Errors.Count > 0
+                            ? string.Join("; ", validation.Errors)
+                            : "Exported snapshot failed validation.",
+                        Operation = "snapshot_validate",
+                        Resource = Resource(("path", export.Destination))
+                    });
+                }
                 manifest = manifest with
                 {
+                    Complete = complete && validation.IsValid,
+                    IncompleteDetails = incomplete,
                     Snapshot = new CollectSnapshotInfo
                     {
                         Exported = true,
@@ -459,6 +481,7 @@ public sealed class AzdoBuildCollector
         string org,
         string project,
         int buildId,
+        Action<string>? progress,
         CancellationToken ct)
     {
         if (IsNone(policy.TestScope))
@@ -475,10 +498,23 @@ public sealed class AzdoBuildCollector
                 Resource(("org", org), ("project", project), ("buildId", buildId)),
                 AzdoListCacheKeys.TestRunsComplete(_cacheOptions, org, project, buildId)),
             policy,
-            async token => await _azdoService.GetTestRunsPageAsync(
-                policy.BuildIdOrUrl,
-                new HlxPageRequest { All = true, Offset = 0, Limit = null },
-                ct: token),
+            async token =>
+            {
+                var envelope = await _azdoService.GetTestRunsPageAsync(
+                    policy.BuildIdOrUrl,
+                    new HlxPageRequest { All = true, Offset = 0, Limit = null },
+                    ct: token);
+                var invalidRun = envelope.Results.FirstOrDefault(run => run.TotalTests < 0);
+                if (invalidRun is not null)
+                {
+                    throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                        AcquisitionErrorKind.InvalidResponse, "azdo", "list_test_runs",
+                        Resource(("org", org), ("project", project), ("buildId", buildId),
+                            ("runId", invalidRun.Id), ("totalTests", invalidRun.TotalTests)),
+                        "AzDO test-run metadata contains a negative totalTests; cannot safely estimate result volume."));
+                }
+                return envelope;
+            },
             metadata: true,
             ct: ct,
             pagingSelector: value => value is HlxListEnvelope<AzdoTestRun> envelope ? PagingFromEnvelope(envelope) : null);
@@ -486,13 +522,45 @@ public sealed class AzdoBuildCollector
         if (runsEnvelope is null)
             return;
 
+        var testProgress = new CollectProgressReporter(progress);
+        var estimatedResults = runsEnvelope.Results.Sum(run => (long)run.TotalTests);
+        var maxResults = policy.MaxTestResults ?? CollectPolicy.DefaultMaxTestResults;
+        var maxAttachments = policy.MaxTestAttachments ?? CollectPolicy.DefaultMaxTestAttachments;
+        var allResults = policy.TestScope.Equals("all", StringComparison.OrdinalIgnoreCase);
+        testProgress.Report(
+            $"Tests: {runsEnvelope.Results.Count} run(s), {estimatedResults} estimated result(s); " +
+            $"scope={policy.TestScope}, result budget={maxResults}, attachments={policy.TestAttachmentScope}, attachment budget={maxAttachments}.",
+            force: true);
+        if (allResults && estimatedResults > maxResults)
+        {
+            var message = $"All-result collection skipped: {estimatedResults} estimated results exceed " +
+                $"{(policy.MaxTestResults.HasValue ? "explicit" : "default")} --max-test-results {maxResults}. " +
+                $"Rerun with --max-test-results {estimatedResults} or larger, or use --test-scope failed.";
+            AddSkip(attempts, "azdo.test-results-budget", "azdo.tests", true, "azdo", "list_test_results",
+                Resource(("buildId", buildId), ("requestedCount", estimatedResults),
+                    ("maxTestResults", maxResults), ("budgetExplicit", policy.MaxTestResults.HasValue)),
+                "test_result_limit", message);
+            testProgress.Report(message, force: true);
+            return;
+        }
+        testProgress.Report(allResults
+            ? $"Tests: all-result budget accepted ({estimatedResults}/{maxResults}); attachments remain {policy.TestAttachmentScope}."
+            : "Tests: failed-only result collection; all-result volume guard does not apply.", force: true);
+        var attachmentPlans = new ConcurrentBag<TestAttachmentPlan>();
+        long acquiredResults = 0;
         var outcomes = policy.TestScope.Equals("all", StringComparison.OrdinalIgnoreCase)
-            ? "Passed,Failed,NotExecuted,Inconclusive,Timeout,Aborted,Error,NotApplicable"
+            // Full AzDO TestOutcome enum (Microsoft.TeamFoundation.TestManagement.WebApi.TestOutcome),
+            // excluding "NotRunnable" which the AzDO test-results API rejects as an invalid
+            // outcome filter value even though some docs/tools list it as a scope keyword.
+            ? "Unspecified,None,Passed,Failed,Inconclusive,Timeout,Aborted,Blocked,NotExecuted,Warning,Error,NotApplicable,Paused,InProgress,NotImpacted"
             : "Failed";
 
         var testAttempts = await ForEachCollectAsync(runsEnvelope.Results, policy.MaxConcurrency, async (run, localAttempts) =>
         {
-            var resultsEnvelope = await RunAsync(
+            testProgress.Report($"Run {run.Id}: acquiring test results ({run.TotalTests} estimated total).", force: true);
+            var resultsEnvelope = await testProgress.WithHeartbeatAsync(
+                $"Run {run.Id} test results",
+                () => RunAsync(
                 localAttempts,
                 priorAttempts,
                 CreateAttempt($"azdo.test-results:{run.Id}:{outcomes}", "azdo.tests", true, "azdo", "list_test_results",
@@ -507,12 +575,28 @@ public sealed class AzdoBuildCollector
                     ct: token),
                 metadata: true,
                 ct: ct,
-                pagingSelector: value => value is HlxListEnvelope<AzdoTestResult> envelope ? PagingFromEnvelope(envelope) : null);
+                pagingSelector: value => value is HlxListEnvelope<AzdoTestResult> envelope ? PagingFromEnvelope(envelope) : null),
+                ct);
 
             if (resultsEnvelope is null)
+            {
+                testProgress.Report($"Run {run.Id}: test-result acquisition failed; see manifest.", force: true);
                 return;
+            }
 
-            if (policy.TestScope.Equals("all", StringComparison.OrdinalIgnoreCase))
+            var totalAcquired = Interlocked.Add(ref acquiredResults, resultsEnvelope.Results.Count);
+            testProgress.Report(
+                $"Run {run.Id}: acquired {resultsEnvelope.Results.Count} result(s); build acquired {totalAcquired}.", force: true);
+            if (allResults && totalAcquired > maxResults)
+            {
+                AddSkip(localAttempts, $"azdo.test-results-budget:{run.Id}", "azdo.tests", true, "azdo", "list_test_results",
+                    Resource(("runId", run.Id), ("requestedCount", totalAcquired), ("maxTestResults", maxResults)),
+                    "test_result_limit",
+                    $"Provider results exceeded the build-wide estimate and --max-test-results {maxResults}. " +
+                    $"Rerun with --max-test-results {totalAcquired} or larger.");
+            }
+
+            if (allResults)
             {
                 var failedResults = resultsEnvelope.Results
                     .Where(result => string.Equals(result.Outcome, "Failed", StringComparison.OrdinalIgnoreCase))
@@ -546,29 +630,74 @@ public sealed class AzdoBuildCollector
                 });
             }
 
-            foreach (var result in resultsEnvelope.Results)
-            {
-                await RunAsync(
-                    localAttempts,
-                    priorAttempts,
-                    CreateAttempt($"azdo.test-attachments:{run.Id}:{result.Id}", "azdo.tests", false, "azdo", "list_test_attachments",
-                        Resource(("org", org), ("project", project), ("runId", run.Id), ("resultId", result.Id)),
-                        AzdoListCacheKeys.TestAttachmentsComplete(_cacheOptions, org, project, run.Id, result.Id)),
-                    policy,
-                    async token => await _azdoService.GetTestAttachmentsPageAsync(
-                        org,
-                        project,
-                        run.Id,
-                        result.Id,
-                        new HlxPageRequest { All = true, Offset = 0, Limit = null },
-                        ct: token),
-                    metadata: true,
-                    ct: ct,
-                    pagingSelector: value => value is HlxListEnvelope<AzdoTestAttachment> envelope ? PagingFromEnvelope(envelope) : null);
-            }
+            var eligible = resultsEnvelope.Results.Where(result => SelectTestAttachments(policy.TestAttachmentScope, result));
+            var eligibleCount = eligible.Count();
+            attachmentPlans.Add(new TestAttachmentPlan(run.Id, eligibleCount,
+                resultsEnvelope.Results.Count - eligibleCount,
+                eligible.OrderBy(result => result.Id).Take((int)Math.Min(maxAttachments, int.MaxValue)).ToList()));
         }, ct);
         attempts.AddRange(testAttempts);
+
+        var selected = new List<(int RunId, int ResultId)>();
+        long excludedCount = 0;
+        long limitedCount = 0;
+        foreach (var plan in attachmentPlans.OrderBy(plan => plan.RunId))
+        {
+            excludedCount += plan.Excluded;
+            if (plan.Excluded > 0)
+            {
+                AddSkip(attempts, $"azdo.test-attachment-exclusions:{plan.RunId}", "azdo.tests", false, "azdo", "list_test_attachments",
+                    Resource(("runId", plan.RunId), ("requestedCount", plan.Excluded), ("testAttachmentScope", policy.TestAttachmentScope)),
+                    "policy_excluded", $"{plan.Excluded} result(s) excluded by --test-attachment-scope {policy.TestAttachmentScope}.");
+            }
+            var available = Math.Max(0, maxAttachments - selected.Count);
+            var take = (int)Math.Min(plan.Candidates.Count, available);
+            selected.AddRange(plan.Candidates.Take(take).Select(result => (plan.RunId, result.Id)));
+            var skipped = plan.Eligible - take;
+            limitedCount += skipped;
+            if (skipped > 0)
+            {
+                AddSkip(attempts, $"azdo.test-attachment-limit:{plan.RunId}", "azdo.tests", true, "azdo", "list_test_attachments",
+                    Resource(("runId", plan.RunId), ("requestedCount", plan.Eligible), ("selectedCount", take),
+                        ("skippedCount", skipped), ("maxTestAttachments", maxAttachments)),
+                    "test_attachment_limit",
+                    $"{skipped} eligible attachment-list request(s) skipped by build-wide --max-test-attachments {maxAttachments}. " +
+                    "Rerun with a larger --max-test-attachments to collect the remaining selected coverage.");
+            }
+        }
+        testProgress.Report(
+            $"Attachments: selected {selected.Count}, excluded {excludedCount}, skipped by limit {limitedCount}; " +
+            $"scope={policy.TestAttachmentScope}, budget={maxAttachments}.", force: true);
+        long completedAttachments = 0;
+        var attachmentAttempts = await testProgress.WithHeartbeatAsync(
+            "Test attachments",
+            () => ForEachCollectAsync(selected, policy.MaxConcurrency, async (item, localAttempts) =>
+            {
+                await RunAsync(localAttempts, priorAttempts,
+                    CreateAttempt($"azdo.test-attachments:{item.RunId}:{item.ResultId}", "azdo.tests", false, "azdo", "list_test_attachments",
+                        Resource(("org", org), ("project", project), ("runId", item.RunId), ("resultId", item.ResultId)),
+                        AzdoListCacheKeys.TestAttachmentsComplete(_cacheOptions, org, project, item.RunId, item.ResultId)),
+                    policy,
+                    token => _azdoService.GetTestAttachmentsPageAsync(org, project, item.RunId, item.ResultId,
+                        new HlxPageRequest { All = true, Offset = 0, Limit = null }, ct: token),
+                    metadata: true, ct: ct,
+                    pagingSelector: value => value is HlxListEnvelope<AzdoTestAttachment> envelope ? PagingFromEnvelope(envelope) : null);
+                var done = Interlocked.Increment(ref completedAttachments);
+                testProgress.Report($"Attachments: completed {done}/{selected.Count}; excluded {excludedCount}, skipped by limit {limitedCount}.");
+            }, ct),
+            ct);
+        attempts.AddRange(attachmentAttempts);
+        testProgress.Report(
+            $"Attachments: completed {completedAttachments}/{selected.Count}; excluded {excludedCount}, skipped by limit {limitedCount}.",
+            force: true);
     }
+
+    private sealed record TestAttachmentPlan(int RunId, int Eligible, int Excluded, IReadOnlyList<AzdoTestResult> Candidates);
+
+    private static bool SelectTestAttachments(string scope, AzdoTestResult result)
+        => scope.Equals("all", StringComparison.OrdinalIgnoreCase) ||
+           scope.Equals("diagnostic", StringComparison.OrdinalIgnoreCase) &&
+           result.Outcome is not null && s_diagnosticTestOutcomes.Contains(result.Outcome);
 
     private async Task CollectHelixSuggestedFetchesAsync(
         List<CollectFetchAttempt> attempts,
@@ -589,7 +718,15 @@ public sealed class AzdoBuildCollector
             .GroupBy(fetch => HelixFetchDedupeKey(fetch), StringComparer.Ordinal)
             .Select(group => group.First())
             .ToList();
-        var downloadBudget = new HelixFileDownloadBudget(policy.MaxTotalBytes);
+
+        // Optional Helix file downloads must never be able to evict required evidence already
+        // collected in this run via the cache's LRU cap. Reserve the bytes required attempts have
+        // already consumed and clamp the optional download budget to whatever cache capacity
+        // remains, in addition to the user-requested --max-total-bytes.
+        var requiredBytesSoFar = attempts.Where(a => a.Required).Sum(a => a.Bytes ?? 0);
+        var remainingCacheCapacity = Math.Max(0, _cacheOptions.MaxSizeBytes - requiredBytesSoFar);
+        var effectiveMaxTotalBytes = Math.Min(policy.MaxTotalBytes, remainingCacheCapacity);
+        var downloadBudget = new HelixFileDownloadBudget(effectiveMaxTotalBytes);
 
         var helixAttempts = await ForEachCollectAsync(fetches, policy.MaxConcurrency, async (fetch, localAttempts) =>
         {
@@ -733,7 +870,7 @@ public sealed class AzdoBuildCollector
                     cachedBytes > policy.MaxFileBytes ? "size_limit" : "total_size_limit",
                     cachedBytes > policy.MaxFileBytes
                         ? $"Cached Helix uploaded file '{fileName}' exceeds --max-file-bytes {policy.MaxFileBytes}."
-                        : $"Cached Helix uploaded file '{fileName}' would exceed --max-total-bytes {policy.MaxTotalBytes}."));
+                        : $"Cached Helix uploaded file '{fileName}' would exceed the effective download budget of {downloadBudget.MaxTotalBytes} bytes (--max-total-bytes {policy.MaxTotalBytes}, clamped to remaining cache capacity)."));
                 return;
             }
         }
@@ -833,7 +970,7 @@ public sealed class AzdoBuildCollector
                                 started,
                                 stopwatch.ElapsedMilliseconds,
                                 "total_size_limit",
-                                $"Helix uploaded file '{fileName}' would exceed --max-total-bytes {policy.MaxTotalBytes}."));
+                                $"Helix uploaded file '{fileName}' would exceed the effective download budget of {downloadBudget.MaxTotalBytes} bytes (--max-total-bytes {policy.MaxTotalBytes}, clamped to remaining cache capacity)."));
                             return;
                         }
 
@@ -877,6 +1014,25 @@ public sealed class AzdoBuildCollector
             {
                 downloadBudget.Release(reservedBytes);
                 acquisitionFailure = ex;
+                break;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                downloadBudget.Release(reservedBytes);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Last-resort net: an unclassified failure (e.g. local disk I/O while caching the
+                // download) must still produce a recorded failed attempt, not an unhandled crash.
+                downloadBudget.Release(reservedBytes);
+                acquisitionFailure = new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                    AcquisitionErrorKind.TransportError,
+                    "helix",
+                    "download_helix_file",
+                    resource,
+                    $"Unexpected error during download_helix_file: {ex.Message}"),
+                    ex);
                 break;
             }
             finally
@@ -1077,6 +1233,24 @@ public sealed class AzdoBuildCollector
             catch (HlxAcquisitionException ex)
             {
                 acquisitionFailure = ex;
+                break;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Last-resort net: any unclassified failure (e.g. a body-read/stream error that
+                // escaped client-boundary classification) must still produce a recorded failed
+                // attempt so the manifest is always written, never an unhandled crash with no manifest.
+                acquisitionFailure = new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                    AcquisitionErrorKind.TransportError,
+                    template.Provider,
+                    template.Operation,
+                    template.Resource,
+                    $"Unexpected error during {template.Operation}: {ex.Message}"),
+                    ex);
                 break;
             }
         }
@@ -1306,7 +1480,11 @@ public sealed class AzdoBuildCollector
             return (true, AcquisitionErrorKind.NotInSnapshot, "");
         }
 
-        var cached = await _cacheStore.GetMetadataAsync(attempt.CacheKey, ct);
+        // Ignore TTL here: this verifies the row is still physically present after collection,
+        // which can outlast a short metadata TTL on a long-running collect. Export and offline
+        // eval replay both ignore expiry too, so a TTL-expired-but-present row is not actually
+        // missing evidence.
+        var cached = await _cacheStore.GetMetadataIgnoringTtlAsync(attempt.CacheKey, ct);
         if (cached is null)
         {
             return (false, AcquisitionErrorKind.NotInSnapshot,
@@ -1466,10 +1644,14 @@ public sealed class AzdoBuildCollector
                 Caps = new CollectCapsInfo
                 {
                     MaxFileBytes = policy.MaxFileBytes,
-                    MaxTotalBytes = policy.MaxTotalBytes
+                    MaxTotalBytes = policy.MaxTotalBytes,
+                    MaxTestResults = policy.MaxTestResults ?? CollectPolicy.DefaultMaxTestResults,
+                    MaxTestAttachments = policy.MaxTestAttachments ?? CollectPolicy.DefaultMaxTestAttachments
                 },
                 LogScope = policy.LogScope,
                 TestScope = policy.TestScope,
+                MaxTestResultsExplicit = policy.MaxTestResults.HasValue,
+                TestAttachmentScope = policy.TestAttachmentScope,
                 HelixScope = policy.HelixScope
             },
             Cache = new CollectCacheInfo
@@ -1515,12 +1697,16 @@ public sealed class AzdoBuildCollector
         return new CollectHelixAuthInfo { Path = path };
     }
 
-    private static string ResolveManifestPath(CollectPolicy policy)
+    private string ResolveManifestPath(CollectPolicy policy)
     {
         if (!string.IsNullOrWhiteSpace(policy.ManifestPath))
             return Path.GetFullPath(policy.ManifestPath);
 
-        var root = Directory.GetCurrentDirectory();
+        // Default next to the cache/export data this run populates, not the current working
+        // directory: a CWD default risks an accidental `git add .`/commit of a manifest that
+        // records the local auth partition hash and absolute cache paths.
+        var root = _cacheOptions.GetEffectiveCacheRoot();
+        Directory.CreateDirectory(root);
         return Path.Combine(root, "hlx-collect-manifest.json");
     }
 
@@ -1536,6 +1722,12 @@ public sealed class AzdoBuildCollector
             throw new ArgumentException("Invalid --log-scope. Must be failed, all, or none.", nameof(policy));
         if (!IsOneOf(policy.TestScope, "failed", "all", "none"))
             throw new ArgumentException("Invalid --test-scope. Must be failed, all, or none.", nameof(policy));
+        if (policy.MaxTestResults is <= 0 || policy.MaxTestAttachments is <= 0)
+            throw new ArgumentOutOfRangeException(nameof(policy), "Test result and attachment budgets must be greater than 0.");
+        if (!IsOneOf(policy.TestAttachmentScope, "diagnostic", "all", "none"))
+            throw new ArgumentException("Invalid --test-attachment-scope. Must be diagnostic, all, or none.", nameof(policy));
+        if (policy.TestAttachmentScope.Equals("all", StringComparison.OrdinalIgnoreCase) && policy.MaxTestAttachments is null)
+            throw new ArgumentException("--test-attachment-scope all requires an explicit positive --max-test-attachments.", nameof(policy));
         if (!IsOneOf(policy.HelixScope, "suggested", "none"))
             throw new ArgumentException("Invalid --helix-scope. Must be suggested or none.", nameof(policy));
         if (policy.MaxFileBytes < 0 || policy.MaxTotalBytes < 0)
@@ -1599,7 +1791,7 @@ public sealed class AzdoBuildCollector
         };
 
     private static bool IsPolicyAllowedIncomplete(CollectIncompleteDetail detail)
-        => detail.Code is "fetch_skipped" && detail.Resource is not null;
+        => detail.Code is "fetch_skipped" or "test_result_limit" or "test_attachment_limit" && detail.Resource is not null;
 
     private static TimeSpan GetRetryDelay(CollectPolicy policy, AcquisitionError error, int attemptCount)
     {
@@ -1689,6 +1881,8 @@ public sealed class AzdoBuildCollector
     {
         private readonly object _gate = new();
         private long _usedBytes;
+
+        public long MaxTotalBytes => maxTotalBytes;
 
         public long Remaining
         {
