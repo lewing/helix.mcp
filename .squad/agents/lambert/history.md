@@ -56,3 +56,22 @@ Cross-agent context from Scribe:
 **Parallel work:**
 - Ash's scanner analysis aligns with Dallas's #152 phasing recommendation
 - All decisions merged and ready for Larry's review
+
+### 2026-10-02T12:04:09-05:00 — Acquisition error contract coverage (#152)
+
+- Added recorded/offline acquisition coverage for AzDO HTTP classification, Helix service classification, MCP structured error filtering/tool integration, CLI `--json` envelopes, cache failure non-persistence, eval/offline cache errors, and `azdo_helix_jobs` fallback preservation of primary acquisition errors. Assertions pin structured fields (`kind`, `provider`, `operation`, `resource`, `httpStatus`, `retryAfterSeconds`) rather than human message wording.
+- Updated stale tests that encoded old success-shaped behavior (`null`, `[]`, `string.Empty`, `HelixException`, `InvalidOperationException`) to the #152 `HlxAcquisitionException`/structured acquisition contract, while keeping legitimate empty successes (`200` empty logs, valid `value: []`, empty Helix file lists) green.
+- Useful implementation feedback caught during test-first iteration: invalid-response paths initially omitted `httpStatus`, MCP structured content initially exposed enum names instead of stable wire strings, composite timeline failures should be represented as incomplete results with `timelineAcquisitionError`, and unexpected non-acquisition exceptions should not trigger Helix fallback. Ripley fixed the implementation gaps during the session; final focused acquisition validation was 67 passed / 0 failed, full suite 2088 passed / 9 skipped.
+
+### 2026-10-02T12:55:00-05:00 — AzDO empty-log metadata validation follow-up (#152)
+
+- Dallas's rejected live case proved raw HTTP `200` + zero-byte AzDO log bodies are not sufficient evidence of success: build 1621466/log 999999 returns an empty body, but the build logs list and timeline both exclude that log ID. Service-level validation now treats that shape as `not_found` while preserving genuinely empty logs when the ID appears in either metadata source.
+- The raw AzDO client can still model provider transport literally (`200` empty text => `""`); ambiguity is resolved in `AzdoService`, where build-log list and timeline metadata are available and failures from those metadata calls can propagate as their own classified acquisition errors.
+- Cache tests should pin both failure non-persistence and empty-success non-persistence for full AzDO logs. Skipping zero-length full-log cache writes is the safe P0 because a cached empty body can outlive the metadata context needed to distinguish "real empty log" from "nonexistent log ID."
+
+### 2026-10-02T12:50:00-05:00 — Locked-out revisions: paging and empty-log fixes
+
+- Revised two rejected commits after Dallas locked out original author (Ripley):
+  - **Commit 28beceb rejection:** paging contract falsely reported non-final pages as complete. Ripley's calculation `offset + shown < total` missed final-page cases. Revised to: any partial page must fail closed with `helixFailuresTruncated=true`, `truncated=true`, `complete=false`, and `incompleteDetails[].code == "helix_failures_truncated"`; only pages where `limit >= total` can be complete. Updated reason text to avoid false "showing first N" claims on later pages.
+  - **Commit 5f11d95 rejection:** AzDO HTTP 200 empty-body log ambiguity. Dallas's spec required metadata validation in `AzdoService.GetBuildLogAsync`: after direct fetch returns `""`, validate requested logId in logs-list (already fetched for tail calls) or timeline records; if absent, throw `not_found` acquisition error; if present, return `""`. Prevent cache persistence of zero-length logs until metadata validation proves logId exists.
+- Both revisions validated: 2095 full suite passed / 9 skipped; targeted #152 tests 98/98 passed; live `azdo log 1621466 999999 --json` now exits 1 with `kind=not_found`, `provider=azdo`, `operation=get_build_log`, `resource.logId=999999`.
