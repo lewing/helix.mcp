@@ -261,14 +261,14 @@ The MCP equivalent keeps its positive `stripAttemptPrefix` boolean, which defaul
 
 - `--helix-failure-offset N` — Offset into parsed Helix monitor failures (for deterministic collectors). Default: `0`. Used with `--helix-failure-limit` to page through `helixFailures[]` when the total exceeds the limit.
 
-- `--helix-failure-limit N` — Maximum parsed Helix monitor failures to return. Default: `200`, max: `1000`. When `helixFailuresTruncated` is `true`, use `--helix-failure-offset` with the same limit to fetch the next page. Helix failures are parsed from timeline issues in arcade queue-monitor jobs; returned only when the monitor job is selected by `--job-results` and its timeline issues contain parseable work-item failures. A monitor job with unparseable failures, unresolved Helix job IDs, or failures exceeding the page limit remains incomplete with explicit `incompleteDetails[].code` reasons.
+- `--helix-failure-limit N` — Maximum parsed Helix monitor failures to return. Default: `200`, max: `1000`. Any page where `helixFailureTotal > helixFailures.length` is a partial response: `complete` is `false`, `truncated` is `true`, `helixFailuresTruncated` is `true`, `incompleteDetails[].code` includes `helix_failures_truncated`, and the CLI exits `2`. This fail-closed rule also applies to later offset pages, including a final page such as `showing 3-3 of 3`, because that single response does not contain every parsed failure. Collectors should treat exit `2` from Helix-failure paging as "fetch/merge remaining pages" or request a `--helix-failure-limit` greater than or equal to `helixFailureTotal` when they need a single complete response. Helix failures are parsed from timeline issues in arcade queue-monitor jobs; returned only when the monitor job is selected by `--job-results` and its timeline issues contain parseable work-item failures. A monitor job with unparseable failures, unresolved Helix job IDs, or partial paging remains incomplete with explicit `incompleteDetails[].code` reasons.
 
 **Exit Codes:**
 
 | Code | Meaning |
 |------|---------|
-| `0` | Plan produced and `complete == true`: selected artifact jobs are mapped, monitor failures (if any) are parseable, and no evidence-plan output was truncated. |
-| `2` | Plan produced but `complete == false` because of ambiguous/missing artifacts, truncation, unparseable monitor output, or unresolved monitor Helix job IDs. **The bounded plan is still written to stdout.** This is informational, not a hard error. |
+| `0` | Plan produced and `complete == true`: selected artifact jobs are mapped, monitor failures (if any) are parseable, and no evidence-plan output was truncated. A paged response is complete only when the page itself contains all parsed Helix failures. |
+| `2` | Plan produced but `complete == false` because of ambiguous/missing artifacts, truncation, partial Helix-failure paging, unparseable monitor output, or unresolved monitor Helix job IDs. **The bounded plan is still written to stdout.** For paging collectors, treat this as a signal to continue fetching/merging pages or retry with a limit at least as large as `helixFailureTotal`. |
 | `1` | Hard error: invalid argument, build not found, timeline unavailable, or network error. |
 
 **Output Structure (JSON):**
@@ -312,25 +312,25 @@ Without `--json`, the CLI prints a deterministic human-readable plan. With `--js
     - `purpose` — Human-readable description of why this fetch is suggested.
 - `helixFailureOffset`, `helixFailureLimit` — Echo of paging parameters from `--helix-failure-offset` / `--helix-failure-limit`.
 - `helixFailureTotal` — Total parsed Helix monitor failures before paging bounds were applied.
-- `helixFailuresTruncated` — `true` when `helixFailureOffset + helixFailures.length < helixFailureTotal` (indicating more pages available via `--helix-failure-offset`).
+- `helixFailuresTruncated` — `true` when `helixFailureTotal > helixFailures.length`. This marks the current response as a partial page even if the offset is on the last row range; it does not necessarily mean another page exists after the current offset.
 - `incompleteDetails[]` — Machine-readable completeness diagnostics (present only if `complete == false`). Each contains:
   - `code` — Stable machine-readable reason:
     - `"artifact_ambiguous"` — A selected artifact job matched multiple candidate artifacts, so none was selected.
     - `"artifact_missing"` — A selected artifact job had no matching artifact candidate.
     - `"candidates_truncated"` — A job's candidate artifact list exceeded the per-entry bound and was truncated.
     - `"entries_truncated"` — Selected artifact jobs exceeded the plan entry bound, so some jobs are not represented.
-    - `"helix_failures_truncated"` — Parsed Helix monitor failures exceeded the current `--helix-failure-offset`/`--helix-failure-limit` page.
+    - `"helix_failures_truncated"` — Parsed Helix monitor failures exceeded the count returned in the current `--helix-failure-offset`/`--helix-failure-limit` page.
     - `"monitor_unparseable"` — A selected Helix-monitor-like job failed but timeline issues contained no parseable Helix work-item failures.
     - `"monitor_unresolved_job_id"` — Failure-shaped monitor timeline entries were found, but their Helix job ID could not be recovered.
   - `message` — Human-readable explanation.
   - `jobId`, `jobName` — Associated job GUID and name (present for job-specific issues).
   - `count`, `total` — When applicable (e.g., for truncation): count returned, total available.
-- `complete` — `true` only when selected artifact jobs are complete (`status == "mapped"`) and `incompleteDetails[]` is empty (no monitor parse/unresolved/truncation diagnostics).
-- `incompleteReasons[]` — Human-readable lines (present only if `complete == false`) explaining ambiguities, gaps, entry truncation, or monitor parsing issues. Human output prints `incompleteDetails[]` as bracketed stable codes, e.g. `- [monitor_unparseable] ...`.
+- `complete` — `true` only when selected artifact jobs are complete (`status == "mapped"`) and `incompleteDetails[]` is empty (no monitor parse/unresolved/truncation diagnostics and no partial Helix-failure page).
+- `incompleteReasons[]` — Human-readable lines (present only if `complete == false`) explaining ambiguities, gaps, entry truncation, partial Helix-failure pages, or monitor parsing issues. Human output prints `incompleteDetails[]` as bracketed stable codes, e.g. `- [monitor_unparseable] ...`. Helix paging messages use explicit ranges such as `Helix monitor failures truncated: showing 1-1 of 2.`
 - `warnings[]` — Non-fatal planning diagnostics in deterministic order, capped at 10. Always present (empty when there are no warnings).
 - `warningTotal` — Total warnings before the 10-item bound. Always present.
 - `warningsTruncated` — `true` when `warningTotal` exceeds the number returned in `warnings`; otherwise `false`. Always present.
-- `truncated` — `true` if either the 200-entry limit, any entry's 10-candidate limit, or the Helix failure page limit was exceeded.
+- `truncated` — `true` if either the 200-entry limit, any entry's 10-candidate limit, or the current Helix failure page is partial (`helixFailureTotal > helixFailures.length`).
 - `totalEntries` — Total selected artifact jobs (present when artifact entry/candidate planning was truncated; omitted for Helix-only truncation).
 - `note` — Present on truncation; summarizes entry truncation, candidate-list truncation, or Helix failure truncation.
 - `generatedAt` — ISO 8601 timestamp when the plan was generated.
@@ -363,6 +363,15 @@ hlx azdo evidence plan "$BUILD_ID" --json | jq '.complete'
 hlx azdo evidence plan "$BUILD_ID" --json | \
   jq -r '.helixFailures[] | .suggestedFetches[] | "\(.tool) \(.helixJobId) \(.workItem // "")  # \(.purpose)"' | \
   while read cmd; do echo "# $cmd"; done
+
+# Paging collectors: exit 2 means the response is bounded but usable.
+# Merge pages until the collected row count reaches helixFailureTotal,
+# or rerun once with --helix-failure-limit >= helixFailureTotal.
+hlx azdo evidence plan "$BUILD_ID" --helix-failure-limit 1 --json > page.json
+status=$?
+if [ "$status" -eq 2 ]; then
+  jq '{helixFailureOffset, returned: (.helixFailures | length), helixFailureTotal, incompleteDetails}' page.json
+fi
 ```
 
 ### `hlx azdo test-attachments <runId> <resultId> [--top N]`
@@ -437,6 +446,88 @@ Output includes:
 | `hlx cache status` | Show cache size, entry count, oldest/newest entries |
 | `hlx cache clear` | Wipe all cached data |
 | `hlx llms-txt` | Print CLI documentation for LLM agents |
+
+## Errors and exit codes
+
+Provider acquisition failures use a stable `AcquisitionError` shape across CLI JSON and MCP structured errors. The wire values for `error.kind` are:
+
+| `kind` | Meaning |
+|--------|---------|
+| `not_found` | The requested provider resource or eval-mode cache entry was not found. |
+| `access_denied` | Authentication or authorization failed. |
+| `rate_limited` | The provider returned a rate-limit response. |
+| `timeout` | The provider operation timed out. |
+| `transport_error` | Network transport failed or the provider returned an unclassified non-success HTTP status. |
+| `invalid_response` | The provider/cache returned malformed, empty, corrupt, or otherwise unusable data. |
+
+`error.provider` is `azdo`, `helix`, or `cache` (eval-mode cache misses and corrupt cache entries). Every error has `kind`, `provider`, `operation`, `resource`, and `message`; `httpStatus` and `retryAfterSeconds` are present only when known. The `resource` object contains operation-specific identifiers such as `org`, `project`, `buildId`, `logId`, `jobId`, `workItem`, or cache `key`.
+
+CLI commands with `--json` wrap hard acquisition failures as:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "kind": "not_found",
+    "provider": "azdo",
+    "operation": "get_build",
+    "resource": {
+      "org": "dnceng-public",
+      "project": "public",
+      "buildId": 999999999
+    },
+    "httpStatus": 404,
+    "message": "AzDO get_build not found for org=dnceng-public, project=public, buildId=999999999 (HTTP 404)."
+  }
+}
+```
+
+The example above is from:
+
+```bash
+cd src/HelixTool
+DOTNET_ROLL_FORWARD=Major dotnet run -- azdo build 999999999 --json
+echo exit=$?
+# exit=1
+```
+
+MCP tool failures return a normal tool result with `isError: true`, human text in `content[0].text`, and the same machine-readable error nested under `structuredContent.error`:
+
+```json
+{
+  "isError": true,
+  "content": [
+    { "type": "text", "text": "AzDO get_build_log not found for org=dnceng-public, project=public, buildId=12345, logId=7 (HTTP 404)." }
+  ],
+  "structuredContent": {
+    "error": {
+      "kind": "not_found",
+      "provider": "azdo",
+      "operation": "get_build_log",
+      "resource": {
+        "org": "dnceng-public",
+        "project": "public",
+        "buildId": 12345,
+        "logId": 7
+      },
+      "httpStatus": 404,
+      "message": "AzDO get_build_log not found for org=dnceng-public, project=public, buildId=12345, logId=7 (HTTP 404)."
+    }
+  }
+}
+```
+
+Callers own retry/skip policy. `rate_limited` can include `retryAfterSeconds`, but `hlx` does not automatically decide whether a caller should retry, skip a resource, or fail a larger collection.
+
+Exit codes:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success. Genuinely empty successful results remain successes: for example, a real empty work-item file list or an empty successful search/list result is not converted into an error. |
+| `1` | Hard command or acquisition error, including validation failures, provider errors, auth failures, invalid/corrupt cache entries, malformed provider JSON, and empty provider responses where a JSON object/list was required. |
+| `2` | Evidence-plan only: a bounded plan was written, but `complete == false` because artifact mapping is ambiguous/missing, output was truncated, monitor data was unparseable/unresolved, or Helix-failure paging returned a partial page. |
+
+Known gap: Azure DevOps can return HTTP `200` with an empty body for some nonexistent log IDs. The current contract surfaces empty provider responses as acquisition failures, while the precise classification for those log-ID cases is pending a design decision.
 
 ## Environment Variables
 
