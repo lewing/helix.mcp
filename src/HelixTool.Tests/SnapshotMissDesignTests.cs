@@ -225,6 +225,31 @@ public sealed class SnapshotMissCacheStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task SetAcquisitionError_DeletesSameKeyPositiveMetadataAndArtifactRows()
+    {
+        using var store = new SqliteCacheStore(new CacheOptions { CacheRoot = _root });
+        const string metadataKey = "azdo:org:project:build:42";
+        const string artifactKey = "job:job1:wi:workItem:file:results.trx";
+        var error = SnapshotMissTestSupport.Error(AcquisitionErrorKind.NotFound, "azdo", "get_build", httpStatus: 404);
+
+        await store.SetMetadataAsync(metadataKey, "{\"Id\":42}", TimeSpan.FromHours(1));
+        await SnapshotMissTestSupport.SetAcquisitionErrorAsync(store, metadataKey, error, TimeSpan.FromHours(1));
+
+        Assert.Null(await store.GetMetadataAsync(metadataKey));
+        Assert.NotNull(await SnapshotMissTestSupport.GetAcquisitionErrorAsync(store, metadataKey));
+
+        await store.SetArtifactAsync(artifactKey, new MemoryStream("artifact"u8.ToArray()));
+        await SnapshotMissTestSupport.SetAcquisitionErrorAsync(
+            store,
+            artifactKey,
+            SnapshotMissTestSupport.Error(AcquisitionErrorKind.NotFound, "helix", "download_helix_file", httpStatus: 404),
+            TimeSpan.FromHours(1));
+
+        Assert.Null(await store.GetArtifactAsync(artifactKey));
+        Assert.NotNull(await SnapshotMissTestSupport.GetAcquisitionErrorAsync(store, artifactKey));
+    }
+
+    [Fact]
     public async Task AcquisitionErrorRows_ExpireInLiveModeButReplayInEvalMode()
     {
         var writerOptions = new CacheOptions { CacheRoot = _root };
@@ -247,6 +272,38 @@ public sealed class SnapshotMissCacheStoreTests : IDisposable
         var replayed = await SnapshotMissTestSupport.GetAcquisitionErrorAsync(evalStore, key);
         Assert.NotNull(replayed);
         Assert.Equal(AcquisitionErrorKind.NotFound, replayed!.Kind);
+    }
+
+    [Fact]
+    public async Task ExpiredAcquisitionErrorRows_AreEvictedAndAbsentFromExportedSnapshot()
+    {
+        var options = new CacheOptions { CacheRoot = _root };
+        var destination = Path.Combine(Path.GetTempPath(), $"hlx-expired-negative-export-{Guid.NewGuid():N}");
+        try
+        {
+            using (var store = new SqliteCacheStore(options))
+            {
+                await SnapshotMissTestSupport.SetAcquisitionErrorAsync(
+                    store,
+                    "azdo:org:project:build:42",
+                    SnapshotMissTestSupport.Error(AcquisitionErrorKind.NotFound, "azdo", "get_build", httpStatus: 404),
+                    TimeSpan.Zero);
+
+                await store.EvictExpiredAsync();
+
+                Assert.Null(await SnapshotMissTestSupport.GetAcquisitionErrorAsync(store, "azdo:org:project:build:42"));
+            }
+
+            await SnapshotExporter.ExportAsync(options.GetEffectiveCacheRoot(), destination);
+
+            var validation = await SnapshotValidator.ValidateAsync(destination);
+            Assert.True(validation.IsValid, string.Join(Environment.NewLine, validation.Errors));
+            Assert.Equal(0, validation.AcquisitionErrorEntries);
+        }
+        finally
+        {
+            try { Directory.Delete(destination, recursive: true); } catch { }
+        }
     }
 }
 
@@ -388,6 +445,48 @@ public sealed class SnapshotMissReplayTests : IDisposable
     }
 
     [Fact]
+    public async Task AzdoLiveMode_NotFoundCompletionProbeFailure_RethrowsOriginalAndDoesNotRecord()
+    {
+        var options = new CacheOptions { CacheRoot = _root };
+        using var store = new SqliteCacheStore(options);
+        var inner = Substitute.For<IAzdoApiClient>();
+        inner.GetBuildChangesAsync("org", "project", 42, Arg.Any<int?>(), Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromException<IReadOnlyList<AzdoBuildChange>>(
+                SnapshotMissTestSupport.Exception(AcquisitionErrorKind.NotFound, "azdo", "list_build_changes", 404)));
+        inner.GetBuildAsync("org", "project", 42, Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromException<AzdoBuild?>(
+                SnapshotMissTestSupport.Exception(AcquisitionErrorKind.AccessDenied, "azdo", "get_build", 403)));
+        var client = new CachingAzdoApiClient(inner, store, options);
+
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() =>
+            client.GetBuildChangesAsync("org", "project", 42));
+
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "list_build_changes", 404);
+        Assert.Null(await SnapshotMissTestSupport.GetAcquisitionErrorAsync(store, "azdo:org:project:changes:42:"));
+    }
+
+    [Fact]
+    public async Task HelixLiveMode_NotFoundCompletionProbeFailure_RethrowsOriginalAndDoesNotRecord()
+    {
+        var options = new CacheOptions { CacheRoot = _root };
+        using var store = new SqliteCacheStore(options);
+        var inner = Substitute.For<IHelixApiClient>();
+        inner.GetFileAsync("results.trx", "workItem", "job1", Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromException<Stream>(
+                SnapshotMissTestSupport.Exception(AcquisitionErrorKind.NotFound, "helix", "download_helix_file", 404)));
+        inner.GetJobDetailsAsync("job1", Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromException<IJobDetails>(
+                SnapshotMissTestSupport.Exception(AcquisitionErrorKind.AccessDenied, "helix", "get_helix_job", 403)));
+        var client = new CachingHelixApiClient(inner, store, options);
+
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() =>
+            client.GetFileAsync("results.trx", "workItem", "job1"));
+
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "helix", "download_helix_file", 404);
+        Assert.Null(await SnapshotMissTestSupport.GetAcquisitionErrorAsync(store, "job:job1:wi:workItem:file:results.trx"));
+    }
+
+    [Fact]
     public async Task AzdoLiveMode_NeverServesNegativeRowsAndPositiveEvidenceWins()
     {
         var options = new CacheOptions { CacheRoot = _root };
@@ -457,6 +556,8 @@ public sealed class SnapshotMissReplayTests : IDisposable
             .Returns(new List<AzdoBuildLogEntry> { new() { Id = 1, LineCount = 10 } });
         api.GetTimelineAsync("dnceng-public", "public", 12345, Arg.Any<CancellationToken>())
             .Returns(new AzdoTimeline { Records = [new AzdoTimelineRecord { Id = "task", Log = new AzdoLogReference { Id = 2 } }] });
+        api.GetBuildAsync("dnceng-public", "public", 12345, Arg.Any<CancellationToken>())
+            .Returns(new AzdoBuild { Id = 12345, Status = "completed" });
         var service = SnapshotMissTestSupport.CreateAzdoService(api, recorderInterface!, recorder!);
 
         var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() => service.GetBuildLogAsync("12345", 999999, tailLines: null));
@@ -465,6 +566,36 @@ public sealed class SnapshotMissReplayTests : IDisposable
         var stored = await SnapshotMissTestSupport.GetAcquisitionErrorAsync(store, "azdo:dnceng-public:public:log:12345:999999");
         Assert.NotNull(stored);
         Assert.Equal("get_build_log", stored!.Operation);
+    }
+
+    [Theory]
+    [InlineData("inProgress")]
+    [InlineData(null)]
+    public async Task EmptyBuildLogAbsentFromMetadata_DoesNotRecordWhenBuildIsNotTerminal(string? status)
+    {
+        var recorderType = Type.GetType("HelixTool.Core.AzDO.CachingAzdoAcquisitionFailureRecorder, HelixTool.Core");
+        Assert.NotNull(recorderType);
+        var recorderInterface = Type.GetType("HelixTool.Core.AzDO.IAzdoAcquisitionFailureRecorder, HelixTool.Core");
+        Assert.NotNull(recorderInterface);
+
+        var options = new CacheOptions { CacheRoot = _root };
+        using var store = new SqliteCacheStore(options);
+        var recorder = Activator.CreateInstance(recorderType!, store, options);
+        var api = Substitute.For<IAzdoApiClient>();
+        api.GetBuildLogAsync("dnceng-public", "public", 12345, 999999, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
+            .Returns(string.Empty);
+        api.GetBuildLogsListAsync("dnceng-public", "public", 12345, Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuildLogEntry> { new() { Id = 1, LineCount = 10 } });
+        api.GetTimelineAsync("dnceng-public", "public", 12345, Arg.Any<CancellationToken>())
+            .Returns(new AzdoTimeline { Records = [new AzdoTimelineRecord { Id = "task", Log = new AzdoLogReference { Id = 2 } }] });
+        api.GetBuildAsync("dnceng-public", "public", 12345, Arg.Any<CancellationToken>())
+            .Returns(status is null ? null : new AzdoBuild { Id = 12345, Status = status });
+        var service = SnapshotMissTestSupport.CreateAzdoService(api, recorderInterface!, recorder!);
+
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() => service.GetBuildLogAsync("12345", 999999, tailLines: null));
+
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.NotFound, "azdo", "get_build_log");
+        Assert.Null(await SnapshotMissTestSupport.GetAcquisitionErrorAsync(store, "azdo:dnceng-public:public:log:12345:999999"));
     }
 }
 

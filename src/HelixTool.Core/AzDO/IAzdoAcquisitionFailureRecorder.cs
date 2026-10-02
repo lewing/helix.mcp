@@ -10,6 +10,7 @@ public interface IAzdoAcquisitionFailureRecorder
         int buildId,
         int logId,
         AcquisitionError error,
+        bool isBuildTerminal,
         CancellationToken ct = default);
 }
 
@@ -27,6 +28,7 @@ public sealed class NoOpAzdoAcquisitionFailureRecorder : IAzdoAcquisitionFailure
         int buildId,
         int logId,
         AcquisitionError error,
+        bool isBuildTerminal,
         CancellationToken ct = default)
         => Task.CompletedTask;
 }

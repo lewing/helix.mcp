@@ -475,7 +475,9 @@ public sealed class SqliteCacheStore : ICacheStore
         var jobId = ExtractJobId(cacheKey);
 
         using var conn = OpenConnection();
+        using var tx = conn.BeginTransaction();
         using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
         cmd.CommandText = """
             INSERT OR REPLACE INTO cache_acquisition_errors
                 (cache_key, error_json, kind, provider, operation, recorded_at, expires_at, job_id)
@@ -492,6 +494,26 @@ public sealed class SqliteCacheStore : ICacheStore
         cmd.Parameters.AddWithValue("@jobId", jobId);
         cmd.ExecuteNonQuery();
 
+        cmd.Parameters.Clear();
+        cmd.CommandText = "DELETE FROM cache_metadata WHERE cache_key = @key;";
+        cmd.Parameters.AddWithValue("@key", cacheKey);
+        cmd.ExecuteNonQuery();
+
+        cmd.Parameters.Clear();
+        cmd.CommandText = "SELECT file_path FROM cache_artifacts WHERE cache_key = @key;";
+        cmd.Parameters.AddWithValue("@key", cacheKey);
+        var artifactPath = cmd.ExecuteScalar() as string;
+        if (artifactPath is not null)
+        {
+            TryDeleteArtifactFile(artifactPath);
+
+            cmd.Parameters.Clear();
+            cmd.CommandText = "DELETE FROM cache_artifacts WHERE cache_key = @key;";
+            cmd.Parameters.AddWithValue("@key", cacheKey);
+            cmd.ExecuteNonQuery();
+        }
+
+        tx.Commit();
         return Task.CompletedTask;
     }
 
@@ -720,6 +742,15 @@ public sealed class SqliteCacheStore : ICacheStore
             cmd.ExecuteNonQuery();
         }
 
+        // Remove expired recorded acquisition failures
+        ct.ThrowIfCancellationRequested();
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "DELETE FROM cache_acquisition_errors WHERE expires_at < @now;";
+            cmd.Parameters.AddWithValue("@now", now);
+            cmd.ExecuteNonQuery();
+        }
+
         // Remove old artifacts (by last access)
         ct.ThrowIfCancellationRequested();
         List<(string Key, string Path)> toDelete;
@@ -784,14 +815,7 @@ public sealed class SqliteCacheStore : ICacheStore
         {
             ct.ThrowIfCancellationRequested();
 
-            // Delete file
-            try
-            {
-                var fullPath = Path.Combine(_artifactsDir, relPath);
-                CacheSecurity.ValidatePathWithinRoot(fullPath, _artifactsDir);
-                if (File.Exists(fullPath)) File.Delete(fullPath);
-            }
-            catch (IOException) { /* file may have been deleted externally */ }
+            TryDeleteArtifactFile(relPath);
 
             // Delete row
             using var del = conn.CreateCommand();
@@ -799,6 +823,17 @@ public sealed class SqliteCacheStore : ICacheStore
             del.Parameters.AddWithValue("@key", key);
             del.ExecuteNonQuery();
         }
+    }
+
+    private void TryDeleteArtifactFile(string relPath)
+    {
+        try
+        {
+            var fullPath = Path.Combine(_artifactsDir, relPath);
+            CacheSecurity.ValidatePathWithinRoot(fullPath, _artifactsDir);
+            if (File.Exists(fullPath)) File.Delete(fullPath);
+        }
+        catch (IOException) { /* file may have been deleted externally */ }
     }
 
     private static string ExtractJobId(string cacheKey)

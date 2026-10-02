@@ -296,13 +296,28 @@ public sealed class CachingHelixApiClient : IHelixApiClient
         }
         catch (HlxAcquisitionException ex)
         {
-            if (AcquisitionFailureRecorderPolicy.IsRecordable(ex.Error)
-                && (ex.Error.Kind != AcquisitionErrorKind.NotFound || await shouldRecordNotFoundAsync()))
+            var shouldRecord = AcquisitionFailureRecorderPolicy.IsRecordable(ex.Error);
+            if (shouldRecord && ex.Error.Kind == AcquisitionErrorKind.NotFound)
+                shouldRecord = await TryShouldRecordNotFoundAsync(shouldRecordNotFoundAsync);
+
+            if (shouldRecord)
             {
                 await _cache.SetAcquisitionErrorAsync(key, ex.Error, ttl, ct);
             }
 
             throw;
+        }
+    }
+
+    private static async Task<bool> TryShouldRecordNotFoundAsync(Func<Task<bool>> shouldRecordNotFoundAsync)
+    {
+        try
+        {
+            return await shouldRecordNotFoundAsync();
+        }
+        catch
+        {
+            return false;
         }
     }
 

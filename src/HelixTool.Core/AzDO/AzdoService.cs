@@ -271,8 +271,26 @@ public class AzdoService
             buildId,
             $"Build log {logId} for build {buildId} returned an empty body, but the log ID was absent from the build log metadata and timeline log references.",
             ("logId", logId));
-        await _failureRecorder.RecordBuildLogFailureAsync(org, project, buildId, logId, ex.Error, ct);
+        var isBuildTerminal = await IsBuildTerminalForRecordingAsync(org, project, buildId, ct);
+        await _failureRecorder.RecordBuildLogFailureAsync(org, project, buildId, logId, ex.Error, isBuildTerminal, ct);
         throw ex;
+    }
+
+    private async Task<bool> IsBuildTerminalForRecordingAsync(
+        string org,
+        string project,
+        int buildId,
+        CancellationToken ct)
+    {
+        try
+        {
+            var build = await _client.GetBuildAsync(org, project, buildId, ct);
+            return string.Equals(build?.Status, "completed", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>

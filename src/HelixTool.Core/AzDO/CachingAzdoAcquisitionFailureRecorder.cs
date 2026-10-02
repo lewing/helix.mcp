@@ -22,8 +22,12 @@ public sealed class CachingAzdoAcquisitionFailureRecorder : IAzdoAcquisitionFail
         int buildId,
         int logId,
         AcquisitionError error,
+        bool isBuildTerminal,
         CancellationToken ct = default)
     {
+        if (!isBuildTerminal)
+            return;
+
         if (!AcquisitionFailureRecorderPolicy.IsRecordable(error))
             return;
 
