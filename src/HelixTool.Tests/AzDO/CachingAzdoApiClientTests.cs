@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text;
 using HelixTool.Core;
 using HelixTool.Core.Cache;
 using HelixTool.Core.AzDO;
@@ -266,6 +267,71 @@ public class CachingAzdoApiClientTests
         Assert.Null(result);
         await _cache.DidNotReceive().SetMetadataAsync(
             Arg.Any<string>(), Arg.Any<string>(), Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetBuildLogAsync_LargeRawLogRoundTripsFromRealSqliteCache_ProviderCalledOnce_Gist6403762()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hlx-azdo-large-log-{Guid.NewGuid():N}");
+        try
+        {
+            var inner = Substitute.For<IAzdoApiClient>();
+            var payload = new string('A', 6329) + "first line\nsecond line\n";
+            Assert.Equal(6352, Encoding.UTF8.GetByteCount(payload));
+            inner.GetBuildLogAsync("org", "proj", 1, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
+                .Returns(payload);
+            inner.GetBuildAsync("org", "proj", 1, Arg.Any<CancellationToken>())
+                .Returns(new AzdoBuild { Id = 1, Status = "completed" });
+
+            var options = new CacheOptions { CacheRoot = root, MaxSizeBytes = 1024 * 1024 };
+            using var store = new SqliteCacheStore(options);
+            var sut = new CachingAzdoApiClient(inner, store, options);
+
+            var first = await sut.GetBuildLogAsync("org", "proj", 1, 5);
+            var second = await sut.GetBuildLogAsync("org", "proj", 1, 5);
+
+            Assert.Equal(payload, first);
+            Assert.Equal(payload, second);
+            Assert.Equal(6352, Encoding.UTF8.GetByteCount(second!));
+            await inner.Received(1).GetBuildLogAsync("org", "proj", 1, 5, null, null, Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task GetBuildLogAsync_LiveModeMarkerOnlyRawLogRow_IsMissAndRefetches_Gist6403762()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hlx-azdo-marker-only-{Guid.NewGuid():N}");
+        try
+        {
+            var options = new CacheOptions { CacheRoot = root, MaxSizeBytes = 1024 * 1024 };
+            const string cacheKey = "azdo:org:proj:log:1:5";
+            using (var seeder = new SqliteCacheStore(options))
+            {
+                await seeder.SetMetadataAsync(cacheKey, "\0raw\n", TimeSpan.FromHours(4));
+            }
+
+            var inner = Substitute.For<IAzdoApiClient>();
+            inner.GetBuildLogAsync("org", "proj", 1, 5, Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>())
+                .Returns("refetched log");
+            inner.GetBuildAsync("org", "proj", 1, Arg.Any<CancellationToken>())
+                .Returns(new AzdoBuild { Id = 1, Status = "completed" });
+
+            using var store = new SqliteCacheStore(options);
+            var sut = new CachingAzdoApiClient(inner, store, options);
+
+            var result = await sut.GetBuildLogAsync("org", "proj", 1, 5);
+
+            Assert.Equal("refetched log", result);
+            await inner.Received(1).GetBuildLogAsync("org", "proj", 1, 5, null, null, Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
     }
 
     // ── ListBuildsAsync: short TTL ──────────────────────────────────

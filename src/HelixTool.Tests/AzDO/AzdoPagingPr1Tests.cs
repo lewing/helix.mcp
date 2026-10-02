@@ -1,4 +1,6 @@
 using System.Reflection;
+using System.Net;
+using System.Text;
 using System.Text.Json;
 using HelixTool.Core.Acquisition;
 using HelixTool.Core.AzDO;
@@ -270,6 +272,21 @@ public sealed class AzdoPagingPr1CliTests
         }
     }
 
+    [Fact]
+    public async Task BuildChanges_FollowsContinuationTokensBeforeComplete_Finding4168886770()
+    {
+        var handler = new ContinuationTokenHandler();
+        var tokenAccessor = Substitute.For<IAzdoTokenAccessor>();
+        using var httpClient = new HttpClient(handler);
+        var client = new AzdoApiClient(httpClient, tokenAccessor);
+
+        var changes = await client.GetBuildChangesAsync("dnceng-public", "public", 42);
+
+        Assert.Equal(["change-1", "change-2"], changes.Select(change => change.Id).ToArray());
+        Assert.Equal(2, handler.RequestUris.Count);
+        Assert.Contains("continuationToken=next-page", handler.RequestUris[1].Query, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static global::AzdoCommands CreateCommands(IAzdoApiClient api)
         => new(new AzdoService(api), Substitute.For<IAzdoTokenAccessor>());
 
@@ -473,6 +490,26 @@ public sealed class AzdoPagingPr1CliTests
         try { Directory.Delete(path, recursive: true); }
         catch { }
     }
+
+    private sealed class ContinuationTokenHandler : HttpMessageHandler
+    {
+        public List<Uri> RequestUris { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestUris.Add(request.RequestUri!);
+            var page = RequestUris.Count == 1
+                ? """{"count":1,"value":[{"id":"change-1","message":"first"}]}"""
+                : """{"count":1,"value":[{"id":"change-2","message":"second"}]}""";
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(page, Encoding.UTF8, "application/json")
+            };
+            if (RequestUris.Count == 1)
+                response.Headers.TryAddWithoutValidation("x-ms-continuationtoken", "next-page");
+            return Task.FromResult(response);
+        }
+    }
 }
 
 public sealed class AzdoPagingPr1CacheCompatibilityTests : IDisposable
@@ -509,6 +546,42 @@ public sealed class AzdoPagingPr1CacheCompatibilityTests : IDisposable
         var completeKey = document.RootElement.GetProperty("cache").GetProperty("completeKey").GetString();
         Assert.Equal("azdo:dnceng-public:public:testresults:v3:101:Failed:all", completeKey);
         Assert.NotNull(await store.GetMetadataAsync(completeKey!));
+    }
+
+    [Fact]
+    public async Task JsonEnvelopeCacheKey_PointsToPersistedEntry_Finding4168886873()
+    {
+        var inner = CreateApiForTestResults(3);
+        using var store = new SqliteCacheStore(new CacheOptions { CacheRoot = _cacheRoot });
+        var cacheOptions = new CacheOptions { CacheRoot = _cacheRoot, MaxSizeBytes = 1024 * 1024 };
+        var caching = new CachingAzdoApiClient(inner, store, cacheOptions);
+        var commands = new global::AzdoCommands(new AzdoService(caching), Substitute.For<IAzdoTokenAccessor>());
+
+        var (stdout, _, exitCode, thrown) = await CaptureCliAsync(
+            commands,
+            "TestResults",
+            new Dictionary<string, object?>
+            {
+                ["buildId"] = "42",
+                ["runId"] = 101,
+                ["json"] = true,
+                ["offset"] = 1,
+                ["limit"] = 1,
+                ["allowTruncated"] = true
+            },
+            "--json",
+            "--offset",
+            "1",
+            "--limit",
+            "1",
+            "--allow-truncated");
+
+        Assert.Null(thrown);
+        Assert.Equal(0, exitCode);
+        using var document = JsonDocument.Parse(stdout);
+        var cacheKey = document.RootElement.GetProperty("cache").GetProperty("key").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(cacheKey));
+        Assert.NotNull(await store.GetMetadataAsync(cacheKey!));
     }
 
     [Fact]

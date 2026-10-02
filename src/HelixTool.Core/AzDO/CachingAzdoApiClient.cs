@@ -27,7 +27,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient, IAzdoCachedBuildLogRe
     private static readonly TimeSpan BuildStateCompletedTtl = TimeSpan.FromHours(4);
 
     /// <summary>Prefix for plain-text cache entries to avoid JSON wrapping overhead.</summary>
-    private const string RawTextPrefix = "\0raw\n";
+    internal const string RawTextPrefix = "\0raw\n";
 
     private readonly IAzdoApiClient _inner;
     private readonly ICacheStore _cache;
@@ -697,8 +697,24 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient, IAzdoCachedBuildLogRe
     private static string? DeserializeLogContent(string? cached, bool throwOnCorrupt = false, string? key = null)
     {
         if (cached is null) return null;
+        if (cached.Length == 0 || cached == RawTextPrefix)
+        {
+            if (throwOnCorrupt)
+            {
+                throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                    AcquisitionErrorKind.InvalidResponse,
+                    "cache",
+                    "deserialize_cache_entry",
+                    new Dictionary<string, object?> { ["key"] = key ?? "(unknown)" },
+                    "Cached AzDO log entry is empty/corrupt; raw log metadata must contain content."));
+            }
+
+            return null;
+        }
+
         if (cached.StartsWith(RawTextPrefix, StringComparison.Ordinal))
             return cached[RawTextPrefix.Length..];
+
         // Legacy JSON-wrapped format — graceful migration
         return TryDeserialize<string>(cached, throwOnCorrupt, key);
     }

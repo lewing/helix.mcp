@@ -2,8 +2,12 @@
 // Uses temp directories with real SQLite database files for proper integration testing.
 // SqliteCacheStore requires file-based SQLite (constructor calls Directory.CreateDirectory).
 
+using System.Text;
+using System.Text.Json;
 using HelixTool.Core;
+using HelixTool.Core.Acquisition;
 using HelixTool.Core.Cache;
+using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace HelixTool.Tests;
@@ -43,6 +47,101 @@ public class SqliteCacheStoreTests : IDisposable
         var result = await _store.GetMetadataAsync(key);
 
         Assert.Equal(json, result);
+    }
+
+    [Fact]
+    public async Task Metadata_MarkerPrefixedValueRoundTripsLosslessly_Finding4168886828()
+    {
+        const string key = "job:marker-prefix:details";
+        const string value = "hlx:nul-base64\nthis-is-not-base64-but-is-valid-metadata";
+
+        await _store.SetMetadataAsync(key, value, TimeSpan.FromHours(4));
+        var result = await _store.GetMetadataAsync(key);
+
+        Assert.Equal(value, result);
+    }
+
+    [Fact]
+    public async Task Metadata_PureWeenLargeRawLogReproducer_RoundTripsExactBytes_Gist6403762()
+    {
+        var payload = new string('A', 6329) + "first line\nsecond line\n";
+        var prefixed = "\0raw\n" + payload;
+        Assert.Equal(6352, Encoding.UTF8.GetByteCount(payload));
+        Assert.Equal(6357, Encoding.UTF8.GetByteCount(prefixed));
+
+        await _store.SetMetadataAsync("control", payload, TimeSpan.FromHours(4));
+        await _store.SetMetadataAsync("prefixed", prefixed, TimeSpan.FromHours(4));
+
+        var control = await _store.GetMetadataAsync("control");
+        var actualPrefixed = await _store.GetMetadataAsync("prefixed");
+        Assert.Equal(payload, control);
+        Assert.Equal(prefixed, actualPrefixed);
+        Assert.Equal(6352, Encoding.UTF8.GetByteCount(control!));
+        Assert.Equal(6357, Encoding.UTF8.GetByteCount(actualPrefixed!));
+    }
+
+    [Fact]
+    public async Task Metadata_SmallNulPayload_RoundTripsExactTwentyEightBytes_Gist6403762()
+    {
+        var value = new string('A', 13) + "\0" + new string('B', 14);
+        Assert.Equal(28, Encoding.UTF8.GetByteCount(value));
+
+        await _store.SetMetadataAsync("small-nul", value, TimeSpan.FromHours(4));
+        var result = await _store.GetMetadataAsync("small-nul");
+
+        Assert.Equal(value, result);
+        Assert.Equal(28, Encoding.UTF8.GetByteCount(result!));
+    }
+
+    public static IEnumerable<object[]> NulPayloadThresholds()
+    {
+        foreach (var size in new[] { 1024, 4096, 6144, 65536, 1024 * 1024 })
+        foreach (var position in new[] { "start", "middle", "end" })
+            yield return [size, position];
+    }
+
+    [Theory]
+    [MemberData(nameof(NulPayloadThresholds))]
+    public async Task Metadata_NulPayloadsAroundStorageThresholds_RoundTrip_Gist6403762(int byteCount, string nulPosition)
+    {
+        var value = CreateAsciiPayloadWithNul(byteCount, nulPosition);
+        Assert.Equal(byteCount, Encoding.UTF8.GetByteCount(value));
+        var key = $"threshold:{byteCount}:{nulPosition}";
+
+        await _store.SetMetadataAsync(key, value, TimeSpan.FromHours(4));
+        var result = await _store.GetMetadataAsync(key);
+
+        Assert.Equal(value, result);
+        Assert.Equal(byteCount, Encoding.UTF8.GetByteCount(result!));
+    }
+
+    [Fact]
+    public async Task AcquisitionErrors_NulContainingContent_RoundTrips_Gist6403762()
+    {
+        var error = AcquisitionErrorFactory.Create(
+            AcquisitionErrorKind.InvalidResponse,
+            "cache",
+            "deserialize_cache_entry",
+            new Dictionary<string, object?> { ["key"] = "log\0key" },
+            "before\0after");
+
+        await _store.SetAcquisitionErrorAsync("job:nul-error:details", error, TimeSpan.FromHours(1));
+        var result = await _store.GetAcquisitionErrorAsync("job:nul-error:details");
+
+        Assert.NotNull(result);
+        Assert.Equal("before\0after", result!.Message);
+        Assert.Equal("log\0key", Assert.IsType<JsonElement>(result.Resource["key"]).GetString());
+    }
+
+    [Fact]
+    public async Task JobState_NulContainingJobId_IsRejected_Gist6403762()
+    {
+        const string jobId = "job-prefix\0job-suffix";
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(
+            () => _store.SetJobCompletedAsync(jobId, completed: true, TimeSpan.FromHours(1)));
+
+        Assert.Contains("NUL", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -389,6 +488,23 @@ public class SqliteCacheStoreTests : IDisposable
     }
 
     private static string MetadataDbPath(CacheOptions opts) => Path.Combine(opts.GetEffectiveCacheRoot(), "cache.db");
+
+    private static string CreateAsciiPayloadWithNul(int byteCount, string nulPosition)
+    {
+        if (byteCount <= 0)
+            throw new ArgumentOutOfRangeException(nameof(byteCount));
+
+        var chars = Enumerable.Repeat('X', byteCount).ToArray();
+        var nulIndex = nulPosition switch
+        {
+            "start" => 0,
+            "middle" => byteCount / 2,
+            "end" => byteCount - 1,
+            _ => throw new ArgumentOutOfRangeException(nameof(nulPosition), nulPosition, null)
+        };
+        chars[nulIndex] = '\0';
+        return new string(chars);
+    }
 
     private static async Task<bool> MetadataRowExistsAsync(CacheOptions opts, string cacheKey)
     {

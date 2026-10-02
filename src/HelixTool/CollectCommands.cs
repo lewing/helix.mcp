@@ -98,9 +98,11 @@ public sealed class CollectCommands
         }
 
         if (!TryParseDuration(retryInitialDelay, out var initialDelay) ||
-            !TryParseDuration(retryMaxDelay, out var maxDelay))
+            !TryParseDuration(retryMaxDelay, out var maxDelay) ||
+            initialDelay < TimeSpan.Zero ||
+            maxDelay < TimeSpan.Zero)
         {
-            Console.Error.WriteLine("Invalid retry delay. Use a TimeSpan value or a suffix like 2s, 5m, or 1h.");
+            Console.Error.WriteLine("Invalid retry delay. Use a non-negative TimeSpan value or a suffix like 2s, 5m, or 1h.");
             Environment.ExitCode = 1;
             return;
         }
@@ -155,11 +157,21 @@ public sealed class CollectCommands
             }
         };
 
-        var collector = _services.GetRequiredService<AzdoBuildCollector>();
-        var result = await collector.CollectAzdoBuildAsync(
-            policy,
-            message => Console.Error.WriteLine($"  {message}"),
-            ct);
+        CollectResult result;
+        try
+        {
+            var collector = _services.GetRequiredService<AzdoBuildCollector>();
+            result = await collector.CollectAzdoBuildAsync(
+                policy,
+                message => Console.Error.WriteLine($"  {message}"),
+                ct);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        {
+            Console.Error.WriteLine($"Error: {ex.Message}");
+            Environment.ExitCode = 1;
+            return;
+        }
 
         if (json)
         {

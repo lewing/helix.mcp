@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using HelixTool.Core.Acquisition;
+using HelixTool.Core.AzDO;
 using Microsoft.Data.Sqlite;
 
 namespace HelixTool.Core.Cache;
@@ -249,6 +250,7 @@ public static class SnapshotValidator
                     command.CommandText = "SELECT COUNT(*) FROM cache_metadata;";
                     metadataEntries =
                         Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+                    ValidateMetadataRows(command, errors, ct);
 
                     command.Parameters.Clear();
                     command.CommandText = """
@@ -524,6 +526,45 @@ public static class SnapshotValidator
         }
 
         return count;
+    }
+
+    private static void ValidateMetadataRows(
+        SqliteCommand command,
+        List<string> errors,
+        CancellationToken ct)
+    {
+        command.Parameters.Clear();
+        command.CommandText = """
+            SELECT cache_key, json_value
+            FROM cache_metadata
+            ORDER BY cache_key;
+            """;
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            ct.ThrowIfCancellationRequested();
+            var cacheKey = reader.GetString(0);
+            var rawValue = reader.GetString(1);
+            var decodedValue = SqliteCacheStore.DecodeMetadataValue(rawValue);
+            if (IsAzdoRawLogKey(cacheKey) &&
+                (string.IsNullOrEmpty(decodedValue) ||
+                 string.Equals(decodedValue, CachingAzdoApiClient.RawTextPrefix, StringComparison.Ordinal)))
+            {
+                errors.Add(
+                    $"Metadata row '{cacheKey}' is an empty/corrupt raw AzDO log entry; " +
+                    "snapshots must contain log content, not an empty NUL-prefixed row.");
+            }
+        }
+    }
+
+    private static bool IsAzdoRawLogKey(string cacheKey)
+    {
+        var parts = cacheKey.Split(':');
+        return parts.Length >= 5 &&
+            parts[0] == "azdo" &&
+            parts.Any(part => string.Equals(part, "log", StringComparison.Ordinal)) &&
+            !parts.Any(part => string.Equals(part, "log-fresh", StringComparison.Ordinal));
     }
 
     private static StringComparison PathComparison => OperatingSystem.IsWindows()

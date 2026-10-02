@@ -334,42 +334,73 @@ public sealed class AzdoApiClient : IAzdoApiClient
         CancellationToken ct,
         string? notFoundMessage = null)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        var credential = await ApplyAuthAsync(request, ct).ConfigureAwait(false);
+        var results = new List<T>();
+        string? continuationToken = null;
+        var nextUrl = url;
 
-        using var response = await SendAsync(request, operation, resource, ct).ConfigureAwait(false);
-
-        if (response.StatusCode == HttpStatusCode.NotFound)
-            throw CreateHttpException(response, operation, resource, notFoundMessage);
-
-        if (response.StatusCode == HttpStatusCode.NoContent)
-            throw InvalidResponse(operation, resource, "AzDO list API returned no content (HTTP 204).", httpStatus: response.StatusCode);
-
-        ThrowOnAuthFailure(response, org, project, credential, operation, resource);
-        await ThrowOnUnexpectedError(response, operation, resource, ct).ConfigureAwait(false);
-        ThrowOnNonJsonSuccess(response, org, project, credential, operation, resource);
-
-        var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(body))
-            throw InvalidResponse(operation, resource, "AzDO list API returned an empty JSON response.", httpStatus: response.StatusCode);
-
-        try
+        do
         {
-            using var document = JsonDocument.Parse(body);
-            if (document.RootElement.ValueKind != JsonValueKind.Object ||
-                !TryGetPropertyCaseInsensitive(document.RootElement, "value", out var valueElement) ||
-                valueElement.ValueKind != JsonValueKind.Array)
+            using var request = new HttpRequestMessage(HttpMethod.Get, nextUrl);
+            var credential = await ApplyAuthAsync(request, ct).ConfigureAwait(false);
+
+            using var response = await SendAsync(request, operation, resource, ct).ConfigureAwait(false);
+
+            if (response.StatusCode == HttpStatusCode.NotFound)
+                throw CreateHttpException(response, operation, resource, notFoundMessage);
+
+            if (response.StatusCode == HttpStatusCode.NoContent)
+                throw InvalidResponse(operation, resource, "AzDO list API returned no content (HTTP 204).", httpStatus: response.StatusCode);
+
+            ThrowOnAuthFailure(response, org, project, credential, operation, resource);
+            await ThrowOnUnexpectedError(response, operation, resource, ct).ConfigureAwait(false);
+            ThrowOnNonJsonSuccess(response, org, project, credential, operation, resource);
+
+            var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(body))
+                throw InvalidResponse(operation, resource, "AzDO list API returned an empty JSON response.", httpStatus: response.StatusCode);
+
+            try
             {
-                throw InvalidResponse(operation, resource, "AzDO list API response is missing the required array property 'value'.", httpStatus: response.StatusCode);
+                using var document = JsonDocument.Parse(body);
+                if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                    !TryGetPropertyCaseInsensitive(document.RootElement, "value", out var valueElement) ||
+                    valueElement.ValueKind != JsonValueKind.Array)
+                {
+                    throw InvalidResponse(operation, resource, "AzDO list API response is missing the required array property 'value'.", httpStatus: response.StatusCode);
+                }
+
+                var wrapper = JsonSerializer.Deserialize<AzdoListResponse<T>>(body, s_jsonOptions);
+                results.AddRange(wrapper?.Value ?? throw InvalidResponse(operation, resource, "AzDO list API response deserialized to null.", httpStatus: response.StatusCode));
+            }
+            catch (JsonException ex)
+            {
+                throw InvalidResponse(operation, resource, $"AzDO returned malformed JSON for {operation}: {SafeSnippet(body)}", ex, response.StatusCode);
             }
 
-            var wrapper = JsonSerializer.Deserialize<AzdoListResponse<T>>(body, s_jsonOptions);
-            return wrapper?.Value ?? throw InvalidResponse(operation, resource, "AzDO list API response deserialized to null.", httpStatus: response.StatusCode);
+            continuationToken = ReadContinuationToken(response);
+            if (!string.IsNullOrWhiteSpace(continuationToken))
+                nextUrl = WithQueryParameter(url, "continuationToken", continuationToken);
         }
-        catch (JsonException ex)
-        {
-            throw InvalidResponse(operation, resource, $"AzDO returned malformed JSON for {operation}: {SafeSnippet(body)}", ex, response.StatusCode);
-        }
+        while (!string.IsNullOrWhiteSpace(continuationToken));
+
+        return results;
+    }
+
+    private static string? ReadContinuationToken(HttpResponseMessage response)
+        => response.Headers.TryGetValues("x-ms-continuationtoken", out var values)
+            ? values.FirstOrDefault()
+            : null;
+
+    private static string WithQueryParameter(string url, string name, string value)
+    {
+        var uri = new Uri(url, UriKind.Absolute);
+        var query = uri.Query.Length > 1 ? uri.Query[1..] : string.Empty;
+        var parameters = query.Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Where(part => !part.StartsWith($"{name}=", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        parameters.Add($"{Uri.EscapeDataString(name)}={Uri.EscapeDataString(value)}");
+        var builder = new UriBuilder(uri) { Query = string.Join("&", parameters) };
+        return builder.Uri.AbsoluteUri;
     }
 
     private void ThrowOnAuthFailure(
