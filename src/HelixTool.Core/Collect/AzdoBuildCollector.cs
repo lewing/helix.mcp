@@ -98,21 +98,16 @@ public sealed class AzdoBuildCollector
         {
             manifestPath = ResolveManifestPath(policy);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
-            // Genuine caller cancellation (the exception's cancellation ties back to our own ct,
-            // not some unrelated/provider-internal timeout) always propagates untouched - never
-            // manifested, per the caller-cancellation contract documented on this method.
-            throw;
-        }
-        catch (Exception ex)
-        {
-            // Even the manifest location itself could not be resolved (e.g. an inaccessible cache
-            // directory). Fall back to a location that is overwhelmingly likely to be writable so
-            // a manifest is still produced rather than nothing at all. Note this also catches a
-            // non-caller OperationCanceledException/TaskCanceledException (e.g. a provider-internal
-            // timeout not tied to our ct): those are hard failures, not caller cancellation, and
-            // must still be manifested rather than silently propagated.
+            // Excluded from this catch (and left to propagate) only when ex IS an
+            // OperationCanceledException AND it ties back to genuine caller cancellation of our
+            // own ct - never manifested, per the caller-cancellation contract documented on this
+            // method. Everything else - including a non-caller OperationCanceledException/
+            // TaskCanceledException such as a provider-internal timeout not tied to our ct - lands
+            // here and must still be manifested rather than silently propagated. Even the manifest
+            // location itself could not be resolved here (e.g. an inaccessible cache directory), so
+            // fall back to a location that is overwhelmingly likely to be writable.
             manifestPath = Path.Combine(Path.GetTempPath(), $"hlx-collect-manifest-{Guid.NewGuid():N}.json");
             return await WriteHardErrorManifestAsync(policy, startedAt, manifestPath, new CollectSourceInfo(), [], [], ex, progress, ct);
         }
@@ -387,21 +382,16 @@ public sealed class AzdoBuildCollector
 
             return new CollectResult(manifest, manifestPath, snapshotPath);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
-            // Genuine caller cancellation always propagates untouched - never manifested.
-            throw;
-        }
-        catch (Exception ex)
-        {
-            // Hard-error backstop: any non-caller-cancellation failure anywhere in the collector
-            // lifecycle from here on - auth resolution, the final auth-status lookup, final
-            // evidence verification, or anything else - lands here. This also catches a
-            // non-caller OperationCanceledException/TaskCanceledException (e.g. a provider-internal
-            // timeout not tied to our ct): those are hard failures, not caller cancellation, and
-            // must still be manifested. A manifest is always written, reflecting whatever
-            // source/attempt/incomplete data was gathered before the failure, instead of letting
-            // the process crash with no manifest at all.
+            // Excluded (left to propagate) only when ex IS an OperationCanceledException AND it
+            // ties back to genuine caller cancellation of our own ct - never manifested. Hard-error
+            // backstop for everything else: any failure anywhere in the collector lifecycle from
+            // here on - auth resolution, the final auth-status lookup, final evidence verification,
+            // or anything else - including a non-caller OperationCanceledException/TaskCanceledException
+            // (e.g. a provider-internal timeout not tied to our ct) - lands here. A manifest is
+            // always written, reflecting whatever source/attempt/incomplete data was gathered
+            // before the failure, instead of letting the process crash with no manifest at all.
             return await WriteHardErrorManifestAsync(policy, startedAt, manifestPath, source, attempts, incomplete, ex, progress, ct);
         }
     }
@@ -431,15 +421,12 @@ public sealed class AzdoBuildCollector
             manifest = BuildHardErrorManifest(policy, startedAt, source, attempts, incomplete, ex);
             await WriteManifestAsync(manifestPath, manifest, ct);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (Exception ex2) when (ex2 is not OperationCanceledException || !ct.IsCancellationRequested)
         {
-            // The caller cancelled while we were persisting the hard-error manifest itself;
-            // propagate real cancellation rather than attempting a second write.
-            throw;
-        }
-        catch (Exception)
-        {
-            // Absolute last resort: even classifying the error or writing the full manifest
+            // Excluded (left to propagate) only for genuine caller cancellation of our own ct -
+            // the caller cancelled while we were persisting the hard-error manifest itself, so we
+            // propagate real cancellation rather than attempting a second write. Absolute last
+            // resort for everything else: even classifying the error or writing the full manifest
             // failed. Write the smallest possible valid manifest directly so one always exists.
             manifest = new CollectManifest
             {

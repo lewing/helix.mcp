@@ -208,16 +208,20 @@ public sealed class CollectCommands
             Environment.ExitCode = 1;
             return;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
             // Should be unreachable: AzdoBuildCollector.CollectAzdoBuildAsync wraps its entire
             // lifecycle (auth resolution, final auth-status lookup, final verification, etc.) in a
             // hard-error handler that always persists a manifest (incompleteDetails code
             // "collector_hard_error") and returns normally instead of throwing. This remains only
             // as an absolute last-resort net against a defect in that guarantee, so the CLI never
-            // crashes with an unhandled stack trace and no manifest. Deliberately never prints
-            // ex.Message: if this guarantee did fail, the escaping exception is unclassified and
-            // could carry secrets or a raw stack trace, and this text goes straight to stderr.
+            // crashes with an unhandled stack trace and no manifest. Uses the same caller-cancellation
+            // ownership predicate as the collector: excluded (left to propagate) only for genuine
+            // caller cancellation of our own ct, so a non-caller OperationCanceledException/
+            // TaskCanceledException (e.g. a provider-internal timeout) still gets this message
+            // instead of silently crashing the process. Deliberately never prints ex.Message: if
+            // this guarantee did fail, the escaping exception is unclassified and could carry
+            // secrets or a raw stack trace, and this text goes straight to stderr.
             Console.Error.WriteLine("Error: hlx collect failed unexpectedly due to an unclassified internal error.");
             Environment.ExitCode = 1;
             return;
