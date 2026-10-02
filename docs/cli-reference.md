@@ -678,18 +678,22 @@ Trimmed real manifest example, generated from public build `1621192` with `--log
 
 **Resume behavior:** `--resume` reads the existing manifest at the resolved manifest path. Prior `ok`/`cached` attempts are recorded as `cached` only if the referenced cache key still exists, and final cache verification still runs before export/manifest completion. Prior provider failures are reused as `recorded_failure` only when the matching negative-cache entry still exists and its kind is not selected by the current retry policy; otherwise they are refetched/retried. Policy changes are reflected in the newly written manifest.
 
-**Resuming a run that used an implicit isolated cache:** if the original run was `--export` without `--cache-dir`, the collector populated a fresh, per-run temporary cache directory instead of the normal hlx cache root (see `--cache-dir` above), and that temporary directory is not reused automatically on a later invocation. Supplying `--manifest <path>` alone is not enough to resume it: the manifest only tells `--resume` which prior attempts to consider, while cache evidence is read from whatever `--cache-dir` resolves to on the new run (the normal hlx cache root by default). To resume such a run, pass the original `--cache-dir`, which the prior run recorded in the manifest at `command.options.cacheDir` (and in the isolated-cache message printed to stderr: `No --cache-dir given with --export; collecting into an isolated cache directory: <path>`), together with `--resume --manifest <path-to-prior-manifest> --export <new-destination>`:
+**Resuming a run that used an implicit isolated cache:** if the original run was `--export` without `--cache-dir`, the collector populated a fresh, per-run temporary cache directory instead of the normal hlx cache root (see `--cache-dir` above), and that temporary directory is not reused automatically on a later invocation. Supplying `--manifest <path>` alone is not enough to resume it: the manifest only tells `--resume` which prior attempts to consider, while cache evidence is read from whatever `--cache-dir` resolves to on the new run (the normal hlx cache root by default — but a new invocation that again passes `--export` with no `--cache-dir` gets another fresh isolated root, not the original temporary directory or the normal root). To resume such a run, pass the original `--cache-dir`, which the prior run recorded in the manifest at `command.options.cacheDir` (and in the isolated-cache message printed to stderr: `No --cache-dir given with --export; collecting into an isolated cache directory: <path>`), together with `--resume --manifest <path-to-prior-manifest> --export <new-destination>`:
 
 ```bash
 # Original run: no --cache-dir, so hlx used an isolated temp cache and reported it on stderr
 hlx collect azdo-build 1621192 --export /tmp/snap-v1
-# manifest/hlx-collect-manifest.json inside /tmp/snap-v1 records command.options.cacheDir, e.g.
-#   /tmp/hlx-collect-cache/<guid>
+# /tmp/hlx-collect-cache/<guid>/hlx-collect-manifest.json is the standalone manifest written
+# inside that isolated cache directory (command.options.cacheDir in both copies)
 
-# Resuming: reuse that recorded cache directory explicitly
+# Resuming: reuse that recorded cache directory and its standalone manifest, exporting to a
+# NEW destination. --manifest is both the resume input and the file this run rewrites with the
+# resumed attempts/policy, so point it at the cache-dir-local standalone manifest above (or a
+# copy of it) — never at /tmp/snap-v1/manifest/hlx-collect-manifest.json, which would overwrite
+# snap-v1's exported manifest while leaving its database/artifacts stale.
 hlx collect azdo-build 1621192 \
   --cache-dir /tmp/hlx-collect-cache/<guid> \
-  --manifest /tmp/snap-v1/manifest/hlx-collect-manifest.json \
+  --manifest /tmp/hlx-collect-cache/<guid>/hlx-collect-manifest.json \
   --resume --export /tmp/snap-v2
 ```
 
