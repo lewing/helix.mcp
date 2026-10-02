@@ -386,7 +386,7 @@ hlx azdo test-attachments 98765 1234
 
 ### `hlx snapshot export <destination>`
 
-Export the current cache as an offline eval snapshot. The snapshot preserves cache keys and can be replayed in eval mode (see `HLX_EVAL_SNAPSHOT` below).
+Export the current cache as an offline eval snapshot. The snapshot preserves cache keys and can be replayed in eval mode (see `HLX_EVAL_SNAPSHOT` below). Current exports use snapshot schema v2.
 
 ```bash
 hlx snapshot export /tmp/my-snapshot
@@ -403,7 +403,12 @@ The command prints:
 ```bash
 HLX_EVAL_SNAPSHOT=/tmp/my-snapshot hlx status <jobId>
 HLX_EVAL_SNAPSHOT=/tmp/my-snapshot hlx azdo test-results <buildId> <runId>
+HLX_EVAL_SNAPSHOT=/tmp/my-snapshot hlx mcp
 ```
+
+In schema v2 snapshots, deterministic acquisition failures recorded during live population are exported with the cache. Recordable failure kinds are `not_found`, `access_denied`, and `invalid_response`; transient kinds (`rate_limited`, `timeout`, `transport_error`) are not recorded. During offline replay, recorded failures keep their original `kind`, `provider`, `operation`, `resource`, `httpStatus` (when known), and `message`, and add `source: "snapshot"`, `replayed: true`, and `recordedAt`.
+
+Live mode never serves recorded failures as data. A later successful live fetch for the same cache key deletes the recorded failure. A snapshot miss for a key that was never collected is reported separately as `kind: "not_in_snapshot"`, `provider: "cache"`, `source: "snapshot"`.
 
 **Auth-scoped replay limitation:**
 
@@ -418,6 +423,7 @@ The snapshot preserves all cache keys unchanged. When replayed in eval mode:
 Validate a snapshot directory for use with `HLX_EVAL_SNAPSHOT`. Checks:
 - Single-link SQLite database ownership (no hard-link aliases)
 - Database integrity and schema version
+- Schema v2 acquisition-failure table and indexes
 - SQLite sidecar absence (`-wal`, `-shm`, `-journal` files)
 - Artifact references and file sizes
 
@@ -434,9 +440,32 @@ Output includes:
 - Errors (if any) — validation failures
 - Metadata entry count
 - Artifact entry count
+- Acquisition error entry count
 - Missing artifact files count
 
+Schema v1 snapshots remain valid, but validation prints a compatibility warning because v1 predates recorded acquisition failures. Missing v1 entries replay as `not_in_snapshot` rather than the original provider failure.
+
 **Intended workflow:** `snapshot export` → `snapshot validate` → offline run with `HLX_EVAL_SNAPSHOT`.
+
+### Scanner workflow
+
+Treat a scanner "bundle" as the existing offline cache snapshot, not a separate artifact format:
+
+1. Populate the cache by running the needed CLI commands live, for example `hlx azdo build <buildId> --json`, `hlx azdo timeline <buildId> --json`, `hlx azdo log <buildId> <logId> --json`, and Helix drilldown commands surfaced by `azdo evidence plan`.
+2. Export and validate the snapshot:
+
+   ```bash
+   hlx snapshot export /tmp/my-snapshot
+   hlx snapshot validate /tmp/my-snapshot
+   ```
+
+3. Run the agent offline against the same MCP/CLI surface:
+
+   ```bash
+   HLX_EVAL_SNAPSHOT=/tmp/my-snapshot hlx mcp
+   ```
+
+   For `dnx`-based MCP configs, set the `HLX_EVAL_SNAPSHOT` environment variable and use the same command/args as live mode (`dnx --yes lewing.helix.mcp`; MCP mode is the default when no subcommand is given).
 
 ## Utility Commands
 
@@ -459,8 +488,9 @@ Provider acquisition failures use a stable `AcquisitionError` shape across CLI J
 | `timeout` | The provider operation timed out. |
 | `transport_error` | Network transport failed or the provider returned an unclassified non-success HTTP status. |
 | `invalid_response` | The provider/cache returned malformed, empty, corrupt, or otherwise unusable data. |
+| `not_in_snapshot` | Eval mode could not find the requested cache entry in the offline snapshot. |
 
-`error.provider` is `azdo`, `helix`, or `cache` (eval-mode cache misses and corrupt cache entries). Every error has `kind`, `provider`, `operation`, `resource`, and `message`; `httpStatus` and `retryAfterSeconds` are present only when known. The `resource` object contains operation-specific identifiers such as `org`, `project`, `buildId`, `logId`, `jobId`, `workItem`, or cache `key`.
+`error.provider` is `azdo`, `helix`, or `cache` (eval-mode snapshot misses and corrupt cache entries). Every error has `kind`, `provider`, `operation`, `resource`, and `message`; `httpStatus`, `retryAfterSeconds`, `source`, `replayed`, and `recordedAt` are present only when known. `source: "snapshot"` means the error came from eval-mode snapshot replay. `replayed: true` means the provider failure was observed and recorded during live collection, then replayed offline. The `resource` object contains operation-specific identifiers such as `org`, `project`, `buildId`, `logId`, `jobId`, `workItem`, or cache `key`; URL query strings and fragments are redacted from resource string values.
 
 CLI commands with `--json` wrap hard acquisition failures as:
 
@@ -491,6 +521,49 @@ echo exit=$?
 # exit=1
 ```
 
+A recorded provider failure replayed from a schema v2 snapshot keeps its original provider failure shape and adds snapshot replay metadata. This example was captured after populating an anonymous/public cache with `azdo build 1621466 --json` and `azdo log 1621466 999999 --json`, exporting the snapshot, then replaying the same missing log offline:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "kind": "not_found",
+    "provider": "azdo",
+    "operation": "get_build_log",
+    "resource": {
+      "org": "dnceng-public",
+      "project": "public",
+      "buildId": 1621466,
+      "logId": 999999
+    },
+    "source": "snapshot",
+    "replayed": true,
+    "recordedAt": "2026-10-02T18:07:29.635097+00:00",
+    "message": "Build log 999999 for build 1621466 returned an empty body, but the log ID was absent from the build log metadata and timeline log references."
+  }
+}
+```
+
+A key that was never collected into the snapshot is different: it is a collector gap and returns `not_in_snapshot` from provider `cache`:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "kind": "not_in_snapshot",
+    "provider": "cache",
+    "operation": "get_build",
+    "resource": {
+      "org": "dnceng-public",
+      "project": "public",
+      "buildId": 999999999
+    },
+    "source": "snapshot",
+    "message": "Snapshot does not contain cache entry for get_build."
+  }
+}
+```
+
 MCP tool failures return a normal tool result with `isError: true`, human text in `content[0].text`, and the same machine-readable error nested under `structuredContent.error`:
 
 ```json
@@ -517,7 +590,7 @@ MCP tool failures return a normal tool result with `isError: true`, human text i
 }
 ```
 
-Callers own retry/skip policy. `rate_limited` can include `retryAfterSeconds`, but `hlx` does not automatically decide whether a caller should retry, skip a resource, or fail a larger collection.
+Callers own retry/skip policy. `rate_limited` can include `retryAfterSeconds`, but `hlx` does not automatically decide whether a caller should retry, skip a resource, or fail a larger collection. For scripts and scanners, treat `not_in_snapshot` as a collection gap: fetch the resource live and export a new snapshot, or record a deliberate skip in your manifest. Treat `replayed: true` as a provider failure observed at collection time, not an offline collection gap.
 
 Exit codes:
 

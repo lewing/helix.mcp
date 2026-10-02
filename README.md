@@ -98,6 +98,8 @@ HLX_EVAL_SNAPSHOT=/tmp/my-snapshot hlx status <jobId>  # Use snapshot
 
 Snapshots preserve all cached data and artifact files. When `HLX_EVAL_SNAPSHOT` is set, `hlx` runs entirely offline against the snapshot's SQLite database. See the [CLI reference](docs/cli-reference.md#snapshot-commands) for auth-scoped replay limitations and the complete workflow.
 
+Schema v2 snapshots also preserve deterministic acquisition failures (`not_found`, `access_denied`, `invalid_response`) recorded during live collection. Offline replay returns the original provider failure with `source: "snapshot"`, `replayed: true`, and `recordedAt`; keys never collected into the snapshot return `kind: "not_in_snapshot"`, `provider: "cache"`.
+
 ## MCP Tools
 
 ### Helix Tools (9)
@@ -138,7 +140,7 @@ Snapshots preserve all cached data and artifact files. When `HLX_EVAL_SNAPSHOT` 
 
 ## Errors and exit codes
 
-CLI JSON hard failures use `{ "ok": false, "error": { ... } }`; MCP tool failures set `isError: true` and put the same object under `structuredContent.error`. `error.kind` is one of `not_found`, `access_denied`, `rate_limited`, `timeout`, `transport_error`, or `invalid_response`; `provider` is `azdo`, `helix`, or `cache`; fields are `kind`, `provider`, `operation`, `resource`, optional `httpStatus`, optional `retryAfterSeconds`, and `message`.
+CLI JSON hard failures use `{ "ok": false, "error": { ... } }`; MCP tool failures set `isError: true` and put the same object under `structuredContent.error`. `error.kind` is one of `not_found`, `access_denied`, `rate_limited`, `timeout`, `transport_error`, `invalid_response`, or `not_in_snapshot`; `provider` is `azdo`, `helix`, or `cache`; fields are `kind`, `provider`, `operation`, `resource`, optional `httpStatus`, optional `retryAfterSeconds`, optional snapshot replay fields (`source`, `replayed`, `recordedAt`), and `message`. Resource URL values redact query strings and fragments.
 
 Exit codes are `0` for success (including genuinely empty successes), `1` for hard command/acquisition errors, and `2` for incomplete evidence plans that still wrote bounded output. Callers own retry/skip policy. When a direct build-log body is empty, hlx validates the logId against the build's logs list and timeline record.log.id; if absent from both, it fails with kind=not_found. Empty full logs are not cached as successes. See the [CLI reference](docs/cli-reference.md#errors-and-exit-codes) for examples.
 
