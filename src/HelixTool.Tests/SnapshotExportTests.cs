@@ -3836,7 +3836,7 @@ public class SnapshotCommandOutputTests : IDisposable
     }
 
     [Fact]
-    public async Task Export_NullRuntimeHashes_StillExplainsEnvironmentReplayAndAzureCliLimitation()
+    public async Task Export_NullRuntimeHashes_ExplainsSnapshotPartitionReplay()
     {
         var cacheRoot = Path.Combine(_workspace, "cache-home");
         var effectiveRoot = Path.Combine(cacheRoot, "public");
@@ -3868,15 +3868,16 @@ public class SnapshotCommandOutputTests : IDisposable
 
             Assert.Equal(0, Environment.ExitCode);
             var output = captured.ToString();
-            Assert.Contains("AZDO_TOKEN", output, StringComparison.Ordinal);
-            Assert.Contains("AZDO_TOKEN_TYPE", output, StringComparison.Ordinal);
-            Assert.Contains("environment", output, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("AzDO snapshot replay", output, StringComparison.Ordinal);
+            Assert.Contains("non-secret AzDO cache partition", output, StringComparison.Ordinal);
+            Assert.Contains("needs no credentials", output, StringComparison.Ordinal);
+            Assert.Contains("HLX_EVAL_AZDO_PARTITION", output, StringComparison.Ordinal);
+            Assert.Contains("multiple AzDO partitions", output, StringComparison.Ordinal);
             Assert.Contains("replay", output, StringComparison.OrdinalIgnoreCase);
-            Assert.True(
-                output.Contains("Azure CLI", StringComparison.OrdinalIgnoreCase)
-                || output.Contains("AzureCliCredential", StringComparison.OrdinalIgnoreCase)
-                || output.Contains("az CLI", StringComparison.OrdinalIgnoreCase),
-                $"Expected Azure CLI limitation in output:{Environment.NewLine}{output}");
+            Assert.DoesNotContain("AZDO_TOKEN", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("Azure CLI", output, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("AzureCliCredential", output, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("az CLI", output, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("checkpoint", output, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("side-files included", output, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("Copying cache.db-wal", output, StringComparison.OrdinalIgnoreCase);

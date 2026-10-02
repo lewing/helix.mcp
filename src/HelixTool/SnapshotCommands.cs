@@ -40,18 +40,17 @@ public class SnapshotCommands
         Console.Error.WriteLine($"Destination: {destFull}");
 
         Console.Error.WriteLine();
-        Console.Error.WriteLine("Note: auth-scoped replay limitation");
-        Console.Error.WriteLine("      Auth-scoped AzDO keys are preserved unchanged.");
+        Console.Error.WriteLine("Note: AzDO snapshot replay");
         Console.Error.WriteLine(
-            "      Eval mode has an environment-only token accessor, so environment-keyed entries");
+            "      Snapshots record the non-secret AzDO cache partition (public or cache-xxxxxxxx).");
         Console.Error.WriteLine(
-            "      can be replayed with the identical AZDO_TOKEN and effective PAT/Bearer classification.");
+            "      Eval/offline replay needs no credentials and selects the recorded partition");
         Console.Error.WriteLine(
-            "      Set AZDO_TOKEN_TYPE to the same value to preserve that classification reliably.");
+            "      automatically.");
         Console.Error.WriteLine(
-            "      AzureCliCredential- or az CLI-derived identity partitions are not currently");
+            "      Snapshots with multiple AzDO partitions fail closed unless");
         Console.Error.WriteLine(
-            "      reproducible in eval mode. Anonymous/public entries work without credentials.");
+            "      HLX_EVAL_AZDO_PARTITION=public or cache-xxxxxxxx selects one.");
 
         Console.Error.WriteLine();
 

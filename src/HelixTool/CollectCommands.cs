@@ -45,7 +45,7 @@ public sealed class CollectCommands
     /// <param name="logScope">AzDO log scope: failed, all, or none. Default: failed.</param>
     /// <param name="testScope">AzDO test scope: failed, all, or none. Default: failed.</param>
     /// <param name="helixScope">Helix scope: suggested or none. Default: suggested.</param>
-    /// <param name="downloadHelixFiles">Glob for explicit Helix uploaded-file byte downloads. V1 records selected files as unsupported skips.</param>
+    /// <param name="downloadHelixFiles">Glob for Helix uploaded files to stream with byte caps; over-cap files are skipped (size_limit/total_size_limit), and in-cap files replay offline.</param>
     /// <param name="maxFileBytes">Maximum bytes per downloaded file. Default: 52428800.</param>
     /// <param name="maxTotalBytes">Maximum total downloaded bytes. Default: 2147483648.</param>
     [Command("collect azdo-build")]
