@@ -14,6 +14,12 @@ namespace HelixTool.Core.AzDO;
 public sealed class AzdoApiClient : IAzdoApiClient
 {
     private const int ErrorBodySnippetLimit = 500;
+    /// <summary>
+    /// Maximum Azure DevOps continuation-token pages followed by one list request before
+    /// failing closed as <c>invalid_response</c>. This prevents malformed provider
+    /// responses from making scanner/collector commands loop forever.
+    /// </summary>
+    public const int MaxContinuationPages = 1000;
     private const int MaxTestResultsPerRequest = 10_000;
     private const int MaxTestRunsPerRequest = 10_000;
     private static readonly JsonSerializerOptions s_jsonOptions = new()
@@ -337,9 +343,29 @@ public sealed class AzdoApiClient : IAzdoApiClient
         var results = new List<T>();
         string? continuationToken = null;
         var nextUrl = url;
+        var seenContinuationTokens = new HashSet<string>(StringComparer.Ordinal);
+        var seenUrls = new HashSet<string>(StringComparer.Ordinal);
+        var pageCount = 0;
 
         do
         {
+            pageCount++;
+            if (pageCount > MaxContinuationPages)
+            {
+                throw InvalidResponse(
+                    operation,
+                    ContinuationResource(resource, pageCount, continuationToken, "max_pages_exceeded"),
+                    $"AzDO {operation} returned more than {MaxContinuationPages} continuation pages; refusing to return a partial list as complete.");
+            }
+
+            if (!seenUrls.Add(nextUrl))
+            {
+                throw InvalidResponse(
+                    operation,
+                    ContinuationResource(resource, pageCount, continuationToken, "url_cycle"),
+                    $"AzDO {operation} continuation paging repeated a request URL after {pageCount} page(s); refusing to return a partial list as complete.");
+            }
+
             using var request = new HttpRequestMessage(HttpMethod.Get, nextUrl);
             var credential = await ApplyAuthAsync(request, ct).ConfigureAwait(false);
 
@@ -379,11 +405,37 @@ public sealed class AzdoApiClient : IAzdoApiClient
 
             continuationToken = ReadContinuationToken(response);
             if (!string.IsNullOrWhiteSpace(continuationToken))
+            {
+                if (!seenContinuationTokens.Add(continuationToken))
+                {
+                    throw InvalidResponse(
+                        operation,
+                        ContinuationResource(resource, pageCount, continuationToken, "repeated_token"),
+                        $"AzDO {operation} continuation paging repeated token '{continuationToken}' after {pageCount} page(s); refusing to return a partial list as complete.");
+                }
+
                 nextUrl = WithQueryParameter(url, "continuationToken", continuationToken);
+            }
         }
         while (!string.IsNullOrWhiteSpace(continuationToken));
 
         return results;
+    }
+
+    private static IReadOnlyDictionary<string, object?> ContinuationResource(
+        IReadOnlyDictionary<string, object?> resource,
+        int pageCount,
+        string? continuationToken,
+        string reason)
+    {
+        var copy = new Dictionary<string, object?>(resource, StringComparer.Ordinal)
+        {
+            ["pageCount"] = pageCount,
+            ["continuationReason"] = reason
+        };
+        if (!string.IsNullOrWhiteSpace(continuationToken))
+            copy["continuationToken"] = continuationToken;
+        return AcquisitionRedaction.RedactResource(copy);
     }
 
     private static string? ReadContinuationToken(HttpResponseMessage response)

@@ -275,7 +275,7 @@ public sealed class AzdoPagingPr1CliTests
     [Fact]
     public async Task BuildChanges_FollowsContinuationTokensBeforeComplete_Finding4168886770()
     {
-        var handler = new ContinuationTokenHandler();
+        var handler = ContinuationTokenHandler.NormalTwoPage();
         var tokenAccessor = Substitute.For<IAzdoTokenAccessor>();
         using var httpClient = new HttpClient(handler);
         var client = new AzdoApiClient(httpClient, tokenAccessor);
@@ -285,6 +285,39 @@ public sealed class AzdoPagingPr1CliTests
         Assert.Equal(["change-1", "change-2"], changes.Select(change => change.Id).ToArray());
         Assert.Equal(2, handler.RequestUris.Count);
         Assert.Contains("continuationToken=next-page", handler.RequestUris[1].Query, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task BuildChanges_RepeatedContinuationToken_FailsInvalidResponse()
+    {
+        var handler = ContinuationTokenHandler.RepeatedToken();
+        var tokenAccessor = Substitute.For<IAzdoTokenAccessor>();
+        using var httpClient = new HttpClient(handler);
+        var client = new AzdoApiClient(httpClient, tokenAccessor);
+
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => client.GetBuildChangesAsync("dnceng-public", "public", 42));
+
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.InvalidResponse, "azdo", "list_build_changes");
+        AcquisitionAssertions.Resource(ex.Error, "pageCount", 2);
+        AcquisitionAssertions.Resource(ex.Error, "continuationReason", "repeated_token");
+    }
+
+    [Fact]
+    public async Task BuildChanges_ContinuationPageCap_FailsInvalidResponse()
+    {
+        var handler = ContinuationTokenHandler.UniqueTokensForever();
+        var tokenAccessor = Substitute.For<IAzdoTokenAccessor>();
+        using var httpClient = new HttpClient(handler);
+        var client = new AzdoApiClient(httpClient, tokenAccessor);
+
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
+            () => client.GetBuildChangesAsync("dnceng-public", "public", 42));
+
+        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.InvalidResponse, "azdo", "list_build_changes");
+        AcquisitionAssertions.Resource(ex.Error, "pageCount", AzdoApiClient.MaxContinuationPages + 1);
+        AcquisitionAssertions.Resource(ex.Error, "continuationReason", "max_pages_exceeded");
+        Assert.Equal(AzdoApiClient.MaxContinuationPages, handler.RequestUris.Count);
     }
 
     private static global::AzdoCommands CreateCommands(IAzdoApiClient api)
@@ -493,20 +526,36 @@ public sealed class AzdoPagingPr1CliTests
 
     private sealed class ContinuationTokenHandler : HttpMessageHandler
     {
+        private readonly Func<int, string?> _tokenForRequest;
+
+        private ContinuationTokenHandler(Func<int, string?> tokenForRequest)
+        {
+            _tokenForRequest = tokenForRequest;
+        }
+
         public List<Uri> RequestUris { get; } = [];
+
+        public static ContinuationTokenHandler NormalTwoPage() =>
+            new(requestNumber => requestNumber == 1 ? "next-page" : null);
+
+        public static ContinuationTokenHandler RepeatedToken() =>
+            new(requestNumber => requestNumber <= 2 ? "same-page" : null);
+
+        public static ContinuationTokenHandler UniqueTokensForever() =>
+            new(requestNumber => $"page-{requestNumber}");
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             RequestUris.Add(request.RequestUri!);
-            var page = RequestUris.Count == 1
-                ? """{"count":1,"value":[{"id":"change-1","message":"first"}]}"""
-                : """{"count":1,"value":[{"id":"change-2","message":"second"}]}""";
+            var requestNumber = RequestUris.Count;
+            var page = $$"""{"count":1,"value":[{"id":"change-{{requestNumber}}","message":"page {{requestNumber}}"}]}""";
             var response = new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(page, Encoding.UTF8, "application/json")
             };
-            if (RequestUris.Count == 1)
-                response.Headers.TryAddWithoutValidation("x-ms-continuationtoken", "next-page");
+            var token = _tokenForRequest(requestNumber);
+            if (!string.IsNullOrWhiteSpace(token))
+                response.Headers.TryAddWithoutValidation("x-ms-continuationtoken", token);
             return Task.FromResult(response);
         }
     }

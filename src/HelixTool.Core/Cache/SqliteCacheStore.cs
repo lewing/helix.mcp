@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HelixTool.Core.Acquisition;
@@ -20,6 +21,7 @@ public sealed class SqliteCacheStore : ICacheStore
     private const int ErrorAccessDenied = unchecked((int)0x80070005);
     private const int ArtifactFileRetryCount = 6;
     private const string EncodedNulMetadataPrefix = "hlx:nul-base64\n";
+    private const string EncodedMetadataV2Prefix = "hlx:b64:v2:";
 
     /// <summary>Bound on how long <see cref="Dispose"/> waits for startup maintenance to finish.</summary>
     private static readonly TimeSpan DisposeJoinTimeout = TimeSpan.FromSeconds(10);
@@ -269,30 +271,79 @@ public sealed class SqliteCacheStore : ICacheStore
     private static string EncodeMetadataValue(string value)
     {
         if (value.IndexOf('\0') < 0 &&
-            !value.StartsWith(EncodedNulMetadataPrefix, StringComparison.Ordinal))
+            !value.StartsWith(EncodedNulMetadataPrefix, StringComparison.Ordinal) &&
+            !value.StartsWith(EncodedMetadataV2Prefix, StringComparison.Ordinal))
         {
             return value;
         }
 
-        return EncodedNulMetadataPrefix + Convert.ToBase64String(Encoding.UTF8.GetBytes(value));
+        var bytes = Encoding.UTF8.GetBytes(value);
+        var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        return $"{EncodedMetadataV2Prefix}{bytes.Length}:{hash}\n{Convert.ToBase64String(bytes)}";
     }
 
     internal static string? DecodeMetadataValue(string? value)
     {
         if (value is null)
             return null;
+        if (value.StartsWith(EncodedMetadataV2Prefix, StringComparison.Ordinal))
+        {
+            return DecodeV2MetadataValue(value) ?? value;
+        }
+
         if (!value.StartsWith(EncodedNulMetadataPrefix, StringComparison.Ordinal))
             return value;
 
         var payload = value[EncodedNulMetadataPrefix.Length..];
         try
         {
-            return Encoding.UTF8.GetString(Convert.FromBase64String(payload));
+            var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(payload));
+            return decoded.IndexOf('\0') >= 0 ||
+                   decoded.StartsWith(EncodedNulMetadataPrefix, StringComparison.Ordinal) ||
+                   decoded.StartsWith(EncodedMetadataV2Prefix, StringComparison.Ordinal)
+                ? decoded
+                : value;
         }
         catch (FormatException)
         {
             return value;
         }
+    }
+
+    private static string? DecodeV2MetadataValue(string value)
+    {
+        var newline = value.IndexOf('\n', EncodedMetadataV2Prefix.Length);
+        if (newline < 0)
+            return null;
+
+        var header = value[EncodedMetadataV2Prefix.Length..newline];
+        var parts = header.Split(':');
+        if (parts.Length != 2 ||
+            !int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var expectedLength) ||
+            expectedLength < 0 ||
+            parts[1].Length != 64)
+        {
+            return null;
+        }
+
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromBase64String(value[(newline + 1)..]);
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+
+        if (bytes.Length != expectedLength)
+            return null;
+
+        var actualHash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        if (!string.Equals(actualHash, parts[1], StringComparison.Ordinal))
+            return null;
+
+        return Encoding.UTF8.GetString(bytes);
     }
 
     private static void AddTextParameter(SqliteCommand command, string name, string? value)

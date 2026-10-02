@@ -14,7 +14,7 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ### Fixed
 
-- **Paging correctness:** AzDO list fetches now follow continuation tokens across all provider pages, and CLI JSON list envelopes report `cache.key` as the backing complete-list cache key used for replay (the same value as `cache.completeKey`).
+- **Paging correctness:** AzDO list fetches now follow continuation tokens across all provider pages, fail closed on repeated continuation tokens/URLs or more than 1000 pages, and CLI JSON list envelopes report `cache.key` as the backing complete-list cache key used for replay (the same value as `cache.completeKey`).
 - **Collector robustness:** `hlx collect azdo-build` now uses thread-safe manifest attempt appends, verifies cached evidence before marking resumed entries complete, retries selected Helix file downloads within byte budgets, honors provider `Retry-After` beyond `--retry-max-delay` up to a 1-hour safety ceiling, rejects disabled caching (`HLX_CACHE_MAX_SIZE_MB=0`), redacts credentials/query/fragment data from recorded argv URLs, lets `--test-scope all` also populate failed-result replay keys for default offline callers, and detects snapshot AzDO cache partitions without credentials.
 
 ### `hlx collect azdo-build` scanner snapshots

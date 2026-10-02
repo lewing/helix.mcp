@@ -166,6 +166,8 @@ hlx azdo log 12345678 42 --full
 
 The AzDO list commands `changes`, `test-runs`, `test-results`, `artifacts`, and `test-attachments` support deterministic paging for scanners and offline snapshot population.
 
+AzDO continuation-token list paging follows at most 1000 pages per list request and fails closed with `invalid_response` if the provider repeats a continuation token/request URL or exceeds that cap; partial results are not returned as complete.
+
 **Flags:**
 
 - `--limit N` — Maximum rows to return for this page. Defaults are command-specific: `changes` 20, `test-runs` 50, `test-results` 200, `artifacts` 100, and `test-attachments` 100.

@@ -2,6 +2,7 @@
 // Uses temp directories with real SQLite database files for proper integration testing.
 // SqliteCacheStore requires file-based SQLite (constructor calls Directory.CreateDirectory).
 
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using HelixTool.Core;
@@ -59,6 +60,62 @@ public class SqliteCacheStoreTests : IDisposable
         var result = await _store.GetMetadataAsync(key);
 
         Assert.Equal(value, result);
+    }
+
+    [Fact]
+    public async Task Metadata_LegacyMarkerPlaintextWithValidBase64Suffix_RoundTripsAsPlaintext()
+    {
+        const string key = "job:legacy-marker-plaintext:details";
+        const string value = "hlx:nul-base64\nSGVsbG8=";
+        await InsertRawMetadataAsync(_opts, key, value);
+
+        var result = await _store.GetMetadataAsync(key);
+
+        Assert.Equal(value, result);
+    }
+
+    [Fact]
+    public async Task Metadata_Existing154EncodedNulRow_StillDecodes()
+    {
+        const string key = "job:legacy-154-encoded:details";
+        const string decoded = "before\0after";
+        var encoded = "hlx:nul-base64\n" + Convert.ToBase64String(Encoding.UTF8.GetBytes(decoded));
+        await InsertRawMetadataAsync(_opts, key, encoded);
+
+        var result = await _store.GetMetadataAsync(key);
+
+        Assert.Equal(decoded, result);
+    }
+
+    [Fact]
+    public async Task Metadata_Existing154EncodedMarkerPrefixedRow_StillDecodesAfterSnapshotExport()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hlx-legacy-154-snapshot-{Guid.NewGuid():N}");
+        var snapshot = Path.Combine(root, "snapshot");
+        const string key = "job:legacy-154-snapshot:details";
+        const string decoded = "hlx:nul-base64\nthis-was-intentionally-encoded";
+        var encoded = "hlx:nul-base64\n" + Convert.ToBase64String(Encoding.UTF8.GetBytes(decoded));
+        try
+        {
+            var options = new CacheOptions { CacheRoot = root };
+            using (var writer = new SqliteCacheStore(options))
+            {
+                await writer.StartupMaintenance;
+                await InsertRawMetadataAsync(options, key, encoded);
+            }
+
+            await SnapshotExporter.ExportAsync(Path.Combine(root, "public"), snapshot);
+            var validation = await SnapshotValidator.ValidateAsync(snapshot);
+            Assert.True(validation.IsValid, string.Join(Environment.NewLine, validation.Errors));
+
+            using var eval = new SqliteCacheStore(new CacheOptions { CacheRoot = snapshot, EvalMode = true });
+            var result = await eval.GetMetadataAsync(key);
+            Assert.Equal(decoded, result);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
     }
 
     [Fact]
@@ -488,6 +545,24 @@ public class SqliteCacheStoreTests : IDisposable
     }
 
     private static string MetadataDbPath(CacheOptions opts) => Path.Combine(opts.GetEffectiveCacheRoot(), "cache.db");
+
+    private static async Task InsertRawMetadataAsync(CacheOptions opts, string cacheKey, string value)
+    {
+        await using var conn = new SqliteConnection($"Data Source={MetadataDbPath(opts)}");
+        await conn.OpenAsync();
+        using var cmd = conn.CreateCommand();
+        var now = DateTimeOffset.UtcNow;
+        cmd.CommandText = """
+            INSERT OR REPLACE INTO cache_metadata (cache_key, json_value, created_at, expires_at, job_id)
+            VALUES (@key, @value, @created, @expires, @jobId);
+            """;
+        cmd.Parameters.AddWithValue("@key", cacheKey);
+        cmd.Parameters.AddWithValue("@value", value);
+        cmd.Parameters.AddWithValue("@created", now.ToString("O", CultureInfo.InvariantCulture));
+        cmd.Parameters.AddWithValue("@expires", now.AddHours(1).ToString("O", CultureInfo.InvariantCulture));
+        cmd.Parameters.AddWithValue("@jobId", "legacy");
+        await cmd.ExecuteNonQueryAsync();
+    }
 
     private static string CreateAsciiPayloadWithNul(int byteCount, string nulPosition)
     {
