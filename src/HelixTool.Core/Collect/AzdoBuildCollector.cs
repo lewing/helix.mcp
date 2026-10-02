@@ -487,7 +487,7 @@ public sealed class AzdoBuildCollector
             return;
 
         var outcomes = policy.TestScope.Equals("all", StringComparison.OrdinalIgnoreCase)
-            ? "Passed,Failed,NotExecuted,Inconclusive,Timeout,Aborted,Error,NotRunnable,NotApplicable"
+            ? "Passed,Failed,NotExecuted,Inconclusive,Timeout,Aborted,Error,NotApplicable"
             : "Failed";
 
         var testAttempts = await ForEachCollectAsync(runsEnvelope.Results, policy.MaxConcurrency, async (run, localAttempts) =>
@@ -517,11 +517,33 @@ public sealed class AzdoBuildCollector
                 var failedResults = resultsEnvelope.Results
                     .Where(result => string.Equals(result.Outcome, "Failed", StringComparison.OrdinalIgnoreCase))
                     .ToList();
+                var failedCacheKey = AzdoListCacheKeys.TestResultsComplete(_cacheOptions, org, project, run.Id, "Failed");
+                var failedSerialized = JsonSerializer.Serialize(failedResults, s_jsonOptions);
                 await _cacheStore.SetMetadataAsync(
-                    AzdoListCacheKeys.TestResultsComplete(_cacheOptions, org, project, run.Id, "Failed"),
-                    JsonSerializer.Serialize(failedResults, s_jsonOptions),
+                    failedCacheKey,
+                    failedSerialized,
                     TestMetadataTtl,
                     ct);
+                var now = DateTimeOffset.UtcNow;
+                AppendAttempt(localAttempts, new CollectFetchAttempt
+                {
+                    Id = $"azdo.test-results-derived:{run.Id}:Failed",
+                    ParentId = $"azdo.test-results:{run.Id}:{outcomes}",
+                    Phase = "azdo.tests",
+                    Required = true,
+                    Provider = "azdo",
+                    Operation = "list_test_results",
+                    Resource = Resource(("org", org), ("project", project), ("runId", run.Id), ("outcomes", "Failed"), ("derivedFromOutcomes", outcomes)),
+                    CacheKey = failedCacheKey,
+                    CompleteCacheKey = failedCacheKey,
+                    StartedAt = now,
+                    FinishedAt = now,
+                    DurationMs = 0,
+                    AttemptCount = 1,
+                    Outcome = "ok",
+                    Bytes = Encoding.UTF8.GetByteCount(failedSerialized),
+                    Sha256 = Sha256Hex(Encoding.UTF8.GetBytes(failedSerialized))
+                });
             }
 
             foreach (var result in resultsEnvelope.Results)
@@ -564,6 +586,8 @@ public sealed class AzdoBuildCollector
 
         var fetches = evidencePlan.HelixFailures
             .SelectMany(DefaultHelixFetches)
+            .GroupBy(fetch => HelixFetchDedupeKey(fetch), StringComparer.Ordinal)
+            .Select(group => group.First())
             .ToList();
         var downloadBudget = new HelixFileDownloadBudget(policy.MaxTotalBytes);
 
@@ -767,7 +791,11 @@ public sealed class AzdoBuildCollector
                     long bytes = 0;
                     while (true)
                     {
-                        var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
+                        var read = await ReadHelixFileChunkAsync(
+                            source,
+                            buffer.AsMemory(0, buffer.Length),
+                            resource,
+                            ct);
                         if (read == 0)
                             break;
 
@@ -907,6 +935,34 @@ public sealed class AzdoBuildCollector
         catch (TaskCanceledException ex)
         {
             throw HelixAcquisition.Timeout(ex, "download_helix_file", HelixAcquisition.Resource(("jobId", jobId), ("workItem", workItem), ("fileName", fileName)));
+        }
+    }
+
+    private static async ValueTask<int> ReadHelixFileChunkAsync(
+        Stream source,
+        Memory<byte> buffer,
+        IReadOnlyDictionary<string, object?> resource,
+        CancellationToken ct)
+    {
+        try
+        {
+            return await source.ReadAsync(buffer, ct);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw HelixAcquisition.FromHttp(ex, "download_helix_file", resource);
+        }
+        catch (TaskCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TaskCanceledException ex)
+        {
+            throw HelixAcquisition.Timeout(ex, "download_helix_file", resource);
+        }
+        catch (IOException ex)
+        {
+            throw HelixAcquisition.Transport(ex, "download_helix_file", resource);
         }
     }
 
@@ -1301,6 +1357,12 @@ public sealed class AzdoBuildCollector
         yield return new AzdoHelixEvidenceFetch { Tool = "helix_files", HelixJobId = failure.HelixJobId, WorkItem = failure.WorkItem, Purpose = "uploaded_files" };
     }
 
+    private static string HelixFetchDedupeKey(AzdoHelixEvidenceFetch fetch)
+        => string.Join('\0',
+            fetch.Tool,
+            HelixIdResolver.ResolveJobId(fetch.HelixJobId),
+            fetch.WorkItem ?? "");
+
     private static IEnumerable<AzdoHelixEvidenceFetch> CompanionHelixFetches(AzdoHelixEvidenceFetch fetch)
     {
         if (string.IsNullOrWhiteSpace(fetch.HelixJobId) || string.IsNullOrWhiteSpace(fetch.WorkItem))
@@ -1321,8 +1383,14 @@ public sealed class AzdoBuildCollector
 
         await using var stream = File.OpenRead(manifestPath);
         var manifest = await JsonSerializer.DeserializeAsync<CollectManifest>(stream, s_jsonOptions, ct);
-        return manifest?.Attempts.ToDictionary(a => a.Id, StringComparer.Ordinal)
-            ?? new Dictionary<string, CollectFetchAttempt>(StringComparer.Ordinal);
+        if (manifest is null)
+            return new Dictionary<string, CollectFetchAttempt>(StringComparer.Ordinal);
+
+        var attempts = new Dictionary<string, CollectFetchAttempt>(StringComparer.Ordinal);
+        foreach (var attempt in manifest.Attempts)
+            attempts[attempt.Id] = attempt;
+
+        return attempts;
     }
 
     private static async Task WriteManifestAsync(string path, CollectManifest manifest, CancellationToken ct)

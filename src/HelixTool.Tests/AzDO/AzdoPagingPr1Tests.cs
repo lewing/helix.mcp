@@ -820,6 +820,42 @@ public sealed class AzdoPagingPr1CacheCompatibilityTests : IDisposable
         Assert.Contains("line 650", tail, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task TestResultsContinuationWithSkip_DoesNotDuplicateRowsOrOverfillWindowCache_Finding4169759234()
+    {
+        var directHandler = new TestResultsContinuationSkipHandler();
+        var directClient = new AzdoApiClient(new HttpClient(directHandler), Substitute.For<IAzdoTokenAccessor>());
+
+        var complete = await directClient.GetTestResultsAsync("dnceng-public", "public", 101, top: 10_001);
+
+        Assert.Equal(10_001, complete.Count);
+        Assert.Equal(10_001, complete.Select(result => result.Id).Distinct().Count());
+        Assert.Equal(10_001, complete[^1].Id);
+        Assert.DoesNotContain(
+            directHandler.RequestUris,
+            uri => uri.Query.Contains("$skip=10000", StringComparison.OrdinalIgnoreCase)
+                   || uri.Query.Contains("%24skip=10000", StringComparison.OrdinalIgnoreCase));
+
+        var cappedHandler = new TestResultsContinuationSkipHandler();
+        var cacheOptions = new CacheOptions { CacheRoot = Path.Combine(_cacheRoot, "continuation-window"), MaxSizeBytes = 1024 * 1024 * 16 };
+        using var store = new SqliteCacheStore(cacheOptions);
+        var cachedClient = new CachingAzdoApiClient(
+            new AzdoApiClient(new HttpClient(cappedHandler), Substitute.For<IAzdoTokenAccessor>()),
+            store,
+            cacheOptions);
+
+        var capped = await cachedClient.GetTestResultsAsync("dnceng-public", "public", 101, top: 10_000);
+
+        Assert.Equal(10_000, capped.Count);
+        Assert.DoesNotContain(cappedHandler.RequestUris, uri => uri.Query.Contains("continuationToken=", StringComparison.OrdinalIgnoreCase));
+        var windowKey = AzdoListCacheKeys.TestResultsWindow(cacheOptions, "dnceng-public", "public", 101, null, 0, 10_000);
+        var completeKey = AzdoListCacheKeys.TestResultsComplete(cacheOptions, "dnceng-public", "public", 101, null);
+        var windowJson = await store.GetMetadataAsync(windowKey);
+        Assert.NotNull(windowJson);
+        Assert.Equal(10_000, JsonSerializer.Deserialize<List<AzdoTestResult>>(windowJson!)?.Count);
+        Assert.Null(await store.GetMetadataAsync(completeKey));
+    }
+
     private async Task<string> SeedSnapshotAsync(Func<SqliteCacheStore, Task> seedAsync)
     {
         var liveRoot = Path.Combine(_cacheRoot, Guid.NewGuid().ToString("N"));
@@ -852,6 +888,37 @@ public sealed class AzdoPagingPr1CacheCompatibilityTests : IDisposable
     {
         try { Directory.Delete(path, recursive: true); }
         catch { }
+    }
+
+    private sealed class TestResultsContinuationSkipHandler : HttpMessageHandler
+    {
+        public List<Uri> RequestUris { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestUris.Add(request.RequestUri!);
+            var query = request.RequestUri!.Query;
+            var isContinuation = query.Contains("continuationToken=", StringComparison.OrdinalIgnoreCase);
+            var isSkipWindow = query.Contains("$skip=10000", StringComparison.OrdinalIgnoreCase)
+                               || query.Contains("%24skip=10000", StringComparison.OrdinalIgnoreCase);
+            var body = isContinuation || isSkipWindow
+                ? TestResultsJson(start: 10_001, count: 1)
+                : TestResultsJson(start: 1, count: 10_000);
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            };
+            if (!isContinuation && !isSkipWindow)
+                response.Headers.TryAddWithoutValidation("x-ms-continuationtoken", "second-page");
+            return Task.FromResult(response);
+        }
+
+        private static string TestResultsJson(int start, int count)
+        {
+            var values = Enumerable.Range(start, count)
+                .Select(id => $$"""{"id":{{id}},"testCaseTitle":"Test {{id}}","outcome":"Failed"}""");
+            return $$"""{"count":{{count}},"value":[{{string.Join(",", values)}}]}""";
+        }
     }
 }
 

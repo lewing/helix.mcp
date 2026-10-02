@@ -70,6 +70,18 @@ internal static class HelixAcquisition
             $"Helix {operation} timed out."),
             ex);
 
+    public static HlxAcquisitionException Transport(
+        Exception ex,
+        string operation,
+        IReadOnlyDictionary<string, object?> resource)
+        => new(AcquisitionErrorFactory.Create(
+            AcquisitionErrorKind.TransportError,
+            "helix",
+            operation,
+            resource,
+            $"Helix {operation} stream transport error: {ex.Message}"),
+            ex);
+
     public static IReadOnlyDictionary<string, object?> Resource(params (string Name, object? Value)[] values)
     {
         var resource = new Dictionary<string, object?>();

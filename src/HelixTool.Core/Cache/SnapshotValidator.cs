@@ -559,13 +559,9 @@ public static class SnapshotValidator
     }
 
     private static bool IsAzdoRawLogKey(string cacheKey)
-    {
-        var parts = cacheKey.Split(':');
-        return parts.Length >= 5 &&
-            parts[0] == "azdo" &&
-            parts.Any(part => string.Equals(part, "log", StringComparison.Ordinal)) &&
-            !parts.Any(part => string.Equals(part, "log-fresh", StringComparison.Ordinal));
-    }
+        => AzdoCacheKeys.TryParse(cacheKey, out var parsed) &&
+           parsed.Prefix == "azdo" &&
+           parsed.ResourceKind == "log";
 
     private static StringComparison PathComparison => OperatingSystem.IsWindows()
         ? StringComparison.OrdinalIgnoreCase
