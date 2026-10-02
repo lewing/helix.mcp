@@ -65,6 +65,29 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 - **Deterministic drilldown:** Each `helixFailures[]` row includes `suggestedFetches[]` with tool names, Helix IDs, and work-item selectors. Scripts can read the plan, decide completeness, and use emitted `helix_work_item`, `helix_logs`, and `helix_files` fetch intents for deep investigation.
 - **Backward compatible:** The artifact plan (`entries[]`) remains unchanged for non-monitor jobs. Monitor jobs without parseable failures remain selectable and report incompleteness with explicit codes. Empty `helixFailures[]` with failures unparseable is never reported as "no failures."
 
+## [v0.10.3] — 2026-09-30
+
+### Hidden AzDO test failures made visible (#150)
+
+- **Real failed-test counts:** `azdo_test_runs` now derives failed-test totals from `unanalyzedTests` and related Azure DevOps counters (including incomplete and not-applicable results) instead of reporting zero failures.
+- **Explicit auth and deletion errors:** Authentication redirects, HTTP 203 responses, and HTML sign-in pages now raise actionable auth errors instead of returning misleading empty results. A 404 while reading test-run results now reports that the run may have been deleted.
+- **Correct large-result paging:** Test results and runs now continue paging past Azure DevOps' 10,000-item cap.
+- **Stale cache avoidance:** Empty test-result lists are no longer cached, and AzDO test cache keys are versioned so older misleading entries are not served after upgrade.
+- **No auto-follow redirects:** The MCP AzDO HTTP client no longer auto-follows redirects, preserving auth-error detection.
+- **Windows cache sharing retries:** Artifact cache reads and writes retry transient Windows sharing violations to prevent spurious CI failures.
+
+### Build Analysis evidence guidance clarified (#145)
+
+- Build-analysis evidence and live monitor guidance now better describe available timeline, log, and Helix signals.
+
+### Infrastructure
+
+- **CoreCLR merged-runner CI guidance (#150):** CI guide notes that merged CoreCLR runners can exit 100 even when tests fail, helping investigators distinguish runner behavior from infrastructure errors.
+
+### Dependencies
+
+- **GitHub Actions updates** (#143, #146, #147, #148) — Updated `zizmor-action` to 0.6.4, `docker/build-push-action` to 7.4.0, `docker/setup-buildx-action` to 4.4.1, and `docker/setup-qemu-action` to 4.4.0.
+
 ## [v0.10.2] — 2026-09-11
 
 ### SQLite cache store isolation and snapshot export concurrency (#130)
