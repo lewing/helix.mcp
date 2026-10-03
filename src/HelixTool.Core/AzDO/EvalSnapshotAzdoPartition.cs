@@ -82,12 +82,8 @@ public static class EvalSnapshotAzdoPartitionSelector
         if (!File.Exists(dbPath))
             return partitions;
 
-        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
-        {
-            DataSource = dbPath,
-            Mode = SqliteOpenMode.ReadOnly,
-            Pooling = false
-        }.ToString());
+        using var connection = new SqliteConnection(
+            $"Data Source={new Uri(dbPath).AbsoluteUri}?immutable=1;Mode=ReadOnly;Pooling=False");
         connection.Open();
 
         ReadKeyPartitions(connection, "cache_metadata", partitions);

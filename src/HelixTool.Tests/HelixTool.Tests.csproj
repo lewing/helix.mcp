@@ -18,6 +18,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="AzDO/Fixtures/timeline-*.json.gz" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\HelixTool\HelixTool.csproj" />
     <ProjectReference Include="..\HelixTool.Core\HelixTool.Core.csproj" />
     <ProjectReference Include="..\HelixTool.Mcp\HelixTool.Mcp.csproj" />

@@ -153,7 +153,13 @@ public sealed class FileEvidenceDeliveryStore(CacheOptions cacheOptions) : IEvid
             // complete scalars until at least lengthBytes have been consumed, then include the
             // complete final scalar even if it extends past the requested length. This never
             // splits a scalar and never truncates a too-small request into a replacement character.
-            var window = (int)Math.Min(remaining, lengthBytes + 4);
+            //
+            // Cap to `remaining` (a real, file-size-bounded value) before adding the 4-byte lookahead
+            // slack — adding 4 directly to a caller-supplied lengthBytes near long.MaxValue would
+            // overflow to a negative number, truncating `window` to zero/garbage and silently
+            // returning zero bytes with a next.offset that never advances.
+            var cappedLength = Math.Min(lengthBytes, remaining);
+            var window = (int)Math.Min(remaining, cappedLength + 4);
             stream.Position = offsetBytes;
             var probe = new byte[window];
             var probeRead = stream.ReadAtLeast(probe, window, throwOnEndOfStream: false);

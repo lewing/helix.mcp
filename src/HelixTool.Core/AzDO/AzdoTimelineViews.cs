@@ -32,6 +32,9 @@ public sealed record TimelineProjectionRequest
     public int IssueOffset { get; init; }
     public int? IssueLimit { get; init; }
     public long MaxResponseBytes { get; init; } = 12_288;
+
+    /// <summary>Caller's original, unclamped requested value for reporting alongside the effective (clamped) <see cref="MaxResponseBytes"/>. Defaults to <see cref="MaxResponseBytes"/> when not separately supplied.</summary>
+    public long? RequestedMaxResponseBytes { get; init; }
     public bool All { get; init; }
     public string Delivery { get; init; } = "auto";
 
@@ -285,8 +288,13 @@ public sealed record TimelineProjectionResult
     [JsonPropertyName("previewChars")]
     public required int PreviewChars { get; init; }
 
+    /// <summary>Effective inline shaping target after clamping the caller's requested value to [8192, 16384].</summary>
     [JsonPropertyName("maxResponseBytes")]
     public required long MaxResponseBytes { get; init; }
+
+    /// <summary>The caller's original, unclamped requested value (may differ from <see cref="MaxResponseBytes"/>).</summary>
+    [JsonPropertyName("requestedMaxResponseBytes")]
+    public long RequestedMaxResponseBytes { get; init; }
 
     [JsonPropertyName("counts")]
     public required TimelineCounts Counts { get; init; }

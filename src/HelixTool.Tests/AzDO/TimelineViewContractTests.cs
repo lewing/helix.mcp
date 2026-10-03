@@ -99,8 +99,10 @@ public sealed class TimelineViewContractTests
         selectors["limit"] = 100;
         var view = await host.TimelineAsync(selectors);
         Assert.Equal("all", view.GetProperty("effectiveFilter").GetString());
-        Assert.Equal(expectedIds.Order(), Ids(view).Order());
-        Assert.True(view.GetProperty("complete").GetBoolean());
+        var rows = await host.ReadPagesAsync(view);
+        Assert.Equal(expectedIds.Order(), rows.Select(r => r.GetProperty("id").GetString()).Order());
+        Assert.Equal(expectedIds.Length, view.GetProperty("selectedTotal").GetInt32());
+        Assert.Equal(expectedIds.Length == view.GetProperty("returned").GetInt32(), view.GetProperty("complete").GetBoolean());
         if (selectors.ContainsKey("type"))
             Assert.True(view.GetProperty("includePhase").GetBoolean());
         if (selectors.ContainsKey("recordId") && expectedIds.Length == 1)
@@ -325,11 +327,12 @@ public sealed class TimelineViewContractTests
     public async Task ByteShortenedPaging_NoGapsDuplicates_NextUsesReturned_AndFinalNonzeroPageRemainsIncomplete()
     {
         await using var host = await TimelineViewHost.StartAsync(TimelineViewFixture.Real(1600801), 1600801);
-        var first = await host.TimelineAsync(new() { ["filter"] = "all", ["projection"] = "compact", ["limit"] = 100, ["maxResponseBytes"] = 4096 });
+        var first = await host.TimelineAsync(new() { ["filter"] = "all", ["projection"] = "compact", ["limit"] = 100, ["maxResponseBytes"] = 8192 });
         Assert.InRange(first.GetProperty("returned").GetInt32(), 1, 19);
         var viewId = first.GetProperty("viewId").GetString();
         var rows = await host.ReadPagesAsync(first, page =>
         {
+            Assert.InRange(host.LastResponseBytes, 1, 8192);
             Assert.Equal(viewId, page.GetProperty("viewId").GetString());
             Assert.False(page.GetProperty("complete").GetBoolean());
             Assert.True(page.GetProperty("truncated").GetBoolean());
@@ -341,7 +344,7 @@ public sealed class TimelineViewContractTests
         Assert.Equal(20, rows.Count);
         Assert.Equal(20, rows.Select(r => r.GetProperty("id").GetString()).Distinct().Count());
         Assert.Equal(TimelineViewFixture.Real(1600801).Records.Select(r => r.Id), rows.Select(r => r.GetProperty("id").GetString()));
-        var differentBudget = await host.TimelineAsync(new() { ["filter"] = "all", ["projection"] = "compact", ["offset"] = 1, ["limit"] = 1, ["maxResponseBytes"] = 8192 });
+        var differentBudget = await host.TimelineAsync(new() { ["filter"] = "all", ["projection"] = "compact", ["offset"] = 1, ["limit"] = 1, ["maxResponseBytes"] = 12288 });
         Assert.Equal(viewId, differentBudget.GetProperty("viewId").GetString());
         var differentProjection = await host.TimelineAsync(new() { ["filter"] = "all", ["projection"] = "summary" });
         Assert.NotEqual(viewId, differentProjection.GetProperty("viewId").GetString());
@@ -544,7 +547,9 @@ public sealed class TimelineViewContractTests
         {
             ["name"] = name, ["expand"] = "none", ["projection"] = "full", ["maxResponseBytes"] = 4096
         });
-        Assert.InRange(host.LastResponseBytes, 1, 4096);
+        Assert.Equal(4096, view.GetProperty("requestedMaxResponseBytes").GetInt64());
+        Assert.Equal(8192, view.GetProperty("maxResponseBytes").GetInt64());
+        Assert.InRange(host.LastResponseBytes, 1, 8192);
         Assert.True(view.TryGetProperty("continuation", out _));
         using var full = JsonDocument.Parse(await host.ReadEvidenceAsync(view.GetProperty("delivery")));
         Assert.Equal(name, full.RootElement.GetProperty("records")[0].GetProperty("name").GetString());
@@ -572,7 +577,34 @@ public sealed class TimelineViewContractTests
     }
 
     [Theory]
-    [InlineData(1, 2048)]
+    [InlineData(120)]
+    [InlineData(130)]
+    [InlineData(140)]
+    public async Task DefaultWireBudget_PagedEscapedLongName_EveryPageStaysWithinTarget(int repeats)
+    {
+        await using var host = await TimelineViewHost.StartAsync(TimelineViewFixture.EscapedLongNameWithSecondRow(repeats));
+        var first = await host.TimelineAsync();
+        Assert.InRange(host.LastResponseBytes, 1, 12288);
+        if (first.TryGetProperty("delivery", out var delivery) && delivery.ValueKind == JsonValueKind.Object)
+        {
+            using var full = JsonDocument.Parse(await host.ReadEvidenceAsync(delivery));
+            Assert.Equal(2, full.RootElement.GetProperty("records").GetArrayLength());
+        }
+        else
+        {
+            var rows = await host.ReadPagesAsync(first, _ => Assert.InRange(host.LastResponseBytes, 1, 12288));
+            Assert.Equal(2, rows.Count);
+        }
+    }
+
+    [Theory]
+    [InlineData(1, 8192)]
+    [InlineData(4096, 8192)]
+    [InlineData(8191, 8192)]
+    [InlineData(8192, 8192)]
+    [InlineData(12288, 12288)]
+    [InlineData(16384, 16384)]
+    [InlineData(16385, 16384)]
     [InlineData(100000, 16384)]
     public async Task ResponseTarget_IsShapedNotRejected_ReportsEffectiveTarget(long requested, long effective)
     {
@@ -581,7 +613,9 @@ public sealed class TimelineViewContractTests
         {
             ["projection"] = "summary", ["maxResponseBytes"] = requested
         });
+        Assert.Equal(requested, view.GetProperty("requestedMaxResponseBytes").GetInt64());
         Assert.Equal(effective, view.GetProperty("maxResponseBytes").GetInt64());
+        Assert.InRange(host.LastResponseBytes, 1, effective);
     }
 
     [Theory]
@@ -597,7 +631,9 @@ public sealed class TimelineViewContractTests
             ["evidenceId"] = descriptor.GetProperty("evidenceId").GetString(),
             ["lengthBytes"] = 1024 * 1024, ["encoding"] = encoding, ["maxResponseBytes"] = 4096
         }));
-        Assert.InRange(host.LastResponseBytes, 1, 4096);
+        Assert.Equal(4096, read.GetProperty("requestedMaxResponseBytes").GetInt64());
+        Assert.Equal(8192, read.GetProperty("maxResponseBytes").GetInt64());
+        Assert.InRange(host.LastResponseBytes, 1, 8192);
         Assert.True(read.GetProperty("sourceComplete").GetBoolean());
         Assert.False(read.GetProperty("rangeComplete").GetBoolean());
         Assert.InRange(read.GetProperty("returnedBytes").GetInt64(), 1, bytes.LongLength - 1);
@@ -605,7 +641,8 @@ public sealed class TimelineViewContractTests
         Assert.Equal("hlx_read_evidence", continuation.GetProperty("tool").GetString());
         var next = await host.ExecuteAsync(continuation);
         Assert.Equal(read.GetProperty("returnedBytes").GetInt64(), next.GetProperty("offsetBytes").GetInt64());
-        Assert.InRange(host.LastResponseBytes, 1, 4096);
+        Assert.Equal(8192, next.GetProperty("maxResponseBytes").GetInt64());
+        Assert.InRange(host.LastResponseBytes, 1, 8192);
     }
 
     [Fact]

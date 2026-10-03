@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.IO.Compression;
 using HelixTool.Core.AzDO;
 
 namespace HelixTool.Tests.AzDO;
@@ -17,6 +18,22 @@ internal static class TimelineViewFixture
     public const string MonitorMessage = "Work item 'System.Diagnostics.Process.Tests' in job 'windows-x86 Debug Libraries_CheckedCoreCLR - windows.10.amd64.open.rt (d0b6dc7c-c1e1-4fe3-953d-2c97a59d024a)' failed (Finished, exit code -3).";
     public const string AndroidWarning = ".dotnet/packs/Microsoft.Android.Sdk.Darwin/36.1.115/tools/Xamarin.Android.Common.targets(576,3): warning XA1040: (NETCORE_ENGINEERING_TELEMETRY=Build) The CoreCLR runtime on Android is an experimental feature and not yet suitable for production use. File issues at: https://github.com/dotnet/android/issues";
     public const string XunitWarning = "src/Controls/tests/DeviceTests/Elements/SwipeView/SwipeViewTests.Android.cs(445,22): warning xUnit2031: (NETCORE_ENGINEERING_TELEMETRY=Build) Do not use a Where clause to filter before calling Assert.Single. Use the overload of Assert.Single that accepts a filtering function. (https://xunit.net/xunit.analyzers/rules/xUnit2031)";
+
+    public static AzdoTimeline FullReal(int buildId)
+    {
+        // Complete anonymous 7.1 captures; strip worker identities, URLs and issue data,
+        // retaining every record in provider order, log IDs, original messages and attempts.
+        var name = $"HelixTool.Tests.AzDO.Fixtures.timeline-{buildId}.json.gz";
+        using var resource = typeof(TimelineViewFixture).Assembly.GetManifestResourceStream(name)
+            ?? throw new InvalidOperationException($"Missing timeline fixture {name}.");
+        using var gzip = new GZipStream(resource, CompressionMode.Decompress);
+        var timeline = JsonSerializer.Deserialize<AzdoTimeline>(gzip)
+            ?? throw new InvalidOperationException($"Invalid timeline fixture {name}.");
+        var expected = buildId == 1621192 ? 1524 : 189;
+        if (timeline.Records.Count != expected)
+            throw new InvalidOperationException($"Fixture {buildId} has {timeline.Records.Count}, expected {expected} records.");
+        return timeline;
+    }
 
     // Anonymous api-version=7.1 timelines fetched on 2026-10-03. Keep provider ordering,
     // identities, attempts, log IDs and issue text; omit workers, URLs and issue data.
@@ -73,6 +90,18 @@ internal static class TimelineViewFixture
             Issues = [new() { Type = "error", Message = "error AX42: work item failure" }]
         }]
     };
+
+    public static AzdoTimeline EscapedLongNameWithSecondRow(int repeats)
+    {
+        var source = EscapedLongName(repeats);
+        return source with
+        {
+            Records = [.. source.Records, source.Records[0] with
+            {
+                Id = SyntheticId(999), Name = "Second failed task", Log = new() { Id = 1467 }
+            }]
+        };
+    }
 
     private static AzdoTimelineRecord Row(int i, string? result, string state, string name) =>
         new()

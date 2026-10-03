@@ -91,6 +91,14 @@ public sealed record EvidenceReadResult
     [JsonPropertyName("rangeComplete")]
     public required bool RangeComplete { get; init; }
 
+    /// <summary>Effective inline shaping target after clamping the caller's requested value to [8192, 16384].</summary>
+    [JsonPropertyName("maxResponseBytes")]
+    public long MaxResponseBytes { get; init; }
+
+    /// <summary>The caller's original, unclamped requested value (may differ from <see cref="MaxResponseBytes"/>).</summary>
+    [JsonPropertyName("requestedMaxResponseBytes")]
+    public long RequestedMaxResponseBytes { get; init; }
+
     [JsonPropertyName("next")]
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
     public EvidenceContinuation? Next { get; init; }

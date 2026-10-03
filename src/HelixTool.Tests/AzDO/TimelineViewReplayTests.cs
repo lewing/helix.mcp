@@ -5,6 +5,7 @@ using System.Text.Json;
 using HelixTool.Core.AzDO;
 using HelixTool.Core.Cache;
 using HelixTool.Mcp.Tools;
+using Microsoft.Data.Sqlite;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
 using NSubstitute;
@@ -106,6 +107,15 @@ public sealed class TimelineViewReplayTests : IDisposable
     public async Task StdioDefaultWireBudget_SingleEscapedLongName_StaysWithinBudget(int repeats)
     {
         await AssertStdioDefaultPagesAsync(TimelineViewFixture.EscapedLongName(repeats), 1621192);
+    }
+
+    [Theory]
+    [InlineData(120)]
+    [InlineData(130)]
+    [InlineData(140)]
+    public async Task StdioDefaultWireBudget_PagedEscapedLongName_EveryPageStaysWithinTarget(int repeats)
+    {
+        await AssertStdioDefaultPagesAsync(TimelineViewFixture.EscapedLongNameWithSecondRow(repeats), 1621192);
     }
 
     private async Task AssertStdioDefaultPagesAsync(AzdoTimeline source, int buildId)
@@ -237,15 +247,29 @@ public sealed class TimelineViewReplayTests : IDisposable
         Assert.Equal(TimelineViewFixture.MonitorMessage, timeline.Records[0].Issues![0].Message);
     }
 
-    private async Task SeedAsync(AzdoTimeline source, int buildId = 1621192) =>
+    internal async Task SeedAsync(AzdoTimeline source, int buildId = 1621192)
+    {
         await SnapshotEvalTestHarness.CreateStableSnapshotAsync(Path.Combine(_root, "live"), Snapshot, async store =>
         {
             await store.SetMetadataAsync($"azdo:dnceng-public:public:timeline:{buildId}", JsonSerializer.Serialize(source), TimeSpan.FromHours(4));
             await store.SetMetadataAsync($"azdo:dnceng-public:public:build:{buildId}",
                 JsonSerializer.Serialize(new AzdoBuild { Id = buildId, Status = "completed" }), TimeSpan.FromHours(4));
         });
+        // File-to-file SQLite backup inherits WAL mode; production exports serialize an
+        // in-memory database. Normalize before freezing so reads need no new sidecar files.
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = Path.Combine(Snapshot, "cache.db"),
+            Mode = SqliteOpenMode.ReadWrite,
+            Pooling = false
+        }.ToString());
+        await connection.OpenAsync();
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA journal_mode=DELETE;";
+        Assert.Equal("delete", (string?)await command.ExecuteScalarAsync());
+    }
 
-    private async Task<(string Stdout, string Stderr, int ExitCode)> RunCliAsync(params string[] arguments)
+    internal async Task<(string Stdout, string Stderr, int ExitCode)> RunCliAsync(params string[] arguments)
     {
         using var process = new Process { StartInfo = TimelineStdioProcess.CreateStartInfo(Snapshot, arguments) };
         Assert.True(process.Start());
@@ -265,6 +289,9 @@ public sealed class TimelineViewReplayTests : IDisposable
             }
         }
     }
+
+    internal string SnapshotPath => Snapshot;
+    internal string TemporaryRoot => _root;
 
     public void Dispose()
     {

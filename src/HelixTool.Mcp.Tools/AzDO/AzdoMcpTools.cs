@@ -115,7 +115,7 @@ public sealed class AzdoMcpTools
         [Description("Source/view fingerprint from a prior response; a stale/changed value is rejected so paging never silently shifts.")] string? viewId = null,
         [Description("Issue offset for one recordId with projection='full'; nonzero is invalid otherwise.")] int issueOffset = 0,
         [Description("Explicit issue window for one full record; omitted means all issues (chunk/file accessible regardless of inline target).")] int? issueLimit = null,
-        [Description("Inline shaping target, not a data-access ceiling. Default: 12288.")] long maxResponseBytes = 12_288,
+        [Description("Inline shaping target, not a data-access ceiling. Clamped to 8192..16384. Default: 12288. The effective (clamped) value and the original request are both reported.")] long maxResponseBytes = 12_288,
         [Description("auto (default) keeps a useful inline page; file/all stream the complete requested selection via hlx_read_evidence.")]
         [AllowedValues("auto", "inline", "file", "chunked")] string delivery = "auto",
         [Description("Retrieve the complete selected scope (ignores limit/maxResponseBytes shaping) without changing filters.")] bool all = false)
@@ -136,10 +136,34 @@ public sealed class AzdoMcpTools
             throw new McpException($"Invalid expand '{expand}'. Must be one of: none, ancestors, children, descendants, ancestorsAndChildren, ancestorsAndDescendants.");
         if (type is not null && !AzdoTimelineProjector.IsValidType(type))
             throw new McpException($"Invalid type '{type}'. Must be one of: Stage, Phase, Job, Task, Checkpoint.");
+        if (maxResponseBytes <= 0)
+            throw new McpException("maxResponseBytes must be positive.");
 
-        // Ordinarily shape the requested target into 2,048..16,384; explicit all/file delivery
-        // below still serves the complete payload regardless of this inline shaping target.
-        var effectiveMaxResponseBytes = Math.Clamp(maxResponseBytes, 2_048, 16_384);
+        // Ordinarily shape the requested target into 8,192..16,384 (Dallas P0-1 review item 1); report
+        // both this effective value and the caller's original requested value in the envelope. Explicit
+        // all/file delivery below still serves the complete payload regardless of this inline target.
+        var effectiveMaxResponseBytes = McpPresentationBudget.ClampMaxResponseBytes(maxResponseBytes);
+
+        // Validate the request's own shape (issueOffset/issueLimit/offset/limit/enum values) before
+        // ever looking at timeline content — an empty-records fast path below must not let a
+        // malformed request (e.g. issueLimit=0) silently succeed just because there was nothing to
+        // select from.
+        var preValidationRequest = new TimelineProjectionRequest
+        {
+            Filter = filter, RecordId = recordId, ParentId = parentId, Type = type, Result = result, State = state, Name = name,
+            Expand = expand, Projection = projection, IncludePhase = includePhase,
+            PreviewIssueLimit = previewIssueLimit, PreviewChars = previewChars, Offset = offset, Limit = limit, ViewId = viewId,
+            IssueOffset = issueOffset, IssueLimit = issueLimit, MaxResponseBytes = effectiveMaxResponseBytes,
+            RequestedMaxResponseBytes = maxResponseBytes, Delivery = delivery, All = all, BuildIdOrUrl = buildIdOrUrl
+        };
+        try
+        {
+            AzdoTimelineProjector.Validate(preValidationRequest);
+        }
+        catch (ArgumentException ex)
+        {
+            throw new McpException(ex.Message);
+        }
 
         var timeline = await McpExceptionHandler.RunServiceCallAsync(
             () => _svc.GetTimelineAsync(buildIdOrUrl),
@@ -163,6 +187,7 @@ public sealed class AzdoMcpTools
                 PreviewIssueLimit = previewIssueLimit,
                 PreviewChars = previewChars,
                 MaxResponseBytes = effectiveMaxResponseBytes,
+                RequestedMaxResponseBytes = maxResponseBytes,
                 Counts = new TimelineCounts { Scope = "matched", Complete = true, ByTypeResult = [] },
                 Offset = offset,
                 Limit = limit,
@@ -174,28 +199,15 @@ public sealed class AzdoMcpTools
             };
         }
 
-        var request = new TimelineProjectionRequest
+        var request = preValidationRequest with
         {
-            Filter = filter,
-            RecordId = recordId,
-            ParentId = parentId,
-            Type = type,
-            Result = result,
-            State = state,
-            Name = name,
-            Expand = expand,
-            Projection = projection,
-            IncludePhase = includePhase,
-            PreviewIssueLimit = previewIssueLimit,
-            PreviewChars = previewChars,
-            Offset = offset,
-            Limit = limit,
-            ViewId = viewId,
-            IssueOffset = issueOffset,
-            IssueLimit = issueLimit,
-            MaxResponseBytes = effectiveMaxResponseBytes,
-            All = all || delivery.Equals("file", StringComparison.OrdinalIgnoreCase) || delivery.Equals("all", StringComparison.OrdinalIgnoreCase),
-            BuildIdOrUrl = buildIdOrUrl
+            // "chunked" retrieves the complete selection for delivery the same as "file"/"all" —
+            // it is not a synonym for "auto" (previously it silently behaved like auto with no
+            // delivery at all).
+            All = all
+                || delivery.Equals("file", StringComparison.OrdinalIgnoreCase)
+                || delivery.Equals("all", StringComparison.OrdinalIgnoreCase)
+                || delivery.Equals("chunked", StringComparison.OrdinalIgnoreCase)
         };
 
         TimelineProjectionResult Project(TimelineProjectionRequest r)
@@ -211,32 +223,7 @@ public sealed class AzdoMcpTools
         }
 
         var (cacheKey, cachePartition) = _svc.ResolveTimelineCacheIdentity(buildIdOrUrl);
-        var (shaped, deliveryDescriptor) = McpPresentationBudget.ShapeTimeline(request, Project, _evidenceStore, cachePartition, cacheKey);
-
-        if (deliveryDescriptor is not null)
-        {
-            shaped = shaped with
-            {
-                Complete = false,
-                Truncated = true,
-                Delivery = deliveryDescriptor,
-                Continuation = new TimelineAction
-                {
-                    Tool = "hlx_read_evidence",
-                    Arguments = new Dictionary<string, object?>
-                    {
-                        ["evidenceId"] = deliveryDescriptor.EvidenceId,
-                        ["offsetBytes"] = 0,
-                        ["lengthBytes"] = 65536,
-                        ["encoding"] = "auto"
-                    }
-                },
-                Note = $"Requested payload exceeded the {maxResponseBytes}-byte inline shaping target; the complete selection was written to a verified evidence file. " +
-                       $"Read it with hlx_read_evidence(evidenceId='{deliveryDescriptor.EvidenceId}', offsetBytes=0, lengthBytes=65536)."
-            };
-        }
-
-        return shaped;
+        return McpPresentationBudget.ShapeTimeline(request, Project, _evidenceStore, cachePartition, cacheKey);
     }
 
     private static readonly HashSet<string> s_validProjections = new(StringComparer.OrdinalIgnoreCase) { "triage", "compact", "full", "summary" };

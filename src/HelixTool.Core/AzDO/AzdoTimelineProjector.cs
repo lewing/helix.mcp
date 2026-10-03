@@ -45,6 +45,16 @@ public static class AzdoTimelineProjector
 
     public static bool IsValidType(string type) => s_typeValues.Contains(type);
 
+    /// <summary>
+    /// Validates a request's own parameter shape (offsets/limits/enum values/issue-window rules)
+    /// independent of any timeline content. Callers that short-circuit before loading/using a
+    /// timeline (e.g. an empty-records fast path) must still invoke this, so a malformed request
+    /// (zero issueLimit, negative issueOffset, invalid enum value, etc.) is a real error rather than
+    /// silently succeeding just because there happened to be nothing to select from.
+    /// </summary>
+    public static void Validate(TimelineProjectionRequest request) => ValidateRequest(request);
+
+
     public static TimelineProjectionResult Project(AzdoTimeline timeline, TimelineProjectionRequest request)
     {
         ArgumentNullException.ThrowIfNull(timeline);
@@ -236,7 +246,10 @@ public static class AzdoTimelineProjector
             throw new ArgumentException($"Stale viewId '{request.ViewId}'. The source/view has changed; restart at offset 0 with the new viewId '{viewId}'.");
 
         var offset = Math.Max(0, request.Offset);
-        var limit = Math.Max(1, request.Limit);
+        // All retrieves the complete selection regardless of the caller's (possibly small-default)
+        // limit — Project() is the single place that decides row counts, so MCP/CLI only need to set
+        // this flag rather than separately recomputing "how many rows is everything."
+        var limit = request.All ? Math.Max(selectedTotal, 1) : Math.Max(1, request.Limit);
 
         var baseResult = new TimelineProjectionResult
         {
@@ -254,6 +267,7 @@ public static class AzdoTimelineProjector
             PreviewIssueLimit = request.PreviewIssueLimit,
             PreviewChars = request.PreviewChars,
             MaxResponseBytes = request.MaxResponseBytes,
+            RequestedMaxResponseBytes = request.RequestedMaxResponseBytes ?? request.MaxResponseBytes,
             Counts = counts,
             IncompleteDetails = incompleteDetails,
             Offset = offset,
@@ -294,6 +308,13 @@ public static class AzdoTimelineProjector
         return result;
     }
 
+    private static readonly HashSet<string> s_projectionValues = new(StringComparer.OrdinalIgnoreCase) { "triage", "compact", "full", "summary" };
+    private static readonly HashSet<string> s_expandValues = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "none", "ancestors", "children", "descendants", "ancestorsAndChildren", "ancestorsAndDescendants"
+    };
+    private static readonly HashSet<string> s_deliveryValues = new(StringComparer.OrdinalIgnoreCase) { "auto", "inline", "file", "chunked" };
+
     private static void ValidateRequest(TimelineProjectionRequest request)
     {
         if (request.Offset < 0)
@@ -310,10 +331,30 @@ public static class AzdoTimelineProjector
             throw new ArgumentException($"Invalid parentId '{request.ParentId}'; must be a GUID.");
         if (request.Type is not null && !IsValidType(request.Type))
             throw new ArgumentException($"Invalid type '{request.Type}'. Must be one of: Stage, Phase, Job, Task, Checkpoint.");
+        if (request.Result is not null && !IsValidResult(request.Result))
+            throw new ArgumentException($"Invalid result '{request.Result}'. Must be one of: failed, canceled, abandoned, skipped, succeededWithIssues, succeeded, none.");
+        if (request.State is not null && !IsValidState(request.State))
+            throw new ArgumentException($"Invalid state '{request.State}'. Must be one of: pending, inProgress, completed (running/active/not-started are accepted aliases).");
+        if (!s_projectionValues.Contains(request.Projection))
+            throw new ArgumentException($"Invalid projection '{request.Projection}'. Must be one of: triage, compact, full, summary.");
+        if (!s_expandValues.Contains(request.Expand))
+            throw new ArgumentException($"Invalid expand '{request.Expand}'. Must be one of: none, ancestors, children, descendants, ancestorsAndChildren, ancestorsAndDescendants.");
+        if (!s_deliveryValues.Contains(request.Delivery))
+            throw new ArgumentException($"Invalid delivery '{request.Delivery}'. Must be one of: auto, inline, file, chunked.");
+        // A negative issueOffset silently behaving as 0 would hide a caller bug (e.g. a miscomputed
+        // continuation) behind an apparently-successful response; reject it explicitly instead.
+        if (request.IssueOffset < 0)
+            throw new ArgumentException("issueOffset must be nonnegative.");
+        // issueLimit=0 would produce a permanently empty, non-advancing issue page (offset + 0 never
+        // passes the total), which looks like forward progress to a caller looping on issueNext but
+        // never terminates — reject it the same way limit<=0 is rejected for row pagination.
+        if (request.IssueLimit is <= 0)
+            throw new ArgumentException("issueLimit must be positive when specified.");
         var singleFullRecord = request.RecordId is not null && request.Projection.Equals("full", StringComparison.OrdinalIgnoreCase);
         if (request.IssueOffset != 0 && !singleFullRecord)
             throw new ArgumentException("issueOffset is only valid together with a single exact recordId and projection='full'.");
     }
+
 
     private static string BucketType(string? type) =>
         type is not null && s_typeValues.Contains(type) ? type : "other";
@@ -411,16 +452,21 @@ public static class AzdoTimelineProjector
             var hasParsedMonitor = issues.Any(i => i.Message is not null && AzdoMonitorFailureParser.ParseMessage(i.Message).Count > 0);
             if (hasParsedMonitor) return 0;
 
-            var isFailedLike = AzdoService.MatchesFilter(r, "failed");
-            var hasUnresolvedMonitor = isFailedLike && issues.Any(i => i.Message is not null && AzdoMonitorFailureParser.IsMonitorLikeMessage(i.Message));
+            // "failed-like" per the shared predicate also matches any succeeded-but-warning-bearing
+            // record (MatchesFilter's hasIssues branch), so it must never itself gate a ranking band —
+            // otherwise a succeeded warning-only Task and a genuinely non-succeeded Job/Stage tie in
+            // the same band and the warning Task (ranked Task-first by TypeRank) displaces the real
+            // failure. Use the narrower "actually non-succeeded result" test for bands 1 and 4.
+            var isActuallyFailedResult = r.Result is { Length: > 0 } && !r.Result.Equals("succeeded", StringComparison.OrdinalIgnoreCase);
+            var hasUnresolvedMonitor = isActuallyFailedResult && issues.Any(i => i.Message is not null && AzdoMonitorFailureParser.IsMonitorLikeMessage(i.Message));
             if (hasUnresolvedMonitor) return 1;
 
             var isTaskLike = r.Type?.Equals("Task", StringComparison.OrdinalIgnoreCase) == true;
             var hasErrorIssue = issues.Any(i => i.Type?.Equals("error", StringComparison.OrdinalIgnoreCase) == true);
             if (isTaskLike && hasErrorIssue) return 2;
             if (hasErrorIssue) return 3;
-            if (isFailedLike) return 4;
-            if (issues.Count > 0) return 5; // warning-only
+            if (isActuallyFailedResult) return 4;
+            if (issues.Count > 0) return 5; // warning-only (succeeded, no error-type issues)
             return 6; // context-only
         }
 
@@ -479,6 +525,13 @@ public static class AzdoTimelineProjector
         if (request.Name is not null) args["name"] = request.Name;
         if (!request.Expand.Equals("ancestors", StringComparison.OrdinalIgnoreCase)) args["expand"] = request.Expand;
         if (request.IncludePhase is not null) args["includePhase"] = request.IncludePhase;
+        // A byte-shortened candidate's own previewChars/previewIssueLimit must travel with its
+        // continuation: replaying without them re-defaults to the caller's original request values,
+        // which recomputes a *different* viewId (both values feed the fingerprint) and immediately
+        // fails that replay's own stale-viewId check against the very page that produced it.
+        if (request.PreviewIssueLimit != 5) args["previewIssueLimit"] = request.PreviewIssueLimit;
+        if (request.PreviewChars != 200) args["previewChars"] = request.PreviewChars;
+        args["maxResponseBytes"] = request.MaxResponseBytes;
         if (delivery is not null) args["delivery"] = delivery;
         return args;
     }
@@ -564,22 +617,34 @@ public static class AzdoTimelineProjector
             if (request.IssueLimit is null)
             {
                 var windowed = issueOffset >= allIssues.Count ? [] : allIssues.Skip(issueOffset).ToList();
+                // Even with no issueLimit (i.e. "take everything from issueOffset"), a nonzero
+                // issueOffset means the caller has not seen issues [0, issueOffset) — that is not a
+                // complete view of the record's issues, matching the same offset==0-only rule used
+                // for the limited-window branch below and for row pagination.
+                var windowComplete = issueOffset == 0;
                 return baseResult with
                 {
                     FullRecords = [rec with { Issues = windowed }],
                     Returned = 1,
                     Total = 1,
                     TotalRecords = 1,
-                    Complete = true,
-                    Truncated = false,
+                    Complete = windowComplete,
+                    Truncated = !windowComplete,
                     IssueWindow = new TimelineIssueWindow
                     {
                         IssueTotal = allIssues.Count,
                         IssueReturned = windowed.Count,
                         IssueOffset = issueOffset,
                         IssueLimit = null,
-                        IssueComplete = true,
-                        IssueTruncated = false
+                        IssueComplete = windowComplete,
+                        IssueTruncated = !windowComplete
+                    },
+                    Continuation = windowComplete ? null : new TimelineAction
+                    {
+                        Tool = "azdo_timeline",
+                        Arguments = ExtendWithIssueWindow(
+                            BaseArguments(request, offset: 0, limit: 1, viewId: viewId, delivery: null),
+                            new TimelineNextPage { Offset = 0, Limit = allIssues.Count, ViewId = viewId })
                     }
                 };
             }
@@ -790,7 +855,6 @@ public static class AzdoTimelineProjector
 
         var groupTotal = ranked.Count;
         var selected = ranked.Take(previewIssueLimit).ToList();
-        var truncated = groupTotal > selected.Count;
 
         var previews = selected.Select(g =>
         {
@@ -805,6 +869,11 @@ public static class AzdoTimelineProjector
                 Normalized = g.AnyNormalizedCollapse
             };
         }).ToList();
+
+        // "Truncated" must cover both ways a caller sees less than the full issue text: whole groups
+        // omitted past previewIssueLimit, AND any surviving preview itself clipped at previewChars
+        // (e.g. one long undeduplicated message) — either case needs recovery via fullAction.
+        var truncated = groupTotal > selected.Count || previews.Any(p => p.MessageTruncated);
 
         return (previews, groupTotal, truncated);
     }
