@@ -143,13 +143,62 @@ hlx azdo builds --min-time 2026-06-01T00:00:00Z --max-time 2026-06-24T00:00:00Z 
 
 `--min-time` and `--max-time` filter the time field determined by `--query-order`. For example, `--query-order finishTimeDescending` means both bounds apply to finish time. Default `--query-order` is `queueTimeDescending`.
 
-### `hlx azdo timeline <buildId> [--filter failed|all]`
+### `hlx azdo timeline <buildId> [options]`
 
-Show build timeline (stages, jobs, tasks). Default filter: `failed`.
+```
+hlx azdo timeline <buildId> [--filter failed|all|running|pending|incomplete|issues]
+    [--record-id ID] [--parent-id ID] [--type Stage|Phase|Job|Task|Checkpoint]
+    [--result R] [--state pending|inProgress|completed] [--name GLOB]
+    [--expand none|ancestors|children|descendants|ancestorsAndChildren|ancestorsAndDescendants]
+    [--projection triage|compact|full|summary] [--include-phase]
+    [--preview-issue-limit N] [--preview-chars N]
+    [--offset N] [--limit N] [--view-id ID]
+    [--issue-offset N] [--issue-limit N]
+    [--all] [--delivery auto|file|all|chunked] [--output PATH] [--allow-truncated]
+    [--json] [--raw-json]
+```
+
+Triage an AzDO build timeline: errors/Helix-first Jobs/Tasks, short deduplicated issue
+previews (with counts), and log IDs. **Default view** (`--projection triage`, the default):
+at most 10 rows, ancestors included, Phase rows omitted, up to 5 deduplicated issue
+previews per row (200 Unicode scalars each). `--filter` defaults to `failed` (non-succeeded
+records or any timeline issue) for ordinary triage; it resolves to `all` once an explicit
+`--record-id`/`--parent-id`/`--type`/`--result`/`--state`/`--name` selector is supplied with
+no `--filter` given, so a deliberate exact lookup is not implicitly narrowed to failures.
+`--projection compact` returns identity/count rows without preview text; `--projection full`
+returns original record detail (including Phase by default); `--projection summary` returns
+aggregate counts only, no records.
+
+Paging uses `--offset`/`--limit` (default 10 rows) plus a server-reported `viewId` — pass the
+prior response's `viewId` back on the next page so a changed/stale source is rejected instead
+of silently shifting pages. The JSON envelope's `next` field (`{ offset, viewId }` or `null` on
+the final page) is the exact argument set for the next call.
+
+`--all` requests the complete selected scope, ignoring the row-count/byte-shaping target, and
+retrieves the complete selection — the same as the MCP `delivery="file"`/`"all"` path it
+corresponds to. `--delivery auto|file|all|chunked` (default `auto`) mirrors the MCP `delivery`
+parameter: `auto` keeps a useful inline page; `file`/`all`/`chunked` retrieve the complete
+selection and deliver it via `--output` or a verified evidence reference readable with
+`hlx_read_evidence`. `--output PATH` writes the complete requested selection as JSON to a file and
+prints a small receipt (`sha256`, byte count, path) instead of inlining it. If `--output` resolves
+inside an active read-only eval snapshot (`HLX_EVAL_SNAPSHOT`), the write is refused with an exact,
+directly-executable recovery command to retry outside the snapshot.
+
+`--json` prints the `.results[]`-keyed JSON envelope used by other CLI list commands (`ok`,
+`results`, `returned`, `complete`, `next`, `viewId`, `cache`, ...) and exits **2** when the
+printed page is incomplete and `--allow-truncated` was not passed (0 on a complete page).
+This is an intentional breaking change from the legacy `{id, records}` shape — see
+[CHANGELOG.md](../CHANGELOG.md). `--raw-json` preserves that legacy `{id, records}` shape with
+full Phase/issue detail and the original `failed`/`all` filter semantics only; it is the escape
+path for offline snapshot replay and always exits 0. Offline replay (`HLX_EVAL_SNAPSHOT`) works
+for every projection (triage/compact/full/summary), not only `--raw-json`.
 
 ```bash
 hlx azdo timeline 12345678
 hlx azdo timeline 12345678 --filter all
+hlx azdo timeline 12345678 --projection summary --json
+hlx azdo timeline 12345678 --filter all --type Job --result failed --json
+hlx azdo timeline 12345678 --record-id <guid> --projection full --raw-json
 ```
 
 ### `hlx azdo log <buildId> <logId> [--tail-lines N] [--full]`

@@ -8,6 +8,47 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+### Added
+
+- **`azdo_timeline` triage view, selectors, and access-first delivery:** `azdo_timeline` (MCP) and
+  `hlx azdo timeline` (CLI) now default to a **triage** projection — at most 10 rows, ancestors
+  included, Phase rows omitted, errors/Helix-first ordering, and up to 5 deduplicated issue
+  previews (200 Unicode scalars each) per row with log IDs and counts. New selectors `recordId`,
+  `parentId`, `type`, `result`, `state`, `name` (glob), and `expand` resolve `filter` to `all`
+  automatically once an explicit selector is given with no preset, so an exact lookup is never
+  implicitly narrowed to failures. New `projection` values `compact` (identity/count rows) and
+  `summary` (aggregate counts only) join the existing `full` (original record detail). Paging adds
+  `offset`/`limit`/`viewId`/`next` with stale-`viewId` rejection. Large rows/records/issue windows
+  are never refused: they are delivered as a verified evidence file/reference via the shared
+  `hlx_read_evidence` reader instead of being dropped or erroring. CLI JSON gains `--delivery`-style
+  `--all`/`--output` escape hatches and `--raw-json` for the legacy `{id, records}` shape used by
+  offline snapshot replay (works for every projection, not just `--raw-json`).
+
+### BREAKING
+
+- **`azdo_timeline` default output shape changed.** The default MCP response is now a bounded
+  triage view (≤10 rows, Phase omitted, issue text shortened to previews) instead of the full,
+  unbounded record list. Pass `projection=full` (and page/`delivery=file` as needed) to recover the
+  previous full-detail shape.
+- **`hlx azdo timeline --json` now emits a `.results[]`-keyed envelope** (`ok`, `results`,
+  `returned`, `complete`, `next`, `viewId`, `cache`, ...) instead of the legacy bare `{id, records}`
+  object, and **exits 2** when the printed page is incomplete and `--allow-truncated` was not
+  passed. Scripts/`jq` pipelines reading `.records[]` must switch to `.results[]` and handle
+  `complete`/`truncated`/`next` for partial pages, or pass `--raw-json` to keep the old shape.
+
+- **CLI `--delivery` flag:** `hlx azdo timeline` accepts `--delivery auto|file|all|chunked`,
+  mirroring the MCP `delivery` parameter; `--all`/`--output` remain available as CLI-specific
+  escape hatches. `--all`/`delivery="file"`/`"all"` now retrieve the complete selected scope.
+  Inline `maxResponseBytes` is clamped to an 8 KiB–16 KiB effective range (default 12288); both
+  the clamped `maxResponseBytes` and the caller's original `requestedMaxResponseBytes` are
+  reported in the response.
+- **`--output` vs. eval snapshots:** writing `--output` into an active read-only eval snapshot
+  (`HLX_EVAL_SNAPSHOT`) is refused with a structured error that includes an exact,
+  directly-executable recovery command to retry outside the snapshot.
+- **Per-request evidence auth:** `hlx_read_evidence` resolves the AzDO auth-context partition for
+  each read independently, matching the identity the originating authenticated call used instead
+  of relying on scope-sharing.
+
 ## [v0.11.0] — 2026-10-02
 
 ### **Fixed — cache data loss**
