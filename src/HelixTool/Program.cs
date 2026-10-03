@@ -1745,6 +1745,23 @@ public class AzdoCommands
             || delivery.Equals("all", StringComparison.OrdinalIgnoreCase)
             || delivery.Equals("chunked", StringComparison.OrdinalIgnoreCase);
 
+        // McpPresentationBudget.ShapeTimeline's bypass branch also always materializes the
+        // complete representation of a single exact record (`recordId` + `projection=full`)
+        // regardless of `all`/`delivery` — a large issue on that one record routing to file
+        // delivery for transport reasons is still a logically complete 1/1 result, not a partial
+        // page. This governs only the completeness-exit-code check below, not `request.All`
+        // (Core's row-limit bump), which stays scoped to the caller's actual `all`/`delivery` intent.
+        var impliesCompleteRecordLookup = recordId is not null && projection.Equals("full", StringComparison.OrdinalIgnoreCase);
+
+        // An explicit partial issue window (`--issue-offset`/`--issue-limit`) means the request
+        // only ever covers that bounded slice of the record's issues, never the complete issue
+        // set — regardless of `--all`/`--delivery file|chunked`/a bare recordId+full lookup.
+        // `view.Complete` there already correctly tracks `issueComplete` on its own; delivery
+        // success for that (deliberately partial) slice must never override it, or a verified
+        // 1-of-2-issues file delivery would wrongly read as a logically complete result.
+        var hasExplicitPartialIssueWindow = issueOffset != 0 || issueLimit is not null;
+        var requestedCompleteDelivery = !hasExplicitPartialIssueWindow && (wantsComplete || impliesCompleteRecordLookup);
+
         var request = new TimelineProjectionRequest
         {
             Filter = filter,
@@ -1830,7 +1847,7 @@ public class AzdoCommands
             // completeness (e.g. a malformed timeline graph is still a best-effort
             // reconstruction) — only the latter governs exit code, matching the materialized
             // evidence-store delivery path below.
-            var effectivelyComplete = IsEffectivelyComplete(view, requestedCompleteDelivery: true);
+            var effectivelyComplete = IsEffectivelyComplete(view, requestedCompleteDelivery);
             var receipt = new
             {
                 ok = effectivelyComplete,
@@ -1853,7 +1870,7 @@ public class AzdoCommands
         {
             var envelope = BuildCliEnvelope(view, cache);
             Console.WriteLine(JsonSerializer.Serialize(envelope, s_jsonOptions));
-            if (!IsEffectivelyComplete(view, wantsComplete) && !allowTruncated)
+            if (!IsEffectivelyComplete(view, requestedCompleteDelivery) && !allowTruncated)
                 Environment.ExitCode = 2;
             return;
         }
@@ -1878,7 +1895,7 @@ public class AzdoCommands
             var rresult = element.TryGetProperty("result", out var resultProp) ? resultProp.GetString() : null;
             Console.WriteLine($"[{rresult ?? "?"}] {rname} ({rid})");
         }
-        if (!IsEffectivelyComplete(view, wantsComplete) && !allowTruncated)
+        if (!IsEffectivelyComplete(view, requestedCompleteDelivery) && !allowTruncated)
             Environment.ExitCode = 2;
     }
 
@@ -1937,30 +1954,40 @@ public class AzdoCommands
     /// check entirely). The not-yet-existing trailing segments (e.g. the output file itself) are
     /// re-appended to the resolved real ancestor unchanged.
     /// </summary>
-    private static string ResolvePhysicalPath(string fullPath)
+    private static string ResolvePhysicalPath(string fullPath) => ResolvePhysicalPath(fullPath, 0);
+
+    private static string ResolvePhysicalPath(string fullPath, int depth)
     {
-        var existingPrefix = fullPath;
-        var trailingSegments = new List<string>();
-        while (!Directory.Exists(existingPrefix) && !File.Exists(existingPrefix))
-        {
-            var parent = Path.GetDirectoryName(existingPrefix);
-            if (string.IsNullOrEmpty(parent) || string.Equals(parent, existingPrefix, StringComparison.Ordinal))
-                break; // reached a root that doesn't exist on disk; nothing further to resolve
-            trailingSegments.Insert(0, Path.GetFileName(existingPrefix));
-            existingPrefix = parent;
-        }
+        // True realpath semantics: resolve one path component at a time from the root, following
+        // any symlink found at EACH ancestor as soon as it is reached, not only the deepest
+        // existing prefix as a single opaque target. A resolved target can itself contain further
+        // unresolved symlinks as one of ITS OWN path components (e.g. `outside-link ->
+        // mid/artifacts`, where `mid` is a separate symlink into the snapshot): `outside-link`
+        // resolves in one hop to a path whose final component ("artifacts") is an ordinary
+        // directory, so a single-hop resolve stops there and never re-examines `mid`. Recursing on
+        // every resolved target — re-running this same component walk on it — guarantees every
+        // ancestor in the chain is actually resolved, not just the first symlink encountered.
+        if (depth > 64)
+            return fullPath; // bounded against a pathological/cyclic symlink chain
 
-        var resolvedPrefix = existingPrefix;
-        for (var hop = 0; hop < 32; hop++) // bounded against a pathological/cyclic symlink chain
+        var root = Path.GetPathRoot(fullPath) ?? string.Empty;
+        var relative = fullPath[root.Length..];
+        var components = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+
+        var current = string.IsNullOrEmpty(root) ? Path.DirectorySeparatorChar.ToString() : root;
+        foreach (var component in components)
         {
-            FileSystemInfo info = Directory.Exists(resolvedPrefix) ? new DirectoryInfo(resolvedPrefix) : new FileInfo(resolvedPrefix);
+            current = Path.Combine(current, component);
+            if (!Directory.Exists(current) && !File.Exists(current))
+                continue; // not-yet-existing trailing segment; nothing on disk to resolve further
+
+            FileSystemInfo info = Directory.Exists(current) ? new DirectoryInfo(current) : new FileInfo(current);
             var target = info.ResolveLinkTarget(returnFinalTarget: true)?.FullName;
-            if (target is null)
-                break;
-            resolvedPrefix = target;
+            if (target is not null)
+                current = ResolvePhysicalPath(target, depth + 1);
         }
 
-        return trailingSegments.Count == 0 ? resolvedPrefix : Path.Combine([resolvedPrefix, .. trailingSegments]);
+        return current;
     }
 
     /// <summary>
