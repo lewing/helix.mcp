@@ -4,35 +4,27 @@
 
 **Role:** Documentation lead. Maintains README, docs/cli-reference.md, .github/skills/helix-cli/SKILL.md.
 
-**Key Learnings:** MCP tool descriptions explain what/inputs/outputs; repo-specific routing via helix_ci_guide; README leads with value prop, keeps CLI details in docs/cli-reference.md.
+**Current Focus:** v0.11.0 release cycle: helix-aware evidence plan docs, CLI paging docs, collector docs, post-merge doc fixes. All v0.11.0 documentation updates shipped.
+
+**Key Learnings:** MCP tool descriptions explain what/inputs/outputs; repo-specific routing via helix_ci_guide; README leads with value prop, keeps CLI details in docs/cli-reference.md. For public error contracts and collector/snapshot docs, verify JSON property names, enum wire strings, provider values, exit codes, flag names against exact commit source/tests plus real CLI runs. Never infer or guess.
 
 ---
 
-## Documentation Decisions (Merged)
+## Durable Documentation Principles
 
-### 2026-03-10: README Overhaul (PR #18)
-**Restructured:** Why (value prop) → Context-Efficient Design → Caching → MCP Tools → Installation → Auth → Security.
-**Removed:** Project structure section (use codebase), full CLI reference (→ docs/cli-reference.md), TRX as featured section (→ tools table).
-**Result:** 589 → ~270 lines. Conciseness is a feature for evaluators.
-
-### 2026-03-10: Documentation/Tool-Description Synchronization
 - **MCP surfaces:** tool descriptions in HelixMcpTools.cs / AzdoMcpTools.cs are the source of truth.
 - **CLI surfaces:** llmstxt (Program.cs), --help on commands, docs/cli-reference.md.
 - **Discovery routing:** `hlx llms-txt` → `hlx describe <command>` → `<command> --schema` → `<command> --help`.
 - **Do NOT document unshipped JSON field shapes** in skill docs; keep hlx search-log CLI text-only, route structured consumers to MCP helix_search.
-
-### 2026-05-08: MCP Annotations & Progress Notifications (PR #47 + #48)
-- **AllowedValues** on enum params (22 network tools = OpenWorld true, 3 static = false)
-- **Progress notifications** on helix_download, azdo_search_log, helix_find_files
-- **Docs action:** Add README section noting which tools emit progress with example formats
-
----
+- **For screenshots/architecture:** Prefer stable GitHub blob URLs over local file copies to avoid vendoring third-party code without provenance.
+- **Subsection headers:** Use ### Helix Tools / ### AzDO Tools rather than separate top-level sections for scanability.
+- **llmstxt raw string:** Flush-left in Program.cs (no indentation inside """ """ block).
 
 ## Tool & API Context
 
-**Helix tools:** 11 (hlx search-log, hlx parse-trx, hlx logs, hlx files, hlx work-item, hlx status, hlx find-files, hlx download, hlx batch-status, helix_ci_guide, helix_parse_uploaded_trx)
+**Helix tools:** 11 (search-log, parse-trx, logs, files, work-item, status, find-files, download, batch-status, helix_ci_guide, helix_parse_uploaded_trx)
 
-**AzDO tools:** 12 (azdo_build, azdo_builds, azdo_timeline, azdo_log, azdo_changes, azdo_test_runs, azdo_test_results, azdo_artifacts, azdo_test_attachments, azdo_search_log, azdo_search_timeline, azdo_search_log_across_steps)
+**AzDO tools:** 12 (build, builds, timeline, log, changes, test-runs, test-results, artifacts, test-attachments, search-log, search-timeline, search-log-across-steps)
 
 **CLI vs. MCP naming:** MCP uses underscores, CLI uses kebab-case. Example: `azdo_search_log_across_steps` MCP → `hlx azdo search-log-all` CLI.
 
@@ -42,193 +34,37 @@
 
 ---
 
-## Structural Conventions
+## Learnings (Summary)
 
-- **Subsection headers:** Use ### Helix Tools / ### AzDO Tools rather than separate top-level sections for scanability.
-- **llmstxt raw string:** Flush-left in Program.cs (no indentation inside """ """ block).
-- **MCP tool table descriptions:** One line each. Detailed param docs in [Description] attributes, not README.
-- **File locations (DO grep before editing):** HelixMcpTools.cs moved to src/HelixTool.Mcp.Tools/ (from src/HelixTool.Core/); AzdoMcpTools.cs same location.
+**Snapshot export auth replay wording:** Snapshot export warnings cannot depend on `AuthTokenHash` or `CacheRootHash` (null at fresh process before credential resolution). Auth-scoped keys unchanged. Eval can reproduce environment-keyed partitions with identical `AZDO_TOKEN` and effective PAT; matching `AZDO_TOKEN_TYPE` is reliable classification control. Eval's environment-only accessor doesn't reproduce `AzureCliCredential` or `az` CLI identity. Anonymous/public entries usable without credentials. Export output should report only destination, artifact count, database size.
 
-## 2026-09-11 — Startup cache-eviction lifecycle CHANGELOG entry (#129)
+**Helix CLI discoverability:** CLI works standalone without MCP. Top gaps: README self-deprecating about CLI, MCP config section doesn't mention CLI fallback, SKILL.md frontmatter says "not loaded" not "fails to start", cli-reference doesn't open with "works without MCP". Top edits: (1) README top — "No MCP? `hlx` works standalone". (2) SKILL.md — add `dnx` install + expand Cache section. (3) README MCP section — add CLI fallback. (4) cli-reference first line. (5) SKILL.md frontmatter USE FOR.
 
-**Documentation:** Added single [Unreleased] CHANGELOG entry for #129. Clarified that startup cache maintenance is now tracked and canceled/joined on disposal, and the startup pass no longer removes entries written after the cache was opened. Explicit note: "Maintenance is not always awaited at shutdown" (CLI does not dispose ServiceProvider). No README/cli-reference changes (no public API changes, no command/flag changes). No misleading "always await" claims. Out of scope: broader TTL/LRU documentation (unchanged).
+**Collector docs verification:** For collector docs, verify `CollectCommands`, `CollectPolicy`, `CollectManifest`, `AzdoBuildCollector`. Design doc may be ahead of implementation. Re-check after implementation lands. Current source: streams `--download-helix-files` to temp, enforces `--max-file-bytes`/`--max-total-bytes`, records `size_limit`/`total_size_limit`, caches in-cap files for offline replay, records AzDO `auth.azdo.cachePartition` with replay mode `snapshot_partition`. Eval replay selects non-secret partition without credentials; document `HLX_EVAL_AZDO_PARTITION` for multi-partition snapshots.
 
-**Decision:** `kane-changelog.md` (documentation status & scope).
+**Cache-loss incident docs:** For cache-loss incidents, verify both source and regression tests before writing release guidance. Shipped fix: encodes metadata containing NUL with `hlx:nul-base64\n`, preserves raw AzDO logs cached with `\0raw\n`, treats empty/corrupt raw-log snapshot rows as `cache/invalid_response`, `hlx snapshot validate` rejects those rows. For collector docs, distinguish missing artifact evidence (`artifact_missing`) from corrupt/size-mismatched cache evidence (`fetch_failed` with `provider=cache`).
 
-**Orchestration log:** `.squad/orchestration-log/2026-09-11-1350-kane-changelog.md`
-- **Folder restructuring (2026-03-10):** 9 Helix files → Core/Helix/; Cache namespace added; shared utils extracted; Helix/AzDO subfolders in Mcp.Tools and Tests (59 files, 1038 tests pass, PR #17).
+**Dallas R3 doc-accuracy gate fixes:** Doc claim matching older mental model can still be wrong. `EvalSnapshotAzdoPartitionSelector.Select` has five-step precedence (explicit env var → manifest `auth.azdo.cachePartition` → single discovered → ambiguous-partition refusal → `public` default), not just "env var or fail closed". Previously shipped CHANGELOG/cli-reference skipped manifest step, implied `HLX_EVAL_AZDO_PARTITION` unconditionally required. Implicit `--export` isolated cache directory is real separate temp root (command.options.cacheDir in manifest, printed to stderr) not rediscovered by `--resume --manifest <path>` alone — new `--cache-dir` must be passed explicitly. Use concrete before/after example, not just assertion. When writing CHANGELOG for fixes still flagged REJECT elsewhere (e.g. R1 evidence-eviction, R2 Helix job-discovery), phrase neutrally, scope narrowly to only accepted sub-behavior — don't let adjacent fix's wording bleed into still-broken part.
 
----
+## Recent Sessions (Most Recent ~5)
 
-## Skill Doc Maintenance
+### 2026-09-11 — Startup cache-eviction lifecycle CHANGELOG entry (#129)
 
-**File:** .github/skills/helix-cli/SKILL.md (single-source CLI doc for agents)
+Added single [Unreleased] CHANGELOG entry. Clarified startup cache maintenance now tracked and canceled/joined on disposal; startup pass no longer removes entries written after cache opened. Explicit note: "Maintenance is not always awaited at shutdown" (CLI doesn't dispose ServiceProvider). No README/cli-reference changes (no public API/command/flag changes). No misleading "always await" claims.
 
-**Structure:** Discovery path (hlx describe → --schema → --help), auth/caching guidance, jq workflows, cache behavior.
+### 2026-10-02 — Helix-aware evidence plan documentation
 
-**Content rules:**
-- Treat as living document aligned to shipped CLI state
-- Note tool-discovery surfaces (llmstxt primary, llms-txt secondary)
-- No unshipped CLI JSON shapes
-- Use exact Ordinal root-boundary checks for cache path containment
+Updated docs/cli-reference.md `hlx azdo evidence plan` section: added `--helix-failure-offset`/`--helix-failure-limit` parameters, expanded Output Structure with full `helixFailures[]` documentation (field meanings, paging semantics, seven `incompleteDetails[].code` values), added exit code clarification (exit 2 when incomplete), jq example converting `helixFailures[]` into helix fetch command templates. Updated README.md MCP Tools table to note Helix monitor support + paging. Added CHANGELOG.md [Unreleased] entry "Helix-aware evidence plan — arcade queue-monitor parsing" with parsing behavior, paging support, machine-readable codes, deterministic drilldown.
 
-**History decisions:** Issue #59 Phase 1 learnings merged; discoverability + documentation/tool-description sync remain active.
+### 2026-10-02 — CLI paging docs source-verification lesson
 
----
+For flags/fields/exit codes, verify from implementation: `src/HelixTool/Program.cs` owns CLI flag names/validation/--top alias/exit 2; `HlxListEnvelope.cs` owns field names; `AzdoService.CreateEnvelope` owns `complete`/`truncated`/`next`/`cache`/`note` semantics; `CachingAzdoApiClient` owns complete-key eval replay; `AzdoMcpTools` confirms MCP defaults stay capped. Generate live public example, include real exit code for scanner-visible JSON changes.
 
-## Learnings
+### 2026-10-02 — `hlx collect azdo-build` docs final gate
 
-### 2026-08-26: Snapshot Export Auth Replay Wording
-- Snapshot export warnings cannot depend on `AuthTokenHash` or `CacheRootHash`: the export command starts in a fresh process before AzDO credential resolution, so both may be null.
-- Auth-scoped keys remain unchanged. Eval mode can reproduce environment-keyed partitions with the identical `AZDO_TOKEN` and effective PAT/Bearer classification; matching `AZDO_TOKEN_TYPE` is the reliable classification control.
-- Eval's environment-only accessor does not reproduce `AzureCliCredential` or `az` CLI identity partitions. Anonymous/public entries remain usable without credentials.
-- User-facing export output should report only the published snapshot destination, artifact count, and database size; online backup makes WAL checkpoint/page and sidecar-copy status claims obsolete.
+All user-facing surfaces now document Helix integration and collector workflow. Docs match shipped code (field names from AzdoEvidenceModels.cs/AzdoMcpTools.cs/Program.cs verified). Paging semantics tied to DefaultHelixFailureLimit and MaxHelixFailureLimit constants. Backward compatibility explicitly noted. No stale text found in CiKnowledgeService.cs (grep found no matches); no documentation debt identified in src/.
 
-### 2026-07-20: hlx CLI Skill Discoverability Assessment
-**Question:** Do we have something like maestro's `helix-cli` SKILL.md? Is it good? How do people find it when MCP isn't running?
+### 2026-10-02 — Dallas R3 doc-accuracy gate fixes (final)
 
-**Answer:** We already have `.github/skills/helix-cli/SKILL.md`. It's richer than maestro's in progressive discovery (4-level ladder), jq examples (real field paths), and workflow patterns (7 numbered). Three gaps in the skill doc: no `dnx` install path, stub Cache section (doesn't say "CLI warms cache for MCP"), and frontmatter doesn't trigger on "MCP fails to start."
+Fixed two remaining Markdown issues per Dallas final release approval gate. Corrected docs/cli-reference.md manifest path example: base `/tmp/hlx-collect-cache/<guid>`, `GetEffectiveCacheRoot` appends `public`, `ResolveManifestPath` writes there. Final example: `<guid>/public/hlx-collect-manifest.json`. Confirmed final breaking/security/data-loss/features/fixes release notes with required-evidence retention, atomic optional headroom/resume accounting, classified SDK discovery fallback. v0.11.0 shipped with all documentation corrected and verified.
 
-**Bigger finding:** The skill is good once found, but **discoverability when MCP is absent** has four weak points:
-1. README headline is self-deprecating about the CLI, no "works standalone" callout near the top.
-2. MCP Configuration section doesn't mention CLI fallback.
-3. SKILL.md frontmatter says "not loaded" not "not configured / fails to start."
-4. docs/cli-reference.md doesn't open with "works without MCP."
-
-**Top edits ranked:** (1) README top — add "No MCP? `hlx` works standalone" callout. (2) SKILL.md — add `dnx` install + expand Cache section. (3) README MCP config section — add CLI fallback note. (4) cli-reference.md first line. (5) SKILL.md frontmatter USE FOR phrase.
-
-**Decision filed:** `.squad/decisions/inbox/kane-hlx-cli-skill-discoverability.md`
-
----
-
-## Final Review F2: Scratch Path Cleanup (Dallas Review 2026-08-20)
-
-**Finding:** Third-party source copy (`upstream-StatelessServerTests.cs`, 642 lines, zero provenance) and test-run logs (`.squad/evidence/`) were about to be committed into the PR, violating compliance/licensing policy and creating scratch clutter.
-
-**Action:** 
-- Deleted `.squad/artifacts/` and `.squad/evidence/` directories entirely
-- Rewrote two dangling XML-doc references in test classes to cite upstream MCP C# SDK v2.2.0 directly via stable GitHub blob URLs
-- Corrected XML-doc misnomer in AzdoMcpTools.cs line 468: "six **paginated** AzDO tools" → "six **capped/truncating** AzDO tools"
-- Added `.squad/artifacts/` and `.squad/evidence/` to `.gitignore` alongside existing scratch patterns, preserving durable `.squad/skills/` and histories
-
-**Key Learning:** When citing upstream library sources in XML docs, prefer stable GitHub URLs (blob/tag/path) over local file copies. This avoids vendoring third-party code without provenance and keeps test documentation pointing to authoritative sources.
-
-**Result:** No dangling references, git status clean of scratch paths, .gitignore prevents recurrence.
-
----
-
-## Snapshot Export/Validate Discoverability (2026-09-11)
-
-**Task:** Close discoverability gap for snapshotting. The feature existed (SnapshotCommands.cs, SnapshotExporter.cs, SnapshotValidator.cs) but had zero documentation.
-
-**Workflow documented:**
-- **Export:** `hlx snapshot export <destination>` — exports cache to portable SQLite snapshot with artifact files. Prints auth-scoped replay limitation warning and usage instructions with `HLX_EVAL_SNAPSHOT`.
-- **Validate:** `hlx snapshot validate <snapshotPath>` — checks SQLite integrity, schema version, single-link requirement (no hard-link aliases), and artifact references. Exit 0 (valid) or 1 (invalid) with detailed diagnostics.
-- **Replay:** Set `HLX_EVAL_SNAPSHOT=/path/to/snapshot hlx <command>` for offline evaluation (no network calls).
-- **Auth semantics:** Environment-keyed entries (via AZDO_TOKEN) reproducible with matching token+AZDO_TOKEN_TYPE classification. Anonymous/public entries always reproducible. AzureCliCredential/az CLI-derived partitions not reproducible in eval mode.
-
-**Changes:**
-1. **docs/cli-reference.md:** Added "Snapshot Commands" section (two subsections: export, validate) covering parameters, semantics, exit codes, and intended workflow. Moved "Utility Commands" table below. Added `HLX_EVAL_SNAPSHOT` and `AZDO_TOKEN_TYPE` to Environment Variables table with full descriptions.
-2. **CHANGELOG.md:** Added entry under [Unreleased] titled "Snapshot export and validation for offline replay mode" with feature summary, use cases, auth-scoped replay semantics, and snapshot layout details.
-3. **README.md:** Added "Offline Snapshots" subsection under "Cross-Process Caching" with code example and link to full CLI reference. Maintains concise cross-reference pattern.
-
-**Key design decisions:**
-- Exact CLI syntax derived from SnapshotCommands.cs [Command] attributes, not guessed.
-- Auth limitation doc mirrors SnapshotCommands.cs export command's Console.Error.WriteLine blocks (the source of truth for user-facing limitation messaging).
-- Snapshot layout description from SnapshotValidator.cs/SnapshotExporter.cs checks: cache.db requires single-link ownership (no aliases), artifacts/ optional, sidecars forbidden.
-- Exit code table matches implementation: exit 0 = valid, exit 1 = errors.
-- AZDO_TOKEN_TYPE added to environment table as it's foundational to auth-scoped key classification in replay mode.
-- README callout stays concise and defers detailed reference to docs/cli-reference.md (consistent with investigation-path and cross-reference patterns).
-
-**Completeness:** Feature is now discoverable via CLI reference, searchable in README, and properly versioned in unreleased changelog.
-
----
-
-## Prior Work Archive
-
-See `.squad/agents/kane/history-archive.md` for detailed work on:
-- Project structure, auth chain patterns, tool enumeration
-- Folder restructuring analysis (Option A executed in PR #17)
-- Cache security review, HelixService refactoring
-- Knowledgebase refresh guidance
-
-## 2026-10-02 — Helix-aware evidence plan documentation
-
-**Task:** Document arcade queue-monitor parsing shipped in commit 28beceb. Update docs/cli-reference.md `hlx azdo evidence plan` section to explain new `helixFailures[]` field, paging parameters, and `incompleteDetails[].code` semantics. Update README.md tool description and add CHANGELOG.md [Unreleased] entry.
-
-**Changes:**
-1. **docs/cli-reference.md** — Expanded command description, added `--helix-failure-offset` / `--helix-failure-limit` parameters. Updated Output Structure section with full `helixFailures[]` documentation including field meanings (helixJobId, workItem, state, exitCode, sourceFormat, suggestedFetches). Documented paging semantics and all seven `incompleteDetails[].code` values from source. Added exit code clarification: exit 2 when plan is incomplete due to truncation/ambiguity/gaps. Added jq example converting `helixFailures[]` into helix fetch command templates for scripts.
-
-2. **README.md** — Updated `azdo_evidence_plan` row in MCP Tools table to note Helix monitor support, paging fields, `incompleteDetails[].code` values, and that Helix drilldown routes to helix tools, not a new MCP tool.
-3. **CHANGELOG.md** — Added [Unreleased] entry titled "Helix-aware evidence plan — arcade queue-monitor parsing". Documented parsing behavior, paging support, machine-readable failure codes, deterministic drilldown via `suggestedFetches[]`, and backward compatibility (no changes to artifact plan `entries[]`, empty helix failures never silent).
-
-**Key design decisions preserved in docs:**
-- No new MCP tool for monitor status; evidence plan surfaces Helix IDs for routing to existing Helix tools.
-- `helixFailures[]` is timeline-only (no Helix API calls from evidence planning).
-- Paging is deterministic for collectors: fail-closed when truncated (explicit `helixFailuresTruncated=true`), never "no failures" for unparseable output.
-- `suggestedFetches[]` gives scripts exact tool/jobId/workItem coordinates; CLI examples show `jq` patterns to extract fetch commands.
-- Monitor jobs without artifacts remain incomplete with explicit codes, not silent misses.
-
-**No stale text found:** CiKnowledgeService.cs does not mention evidence plan (grep found no matches); no documentation debt identified in src/.
-
-**Completeness:** All user-facing surfaces now document Helix integration. Docs match shipped code (field names from AzdoEvidenceModels.cs/AzdoMcpTools.cs/Program.cs verified). Paging semantics tied to DefaultHelixFailureLimit and MaxHelixFailureLimit constants. Backward compatibility explicitly noted for evidence plan contract stability.
-
-## 2026-10-02 — CLI paging docs source-verification lesson
-
-**Task:** Document HEAD commit 8415f88 CLI paging in README, docs/cli-reference.md, and CHANGELOG without touching src/tests.
-
-**Key learning:** For flags/fields/exit codes, verify from implementation before writing docs: `src/HelixTool/Program.cs` owns CLI flag names, validation, `--top` alias rules, and exit `2`; `HlxListEnvelope.cs` owns envelope field names; `AzdoService.CreateEnvelope` owns `complete`, `truncated`, `next`, `cache`, and `note` semantics; `CachingAzdoApiClient` owns complete-key eval replay behavior; `AzdoMcpTools` confirms MCP defaults stay capped. Generate at least one live public example and include the real exit code when documenting scanner-visible JSON changes.
-
-## 2026-10-02T12:05:00Z — Session handoff: Evidence plan Helix + #152 acquisition errors
-
-Cross-agent context from Scribe:
-
-**For Kane (Documentation):**
-- Ripley's evidence-plan implementation is complete (commit 28beceb, 2047 tests pass)
-- Dallas approved the design; Lambert's tests report it works except for missing stable reason codes in human CLI output
-- Two test failures are implementation gaps (codes expected but not emitted): `CliEvidencePlan_UnparseableMonitorHumanOutput_ExitsTwoWithStableReasonCode`, `CliEvidencePlan_HelixFailurePaging_ReportsTruncationAndSecondPage`
-- Dallas also approved acquisition error contract (#152) as separate PR: stable `HlxAcquisitionException` with `AcquisitionError` record, MCP filter, CLI JSON envelope
-- Update MCP descriptions for both evidence-plan Helix features and acquisition error contract when Ripley adds missing reason codes to CLI output
-- Phasing: #152 error contract PR first (P0), then pagination/completeness, then `hlx collect` bundle writer
-
-**Coordination:**
-- Ash's scanner analysis supports phasing evidence-plan Helix + #152 error contract before scanner work
-- All five agents' decisions merged; ready for Larry's review gate
-
-## 2026-10-02 — Evidence plan code strings
-
-**Learning:** Verify enum/code strings against source, never infer.
-
-## 2026-10-02 — #152 acquisition errors and fail-closed paging docs
-
-**Learning:** For public error contracts, verify JSON property names, enum wire strings, provider values, and exit-code behavior against the exact commit source/tests plus a real CLI run. Evidence-plan paging now treats `helixFailureTotal > helixFailures.length` as partial even on later/final offset pages; never document offset math as the completeness rule.
-
-## 2026-10-02 — Snapshot replay acquisition errors
-
-**Learning:** Snapshot "bundle" docs must describe the existing cache/snapshot path, not a parallel artifact format. Verify replay examples in anonymous mode when possible; Azure CLI-auth cache partitions can make offline replay miss earlier with `not_in_snapshot`. Source-verified wire fields: schema v2 records only `not_found`, `access_denied`, and `invalid_response`; replay adds `source: "snapshot"`, `replayed: true`, and `recordedAt`; true collector gaps use `kind=not_in_snapshot`, `provider=cache`.
-
-### 2026-10-02: PR #153 documentation for snapshot misses (commit 58fd3d0)
-- Documented `not_in_snapshot` acquisition kind and distinction from provider `not_found`
-- Explained negative cache replay workflow in eval mode (source="snapshot", replayed=true)
-- Clarified schema v1/v2 coexistence and validation contract
-- Documented scanner/collect workflow for offline cache population
-- Described empty-log validation and `get_build_log` absence detection
-- All documentation reviews passed by Dallas
-- Full test suite validation: 2175 passed / 9 skipped
-- **Status:** APPROVED as part of PR #153 merge readiness
-
-## 2026-10-02 — `hlx collect azdo-build` docs
-
-**Learning:** For collector docs, verify the generated CLI help as well as `CollectCommands`, `CollectPolicy`, `CollectManifest`, and `AzdoBuildCollector`. The design doc may be ahead of implementation: at this checkpoint `--download-helix-files` still recorded selected Helix uploaded files as skipped rather than downloading bytes, and auth replay text had to follow the then-current manifest `auth.azdo.replay` values (`public`, `environment_token_required`, `not_replayable_az_cli`) until Dallas/Larry changed the implementation.
-
-## 2026-10-02 — Collector rulings landed
-
-**Learning:** Re-check prior review learnings after implementation lands. Current source streams `--download-helix-files` to temp files, enforces `--max-file-bytes` / `--max-total-bytes`, records `size_limit` / `total_size_limit`, caches in-cap files for offline replay, and records AzDO `auth.azdo.cachePartition` with replay mode `snapshot_partition`. Eval replay selects that non-secret partition without credentials; document `HLX_EVAL_AZDO_PARTITION` for multi-partition snapshots.
-
-## 2026-10-02 — SQLite NUL cache data-loss docs
-
-**Learning:** For cache-loss incidents, verify both source and regression tests before writing release guidance. The shipped fix encodes metadata values containing NUL with `hlx:nul-base64\n`, preserves raw AzDO logs cached with `\0raw\n`, treats empty/corrupt raw-log snapshot rows as `cache/invalid_response`, and has `hlx snapshot validate` reject those rows. For collector docs, distinguish missing artifact evidence (`artifact_missing`) from corrupt/size-mismatched cache evidence (`fetch_failed` with `provider=cache`), even if a review note uses broader shorthand.
-
-## 2026-10-02 — Dallas R3 doc-accuracy gate fixes
-
-**Learning:** A doc claim that matches an older/simpler mental model of the code can still be wrong even when it "sounds right" — `EvalSnapshotAzdoPartitionSelector.Select` has five-step precedence (explicit env var → manifest `auth.azdo.cachePartition` → single discovered partition → ambiguous-partition refusal → `public` default), not just "env var or fail closed." Previously shipped CHANGELOG/cli-reference text skipped the manifest step entirely and implied `HLX_EVAL_AZDO_PARTITION` was unconditionally required. Also: an implicit `--export` isolated cache directory is a real, separate temp root (`command.options.cacheDir` in the manifest, also printed to stderr) that is *not* rediscovered by `--resume --manifest <path>` alone — the new `--cache-dir` must be passed explicitly to resume it, and this must be shown with a concrete before/after example, not just asserted. When writing CHANGELOG entries for fixes still flagged `REJECT` elsewhere in the same gate (R1 evidence-eviction clamp, R2 Helix job-discovery classification), phrase neutrally and scope narrowly to only the accepted sub-behavior (e.g. "six named operations," explicitly excluding job discovery; "clamped to remaining capacity," never "cannot be evicted") — do not let an adjacent accepted fix's wording bleed into a claim about the still-broken part.
