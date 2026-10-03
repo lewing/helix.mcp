@@ -138,7 +138,7 @@ All-result collection is opt-in for large builds: `--test-scope all` checks the 
 |------|-------------|
 | `azdo_build` | Build details (status, result, branch, timing, URL). Accepts URLs or integer IDs. |
 | `azdo_builds` | List recent builds. Filter by branch, PR, definition, status, or time range (`minTime`/`maxTime`/`queryOrder`). |
-| `azdo_timeline` | Build timeline (stages, jobs, tasks). Filter: `failed` (default) or `all`. |
+| `azdo_timeline` | Triage an AzDO build timeline: errors/Helix-first Jobs/Tasks, short deduplicated issue previews (with counts), log IDs, and ancestor context. Defaults to `projection=triage` (at most 10 rows, Phase rows omitted); `filter` defaults to `failed` for ordinary triage, or `all` once an explicit `recordId`/`parentId`/`type`/`result`/`state`/`name` selector is given with no preset. Also supports `projection=compact\|full\|summary`, paging via `offset`/`limit`/`viewId`/`next`, and `maxResponseBytes` (default 12288, inline shaping target — not a data-access ceiling). Full/complete selections stay reachable via `delivery=file`/`all` and `hlx_read_evidence`, never refused. |
 | `azdo_log` | Log content for a specific build step (last N lines, default 500). |
 | `azdo_search_log` | Search a specific build log or all ranked build logs for a pattern with context lines. |
 | `azdo_search_timeline` | Search timeline records by name or issue pattern. |
@@ -150,6 +150,20 @@ All-result collection is opt-in for large builds: `--test-scope all` checks the 
 | `azdo_evidence_plan` | Plan failed/canceled job → artifact evidence mapping. `auto` (default) joins by source GUID, then falls back to normalized-exact names; source-ID-only, normalized-exact, and exact-name modes are also available. Parses selected arcade queue-monitor timeline issues into structured `helixFailures[]` rows (helixJobId, workItem, state, exitCode, sourceFormat, suggestedFetches). Paging fields: helixFailureOffset/Limit/Total/Truncated. Any partial Helix-failure page (`helixFailureTotal > helixFailures.length`, including later offset pages) is fail-closed: `complete=false`, `truncated=true`, `helix_failures_truncated`, and CLI exit `2`. Read-only; returns ranked candidates, ambiguity and truncation metadata, completeness status, and stable `incompleteDetails[].code` values (never silently chooses). The MCP `stripAttemptPrefix` parameter defaults to `true`; the equivalent CLI strips by default and exposes the inverse bare flag `--keep-attempt-prefix`. `suggestedFetches[].tool` emits `helix_work_item`, `helix_logs`, and `helix_files` for drilldown. |
 
 `azdo_evidence_plan` incomplete codes: `artifact_ambiguous` = multiple artifact candidates for one selected job; `artifact_missing` = no matching artifact candidate; `candidates_truncated` = a job's candidate list exceeded the per-entry bound; `entries_truncated` = selected jobs exceeded the plan entry bound; `helix_failures_truncated` = the current response contains only a partial Helix-failure page; `monitor_unparseable` = a selected monitor-like job had no parseable Helix work-item failures; `monitor_unresolved_job_id` = failure-shaped monitor entries lacked a recoverable Helix job ID. Human output reports paging ranges such as `showing 1-1 of 2`; collectors should treat exit `2` from paging as "fetch/merge remaining pages" or rerun with a limit at least as large as `helixFailureTotal`.
+
+`azdo_timeline` response shaping is access-first: `maxResponseBytes` (default 12288) is an inline
+shaping target, never a refusal — a row/record too large to inline is delivered as a verified
+evidence file/reference, readable with `hlx_read_evidence`, instead of being dropped or erroring.
+`previewIssueLimit` (default 5) and `previewChars` (default 200) bound the deduplicated issue
+preview per triage row; the full, untruncated text for any shortened preview is always reachable
+through the row's own recovery action. A per-call `delivery="file"`/`all=true` request retrieves
+the complete selected scope, ignoring that shaping target (there is no `delivery="all"` value).
+The CLI has an equivalent `--delivery auto|inline|file|chunked` flag; combine `--all` with
+`--delivery file` (or just `--all`) for the same complete-selection behavior (`--output` remains
+available as a CLI-specific escape hatch).
+Inline `maxResponseBytes` is clamped to an 8 KiB–16 KiB effective range (default 12288),
+independent of a smaller requested value; both the effective (clamped) `maxResponseBytes` and the
+caller's original `requestedMaxResponseBytes` are reported in the response.
 
 > **Parameter validation:** MCP tools reject unknown parameter names with a structured error (including a "Did you mean?" hint when the unknown name is close to a known parameter) — LLM-hallucinated or mistyped param names get immediate feedback instead of silent drops.
 > Common aliases are resolved automatically before validation: `buildId` / `build_id` / `buildUrl` → `buildIdOrUrl` on AzDO tools that accept a build identifier; `result` → `resultFilter` on `azdo_search_timeline`.

@@ -119,6 +119,12 @@ new AzdoService(
     sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>(),
     sp.GetRequiredService<CacheOptions>()));
 
+// Shared evidence delivery store (P0-1 design 2.1a): materializes oversized tool payloads into the
+// private runtime delivery directory and backs hlx_read_evidence. Scoped to match CacheOptions'
+// per-request auth-context partitioning.
+builder.Services.AddScoped<HelixTool.Core.Delivery.IEvidenceDeliveryStore>(sp =>
+    new HelixTool.Core.Delivery.FileEvidenceDeliveryStore(sp.GetRequiredService<CacheOptions>()));
+
 builder.Services
     .AddMcpServer(options =>
     {
@@ -142,16 +148,7 @@ builder.Services
         // which selects Stateful and refuses current clients with -32022).
         options.SessionMode = HttpServerSessionMode.Stateless;
     })
-    .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly, new JsonSerializerOptions
-    {
-        // Reject unknown parameters at binding time so callers get a structured error
-        // instead of silent data loss. The AddBindingErrorFilter above catches the resulting
-        // ArgumentException(paramName:"arguments") and wraps it as McpException.
-        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
-        // Required: SDK calls MakeReadOnly() on options before schema gen; without a
-        // TypeInfoResolver set, CreateJsonSchemaCore tries to assign one post-lock → InvalidOperationException.
-        TypeInfoResolver = new DefaultJsonTypeInfoResolver(),
-    })
+    .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly, McpPresentationBudget.ProductionToolJsonOptions)
     .WithResourcesFromAssembly(typeof(HelixMcpTools).Assembly);
 
 var app = builder.Build();

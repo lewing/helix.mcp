@@ -17,7 +17,7 @@ public class AzdoMcpToolsTests
     {
         _mockApi = Substitute.For<IAzdoApiClient>();
         _svc = new AzdoService(_mockApi);
-        _tools = new AzdoMcpTools(_svc, Substitute.For<IAzdoTokenAccessor>());
+        _tools = new AzdoMcpTools(_svc, Substitute.For<IAzdoTokenAccessor>(), Substitute.For<HelixTool.Core.Delivery.IEvidenceDeliveryStore>());
     }
 
     // ── azdo_build ──────────────────────────────────────────────────
@@ -141,12 +141,12 @@ public class AzdoMcpToolsTests
         _mockApi.GetTimelineAsync("dnceng-public", "public", 10, Arg.Any<CancellationToken>())
             .Returns(timeline);
 
-        var result = await _tools.Timeline("10");
+        var result = await _tools.Timeline("10", projection: "full");
 
         Assert.NotNull(result);
         Assert.Equal("tl-1", result!.Id);
-        Assert.Single(result.Records);
-        Assert.Equal("Build", result.Records[0].Name);
+        Assert.Single(result.FullRecords!);
+        Assert.Equal("Build", result.FullRecords![0].Name);
     }
 
     [Fact]
@@ -182,9 +182,8 @@ public class AzdoMcpToolsTests
     }
 
     [Fact]
-    public async Task Timeline_Truncated_WhenRecordsExceedMax()
+    public async Task Timeline_PagesLargeSelection_WithTruthfulSelectedTotal()
     {
-        // 250 records exceeds MaxTimelineRecords (200)
         const int totalCount = 250;
         var records = Enumerable.Range(0, totalCount)
             .Select(i => new AzdoTimelineRecord { Id = $"r{i}", Name = $"Task {i}", Type = "Task", Result = "succeeded" })
@@ -194,20 +193,20 @@ public class AzdoMcpToolsTests
         _mockApi.GetTimelineAsync("dnceng-public", "public", 10, Arg.Any<CancellationToken>())
             .Returns(timeline);
 
-        var result = await _tools.Timeline("10", filter: "all");
+        var result = await _tools.Timeline("10", filter: "all", projection: "compact");
 
         Assert.NotNull(result);
         Assert.True(result!.Truncated);
         Assert.Equal(totalCount, result.TotalRecords);
-        Assert.Equal(100, result.Records.Count); // TruncatedTimelineBudget
-        Assert.Contains("truncated", result.Note, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("250", result.Note!);
+        Assert.InRange(result.CompactRows!.Count, 1, 10);
+        Assert.NotNull(result.Next);
+        Assert.Equal(result.Returned, result.Next.Offset);
+        Assert.False(result.Complete);
     }
 
     [Fact]
-    public async Task Timeline_NotTruncated_WhenRecordsBelowMax()
+    public async Task Timeline_PagesWideSelection_EvenBelowOldRecordCountThreshold()
     {
-        // 150 records is under MaxTimelineRecords (200)
         const int totalCount = 150;
         var records = Enumerable.Range(0, totalCount)
             .Select(i => new AzdoTimelineRecord { Id = $"r{i}", Name = $"Task {i}", Type = "Task", Result = "succeeded" })
@@ -217,13 +216,13 @@ public class AzdoMcpToolsTests
         _mockApi.GetTimelineAsync("dnceng-public", "public", 10, Arg.Any<CancellationToken>())
             .Returns(timeline);
 
-        var result = await _tools.Timeline("10", filter: "all");
+        var result = await _tools.Timeline("10", filter: "all", projection: "compact");
 
         Assert.NotNull(result);
-        Assert.False(result!.Truncated);
-        Assert.Null(result.TotalRecords);
-        Assert.Null(result.Note);
-        Assert.Equal(totalCount, result.Records.Count);
+        Assert.True(result!.Truncated);
+        Assert.Equal(totalCount, result.TotalRecords);
+        Assert.InRange(result.CompactRows!.Count, 1, 10);
+        Assert.NotNull(result.Next);
     }
 
     // ── azdo_log (returns plain text, not JSON) ─────────────────────
@@ -489,10 +488,10 @@ public class AzdoMcpToolsTests
     public async Task Timeline_Filter_Running_ReturnsOnlyInProgressRecords()
     {
         SetupFilterTestTimeline();
-        var result = await _tools.Timeline("10", filter: "running");
+        var result = await _tools.Timeline("10", filter: "running", projection: "full");
 
         Assert.NotNull(result);
-        var names = result!.Records.Select(r => r.Name).ToList();
+        var names = result!.FullRecords!.Select(r => r.Name).ToList();
         Assert.Contains("Running Task", names);
         Assert.DoesNotContain("Pending Task",     names);
         Assert.DoesNotContain("Succeeded Task",   names);
@@ -504,10 +503,10 @@ public class AzdoMcpToolsTests
     public async Task Timeline_Filter_Pending_ReturnsOnlyPendingRecords()
     {
         SetupFilterTestTimeline();
-        var result = await _tools.Timeline("10", filter: "pending");
+        var result = await _tools.Timeline("10", filter: "pending", projection: "full");
 
         Assert.NotNull(result);
-        var names = result!.Records.Select(r => r.Name).ToList();
+        var names = result!.FullRecords!.Select(r => r.Name).ToList();
         Assert.Contains("Pending Task", names);
         Assert.DoesNotContain("Running Task",     names);
         Assert.DoesNotContain("Succeeded Task",   names);
@@ -519,10 +518,10 @@ public class AzdoMcpToolsTests
     public async Task Timeline_Filter_Incomplete_ReturnsRunningAndPendingRecords()
     {
         SetupFilterTestTimeline();
-        var result = await _tools.Timeline("10", filter: "incomplete");
+        var result = await _tools.Timeline("10", filter: "incomplete", projection: "full");
 
         Assert.NotNull(result);
-        var names = result!.Records.Select(r => r.Name).ToList();
+        var names = result!.FullRecords!.Select(r => r.Name).ToList();
         Assert.Contains("Running Task", names);
         Assert.Contains("Pending Task", names);
         Assert.DoesNotContain("Succeeded Task",  names);
@@ -535,10 +534,10 @@ public class AzdoMcpToolsTests
     public async Task Timeline_Filter_Issues_ReturnsOnlyRecordsWithIssues()
     {
         SetupFilterTestTimeline();
-        var result = await _tools.Timeline("10", filter: "issues");
+        var result = await _tools.Timeline("10", filter: "issues", projection: "full");
 
         Assert.NotNull(result);
-        var names = result!.Records.Select(r => r.Name).ToList();
+        var names = result!.FullRecords!.Select(r => r.Name).ToList();
         Assert.Contains("Task With Issues", names);
         Assert.DoesNotContain("Running Task",   names);
         Assert.DoesNotContain("Pending Task",   names);
@@ -551,10 +550,10 @@ public class AzdoMcpToolsTests
     {
         // Regression: 'failed' returns non-succeeded + records-with-issues
         SetupFilterTestTimeline();
-        var result = await _tools.Timeline("10", filter: "failed");
+        var result = await _tools.Timeline("10", filter: "failed", projection: "full");
 
         Assert.NotNull(result);
-        var names = result!.Records.Select(r => r.Name).ToList();
+        var names = result!.FullRecords!.Select(r => r.Name).ToList();
         Assert.Contains("Failed Task",      names);
         Assert.Contains("Canceled Task",    names);
         Assert.Contains("Task With Issues", names);  // issues gate
@@ -568,10 +567,10 @@ public class AzdoMcpToolsTests
     public async Task Timeline_Filter_All_DefaultBehaviorUnchanged()
     {
         SetupFilterTestTimeline();
-        var result = await _tools.Timeline("10", filter: "all");
+        var result = await _tools.Timeline("10", filter: "all", projection: "full");
 
         Assert.NotNull(result);
-        Assert.Equal(6, result!.Records.Count);
+        Assert.Equal(6, result!.FullRecords!.Count);
     }
 
     [Fact]
@@ -606,10 +605,10 @@ public class AzdoMcpToolsTests
     public async Task Timeline_Alias_ResolvesToRunning(string alias)
     {
         SetupFilterTestTimeline();
-        var result = await _tools.Timeline("10", filter: alias);
+        var result = await _tools.Timeline("10", filter: alias, projection: "full");
 
         Assert.NotNull(result);
-        var names = result!.Records.Select(r => r.Name).ToList();
+        var names = result!.FullRecords!.Select(r => r.Name).ToList();
         Assert.Contains("Running Task",   names);
         Assert.DoesNotContain("Pending Task",   names);
         Assert.DoesNotContain("Succeeded Task", names);
@@ -621,10 +620,10 @@ public class AzdoMcpToolsTests
     public async Task Timeline_Alias_ResolvesToPending(string alias)
     {
         SetupFilterTestTimeline();
-        var result = await _tools.Timeline("10", filter: alias);
+        var result = await _tools.Timeline("10", filter: alias, projection: "full");
 
         Assert.NotNull(result);
-        var names = result!.Records.Select(r => r.Name).ToList();
+        var names = result!.FullRecords!.Select(r => r.Name).ToList();
         Assert.Contains("Pending Task",   names);
         Assert.DoesNotContain("Running Task",   names);
         Assert.DoesNotContain("Succeeded Task", names);
@@ -634,10 +633,10 @@ public class AzdoMcpToolsTests
     public async Task Timeline_Alias_CaseInsensitive_InprogressUpperCase_ResolvesToRunning()
     {
         SetupFilterTestTimeline();
-        var result = await _tools.Timeline("10", filter: "INPROGRESS");
+        var result = await _tools.Timeline("10", filter: "INPROGRESS", projection: "full");
 
         Assert.NotNull(result);
-        var names = result!.Records.Select(r => r.Name).ToList();
+        var names = result!.FullRecords!.Select(r => r.Name).ToList();
         Assert.Contains("Running Task", names);
         Assert.DoesNotContain("Pending Task", names);
     }
@@ -659,10 +658,10 @@ public class AzdoMcpToolsTests
                 ]
             });
 
-        var result = await _tools.Timeline("10", filter: "failed");
+        var result = await _tools.Timeline("10", filter: "failed", projection: "full");
 
         Assert.NotNull(result);
-        var names = result!.Records.Select(r => r.Name).ToList();
+        var names = result!.FullRecords!.Select(r => r.Name).ToList();
         Assert.Contains("Failed Step",   names);
         Assert.DoesNotContain("Pending Step", names);
     }
@@ -671,11 +670,11 @@ public class AzdoMcpToolsTests
     public async Task Timeline_Filter_Pending_DoesNotMatchRunning()
     {
         SetupFilterTestTimeline();
-        var result = await _tools.Timeline("10", filter: "pending");
+        var result = await _tools.Timeline("10", filter: "pending", projection: "full");
 
         Assert.NotNull(result);
         // Running task must NOT appear under 'pending' filter
-        Assert.DoesNotContain(result!.Records, r => r.Name == "Running Task");
+        Assert.DoesNotContain(result!.FullRecords!, r => r.Name == "Running Task");
     }
 
     [Fact]
@@ -695,10 +694,10 @@ public class AzdoMcpToolsTests
                 ]
             });
 
-        var result = await _tools.Timeline("10", filter: "running");
+        var result = await _tools.Timeline("10", filter: "running", projection: "full");
 
         Assert.NotNull(result);
-        var names = result!.Records.Select(r => r.Name).ToList();
+        var names = result!.FullRecords!.Select(r => r.Name).ToList();
         Assert.Contains("Running Task", names);  // direct match
         Assert.Contains("Tests Job",    names);  // parent walk
         Assert.Contains("Build Stage",  names);  // grandparent walk

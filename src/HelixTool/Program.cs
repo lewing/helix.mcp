@@ -123,6 +123,12 @@ services.AddSingleton<AzdoService>(sp =>
 services.AddSingleton<AzdoBuildCollector>();
 }
 
+// Shared evidence delivery store (P0-1 design 2.1a): materializes oversized tool payloads into the
+// private runtime delivery directory and backs hlx_read_evidence. CLI commands with --output write
+// files directly; this store exists so CLI-hosted MCP stdio sessions (hlx mcp) can serve remote reads.
+services.AddSingleton<HelixTool.Core.Delivery.IEvidenceDeliveryStore>(sp =>
+    new HelixTool.Core.Delivery.FileEvidenceDeliveryStore(sp.GetRequiredService<CacheOptions>()));
+
 ConsoleApp.ServiceProvider = services.BuildServiceProvider();
 
 var app = ConsoleApp.Create();
@@ -948,7 +954,7 @@ public class Commands
 ### AzDO CLI Commands
 - `hlx azdo build <buildId> [--json]` — Get build details (status, result, branch, timing, URL)
 - `hlx azdo builds [--org ORG] [--project PROJ] [--top N] [--branch B] [--pr-number N] [--definition-id N] [--status S] [--json]` — List builds (default top 20)
-- `hlx azdo timeline <buildId> [--filter failed|all] [--json]` — Build timeline (stages, jobs, tasks with log IDs)
+- `hlx azdo timeline <buildId> [--filter failed|all|...] [--record-id ID] [--parent-id ID] [--type T] [--result R] [--state S] [--name GLOB] [--expand MODE] [--projection triage|compact|full|summary] [--offset N] [--limit N] [--all] [--output PATH] [--allow-truncated] [--json] [--raw-json]` — Triage an AzDO build timeline: error/Helix-first Jobs/Tasks, short deduplicated issue previews, log IDs. Defaults to triage (Phase rows omitted); `--raw-json` preserves the legacy `{id,records}` shape for offline replay.
 - `hlx azdo log <buildId> <logId> [--tail-lines N] [--full]` — Get build log content (last N lines by default, or the full log)
 - `hlx azdo search-log <buildId> [--log-id N] [--pattern P] [--context-lines N] [--max-matches N] [--max-logs N] [--min-lines N] [--json]` — Search one build log or all ranked logs (defaults: 100 matches, 50 logs)
 - `hlx azdo search-timeline <buildId> <pattern> [--type Stage|Job|Task] [--result failed|all] [--json]` — Search timeline records by name/issue pattern
@@ -1116,6 +1122,10 @@ Available as `failureCategory` in JSON and MCP output.
                 sp.GetRequiredService<CacheOptions>()));
         }
 
+        // Shared evidence delivery store (P0-1 design 2.1a); backs hlx_read_evidence for the stdio MCP server.
+        builder.Services.AddSingleton<HelixTool.Core.Delivery.IEvidenceDeliveryStore>(sp =>
+            new HelixTool.Core.Delivery.FileEvidenceDeliveryStore(sp.GetRequiredService<CacheOptions>()));
+
         builder.Services
             .AddMcpServer(options =>
             {
@@ -1131,16 +1141,11 @@ Available as `failureCategory` in JSON and MCP output.
                 options.AddAcquisitionErrorFilter();
             })
             .WithStdioServerTransport()
-            .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly, new JsonSerializerOptions
-            {
-                // Reject unknown parameters at binding time so callers get a structured error
-                // instead of silent data loss. The AddBindingErrorFilter above catches the resulting
-                // ArgumentException(paramName:"arguments") and wraps it as McpException.
-                UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
-                // Required: SDK calls MakeReadOnly() on options before schema gen; without a
-                // TypeInfoResolver set, CreateJsonSchemaCore tries to assign one post-lock → InvalidOperationException.
-                TypeInfoResolver = new DefaultJsonTypeInfoResolver(),
-            })
+            // Shared with McpPresentationBudget.MeasureAny so budget shaping decisions are made
+            // against the exact options this host actually serializes tool results with — a
+            // locally-duplicated JsonSerializerOptions here previously silently drifted from what
+            // shaping measured (e.g. omitting vs. emitting null row fields).
+            .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly, McpPresentationBudget.ProductionToolJsonOptions)
             .WithResourcesFromAssembly(typeof(HelixMcpTools).Assembly);
         await builder.Build().RunAsync();
     }
@@ -1416,11 +1421,19 @@ public class AzdoCommands
 
     private readonly AzdoService _svc;
     private readonly IAzdoTokenAccessor _tokenAccessor;
+    private readonly HelixTool.Core.Cache.CacheOptions _cacheOptions;
+    private readonly HelixTool.Core.Delivery.IEvidenceDeliveryStore _evidenceStore;
 
-    public AzdoCommands(AzdoService svc, IAzdoTokenAccessor tokenAccessor)
+    public AzdoCommands(
+        AzdoService svc,
+        IAzdoTokenAccessor tokenAccessor,
+        HelixTool.Core.Cache.CacheOptions? cacheOptions = null,
+        HelixTool.Core.Delivery.IEvidenceDeliveryStore? evidenceStore = null)
     {
         _svc = svc;
         _tokenAccessor = tokenAccessor;
+        _cacheOptions = cacheOptions ?? new HelixTool.Core.Cache.CacheOptions();
+        _evidenceStore = evidenceStore ?? new HelixTool.Core.Delivery.FileEvidenceDeliveryStore(_cacheOptions);
     }
 
     private static bool TryCreatePageRequest(
@@ -1631,89 +1644,378 @@ public class AzdoCommands
         }
     }
 
-    /// <summary>Get the build timeline showing stages, jobs, and tasks.</summary>
+    /// <summary>Triage an AzDO build timeline: error/Helix-first Jobs/Tasks with short deduplicated issue text and log IDs.</summary>
     /// <param name="buildId">AzDO build ID (integer) or full AzDO build URL.</param>
-    /// <param name="filter">Filter: 'failed' (default) or 'all'.</param>
-    /// <param name="json">Output as structured JSON.</param>
+    /// <param name="filter">Effective 'failed' for ordinary triage; 'all' when an explicit selector is supplied and no preset is given.</param>
+    /// <param name="recordId">Exact timeline record GUID.</param>
+    /// <param name="parentId">Select records whose direct parent is this GUID.</param>
+    /// <param name="type">Exact record type: Stage, Phase, Job, Task, Checkpoint.</param>
+    /// <param name="result">Exact result: failed, canceled, abandoned, skipped, succeededWithIssues, succeeded, none.</param>
+    /// <param name="state">Exact provider state: pending, inProgress, completed.</param>
+    /// <param name="name">Case-insensitive name glob using * and ?.</param>
+    /// <param name="expand">none, ancestors (default), children, descendants, ancestorsAndChildren, or ancestorsAndDescendants.</param>
+    /// <param name="projection">triage (default), compact, full, or summary.</param>
+    /// <param name="includePhase">Effective default false for triage/summary, true for full/compact.</param>
+    /// <param name="previewIssueLimit">Efficiency default per row.</param>
+    /// <param name="previewChars">Efficiency default Unicode-scalar preview length per issue.</param>
+    /// <param name="offset">Offset into the deduplicated expanded record set.</param>
+    /// <param name="limit">Requested row window.</param>
+    /// <param name="viewId">Source/view fingerprint from a prior response.</param>
+    /// <param name="issueOffset">Issue offset for one recordId with projection='full'.</param>
+    /// <param name="issueLimit">Explicit issue window for one full record.</param>
+    /// <param name="all">Retrieve the complete selected scope (ignores limit shaping).</param>
+    /// <param name="output">Write the complete requested selection as JSON to this file and print a small receipt.</param>
+    /// <param name="allowTruncated">Exit 0 even when the output is truncated.</param>
+    /// <param name="json">Output the #154 JSON envelope.</param>
+    /// <param name="rawJson">Output the legacy {id,records} shape with full Phase/issue detail (offline replay path).</param>
+    /// <param name="delivery">auto (default) keeps a useful inline page; file/all/chunked retrieve the complete selection and deliver via --output or a verified evidence reference.</param>
     [McpEquivalent("azdo_timeline")]
     [Command("azdo timeline")]
-    public async Task Timeline([Argument] string buildId, string filter = "failed", bool json = false, bool schema = false)
+    public async Task Timeline(
+        [Argument] string buildId,
+        string? filter = null,
+        string? recordId = null,
+        string? parentId = null,
+        string? type = null,
+        string? result = null,
+        string? state = null,
+        string? name = null,
+        string expand = "ancestors",
+        string projection = "triage",
+        bool? includePhase = null,
+        int previewIssueLimit = 5,
+        int previewChars = 200,
+        int offset = 0,
+        int limit = 10,
+        string? viewId = null,
+        int issueOffset = 0,
+        int? issueLimit = null,
+        bool all = false,
+        string delivery = "auto",
+        string? output = null,
+        bool allowTruncated = false,
+        bool json = false,
+        bool rawJson = false,
+        bool schema = false)
     {
         if (Commands.TryPrintSchema<AzdoTimeline>(schema))
             return;
 
-        if (!filter.Equals("failed", StringComparison.OrdinalIgnoreCase) &&
-            !filter.Equals("all", StringComparison.OrdinalIgnoreCase))
+        var timeline = await _svc.GetTimelineAsync(buildId);
+        if (timeline is null)
         {
-            throw new ArgumentException($"Invalid filter '{filter}'. Must be 'failed' or 'all'.", nameof(filter));
-        }
-
-        var timeline = (await _svc.GetTimelineAsync(buildId))!;
-
-        var records = timeline.Records;
-        if (filter.Equals("failed", StringComparison.OrdinalIgnoreCase))
-        {
-            var failedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var r in records)
-            {
-                if (r.Id is null) continue;
-                var isFailed = r.Result is not null &&
-                    !r.Result.Equals("succeeded", StringComparison.OrdinalIgnoreCase);
-                var hasIssues = r.Issues is { Count: > 0 };
-                if (isFailed || hasIssues)
-                    failedIds.Add(r.Id);
-            }
-
-            var allIds = new HashSet<string>(failedIds, StringComparer.OrdinalIgnoreCase);
-            var recordById = records.Where(r => r.Id is not null)
-                .ToDictionary(r => r.Id!, StringComparer.OrdinalIgnoreCase);
-            foreach (var id in failedIds)
-            {
-                var current = recordById.GetValueOrDefault(id);
-                while (current?.ParentId is not null && allIds.Add(current.ParentId))
-                    current = recordById.GetValueOrDefault(current.ParentId);
-            }
-            records = records.Where(r => r.Id is not null && allIds.Contains(r.Id)).ToList();
-        }
-
-        if (json)
-        {
-            Console.WriteLine(JsonSerializer.Serialize(new AzdoTimeline { Id = timeline.Id, Records = records }, s_jsonOptions));
+            Console.WriteLine($"No timeline available for build {buildId}.");
             return;
         }
 
-        foreach (var r in records)
+        if (rawJson)
         {
-            var indent = r.Type?.Equals("Stage", StringComparison.OrdinalIgnoreCase) == true ? "" :
-                         r.Type?.Equals("Phase", StringComparison.OrdinalIgnoreCase) == true ? "  " :
-                         r.Type?.Equals("Job", StringComparison.OrdinalIgnoreCase) == true ? "    " : "      ";
+            // Legacy offline replay path: original {id,records} shape, full Phase/issue detail,
+            // original 'failed'/'all' semantics only. Not the new #154 envelope.
+            var legacyFilter = string.IsNullOrEmpty(filter) ? "failed" : filter;
+            legacyFilter = AzdoService.NormalizeFilter(legacyFilter);
+            if (!AzdoService.IsValidFilter(legacyFilter))
+                throw new ArgumentException(AzdoService.GetInvalidFilterMessage(legacyFilter), nameof(filter));
 
-            var result = r.Result ?? r.State ?? "?";
-            if (result.Equals("failed", StringComparison.OrdinalIgnoreCase))
-                Console.ForegroundColor = ConsoleColor.Red;
-            else if (result.Equals("succeeded", StringComparison.OrdinalIgnoreCase))
-                Console.ForegroundColor = ConsoleColor.Green;
-            else
-                Console.ForegroundColor = ConsoleColor.Yellow;
-
-            Console.Write($"{indent}[{result}]");
-            Console.ResetColor();
-            Console.Write($" {r.Name}");
-            if (r.Log is not null)
-                Console.Write($" (log: {r.Log.Id})");
-            Console.WriteLine();
-
-            if (r.Issues is { Count: > 0 })
+            var legacyRecords = timeline.Records;
+            if (!legacyFilter.Equals("all", StringComparison.OrdinalIgnoreCase))
             {
-                foreach (var issue in r.Issues)
+                var matchedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var r in legacyRecords)
+                    if (r.Id is not null && AzdoService.MatchesFilter(r, legacyFilter))
+                        matchedIds.Add(r.Id);
+
+                var allIds = new HashSet<string>(matchedIds, StringComparer.OrdinalIgnoreCase);
+                var recordById = legacyRecords.Where(r => r.Id is not null).ToDictionary(r => r.Id!, StringComparer.OrdinalIgnoreCase);
+                foreach (var id in matchedIds)
                 {
-                    Console.ForegroundColor = issue.Type?.Equals("error", StringComparison.OrdinalIgnoreCase) == true
-                        ? ConsoleColor.Red : ConsoleColor.Yellow;
-                    Console.WriteLine($"{indent}  {issue.Type}: {issue.Message}");
-                    Console.ResetColor();
+                    var current = recordById.GetValueOrDefault(id);
+                    while (current?.ParentId is not null && allIds.Add(current.ParentId))
+                        current = recordById.GetValueOrDefault(current.ParentId);
                 }
+                legacyRecords = legacyRecords.Where(r => r.Id is not null && allIds.Contains(r.Id)).ToList();
+            }
+
+            Console.WriteLine(JsonSerializer.Serialize(new AzdoTimeline { Id = timeline.Id, Records = legacyRecords }, s_jsonOptions));
+            return;
+        }
+
+        var wantsComplete = all || output is not null
+            || delivery.Equals("file", StringComparison.OrdinalIgnoreCase)
+            || delivery.Equals("all", StringComparison.OrdinalIgnoreCase)
+            || delivery.Equals("chunked", StringComparison.OrdinalIgnoreCase);
+
+        var request = new TimelineProjectionRequest
+        {
+            Filter = filter,
+            RecordId = recordId,
+            ParentId = parentId,
+            Type = type,
+            Result = result,
+            State = state,
+            Name = name,
+            Expand = expand,
+            Projection = projection,
+            IncludePhase = includePhase,
+            PreviewIssueLimit = previewIssueLimit,
+            PreviewChars = previewChars,
+            Offset = offset,
+            Limit = limit,
+            ViewId = viewId,
+            IssueOffset = issueOffset,
+            IssueLimit = issueLimit,
+            Delivery = delivery,
+            All = wantsComplete,
+            BuildIdOrUrl = buildId
+        };
+
+        TimelineProjectionResult Project(TimelineProjectionRequest r) => AzdoTimelineProjector.Project(timeline, r);
+
+        var (cacheKey, cachePartition) = _svc.ResolveTimelineCacheIdentity(buildId);
+        var cache = new HlxCacheProvenance { Key = cacheKey, CompleteKey = cacheKey };
+
+        TimelineProjectionResult view;
+        bool logicallyComplete;
+        try
+        {
+            // An explicit --output destination always writes the complete requested representation
+            // there directly (today's established CLI contract); `Project(request)` here is the raw
+            // pre-receipt result (never cleared/materialized), so its own Complete/IssueWindow
+            // already is the real backing completeness. Without --output, route through the same
+            // auto/file/chunked shaping+evidence-store delivery the MCP tool uses, so `--all`/
+            // `--delivery file|chunked` without --output still materializes a readable, verified
+            // evidence file instead of silently truncating to the default row window — `ShapeTimeline`
+            // separately returns that same real backing completeness alongside the (possibly
+            // cleared-for-delivery) wire receipt, so delivery mode never has to be guessed back out
+            // from flags after the fact.
+            if (output is not null)
+            {
+                view = Project(request);
+                logicallyComplete = McpPresentationBudget.IsLogicallyComplete(view);
+            }
+            else
+            {
+                (view, logicallyComplete) = McpPresentationBudget.ShapeTimeline(request, Project, _evidenceStore, cachePartition, cacheKey);
             }
         }
+        catch (ArgumentException ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        if (output is not null)
+        {
+            if (!TryGuardOutputDestination(output, out var guardError))
+            {
+                Environment.ExitCode = 1;
+                var safeOutput = Path.Combine(Path.GetTempPath(), $"hlx-timeline-output-{Guid.NewGuid():N}.json");
+                var recoveryArgv = BuildRecoveryArgv(
+                    buildId, filter, recordId, parentId, type, result, state, name, expand, projection, includePhase,
+                    previewIssueLimit, previewChars, offset, limit, viewId, issueOffset, issueLimit, all, delivery,
+                    safeOutput, allowTruncated, json, rawJson);
+                if (json)
+                {
+                    var errorEnvelope = new
+                    {
+                        ok = false,
+                        error = guardError,
+                        recovery = new { tool = "hlx", argv = recoveryArgv }
+                    };
+                    Console.WriteLine(JsonSerializer.Serialize(errorEnvelope, s_jsonOptions));
+                }
+                else
+                {
+                    Console.Error.WriteLine(guardError);
+                    Console.Error.WriteLine($"Retry outside the snapshot: {string.Join(' ', recoveryArgv.Skip(1))}");
+                }
+                return;
+            }
+
+            var envelope = BuildCliEnvelope(view, cache);
+            var fileJson = JsonSerializer.Serialize(envelope, s_jsonOptions);
+            await File.WriteAllTextAsync(output, fileJson);
+            var bytes = await File.ReadAllBytesAsync(output);
+            var sha256 = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes));
+            // Physical write success (file verified on disk) is distinct from logical/source
+            // completeness (e.g. a malformed timeline graph is still a best-effort
+            // reconstruction) — only the latter governs exit code, matching the materialized
+            // evidence-store delivery path below.
+            var receipt = new
+            {
+                ok = logicallyComplete,
+                delivery = new
+                {
+                    complete = true,
+                    localPath = Path.GetFullPath(output),
+                    bytes = bytes.LongLength,
+                    sha256
+                }
+            };
+            Console.WriteLine(JsonSerializer.Serialize(receipt, s_jsonOptions));
+            if (!logicallyComplete && !allowTruncated)
+                Environment.ExitCode = 2;
+            return;
+        }
+
+
+        if (json)
+        {
+            var envelope = BuildCliEnvelope(view, cache);
+            Console.WriteLine(JsonSerializer.Serialize(envelope, s_jsonOptions));
+            if (!logicallyComplete && !allowTruncated)
+                Environment.ExitCode = 2;
+            return;
+        }
+
+        // A materialized evidence-file delivery (explicit --delivery file/chunked, or an
+        // auto-overflow materialize) carries zero inline rows in `view.Records` — printing
+        // nothing here would silently hide that real data was written, with no path/receipt
+        // reaching the caller at all in non-JSON mode.
+        if (view.Delivery is not null)
+        {
+            Console.WriteLine($"[delivery] {(view.Delivery.Complete ? "complete" : "partial")} " +
+                               $"{view.Delivery.LocalPath} ({view.Delivery.Sha256})");
+            if (view.Note is not null)
+                Console.WriteLine(view.Note);
+        }
+
+        foreach (var row in view.Records)
+        {
+            var element = JsonSerializer.SerializeToElement(row);
+            var rid = element.TryGetProperty("id", out var idProp) ? idProp.GetString() : null;
+            var rname = element.TryGetProperty("name", out var nameProp) ? nameProp.GetString() : null;
+            var rresult = element.TryGetProperty("result", out var resultProp) ? resultProp.GetString() : null;
+            Console.WriteLine($"[{rresult ?? "?"}] {rname} ({rid})");
+        }
+        if (!logicallyComplete && !allowTruncated)
+            Environment.ExitCode = 2;
+    }
+
+    /// <summary>
+    /// Rejects a caller-selected --output destination that would land inside the active immutable
+    /// eval snapshot directory (HLX_EVAL_SNAPSHOT). That directory is replayed read-only for
+    /// deterministic offline evidence; writing into it — even a legitimate query receipt — could
+    /// corrupt a fixture or silently poison a future replay with content the snapshot never captured.
+    /// </summary>
+    private bool TryGuardOutputDestination(string output, out string error)
+    {
+        error = "";
+        if (!_cacheOptions.EvalMode || string.IsNullOrEmpty(_cacheOptions.CacheRoot))
+            return true;
+
+        var snapshotRoot = ResolvePhysicalPath(Path.GetFullPath(_cacheOptions.GetEffectiveCacheRoot()));
+        var resolvedOutput = ResolvePhysicalPath(Path.GetFullPath(output));
+        var snapshotRootWithSeparator = snapshotRoot.EndsWith(Path.DirectorySeparatorChar) ? snapshotRoot : snapshotRoot + Path.DirectorySeparatorChar;
+        var isInsideSnapshot = string.Equals(resolvedOutput, snapshotRoot, StringComparison.OrdinalIgnoreCase)
+            || resolvedOutput.StartsWith(snapshotRootWithSeparator, StringComparison.OrdinalIgnoreCase);
+        if (!isInsideSnapshot)
+            return true;
+
+        error = $"--output '{output}' resolves inside the active read-only eval snapshot ('{snapshotRoot}'). " +
+                "Choose a destination outside HLX_EVAL_SNAPSHOT; writing here could corrupt the immutable snapshot used for offline replay.";
+        return false;
+    }
+
+    /// <summary>
+    /// Resolves the true physical path a lexical path would ultimately write to, following any
+    /// symlink chain on its longest *existing* ancestor (a plain <see cref="Path.GetFullPath"/>
+    /// is purely lexical and never consults the filesystem, so an ancestor directory that is
+    /// itself a symlink pointing into the snapshot would otherwise slip past the containment
+    /// check entirely). The not-yet-existing trailing segments (e.g. the output file itself) are
+    /// re-appended to the resolved real ancestor unchanged.
+    /// </summary>
+    private static string ResolvePhysicalPath(string fullPath) => ResolvePhysicalPath(fullPath, 0);
+
+    private static string ResolvePhysicalPath(string fullPath, int depth)
+    {
+        // True realpath semantics: resolve one path component at a time from the root, following
+        // any symlink found at EACH ancestor as soon as it is reached, not only the deepest
+        // existing prefix as a single opaque target. A resolved target can itself contain further
+        // unresolved symlinks as one of ITS OWN path components (e.g. `outside-link ->
+        // mid/artifacts`, where `mid` is a separate symlink into the snapshot): `outside-link`
+        // resolves in one hop to a path whose final component ("artifacts") is an ordinary
+        // directory, so a single-hop resolve stops there and never re-examines `mid`. Recursing on
+        // every resolved target — re-running this same component walk on it — guarantees every
+        // ancestor in the chain is actually resolved, not just the first symlink encountered.
+        if (depth > 64)
+            return fullPath; // bounded against a pathological/cyclic symlink chain
+
+        var root = Path.GetPathRoot(fullPath) ?? string.Empty;
+        var relative = fullPath[root.Length..];
+        var components = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+
+        var current = string.IsNullOrEmpty(root) ? Path.DirectorySeparatorChar.ToString() : root;
+        foreach (var component in components)
+        {
+            current = Path.Combine(current, component);
+            if (!Directory.Exists(current) && !File.Exists(current))
+                continue; // not-yet-existing trailing segment; nothing on disk to resolve further
+
+            FileSystemInfo info = Directory.Exists(current) ? new DirectoryInfo(current) : new FileInfo(current);
+            var target = info.ResolveLinkTarget(returnFinalTarget: true)?.FullName;
+            if (target is not null)
+                current = ResolvePhysicalPath(target, depth + 1);
+        }
+
+        return current;
+    }
+
+    /// <summary>
+    /// Reconstructs an equivalent `hlx azdo timeline` invocation with the unsafe --output destination
+    /// replaced by <paramref name="safeOutput"/>, so a caller whose destination was rejected (because it
+    /// resolved inside the immutable eval snapshot) has an exact, directly-executable recovery command
+    /// rather than having to re-derive every other flag from scratch.
+    /// </summary>
+    private static string[] BuildRecoveryArgv(
+        string buildId, string? filter, string? recordId, string? parentId, string? type, string? result, string? state,
+        string? name, string expand, string projection, bool? includePhase, int previewIssueLimit, int previewChars,
+        int offset, int limit, string? viewId, int issueOffset, int? issueLimit, bool all, string delivery,
+        string safeOutput, bool allowTruncated, bool json, bool rawJson)
+    {
+        List<string> argv = ["hlx", "azdo", "timeline", buildId];
+        void Add(string flag, string? value) { if (value is not null) { argv.Add(flag); argv.Add(value); } }
+        Add("--filter", filter);
+        Add("--record-id", recordId);
+        Add("--parent-id", parentId);
+        Add("--type", type);
+        Add("--result", result);
+        Add("--state", state);
+        Add("--name", name);
+        if (!expand.Equals("ancestors", StringComparison.OrdinalIgnoreCase)) Add("--expand", expand);
+        if (!projection.Equals("triage", StringComparison.OrdinalIgnoreCase)) Add("--projection", projection);
+        if (includePhase is not null) argv.AddRange(["--include-phase", includePhase.Value.ToString()]);
+        if (previewIssueLimit != 5) Add("--preview-issue-limit", previewIssueLimit.ToString());
+        if (previewChars != 200) Add("--preview-chars", previewChars.ToString());
+        if (offset != 0) Add("--offset", offset.ToString());
+        if (limit != 10) Add("--limit", limit.ToString());
+        Add("--view-id", viewId);
+        if (issueOffset != 0) Add("--issue-offset", issueOffset.ToString());
+        if (issueLimit is not null) Add("--issue-limit", issueLimit.Value.ToString());
+        if (all) argv.Add("--all");
+        if (!delivery.Equals("auto", StringComparison.OrdinalIgnoreCase)) Add("--delivery", delivery);
+        Add("--output", safeOutput);
+        if (allowTruncated) argv.Add("--allow-truncated");
+        if (json) argv.Add("--json");
+        if (rawJson) argv.Add("--raw-json");
+        return [.. argv];
+    }
+
+    /// <summary>Builds the CLI #154-style envelope for a timeline view: same metadata, "results" instead of "records" (matching other CLI list commands), plus cache provenance.</summary>
+    private static Dictionary<string, object?> BuildCliEnvelope(TimelineProjectionResult view, HlxCacheProvenance cache)
+    {
+        var element = JsonSerializer.SerializeToElement(view);
+        var envelope = new Dictionary<string, object?>();
+        foreach (var prop in element.EnumerateObject())
+        {
+            if (prop.NameEquals("records"))
+                envelope["results"] = prop.Value;
+            else
+                envelope[prop.Name] = prop.Value;
+        }
+        envelope["cache"] = cache;
+        return envelope;
     }
 
     /// <summary>Get log content for a specific build log.</summary>

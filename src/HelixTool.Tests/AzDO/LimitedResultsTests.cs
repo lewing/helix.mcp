@@ -150,5 +150,5 @@ public class LimitedResultsTests
     }
 
     private static AzdoMcpTools CreateTools(IAzdoApiClient mockApi)
-        => new(new AzdoService(mockApi), Substitute.For<IAzdoTokenAccessor>());
+        => new(new AzdoService(mockApi), Substitute.For<IAzdoTokenAccessor>(), Substitute.For<HelixTool.Core.Delivery.IEvidenceDeliveryStore>());
 }

@@ -59,3 +59,16 @@
 - ⚠️ **Windows-safe filename rule now hardened in Scribe charter:** All .squad file names must use compact UTC (`2026-10-02T1905Z-{slug}.md`), never colons or `<>"|?*\`. This rule is enforced in all .squad operations going forward.
 - Checked agent history sizes: Kane 15,886 bytes (≥15360 threshold); summarization pending
 - No new deduplication needed — all three merged decisions are distinct topics
+
+### 2026-10-03: Post-release session history summarization
+
+**Threshold:** 15,360 bytes (HARD GATE)
+**Files exceeding threshold:** kane (20K), ripley (17K), dallas (30K), lambert (34K)
+
+Archived prior session entries from each agent into existing history-archive.md files:
+- **Kane:** archived 3 sessions (pre-10-02 documentation/help work); retained 2026-10-02 R3 doc-accuracy findings and Dallas-gate learning notes
+- **Ripley:** archived 6 sessions (pre-10-02 implementation/post-merge work); retained 2026-10-02 v0.11.0 release cut and PR156 deviations
+- **Dallas:** archived 12 sessions (pre-10-02 review gates); retained 2026-10-02 final release approval and R1–R3 blocker summaries
+- **Lambert:** archived 8 sessions (pre-10-02 test/refactor work); retained 2026-10-02 lifecycle test coverage, hard-error regression cases, and green builds
+
+**No new deduplication action required.** Archive operations and history retention are append-only per Scribe charter.
