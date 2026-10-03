@@ -9,6 +9,7 @@ using ModelContextProtocol.Server;
 
 using HelixTool.Core;
 using HelixTool.Core.AzDO;
+using HelixTool.Core.Delivery;
 
 namespace HelixTool.Mcp.Tools;
 
@@ -17,11 +18,23 @@ public sealed class AzdoMcpTools
 {
     private readonly AzdoService _svc;
     private readonly IAzdoTokenAccessor _tokenAccessor;
+    private readonly IEvidenceDeliveryStore _evidenceStore;
 
+    /// <summary>
+    /// Back-compat convenience constructor for existing test call sites that predate the shared
+    /// evidence delivery store. Production DI should use the three-argument constructor with an
+    /// explicit <see cref="IEvidenceDeliveryStore"/>.
+    /// </summary>
     public AzdoMcpTools(AzdoService svc, IAzdoTokenAccessor tokenAccessor)
+        : this(svc, tokenAccessor, new HelixTool.Core.Delivery.FileEvidenceDeliveryStore(new HelixTool.Core.Cache.CacheOptions()))
+    {
+    }
+
+    public AzdoMcpTools(AzdoService svc, IAzdoTokenAccessor tokenAccessor, IEvidenceDeliveryStore evidenceStore)
     {
         _svc = svc;
         _tokenAccessor = tokenAccessor;
+        _evidenceStore = evidenceStore;
     }
 
     [McpServerTool(Name = "azdo_build", Title = "AzDO Build Details", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
@@ -75,88 +88,162 @@ public sealed class AzdoMcpTools
             "list builds");
     }
 
-    private const int MaxTimelineRecords = 200;
-    private const int TruncatedTimelineBudget = 100;
-
-    [McpServerTool(Name = "azdo_timeline", Title = "AzDO Build Timeline", ReadOnly = true, Idempotent = true, UseStructuredContent = true),
-     Description("Get the Azure DevOps (AzDO) build timeline with stages, jobs, and tasks. Find failed steps and AzDO log IDs for azdo_log. Consider azdo_search_timeline for large builds.")]
-    public async Task<TimelineResponse?> Timeline(
+    [McpServerTool(Name = "azdo_timeline", Title = "AzDO Build Timeline", ReadOnly = true, Idempotent = true, UseStructuredContent = true,
+                   OutputSchemaType = typeof(MinimalObjectSchema)),
+     Description("Triage an AzDO build with error/Helix-first Jobs/Tasks, short deduplicated issue text and log IDs. Full records/issues remain accessible: continue with next or read the returned evidence reference/file. Defaults omit duplicate Phase rows; use compact for count rows and summary for aggregates.")]
+    public async Task<TimelineProjectionResult> Timeline(
         [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
-        [Description("Filter: 'failed' (default), 'all', 'running' (in-progress tasks), 'pending' (not started), 'incomplete' (running+pending), or 'issues' (errors/warnings only)."), AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")] string filter = "failed")
+        [Description("Effective 'failed' for ordinary triage; 'all' when an explicit record/parent/type/result/state/name selector is supplied and no preset is given. An explicit preset still intersects selectors."),
+         AllowedValues("failed", "all", "running", "pending", "incomplete", "issues")] string? filter = null,
+        [Description("Exact timeline record GUID. Bypasses only an omitted/implicit failure preset, not a deliberate caller filter.")] string? recordId = null,
+        [Description("Select records whose direct parent is this GUID; expansion can add descendants/context.")] string? parentId = null,
+        [Description("Exact record type: Stage, Phase, Job, Task, Checkpoint (ordinal-ignore-case)."), AllowedValues("Stage", "Phase", "Job", "Task", "Checkpoint")] string? type = null,
+        [Description("Exact result: failed, canceled, abandoned, skipped, succeededWithIssues, succeeded, none."),
+         AllowedValues("failed", "canceled", "abandoned", "skipped", "succeededWithIssues", "succeeded", "none")] string? result = null,
+        [Description("Exact provider state: pending, inProgress, completed (running/active/not-started normalize to these)."),
+         AllowedValues("pending", "inProgress", "completed")] string? state = null,
+        [Description("Case-insensitive name glob using * and ?; a pattern without wildcards is a legacy substring match.")] string? name = null,
+        [Description("none, ancestors (default), children, descendants, ancestorsAndChildren, or ancestorsAndDescendants."),
+         AllowedValues("none", "ancestors", "children", "descendants", "ancestorsAndChildren", "ancestorsAndDescendants")] string expand = "ancestors",
+        [Description("triage (default, diagnostic previews), compact (identity/count rows), full (original record detail), or summary (aggregate counts only)."),
+         AllowedValues("triage", "compact", "full", "summary")] string projection = "triage",
+        [Description("Effective default false for triage/summary, true for full/compact. An exact Phase target remains retrievable regardless.")] bool? includePhase = null,
+        [Description("Efficiency default per row; larger explicit values remain accessible through paging/file delivery.")] int previewIssueLimit = 5,
+        [Description("Efficiency default Unicode-scalar preview length per issue; larger requested text remains accessible through full/file delivery.")] int previewChars = 200,
+        [Description("Offset into the deduplicated expanded record set.")] int offset = 0,
+        [Description("Requested row window. Larger values remain valid; delivery shapes the response, never refuses it.")] int limit = 10,
+        [Description("Source/view fingerprint from a prior response; a stale/changed value is rejected so paging never silently shifts.")] string? viewId = null,
+        [Description("Issue offset for one recordId with projection='full'; nonzero is invalid otherwise.")] int issueOffset = 0,
+        [Description("Explicit issue window for one full record; omitted means all issues (chunk/file accessible regardless of inline target).")] int? issueLimit = null,
+        [Description("Inline shaping target, not a data-access ceiling. Default: 12288.")] long maxResponseBytes = 12_288,
+        [Description("auto (default) keeps a useful inline page; file/all stream the complete requested selection via hlx_read_evidence.")]
+        [AllowedValues("auto", "inline", "file", "chunked")] string delivery = "auto",
+        [Description("Retrieve the complete selected scope (ignores limit/maxResponseBytes shaping) without changing filters.")] bool all = false)
     {
-        filter = AzdoService.NormalizeFilter(filter);
-        if (!AzdoService.IsValidFilter(filter))
-            throw new McpException(AzdoService.GetInvalidFilterMessage(filter));
+        if (filter is not null)
+        {
+            filter = AzdoService.NormalizeFilter(filter);
+            if (!AzdoService.IsValidFilter(filter))
+                throw new McpException(AzdoService.GetInvalidFilterMessage(filter));
+        }
+        if (result is not null && !AzdoTimelineProjector.IsValidResult(result))
+            throw new McpException($"Invalid result '{result}'. Must be one of: failed, canceled, abandoned, skipped, succeededWithIssues, succeeded, none.");
+        if (state is not null && !AzdoTimelineProjector.IsValidState(state))
+            throw new McpException($"Invalid state '{state}'. Must be one of: pending, inProgress, completed (running/active/not-started are accepted aliases).");
+        if (!s_validProjections.Contains(projection))
+            throw new McpException($"Invalid projection '{projection}'. Must be one of: triage, compact, full, summary.");
+        if (!s_validExpand.Contains(expand))
+            throw new McpException($"Invalid expand '{expand}'. Must be one of: none, ancestors, children, descendants, ancestorsAndChildren, ancestorsAndDescendants.");
+        if (type is not null && !AzdoTimelineProjector.IsValidType(type))
+            throw new McpException($"Invalid type '{type}'. Must be one of: Stage, Phase, Job, Task, Checkpoint.");
 
-        AzdoTimeline? timeline;
-        timeline = await McpExceptionHandler.RunServiceCallAsync(
+        // Ordinarily shape the requested target into 2,048..16,384; explicit all/file delivery
+        // below still serves the complete payload regardless of this inline shaping target.
+        var effectiveMaxResponseBytes = Math.Clamp(maxResponseBytes, 2_048, 16_384);
+
+        var timeline = await McpExceptionHandler.RunServiceCallAsync(
             () => _svc.GetTimelineAsync(buildIdOrUrl),
             "get build timeline",
             ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
 
-        if (timeline is null)
-            return new TimelineResponse
+        if (timeline is null || timeline.Records.Count == 0)
+        {
+            return new TimelineProjectionResult
             {
+                Id = timeline?.Id,
+                Projection = projection.ToLowerInvariant(),
+                EffectiveFilter = filter ?? "failed",
+                ViewId = "",
+                Matched = 0,
+                SelectedTotal = 0,
+                TimelineRecords = 0,
+                SelectionScope = "preset",
+                IncludePhase = includePhase ?? false,
+                PhaseSuppressed = false,
+                PreviewIssueLimit = previewIssueLimit,
+                PreviewChars = previewChars,
+                MaxResponseBytes = effectiveMaxResponseBytes,
+                Counts = new TimelineCounts { Scope = "matched", Complete = true, ByTypeResult = [] },
+                Offset = offset,
+                Limit = limit,
+                Returned = 0,
+                Total = 0,
+                Complete = true,
+                Truncated = false,
                 Note = $"No timeline available for build {buildIdOrUrl}. The build may still be initializing, was canceled before any leg reported, or has no timeline data."
             };
-
-        List<AzdoTimelineRecord> records;
-
-        if (filter.Equals("all", StringComparison.OrdinalIgnoreCase))
-        {
-            records = [.. timeline.Records];
-        }
-        else
-        {
-            var matchedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var r in timeline.Records)
-            {
-                if (r.Id is not null && AzdoService.MatchesFilter(r, filter))
-                    matchedIds.Add(r.Id);
-            }
-
-            // Include parent records for context (walk up parentId chain)
-            var allIds = new HashSet<string>(matchedIds, StringComparer.OrdinalIgnoreCase);
-            var recordById = timeline.Records
-                .Where(r => r.Id is not null)
-                .ToDictionary(r => r.Id!, StringComparer.OrdinalIgnoreCase);
-
-            foreach (var id in matchedIds)
-            {
-                var current = recordById.GetValueOrDefault(id);
-                while (current?.ParentId is not null && allIds.Add(current.ParentId))
-                {
-                    current = recordById.GetValueOrDefault(current.ParentId);
-                }
-            }
-
-            records = timeline.Records.Where(r => r.Id is not null && allIds.Contains(r.Id)).ToList();
         }
 
-        // Partial response pattern: truncate if too many records
-        var totalRecords = records.Count;
-        if (totalRecords > MaxTimelineRecords)
+        var request = new TimelineProjectionRequest
         {
-            records = records.Take(TruncatedTimelineBudget).ToList();
-            return new TimelineResponse
+            Filter = filter,
+            RecordId = recordId,
+            ParentId = parentId,
+            Type = type,
+            Result = result,
+            State = state,
+            Name = name,
+            Expand = expand,
+            Projection = projection,
+            IncludePhase = includePhase,
+            PreviewIssueLimit = previewIssueLimit,
+            PreviewChars = previewChars,
+            Offset = offset,
+            Limit = limit,
+            ViewId = viewId,
+            IssueOffset = issueOffset,
+            IssueLimit = issueLimit,
+            MaxResponseBytes = effectiveMaxResponseBytes,
+            All = all || delivery.Equals("file", StringComparison.OrdinalIgnoreCase) || delivery.Equals("all", StringComparison.OrdinalIgnoreCase),
+            BuildIdOrUrl = buildIdOrUrl
+        };
+
+        TimelineProjectionResult Project(TimelineProjectionRequest r)
+        {
+            try
             {
-                Id = timeline.Id,
-                Records = records,
+                return AzdoTimelineProjector.Project(timeline, r);
+            }
+            catch (ArgumentException ex)
+            {
+                throw new McpException(ex.Message);
+            }
+        }
+
+        var (cacheKey, cachePartition) = _svc.ResolveTimelineCacheIdentity(buildIdOrUrl);
+        var (shaped, deliveryDescriptor) = McpPresentationBudget.ShapeTimeline(request, Project, _evidenceStore, cachePartition, cacheKey);
+
+        if (deliveryDescriptor is not null)
+        {
+            shaped = shaped with
+            {
+                Complete = false,
                 Truncated = true,
-                TotalRecords = totalRecords,
-                Note = $"⚠️ Timeline truncated: showing {TruncatedTimelineBudget} of {totalRecords} records. " +
-                       (filter.Equals("all", StringComparison.OrdinalIgnoreCase)
-                           ? $"Use azdo_search_timeline(buildIdOrUrl, 'pattern') for targeted search, or azdo_timeline with filter='failed' to reduce results."
-                           : $"Use azdo_search_timeline(buildIdOrUrl, 'pattern') for targeted search.")
+                Delivery = deliveryDescriptor,
+                Continuation = new TimelineAction
+                {
+                    Tool = "hlx_read_evidence",
+                    Arguments = new Dictionary<string, object?>
+                    {
+                        ["evidenceId"] = deliveryDescriptor.EvidenceId,
+                        ["offsetBytes"] = 0,
+                        ["lengthBytes"] = 65536,
+                        ["encoding"] = "auto"
+                    }
+                },
+                Note = $"Requested payload exceeded the {maxResponseBytes}-byte inline shaping target; the complete selection was written to a verified evidence file. " +
+                       $"Read it with hlx_read_evidence(evidenceId='{deliveryDescriptor.EvidenceId}', offsetBytes=0, lengthBytes=65536)."
             };
         }
 
-        return new TimelineResponse
-        {
-            Id = timeline.Id,
-            Records = records
-        };
+        return shaped;
     }
+
+    private static readonly HashSet<string> s_validProjections = new(StringComparer.OrdinalIgnoreCase) { "triage", "compact", "full", "summary" };
+    private static readonly HashSet<string> s_validExpand = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "none", "ancestors", "children", "descendants", "ancestorsandchildren", "ancestorsanddescendants"
+    };
 
     [McpServerTool(Name = "azdo_log", Title = "AzDO Build Log", ReadOnly = true, Idempotent = true),
      Description("Get Azure DevOps (AzDO) log content for a build step. Use the AzDO log ID from azdo_timeline. Returns last N lines by default.")]
@@ -455,28 +542,6 @@ public sealed class AzdoMcpTools
         }
         return message;
     }
-}
-
-/// <summary>Timeline response with optional truncation metadata for the partial response pattern.</summary>
-public sealed record TimelineResponse
-{
-    [JsonPropertyName("id")]
-    public string? Id { get; init; }
-
-    [JsonPropertyName("records")]
-    public IReadOnlyList<AzdoTimelineRecord> Records { get; init; } = [];
-
-    [JsonPropertyName("truncated")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-    public bool Truncated { get; init; }
-
-    [JsonPropertyName("totalRecords")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public int? TotalRecords { get; init; }
-
-    [JsonPropertyName("note")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? Note { get; init; }
 }
 
 [JsonConverter(typeof(LimitedResultsJsonConverterFactory))]

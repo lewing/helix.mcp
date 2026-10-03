@@ -330,5 +330,5 @@ public class PaginationContractTests
     }
 
     private static AzdoMcpTools CreateAzdoTools(IAzdoApiClient mockApi)
-        => new(new AzdoService(mockApi), Substitute.For<IAzdoTokenAccessor>());
+        => new(new AzdoService(mockApi), Substitute.For<IAzdoTokenAccessor>(), Substitute.For<HelixTool.Core.Delivery.IEvidenceDeliveryStore>());
 }

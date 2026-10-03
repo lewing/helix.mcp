@@ -119,6 +119,12 @@ new AzdoService(
     sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>(),
     sp.GetRequiredService<CacheOptions>()));
 
+// Shared evidence delivery store (P0-1 design 2.1a): materializes oversized tool payloads into the
+// private runtime delivery directory and backs hlx_read_evidence. Scoped to match CacheOptions'
+// per-request auth-context partitioning.
+builder.Services.AddScoped<HelixTool.Core.Delivery.IEvidenceDeliveryStore>(sp =>
+    new HelixTool.Core.Delivery.FileEvidenceDeliveryStore(sp.GetRequiredService<CacheOptions>()));
+
 builder.Services
     .AddMcpServer(options =>
     {

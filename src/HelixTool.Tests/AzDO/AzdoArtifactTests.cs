@@ -23,7 +23,7 @@ public class AzdoArtifactTests
     {
         _mockApi = Substitute.For<IAzdoApiClient>();
         _svc = new AzdoService(_mockApi);
-        _tools = new AzdoMcpTools(_svc, Substitute.For<IAzdoTokenAccessor>());
+        _tools = new AzdoMcpTools(_svc, Substitute.For<IAzdoTokenAccessor>(), Substitute.For<HelixTool.Core.Delivery.IEvidenceDeliveryStore>());
     }
 
     // ── API Client: GetBuildArtifactsAsync ───────────────────────────

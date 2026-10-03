@@ -1166,7 +1166,8 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         var store = new SqliteCacheStore(options);
         var client = new CachingAzdoApiClient(new OfflineAzdoApiClient(), store, options);
         var helix = new CachingHelixApiClient(new OfflineHelixApiClient(), store, options);
-        return new AzdoMcpTools(new AzdoService(client, helix, new CachingAzdoAcquisitionFailureRecorder(store, options), options), Substitute.For<IAzdoTokenAccessor>());
+        return new AzdoMcpTools(new AzdoService(client, helix, new CachingAzdoAcquisitionFailureRecorder(store, options), options),
+            Substitute.For<IAzdoTokenAccessor>(), Substitute.For<HelixTool.Core.Delivery.IEvidenceDeliveryStore>());
     }
 
     private static HelixMcpTools CreateEvalHelixTools(string snapshotPath)
