@@ -223,7 +223,8 @@ public sealed class AzdoMcpTools
         }
 
         var (cacheKey, cachePartition) = _svc.ResolveTimelineCacheIdentity(buildIdOrUrl);
-        return McpPresentationBudget.ShapeTimeline(request, Project, _evidenceStore, cachePartition, cacheKey);
+        var (shaped, _) = McpPresentationBudget.ShapeTimeline(request, Project, _evidenceStore, cachePartition, cacheKey);
+        return shaped;
     }
 
     private static readonly HashSet<string> s_validProjections = new(StringComparer.OrdinalIgnoreCase) { "triage", "compact", "full", "summary" };

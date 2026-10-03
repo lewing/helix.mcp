@@ -36,8 +36,16 @@ public static class McpPresentationBudget
     /// The returned <see cref="TimelineProjectionResult"/> is always the complete, final wire shape —
     /// Delivery/Continuation/Note (when present) are attached before the accept-vs-materialize
     /// decision measures it, never bolted on afterward unmeasured.
+    ///
+    /// The second tuple element is the actual backing-selection logical completeness (row
+    /// `selectedTotal == returned` at offset 0, or `issueWindow.issueComplete` for an issue-window
+    /// request) computed from the projector's own pre-receipt result — never inferred from which
+    /// delivery mode was used. A materialized/file-delivered receipt always reports its own
+    /// `Complete=false` (the small receipt's own row count, not the backing data), so callers that
+    /// need to know whether the *backing selection* was actually complete (e.g. the CLI's exit
+    /// code) must use this value, not <see cref="TimelineProjectionResult.Complete"/>.
     /// </summary>
-    public static TimelineProjectionResult ShapeTimeline(
+    public static (TimelineProjectionResult Result, bool LogicallyComplete) ShapeTimeline(
         TimelineProjectionRequest baseRequest,
         Func<TimelineProjectionRequest, TimelineProjectionResult> project,
         IEvidenceDeliveryStore evidenceStore,
@@ -61,9 +69,9 @@ public static class McpPresentationBudget
             var explicitFileDelivery = baseRequest.Delivery.Equals("file", StringComparison.OrdinalIgnoreCase)
                 || baseRequest.Delivery.Equals("chunked", StringComparison.OrdinalIgnoreCase);
             if (!explicitFileDelivery && Measure(fullResult) <= budget)
-                return fullResult;
+                return (fullResult, IsLogicallyComplete(fullResult));
 
-            return MaterializeReceipt(fullResult, baseRequest, evidenceStore, cachePartition, backingCacheKey);
+            return (MaterializeReceipt(fullResult, baseRequest, evidenceStore, cachePartition, backingCacheKey), IsLogicallyComplete(fullResult));
         }
 
         // Do not clamp an invalid caller-supplied limit here — Project() must see and reject it
@@ -74,7 +82,7 @@ public static class McpPresentationBudget
         {
             var candidate = project(baseRequest with { Limit = limit });
             if (Measure(candidate) <= budget)
-                return candidate;
+                return (candidate, IsLogicallyComplete(candidate));
 
             best = candidate;
             if (limit == 1) break;
@@ -97,7 +105,7 @@ public static class McpPresentationBudget
                 shrinkPreviews = Math.Max(1, shrinkPreviews - 1);
                 var candidate = project(baseRequest with { Limit = 1, PreviewChars = shrinkChars, PreviewIssueLimit = shrinkPreviews });
                 if (Measure(candidate) <= budget)
-                    return candidate;
+                    return (candidate, IsLogicallyComplete(candidate));
                 best = candidate;
                 if (shrinkChars <= 40 && shrinkPreviews <= 1) break;
             }
@@ -125,13 +133,32 @@ public static class McpPresentationBudget
             ? unshrunkBest
             : best;
         if (allowOverage && accepted is not null && accepted.Returned >= 1 && Measure(accepted) <= budget + MaxAcceptableOverageBytes)
-            return accepted;
+            return (accepted, IsLogicallyComplete(accepted));
 
         // Last resort: materialize the complete originally-requested page/set to a verified evidence
         // file rather than silently emitting a many-times-over-budget single field inline.
         var completeResult = project(baseRequest);
-        return MaterializeReceipt(completeResult, baseRequest, evidenceStore, cachePartition, backingCacheKey);
+        return (MaterializeReceipt(completeResult, baseRequest, evidenceStore, cachePartition, backingCacheKey), IsLogicallyComplete(completeResult));
     }
+
+    /// <summary>
+    /// The single source of truth for whether the BACKING selection (not the wire receipt) is
+    /// actually complete — computed once, directly from the projector's own pre-receipt
+    /// <see cref="TimelineProjectionResult.Complete"/>, never inferred from request flags
+    /// (`all`/`delivery`/`recordId`/`--issue-*`) or which delivery mode was used.
+    ///
+    /// <see cref="TimelineProjectionResult.Complete"/> already *is* this combined truth: Core sets
+    /// it to `issueComplete` for an issue-window request (or the ordinary
+    /// `offset==0 && returned>=selectedTotal` row rule otherwise), and then unconditionally forces
+    /// it to `false` whenever the timeline graph itself is a malformed/best-effort reconstruction
+    /// — regardless of which branch produced the value first. An earlier version of this method
+    /// preferred `IssueWindow.IssueComplete` *instead of* `Complete` whenever an issue window was
+    /// present, which incorrectly dropped that graph-validity override: a record with all of its
+    /// issues present (`issueComplete=true`) but reached through a broken ancestor chain
+    /// (`Complete` forced `false`) was wrongly reported as logically complete. `Complete` alone is
+    /// never a partial view of the truth — it already *is* the AND of both signals.
+    /// </summary>
+    public static bool IsLogicallyComplete(TimelineProjectionResult result) => result.Complete;
 
     /// <summary>
     /// Builds the complete final materialize-to-evidence receipt — descriptor, continuation, and

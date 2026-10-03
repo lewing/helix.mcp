@@ -58,7 +58,7 @@ public sealed class TimelineThirdReviewRegressionTests
     {
         using var fixture = new TimelineViewReplayTests();
         var message = new string('x', chars);
-        var source = TimelineViewFixture.WithSelectorRows();
+        var source = TimelineViewFixture.FullIssueLookup();
         source = TimelineViewFixture.WithIssues(source, TimelineViewFixture.SyntheticId(5),
             new AzdoIssue { Type = "warning", Message = message });
         await fixture.SeedAsync(source);

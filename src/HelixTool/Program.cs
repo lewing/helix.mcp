@@ -1745,23 +1745,6 @@ public class AzdoCommands
             || delivery.Equals("all", StringComparison.OrdinalIgnoreCase)
             || delivery.Equals("chunked", StringComparison.OrdinalIgnoreCase);
 
-        // McpPresentationBudget.ShapeTimeline's bypass branch also always materializes the
-        // complete representation of a single exact record (`recordId` + `projection=full`)
-        // regardless of `all`/`delivery` — a large issue on that one record routing to file
-        // delivery for transport reasons is still a logically complete 1/1 result, not a partial
-        // page. This governs only the completeness-exit-code check below, not `request.All`
-        // (Core's row-limit bump), which stays scoped to the caller's actual `all`/`delivery` intent.
-        var impliesCompleteRecordLookup = recordId is not null && projection.Equals("full", StringComparison.OrdinalIgnoreCase);
-
-        // An explicit partial issue window (`--issue-offset`/`--issue-limit`) means the request
-        // only ever covers that bounded slice of the record's issues, never the complete issue
-        // set — regardless of `--all`/`--delivery file|chunked`/a bare recordId+full lookup.
-        // `view.Complete` there already correctly tracks `issueComplete` on its own; delivery
-        // success for that (deliberately partial) slice must never override it, or a verified
-        // 1-of-2-issues file delivery would wrongly read as a logically complete result.
-        var hasExplicitPartialIssueWindow = issueOffset != 0 || issueLimit is not null;
-        var requestedCompleteDelivery = !hasExplicitPartialIssueWindow && (wantsComplete || impliesCompleteRecordLookup);
-
         var request = new TimelineProjectionRequest
         {
             Filter = filter,
@@ -1792,16 +1775,28 @@ public class AzdoCommands
         var cache = new HlxCacheProvenance { Key = cacheKey, CompleteKey = cacheKey };
 
         TimelineProjectionResult view;
+        bool logicallyComplete;
         try
         {
             // An explicit --output destination always writes the complete requested representation
-            // there directly (today's established CLI contract). Without --output, route through the
-            // same auto/file/chunked shaping+evidence-store delivery the MCP tool uses, so `--all`/
+            // there directly (today's established CLI contract); `Project(request)` here is the raw
+            // pre-receipt result (never cleared/materialized), so its own Complete/IssueWindow
+            // already is the real backing completeness. Without --output, route through the same
+            // auto/file/chunked shaping+evidence-store delivery the MCP tool uses, so `--all`/
             // `--delivery file|chunked` without --output still materializes a readable, verified
-            // evidence file instead of silently truncating to the default row window.
-            view = output is not null
-                ? Project(request)
-                : McpPresentationBudget.ShapeTimeline(request, Project, _evidenceStore, cachePartition, cacheKey);
+            // evidence file instead of silently truncating to the default row window — `ShapeTimeline`
+            // separately returns that same real backing completeness alongside the (possibly
+            // cleared-for-delivery) wire receipt, so delivery mode never has to be guessed back out
+            // from flags after the fact.
+            if (output is not null)
+            {
+                view = Project(request);
+                logicallyComplete = McpPresentationBudget.IsLogicallyComplete(view);
+            }
+            else
+            {
+                (view, logicallyComplete) = McpPresentationBudget.ShapeTimeline(request, Project, _evidenceStore, cachePartition, cacheKey);
+            }
         }
         catch (ArgumentException ex)
         {
@@ -1847,10 +1842,9 @@ public class AzdoCommands
             // completeness (e.g. a malformed timeline graph is still a best-effort
             // reconstruction) — only the latter governs exit code, matching the materialized
             // evidence-store delivery path below.
-            var effectivelyComplete = IsEffectivelyComplete(view, requestedCompleteDelivery);
             var receipt = new
             {
-                ok = effectivelyComplete,
+                ok = logicallyComplete,
                 delivery = new
                 {
                     complete = true,
@@ -1860,7 +1854,7 @@ public class AzdoCommands
                 }
             };
             Console.WriteLine(JsonSerializer.Serialize(receipt, s_jsonOptions));
-            if (!effectivelyComplete && !allowTruncated)
+            if (!logicallyComplete && !allowTruncated)
                 Environment.ExitCode = 2;
             return;
         }
@@ -1870,7 +1864,7 @@ public class AzdoCommands
         {
             var envelope = BuildCliEnvelope(view, cache);
             Console.WriteLine(JsonSerializer.Serialize(envelope, s_jsonOptions));
-            if (!IsEffectivelyComplete(view, requestedCompleteDelivery) && !allowTruncated)
+            if (!logicallyComplete && !allowTruncated)
                 Environment.ExitCode = 2;
             return;
         }
@@ -1895,31 +1889,9 @@ public class AzdoCommands
             var rresult = element.TryGetProperty("result", out var resultProp) ? resultProp.GetString() : null;
             Console.WriteLine($"[{rresult ?? "?"}] {rname} ({rid})");
         }
-        if (!IsEffectivelyComplete(view, requestedCompleteDelivery) && !allowTruncated)
+        if (!logicallyComplete && !allowTruncated)
             Environment.ExitCode = 2;
     }
-
-    /// <summary>
-    /// A small materialized-receipt response (verified evidence file covering the complete requested
-    /// selection) is a full success even though its own top-level `complete`/`returned` describe the
-    /// zero-row receipt, not the backing data — exit 0 for a complete file delivery, matching the
-    /// existing explicit `--output` contract, and exit 2 only for a genuinely partial/paged response.
-    /// Physical delivery completeness (`delivery.complete` — all intended bytes were written and
-    /// verified) is independent of *logical/source* completeness: a malformed timeline graph
-    /// (`incompleteDetails` non-empty) can still produce a fully-written file whose backing
-    /// selection is itself an incomplete best-effort reconstruction — that must still exit 2.
-    ///
-    /// Crucially, `delivery.complete=true` only substitutes for logical completeness when the
-    /// caller actually asked for the *complete selection* (`--all`/`--delivery file|chunked`/
-    /// `--output`). An ordinary auto-shaped request that happens to spill one oversized row/page
-    /// to an evidence file (no `--all`, default `delivery=auto`, a small `--limit`) still gets a
-    /// fully-written, verified file — `delivery.complete=true` — but that file holds only the
-    /// requested *page*, not the whole backing `selectedTotal`; `requestedCompleteDelivery=false`
-    /// correctly keeps that case on `view.Complete` alone (already false for a partial page).
-    /// </summary>
-    private static bool IsEffectivelyComplete(TimelineProjectionResult view, bool requestedCompleteDelivery) =>
-        view.IncompleteDetails.Count == 0 &&
-        (view.Complete || (requestedCompleteDelivery && (view.Delivery?.Complete ?? false)));
 
     /// <summary>
     /// Rejects a caller-selected --output destination that would land inside the active immutable

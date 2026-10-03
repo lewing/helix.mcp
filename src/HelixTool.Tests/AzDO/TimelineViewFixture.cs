@@ -79,6 +79,27 @@ internal static class TimelineViewFixture
 
     public static string SyntheticId(int i) => $"10000000-0000-0000-0000-{i:D12}";
 
+    public static AzdoTimeline FullIssueLookup(bool includeAncestor = true)
+    {
+        var task = new AzdoTimelineRecord
+        {
+            Id = SyntheticId(5), ParentId = SyntheticId(6), Type = "Task", Name = "Successful issue-bearing task",
+            State = "completed", Result = "succeeded", Attempt = 1, Log = new() { Id = 3005 },
+            Issues = [new() { Type = "warning", Message = new string('x', 1024 * 1024) },
+                new() { Type = "warning", Message = "second issue" },
+                new() { Type = "warning", Message = "third issue" }]
+        };
+        return new AzdoTimeline
+        {
+            Id = "c4e04671-d712-4fc6-94d8-eb26de84c004",
+            Records = includeAncestor ? [task, new()
+            {
+                Id = SyntheticId(6), Type = "Job", Name = "Existing job ancestor",
+                State = "completed", Result = "succeeded", Attempt = 1, Log = new() { Id = 3006 }
+            }] : [task]
+        };
+    }
+
     public static AzdoTimeline EscapedLongName(int repeats) => new()
     {
         Id = "c4e04671-d712-4fc6-94d8-eb26de84c004",
