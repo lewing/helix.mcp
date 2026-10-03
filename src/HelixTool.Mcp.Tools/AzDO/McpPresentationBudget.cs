@@ -87,24 +87,24 @@ internal static class McpPresentationBudget
 
         // A single row carrying real content (envelope/counts/viewId overhead, SDK text+structured
         // duplication, and conservative \uXXXX quote escaping) can legitimately land a little over
-        // an aggressively tight requested target. A zero-row page is explicitly disallowed by the
-        // access-first contract ("never a self-repeating zero-row page"), so a one-row response that
-        // is only moderately over budget is still the right answer — truncated=true already reports
-        // this honestly, and continuation/next still carry the exact way to keep reading. Prefer the
-        // unshrunk candidate (matching the caller's actual requested preview shaping, and therefore a
-        // viewId a plain follow-up call will recompute identically) whenever no shrink attempt helped.
+        // an aggressively tight requested target when it is part of ordinary multi-row pagination
+        // (selectedTotal > 1): a zero-row page is explicitly disallowed by the access-first contract
+        // ("never a self-repeating zero-row page"), and the caller already has `next`/`continuation`
+        // to keep reading, so a one-row page that is only moderately over budget is still the right
+        // answer — truncated=true already reports this honestly.
         //
-        // The allowance here is a fixed *absolute* number of bytes (envelope/escaping overhead is
-        // roughly constant, not proportional to the requested budget) — not a multiplier. A
-        // multiplier large enough to absorb that fixed overhead at a small requested budget (e.g.
-        // 4096) would also silently accept a genuinely oversized single field (e.g. a many-KB name)
-        // at a larger default budget, which is exactly the "pathological single field" case that must
-        // materialize to evidence instead.
+        // That tolerance must NOT apply to a unique exact-match single-row selection (selectedTotal
+        // == 1, e.g. an explicit `name`/`recordId` selector): there is no "next page" concept there,
+        // so any amount of over-budget content is exactly the oversized-single-field case the design
+        // routes to a verified evidence file, not an inline accept. Materializing a zero-row receipt
+        // with a delivery pointer is a complete, lossless, non-repeating response in that case — not
+        // the disallowed "self-repeating zero-row page" (there is nothing left to repeat).
         const int MaxAcceptableOverageBytes = 1024;
-        var accepted = unshrunkBest is not null && Measure(unshrunkBest) <= budget + MaxAcceptableOverageBytes
+        var allowOverage = (unshrunkBest?.SelectedTotal ?? best?.SelectedTotal ?? 0) > 1;
+        var accepted = allowOverage && unshrunkBest is not null && Measure(unshrunkBest) <= budget + MaxAcceptableOverageBytes
             ? unshrunkBest
             : best;
-        if (accepted is not null && accepted.Returned >= 1 && Measure(accepted) <= budget + MaxAcceptableOverageBytes)
+        if (allowOverage && accepted is not null && accepted.Returned >= 1 && Measure(accepted) <= budget + MaxAcceptableOverageBytes)
             return (accepted, null);
 
         // Last resort: materialize the complete originally-requested page/set to a verified evidence

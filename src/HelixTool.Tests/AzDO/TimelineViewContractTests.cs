@@ -551,9 +551,10 @@ public sealed class TimelineViewContractTests
     }
 
     [Theory]
+    [InlineData(150)]
     [InlineData(200)]
     [InlineData(400)]
-    public async Task DefaultWireBudget_SingleEscapedLongName_IsDeliveredWithoutAcceptingFourTimesBudget(int repeats)
+    public async Task DefaultWireBudget_SingleEscapedLongName_IsDeliveredWithinTarget(int repeats)
     {
         var source = TimelineViewFixture.EscapedLongName(repeats);
         var name = source.Records[0].Name;

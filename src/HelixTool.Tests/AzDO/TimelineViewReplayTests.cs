@@ -100,6 +100,7 @@ public sealed class TimelineViewReplayTests : IDisposable
     }
 
     [Theory]
+    [InlineData(150)]
     [InlineData(200)]
     [InlineData(400)]
     public async Task StdioDefaultWireBudget_SingleEscapedLongName_StaysWithinBudget(int repeats)
