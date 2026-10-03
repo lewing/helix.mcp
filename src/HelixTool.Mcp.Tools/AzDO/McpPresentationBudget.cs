@@ -147,32 +147,38 @@ public static class McpPresentationBudget
         string? backingCacheKey)
     {
         var evidence = MaterializeToEvidence(result, evidenceStore, cachePartition, backingCacheKey);
-        var receipt = ClearRows(result) with
+        var continuation = new TimelineAction
         {
-            Complete = false,
-            Truncated = true,
-            Delivery = evidence,
-            Continuation = new TimelineAction
+            Tool = "hlx_read_evidence",
+            Arguments = new Dictionary<string, object?>
             {
-                Tool = "hlx_read_evidence",
-                Arguments = new Dictionary<string, object?>
-                {
-                    ["evidenceId"] = evidence.EvidenceId,
-                    ["offsetBytes"] = 0,
-                    ["lengthBytes"] = 65536,
-                    ["encoding"] = "auto"
-                }
-            },
-            Note = $"Requested payload exceeded the {baseRequest.MaxResponseBytes}-byte inline shaping target; the complete selection was written to a verified evidence file. " +
-                   $"Read it with hlx_read_evidence(evidenceId='{evidence.EvidenceId}', offsetBytes=0, lengthBytes=65536)."
+                ["evidenceId"] = evidence.EvidenceId,
+                ["offsetBytes"] = 0,
+                ["lengthBytes"] = 65536,
+                ["encoding"] = "auto"
+            }
         };
+        var fullNote = $"Requested payload exceeded the {baseRequest.MaxResponseBytes}-byte inline shaping target; the complete selection was written to a verified evidence file. " +
+                       $"Read it with hlx_read_evidence(evidenceId='{evidence.EvidenceId}', offsetBytes=0, lengthBytes=65536).";
+        var cleared = ClearRows(result);
+        var receipt = cleared with { Complete = false, Truncated = true, Delivery = evidence, Continuation = continuation, Note = fullNote };
 
         // The descriptor/continuation/note themselves ride the same wire response; re-measuring the
-        // fully-formed receipt is the actual accept/no-further-shrink decision point, even though
-        // there is nothing left to shrink below a zero-row receipt (descriptor fields are required
-        // provenance, not optional bulk).
-        _ = Measure(receipt);
-        return receipt;
+        // fully-formed receipt is the actual accept/no-further-shrink decision point. Unlike the
+        // earlier no-op measurement, this is now enforced: the free-text Note is the only droppable
+        // field (descriptor provenance and the continuation action itself are required, not
+        // optional bulk), so a receipt still over budget drops to a terse Note, then no Note at all,
+        // before accepting whatever remains as the irreducible floor.
+        var budget = ClampMaxResponseBytes(baseRequest.MaxResponseBytes) - FramingReserveBytes;
+        if (Measure(receipt) <= budget)
+            return receipt;
+
+        var terseNote = $"Oversized; see delivery.evidenceId='{evidence.EvidenceId}'.";
+        var terseReceipt = cleared with { Complete = false, Truncated = true, Delivery = evidence, Continuation = continuation, Note = terseNote };
+        if (Measure(terseReceipt) <= budget)
+            return terseReceipt;
+
+        return cleared with { Complete = false, Truncated = true, Delivery = evidence, Continuation = continuation, Note = null };
     }
 
     private static TimelineProjectionResult ClearRows(TimelineProjectionResult result) => result with
@@ -189,7 +195,7 @@ public static class McpPresentationBudget
         string cachePartition,
         string? backingCacheKey)
     {
-        var json = JsonSerializer.Serialize(result, McpJsonOptions);
+        var json = JsonSerializer.Serialize(result, ProductionToolJsonOptions);
         return evidenceStore.PutText(json, "application/json", result.ViewId, backingCacheKey, cachePartition);
     }
 
@@ -198,8 +204,8 @@ public static class McpPresentationBudget
     /// <summary>Measures the actual wire bytes of a <see cref="CallToolResult"/> wrapping <paramref name="payload"/>, matching SDK text+structured duplication/escaping/framing.</summary>
     public static int MeasureAny<T>(T payload)
     {
-        var structured = JsonSerializer.SerializeToElement(payload, McpJsonOptions);
-        var text = JsonSerializer.Serialize(payload, McpJsonOptions);
+        var structured = JsonSerializer.SerializeToElement(payload, ProductionToolJsonOptions);
+        var text = JsonSerializer.Serialize(payload, ProductionToolJsonOptions);
         var callResult = new CallToolResult
         {
             Content = [new TextContentBlock { Text = text }],
@@ -208,5 +214,22 @@ public static class McpPresentationBudget
         return JsonSerializer.SerializeToUtf8Bytes(callResult, McpJsonUtilities.DefaultOptions).Length;
     }
 
-    private static readonly JsonSerializerOptions McpJsonOptions = McpJsonUtilities.DefaultOptions;
+    /// <summary>
+    /// The exact <see cref="JsonSerializerOptions"/> both production hosts (<c>hlx mcp</c> and the
+    /// standalone <c>HelixTool.Mcp</c> ASP.NET host) register via <c>WithToolsFromAssembly</c>.
+    /// Unlike <see cref="McpJsonUtilities.DefaultOptions"/> (which omits null properties), this
+    /// bare options object has no <see cref="JsonSerializerOptions.DefaultIgnoreCondition"/> set, so
+    /// ordinary nullable row fields (<c>monitorEvidence</c>, <c>parentId</c>, <c>contextParentId</c>,
+    /// <c>log</c>, ...) are emitted as literal <c>null</c> on the real wire. Measuring shaping
+    /// decisions with <see cref="McpJsonUtilities.DefaultOptions"/> instead previously
+    /// under-counted every row with any null field, so a page that measured under budget in the
+    /// shaping helper could still exceed it on the real transport. Both hosts reference this single
+    /// definition directly (rather than constructing their own copy) so they can never drift from
+    /// what shaping actually measures.
+    /// </summary>
+    public static readonly JsonSerializerOptions ProductionToolJsonOptions = new()
+    {
+        UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow,
+        TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver(),
+    };
 }

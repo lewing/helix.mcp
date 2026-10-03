@@ -118,7 +118,7 @@ public sealed class TimelineViewReplayTests : IDisposable
         await AssertStdioDefaultPagesAsync(TimelineViewFixture.EscapedLongNameWithSecondRow(repeats), 1621192);
     }
 
-    private async Task AssertStdioDefaultPagesAsync(AzdoTimeline source, int buildId)
+    internal async Task AssertStdioDefaultPagesAsync(AzdoTimeline source, int buildId)
     {
         await SeedAsync(source, buildId);
         await using var process = await TimelineStdioProcess.StartAsync(Snapshot);
@@ -129,7 +129,9 @@ public sealed class TimelineViewReplayTests : IDisposable
         HashSet<string> ids = [];
         for (var i = 0; i < 100; i++)
         {
-            Assert.InRange(process.LastResponseBytes, 1, 12288);
+            Assert.Equal(12288, page.GetProperty("requestedMaxResponseBytes").GetInt64());
+            Assert.Equal(12288, page.GetProperty("maxResponseBytes").GetInt64());
+            Assert.InRange(process.LastResponseBytes, 1, page.GetProperty("maxResponseBytes").GetInt64());
             foreach (var id in TimelineViewContractTests.Ids(page))
                 Assert.True(ids.Add(id), $"Duplicate record {id} in continuation.");
             Assert.Equal(viewId, page.GetProperty("viewId").GetString());
@@ -332,6 +334,15 @@ internal sealed class TimelineStdioProcess : IAsyncDisposable
             info.ArgumentList.Add(argument);
         info.Environment["HLX_EVAL_SNAPSHOT"] = snapshot;
         info.Environment["DOTNET_ROLL_FORWARD"] = "Major";
+        var temp = Path.Combine(Path.GetDirectoryName(snapshot)!, "child-temp");
+        Directory.CreateDirectory(temp);
+        if (OperatingSystem.IsWindows())
+        {
+            info.Environment["TMP"] = temp;
+            info.Environment["TEMP"] = temp;
+        }
+        else
+            info.Environment["TMPDIR"] = temp;
         info.Environment.Remove("HLX_EVAL_AZDO_PARTITION");
         info.Environment.Remove("AZDO_TOKEN");
         info.Environment.Remove("HELIX_TOKEN");

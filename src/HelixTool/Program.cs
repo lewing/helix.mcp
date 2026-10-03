@@ -1141,16 +1141,11 @@ Available as `failureCategory` in JSON and MCP output.
                 options.AddAcquisitionErrorFilter();
             })
             .WithStdioServerTransport()
-            .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly, new JsonSerializerOptions
-            {
-                // Reject unknown parameters at binding time so callers get a structured error
-                // instead of silent data loss. The AddBindingErrorFilter above catches the resulting
-                // ArgumentException(paramName:"arguments") and wraps it as McpException.
-                UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
-                // Required: SDK calls MakeReadOnly() on options before schema gen; without a
-                // TypeInfoResolver set, CreateJsonSchemaCore tries to assign one post-lock → InvalidOperationException.
-                TypeInfoResolver = new DefaultJsonTypeInfoResolver(),
-            })
+            // Shared with McpPresentationBudget.MeasureAny so budget shaping decisions are made
+            // against the exact options this host actually serializes tool results with — a
+            // locally-duplicated JsonSerializerOptions here previously silently drifted from what
+            // shaping measured (e.g. omitting vs. emitting null row fields).
+            .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly, McpPresentationBudget.ProductionToolJsonOptions)
             .WithResourcesFromAssembly(typeof(HelixMcpTools).Assembly);
         await builder.Build().RunAsync();
     }
@@ -1831,9 +1826,14 @@ public class AzdoCommands
             await File.WriteAllTextAsync(output, fileJson);
             var bytes = await File.ReadAllBytesAsync(output);
             var sha256 = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes));
+            // Physical write success (file verified on disk) is distinct from logical/source
+            // completeness (e.g. a malformed timeline graph is still a best-effort
+            // reconstruction) — only the latter governs exit code, matching the materialized
+            // evidence-store delivery path below.
+            var effectivelyComplete = IsEffectivelyComplete(view, requestedCompleteDelivery: true);
             var receipt = new
             {
-                ok = true,
+                ok = effectivelyComplete,
                 delivery = new
                 {
                     complete = true,
@@ -1843,6 +1843,8 @@ public class AzdoCommands
                 }
             };
             Console.WriteLine(JsonSerializer.Serialize(receipt, s_jsonOptions));
+            if (!effectivelyComplete && !allowTruncated)
+                Environment.ExitCode = 2;
             return;
         }
 
@@ -1851,9 +1853,21 @@ public class AzdoCommands
         {
             var envelope = BuildCliEnvelope(view, cache);
             Console.WriteLine(JsonSerializer.Serialize(envelope, s_jsonOptions));
-            if (!IsEffectivelyComplete(view) && !allowTruncated)
+            if (!IsEffectivelyComplete(view, wantsComplete) && !allowTruncated)
                 Environment.ExitCode = 2;
             return;
+        }
+
+        // A materialized evidence-file delivery (explicit --delivery file/chunked, or an
+        // auto-overflow materialize) carries zero inline rows in `view.Records` — printing
+        // nothing here would silently hide that real data was written, with no path/receipt
+        // reaching the caller at all in non-JSON mode.
+        if (view.Delivery is not null)
+        {
+            Console.WriteLine($"[delivery] {(view.Delivery.Complete ? "complete" : "partial")} " +
+                               $"{view.Delivery.LocalPath} ({view.Delivery.Sha256})");
+            if (view.Note is not null)
+                Console.WriteLine(view.Note);
         }
 
         foreach (var row in view.Records)
@@ -1864,7 +1878,7 @@ public class AzdoCommands
             var rresult = element.TryGetProperty("result", out var resultProp) ? resultProp.GetString() : null;
             Console.WriteLine($"[{rresult ?? "?"}] {rname} ({rid})");
         }
-        if (!IsEffectivelyComplete(view) && !allowTruncated)
+        if (!IsEffectivelyComplete(view, wantsComplete) && !allowTruncated)
             Environment.ExitCode = 2;
     }
 
@@ -1873,9 +1887,22 @@ public class AzdoCommands
     /// selection) is a full success even though its own top-level `complete`/`returned` describe the
     /// zero-row receipt, not the backing data — exit 0 for a complete file delivery, matching the
     /// existing explicit `--output` contract, and exit 2 only for a genuinely partial/paged response.
+    /// Physical delivery completeness (`delivery.complete` — all intended bytes were written and
+    /// verified) is independent of *logical/source* completeness: a malformed timeline graph
+    /// (`incompleteDetails` non-empty) can still produce a fully-written file whose backing
+    /// selection is itself an incomplete best-effort reconstruction — that must still exit 2.
+    ///
+    /// Crucially, `delivery.complete=true` only substitutes for logical completeness when the
+    /// caller actually asked for the *complete selection* (`--all`/`--delivery file|chunked`/
+    /// `--output`). An ordinary auto-shaped request that happens to spill one oversized row/page
+    /// to an evidence file (no `--all`, default `delivery=auto`, a small `--limit`) still gets a
+    /// fully-written, verified file — `delivery.complete=true` — but that file holds only the
+    /// requested *page*, not the whole backing `selectedTotal`; `requestedCompleteDelivery=false`
+    /// correctly keeps that case on `view.Complete` alone (already false for a partial page).
     /// </summary>
-    private static bool IsEffectivelyComplete(TimelineProjectionResult view) =>
-        view.Complete || (view.Delivery?.Complete ?? false);
+    private static bool IsEffectivelyComplete(TimelineProjectionResult view, bool requestedCompleteDelivery) =>
+        view.IncompleteDetails.Count == 0 &&
+        (view.Complete || (requestedCompleteDelivery && (view.Delivery?.Complete ?? false)));
 
     /// <summary>
     /// Rejects a caller-selected --output destination that would land inside the active immutable
@@ -1889,8 +1916,8 @@ public class AzdoCommands
         if (!_cacheOptions.EvalMode || string.IsNullOrEmpty(_cacheOptions.CacheRoot))
             return true;
 
-        var snapshotRoot = Path.GetFullPath(_cacheOptions.GetEffectiveCacheRoot());
-        var resolvedOutput = Path.GetFullPath(output);
+        var snapshotRoot = ResolvePhysicalPath(Path.GetFullPath(_cacheOptions.GetEffectiveCacheRoot()));
+        var resolvedOutput = ResolvePhysicalPath(Path.GetFullPath(output));
         var snapshotRootWithSeparator = snapshotRoot.EndsWith(Path.DirectorySeparatorChar) ? snapshotRoot : snapshotRoot + Path.DirectorySeparatorChar;
         var isInsideSnapshot = string.Equals(resolvedOutput, snapshotRoot, StringComparison.OrdinalIgnoreCase)
             || resolvedOutput.StartsWith(snapshotRootWithSeparator, StringComparison.OrdinalIgnoreCase);
@@ -1900,6 +1927,40 @@ public class AzdoCommands
         error = $"--output '{output}' resolves inside the active read-only eval snapshot ('{snapshotRoot}'). " +
                 "Choose a destination outside HLX_EVAL_SNAPSHOT; writing here could corrupt the immutable snapshot used for offline replay.";
         return false;
+    }
+
+    /// <summary>
+    /// Resolves the true physical path a lexical path would ultimately write to, following any
+    /// symlink chain on its longest *existing* ancestor (a plain <see cref="Path.GetFullPath"/>
+    /// is purely lexical and never consults the filesystem, so an ancestor directory that is
+    /// itself a symlink pointing into the snapshot would otherwise slip past the containment
+    /// check entirely). The not-yet-existing trailing segments (e.g. the output file itself) are
+    /// re-appended to the resolved real ancestor unchanged.
+    /// </summary>
+    private static string ResolvePhysicalPath(string fullPath)
+    {
+        var existingPrefix = fullPath;
+        var trailingSegments = new List<string>();
+        while (!Directory.Exists(existingPrefix) && !File.Exists(existingPrefix))
+        {
+            var parent = Path.GetDirectoryName(existingPrefix);
+            if (string.IsNullOrEmpty(parent) || string.Equals(parent, existingPrefix, StringComparison.Ordinal))
+                break; // reached a root that doesn't exist on disk; nothing further to resolve
+            trailingSegments.Insert(0, Path.GetFileName(existingPrefix));
+            existingPrefix = parent;
+        }
+
+        var resolvedPrefix = existingPrefix;
+        for (var hop = 0; hop < 32; hop++) // bounded against a pathological/cyclic symlink chain
+        {
+            FileSystemInfo info = Directory.Exists(resolvedPrefix) ? new DirectoryInfo(resolvedPrefix) : new FileInfo(resolvedPrefix);
+            var target = info.ResolveLinkTarget(returnFinalTarget: true)?.FullName;
+            if (target is null)
+                break;
+            resolvedPrefix = target;
+        }
+
+        return trailingSegments.Count == 0 ? resolvedPrefix : Path.Combine([resolvedPrefix, .. trailingSegments]);
     }
 
     /// <summary>

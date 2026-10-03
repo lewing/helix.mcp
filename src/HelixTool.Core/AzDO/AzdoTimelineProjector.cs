@@ -456,18 +456,27 @@ public static class AzdoTimelineProjector
             // record (MatchesFilter's hasIssues branch), so it must never itself gate a ranking band —
             // otherwise a succeeded warning-only Task and a genuinely non-succeeded Job/Stage tie in
             // the same band and the warning Task (ranked Task-first by TypeRank) displaces the real
-            // failure. Use the narrower "actually non-succeeded result" test for bands 1 and 4.
+            // failure. Use the narrower "actually non-succeeded result" test for the monitor/failure
+            // bands below and for the generic-failure band.
             var isActuallyFailedResult = r.Result is { Length: > 0 } && !r.Result.Equals("succeeded", StringComparison.OrdinalIgnoreCase);
             var hasUnresolvedMonitor = isActuallyFailedResult && issues.Any(i => i.Message is not null && AzdoMonitorFailureParser.IsMonitorLikeMessage(i.Message));
             if (hasUnresolvedMonitor) return 1;
 
+            // Design order: parsed/unresolved monitor evidence, then failed monitor *name* hints
+            // (no parseable/monitor-like issue text at all, but the record's own name looks like a
+            // known monitor job — e.g. "Monitor Helix Jobs"), ahead of generic failed Task errors.
+            // This mirrors ClassifyMonitorEvidence's own "nameHint" classification, which previously
+            // had no corresponding ranking band at all.
+            var hasMonitorNameHint = isActuallyFailedResult && AzdoMonitorFailureParser.IsMonitorLikeName(r.Name);
+            if (hasMonitorNameHint) return 2;
+
             var isTaskLike = r.Type?.Equals("Task", StringComparison.OrdinalIgnoreCase) == true;
             var hasErrorIssue = issues.Any(i => i.Type?.Equals("error", StringComparison.OrdinalIgnoreCase) == true);
-            if (isTaskLike && hasErrorIssue) return 2;
-            if (hasErrorIssue) return 3;
-            if (isActuallyFailedResult) return 4;
-            if (issues.Count > 0) return 5; // warning-only (succeeded, no error-type issues)
-            return 6; // context-only
+            if (isTaskLike && hasErrorIssue) return 3;
+            if (hasErrorIssue) return 4;
+            if (isActuallyFailedResult) return 5;
+            if (issues.Count > 0) return 6; // warning-only (succeeded, no error-type issues)
+            return 7; // context-only
         }
 
         int TypeRank(AzdoTimelineRecord r) => r.Type?.ToLowerInvariant() switch

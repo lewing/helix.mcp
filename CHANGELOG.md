@@ -36,9 +36,10 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
   passed. Scripts/`jq` pipelines reading `.records[]` must switch to `.results[]` and handle
   `complete`/`truncated`/`next` for partial pages, or pass `--raw-json` to keep the old shape.
 
-- **CLI `--delivery` flag:** `hlx azdo timeline` accepts `--delivery auto|file|all|chunked`,
+- **CLI `--delivery` flag:** `hlx azdo timeline` accepts `--delivery auto|inline|file|chunked`,
   mirroring the MCP `delivery` parameter; `--all`/`--output` remain available as CLI-specific
-  escape hatches. `--all`/`delivery="file"`/`"all"` now retrieve the complete selected scope.
+  escape hatches. `--all`/`delivery="file"` now retrieve the complete selected scope (there is no
+  `delivery="all"` value — combine `--all` with `--delivery file`, or just pass `--all`).
   Inline `maxResponseBytes` is clamped to an 8 KiB–16 KiB effective range (default 12288); both
   the clamped `maxResponseBytes` and the caller's original `requestedMaxResponseBytes` are
   reported in the response.

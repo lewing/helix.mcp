@@ -154,7 +154,7 @@ hlx azdo timeline <buildId> [--filter failed|all|running|pending|incomplete|issu
     [--preview-issue-limit N] [--preview-chars N]
     [--offset N] [--limit N] [--view-id ID]
     [--issue-offset N] [--issue-limit N]
-    [--all] [--delivery auto|file|all|chunked] [--output PATH] [--allow-truncated]
+    [--all] [--delivery auto|inline|file|chunked] [--output PATH] [--allow-truncated]
     [--json] [--raw-json]
 ```
 
@@ -171,34 +171,42 @@ aggregate counts only, no records.
 
 Paging uses `--offset`/`--limit` (default 10 rows) plus a server-reported `viewId` — pass the
 prior response's `viewId` back on the next page so a changed/stale source is rejected instead
-of silently shifting pages. The JSON envelope's `next` field (`{ offset, viewId }` or `null` on
-the final page) is the exact argument set for the next call.
+of silently shifting pages. The JSON envelope's `next` field (`{ offset, limit, viewId }` or
+`null` on the final page) is only the bare page coordinates for the next call, not a complete
+re-invocation — it omits the filter/selector/projection settings of the current request. Where
+present, a row/action's `continuation` field (`{ tool, arguments }`) is the exact full
+`azdo_timeline` invocation, preserving every selector and setting, and is what to use to
+reliably resume or reproduce the current view.
 
 `--all` requests the complete selected scope, ignoring the row-count/byte-shaping target, and
-retrieves the complete selection — the same as the MCP `delivery="file"`/`"all"` path it
-corresponds to. `--delivery auto|file|all|chunked` (default `auto`) mirrors the MCP `delivery`
-parameter: `auto` keeps a useful inline page; `file`/`all`/`chunked` retrieve the complete
-selection and deliver it via `--output` or a verified evidence reference readable with
-`hlx_read_evidence`. `--output PATH` writes the complete requested selection as JSON to a file and
-prints a small receipt (`sha256`, byte count, path) instead of inlining it. If `--output` resolves
-inside an active read-only eval snapshot (`HLX_EVAL_SNAPSHOT`), the write is refused with an exact,
-directly-executable recovery command to retry outside the snapshot.
+retrieves the complete selection — the same as the MCP `delivery="file"` path it corresponds
+to. `--delivery auto|inline|file|chunked` (default `auto`) mirrors the MCP `delivery` parameter:
+`auto` keeps a useful inline page; `file`/`chunked` retrieve the complete selection and deliver
+it via `--output` or a verified evidence reference readable with `hlx_read_evidence`. There is no
+`--delivery all` value — combine `--all` with `--delivery file` (or just `--all`, which already
+implies complete-scope file/evidence delivery) to force a complete selection. `--output PATH`
+writes the complete requested selection as JSON to a file and prints a small receipt (`sha256`,
+byte count, path) instead of inlining it. If `--output` resolves inside an active read-only eval
+snapshot (`HLX_EVAL_SNAPSHOT`), the write is refused with an exact, directly-executable recovery
+command to retry outside the snapshot.
 
 `--json` prints the `.results[]`-keyed JSON envelope used by other CLI list commands (`ok`,
 `results`, `returned`, `complete`, `next`, `viewId`, `cache`, ...) and exits **2** when the
 printed page is incomplete and `--allow-truncated` was not passed (0 on a complete page).
 This is an intentional breaking change from the legacy `{id, records}` shape — see
 [CHANGELOG.md](../CHANGELOG.md). `--raw-json` preserves that legacy `{id, records}` shape with
-full Phase/issue detail and the original `failed`/`all` filter semantics only; it is the escape
-path for offline snapshot replay and always exits 0. Offline replay (`HLX_EVAL_SNAPSHOT`) works
-for every projection (triage/compact/full/summary), not only `--raw-json`.
+full Phase/issue detail and the original `failed`/`all` filter semantics only; it ignores the new
+selectors (`--record-id`, `--parent-id`, `--type`, `--result`, `--state`, `--name`, `--expand`,
+`--projection`), so it is not a substitute for an exact-lookup request — it is the escape path for
+offline snapshot replay and always exits 0. Offline replay (`HLX_EVAL_SNAPSHOT`) works for every
+projection (triage/compact/full/summary), not only `--raw-json`.
 
 ```bash
 hlx azdo timeline 12345678
 hlx azdo timeline 12345678 --filter all
 hlx azdo timeline 12345678 --projection summary --json
 hlx azdo timeline 12345678 --filter all --type Job --result failed --json
-hlx azdo timeline 12345678 --record-id <guid> --projection full --raw-json
+hlx azdo timeline 12345678 --record-id <guid> --projection full
 ```
 
 ### `hlx azdo log <buildId> <logId> [--tail-lines N] [--full]`

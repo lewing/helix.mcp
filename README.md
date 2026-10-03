@@ -157,8 +157,10 @@ evidence file/reference, readable with `hlx_read_evidence`, instead of being dro
 `previewIssueLimit` (default 5) and `previewChars` (default 200) bound the deduplicated issue
 preview per triage row; the full, untruncated text for any shortened preview is always reachable
 through the row's own recovery action. A per-call `delivery="file"`/`all=true` request retrieves
-the complete selected scope, ignoring that shaping target. The CLI has an equivalent `--delivery
-auto|file|all|chunked` flag (`--all`/`--output` remain available as CLI-specific escape hatches).
+the complete selected scope, ignoring that shaping target (there is no `delivery="all"` value).
+The CLI has an equivalent `--delivery auto|inline|file|chunked` flag; combine `--all` with
+`--delivery file` (or just `--all`) for the same complete-selection behavior (`--output` remains
+available as a CLI-specific escape hatch).
 Inline `maxResponseBytes` is clamped to an 8 KiB–16 KiB effective range (default 12288),
 independent of a smaller requested value; both the effective (clamped) `maxResponseBytes` and the
 caller's original `requestedMaxResponseBytes` are reported in the response.

@@ -82,8 +82,13 @@ public static class EvalSnapshotAzdoPartitionSelector
         if (!File.Exists(dbPath))
             return partitions;
 
+        // Read-only (not immutable): partition prefixes can be committed only to WAL, same as
+        // payloads — immutable=1 tells SQLite the file will never change and skips consulting the
+        // WAL entirely, silently hiding any partition whose only committed record lives there.
+        // Plain Mode=ReadOnly still follows an existing WAL correctly (SQLite's normal read-only
+        // WAL-reader protocol) without ever writing to the snapshot.
         using var connection = new SqliteConnection(
-            $"Data Source={new Uri(dbPath).AbsoluteUri}?immutable=1;Mode=ReadOnly;Pooling=False");
+            $"Data Source={dbPath};Mode=ReadOnly;Pooling=False");
         connection.Open();
 
         ReadKeyPartitions(connection, "cache_metadata", partitions);

@@ -237,7 +237,8 @@ public sealed class TimelineViewContractTests
             "pending" => source.Records.Where(r => r.State == "pending"),
             _ => source.Records.Where(r => r.State != "completed")
         };
-        Assert.Equal(expected.Select(r => r.Id).Order(), Ids(view).Order());
+        var rows = await host.ReadPagesAsync(view);
+        Assert.Equal(expected.Select(r => r.Id).Order(), rows.Select(r => r.GetProperty("id").GetString()).Order());
     }
 
     [Fact]
@@ -951,8 +952,11 @@ internal sealed class TimelineViewHost : IAsyncDisposable
             Directory.Delete(_runtimeRoot, recursive: true);
     }
 
-    private sealed class CaptureResponseHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
+    internal sealed class CaptureResponseHandler : DelegatingHandler
     {
+        public CaptureResponseHandler() { }
+        public CaptureResponseHandler(HttpMessageHandler inner) : base(inner) { }
+
         public int LastResponseBytes { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
