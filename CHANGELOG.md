@@ -8,6 +8,8 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+## [v0.11.0] — 2026-10-02
+
 ### **Fixed — cache data loss**
 
 - **SQLite NUL metadata encoding:** On v0.10.3 and earlier, cached values containing NUL characters could be stored as zero bytes by the SQLite metadata path. The main known impact was raw AzDO build logs around 6 KB and larger: they are cached as plain text with a NUL-prefixed `\0raw\n` marker, so live calls usually hid the issue by refetching, but offline/eval snapshots could replay empty logs while still validating. Metadata values containing NULs are now encoded losslessly before storage and decoded on read; empty raw-log rows are treated as corrupt (`cache/invalid_response` in eval/offline mode, refetched in live mode), and `hlx snapshot validate` flags empty/corrupt raw AzDO log metadata rows. Clear affected local caches with `hlx cache clear` and re-collect any snapshots produced by v0.10.3 or earlier. Reported by PureWeen (gist).
@@ -62,6 +64,29 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 - **Machine-readable failure semantics:** Added stable `incompleteDetails[].code` values alongside human `incompleteReasons[]`. Codes: `artifact_ambiguous` = multiple artifact candidates for one selected job; `artifact_missing` = no matching artifact candidate; `candidates_truncated` = a job's candidate list exceeded the per-entry bound; `entries_truncated` = selected jobs exceeded the plan entry bound; `helix_failures_truncated` = the current response contains only a partial Helix-failure page; `monitor_unparseable` = a selected monitor-like job had no parseable Helix work-item failures; `monitor_unresolved_job_id` = failure-shaped monitor entries lacked a recoverable Helix job ID.
 - **Deterministic drilldown:** Each `helixFailures[]` row includes `suggestedFetches[]` with tool names, Helix IDs, and work-item selectors. Scripts can read the plan, decide completeness, and use emitted `helix_work_item`, `helix_logs`, and `helix_files` fetch intents for deep investigation.
 - **Backward compatible:** The artifact plan (`entries[]`) remains unchanged for non-monitor jobs. Monitor jobs without parseable failures remain selectable and report incompleteness with explicit codes. Empty `helixFailures[]` with failures unparseable is never reported as "no failures."
+
+## [v0.10.3] — 2026-09-30
+
+### Hidden AzDO test failures made visible (#150)
+
+- **Real failed-test counts:** `azdo_test_runs` now derives failed-test totals from `unanalyzedTests` and related Azure DevOps counters (including incomplete and not-applicable results) instead of reporting zero failures.
+- **Explicit auth and deletion errors:** Authentication redirects, HTTP 203 responses, and HTML sign-in pages now raise actionable auth errors instead of returning misleading empty results. A 404 while reading test-run results now reports that the run may have been deleted.
+- **Correct large-result paging:** Test results and runs now continue paging past Azure DevOps' 10,000-item cap.
+- **Stale cache avoidance:** Empty test-result lists are no longer cached, and AzDO test cache keys are versioned so older misleading entries are not served after upgrade.
+- **No auto-follow redirects:** The MCP AzDO HTTP client no longer auto-follows redirects, preserving auth-error detection.
+- **Windows cache sharing retries:** Artifact cache reads and writes retry transient Windows sharing violations to prevent spurious CI failures.
+
+### Build Analysis evidence guidance clarified (#145)
+
+- Build-analysis evidence and live monitor guidance now better describe available timeline, log, and Helix signals.
+
+### Infrastructure
+
+- **CoreCLR merged-runner CI guidance (#150):** CI guide notes that merged CoreCLR runners can exit 100 even when tests fail, helping investigators distinguish runner behavior from infrastructure errors.
+
+### Dependencies
+
+- **GitHub Actions updates** (#143, #146, #147, #148) — Updated `zizmor-action` to 0.6.4, `docker/build-push-action` to 7.4.0, `docker/setup-buildx-action` to 4.4.1, and `docker/setup-qemu-action` to 4.4.0.
 
 ## [v0.10.2] — 2026-09-11
 
