@@ -203,8 +203,7 @@ public sealed class TimelineWalPartitionRegressionTests : IDisposable
         public void Dispose()
         {
             _writer.Dispose();
-            if (Directory.Exists(_root))
-                Directory.Delete(_root, recursive: true);
+            CacheTestCleanup.DeleteRoot(_root);
         }
     }
 }

@@ -948,8 +948,7 @@ internal sealed class TimelineViewHost : IAsyncDisposable
             File.Delete(path);
             File.Delete(Path.ChangeExtension(path, ".meta.json"));
         }
-        if (Directory.Exists(_runtimeRoot))
-            Directory.Delete(_runtimeRoot, recursive: true);
+        CacheTestCleanup.DeleteRoot(_runtimeRoot);
     }
 
     internal sealed class CaptureResponseHandler : DelegatingHandler

@@ -639,9 +639,8 @@ public sealed partial class IndependentReviewRegressionTests
             var isolatedCache = Options.GetBaseCacheRoot();
             var temporaryCollectRoot = Path.Combine(Path.GetTempPath(), "hlx-collect-cache") + Path.DirectorySeparatorChar;
             if (isolatedCache.StartsWith(temporaryCollectRoot, StringComparison.Ordinal) && Directory.Exists(isolatedCache))
-                Directory.Delete(isolatedCache, recursive: true);
-            if (Directory.Exists(_root))
-                Directory.Delete(_root, recursive: true);
+                CacheTestCleanup.DeleteRoot(isolatedCache);
+            CacheTestCleanup.DeleteRoot(_root);
         }
     }
 

@@ -521,8 +521,7 @@ public sealed class AzdoPagingPr1CliTests
 
     private static void TryDelete(string path)
     {
-        try { Directory.Delete(path, recursive: true); }
-        catch { }
+        CacheTestCleanup.DeleteRoot(path);
     }
 
     private sealed class ContinuationTokenHandler : HttpMessageHandler
@@ -888,8 +887,7 @@ public sealed class AzdoPagingPr1CacheCompatibilityTests : IDisposable
 
     private static void TryDelete(string path)
     {
-        try { Directory.Delete(path, recursive: true); }
-        catch { }
+        CacheTestCleanup.DeleteRoot(path);
     }
 
     private sealed class TestResultsContinuationSkipHandler : HttpMessageHandler

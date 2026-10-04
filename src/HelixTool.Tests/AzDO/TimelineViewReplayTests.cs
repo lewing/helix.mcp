@@ -297,8 +297,7 @@ public sealed class TimelineViewReplayTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(_root))
-            Directory.Delete(_root, recursive: true);
+        CacheTestCleanup.DeleteRoot(_root);
     }
 }
 

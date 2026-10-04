@@ -151,7 +151,6 @@ public sealed class AzdoCacheKeyReviewRegressionTests : IDisposable
 
     private static void TryDelete(string path)
     {
-        try { Directory.Delete(path, recursive: true); }
-        catch { }
+        CacheTestCleanup.DeleteRoot(path);
     }
 }

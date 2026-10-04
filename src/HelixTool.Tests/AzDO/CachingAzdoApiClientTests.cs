@@ -297,7 +297,7 @@ public class CachingAzdoApiClientTests
         }
         finally
         {
-            try { Directory.Delete(root, recursive: true); } catch { }
+            CacheTestCleanup.DeleteRoot(root);
         }
     }
 
@@ -330,7 +330,7 @@ public class CachingAzdoApiClientTests
         }
         finally
         {
-            try { Directory.Delete(root, recursive: true); } catch { }
+            CacheTestCleanup.DeleteRoot(root);
         }
     }
 

@@ -151,8 +151,7 @@ public sealed class TimelineAuthenticatedHttpRegressionTests
             finally
             {
                 Environment.SetEnvironmentVariable("HLX_EVAL_SNAPSHOT", _oldEval);
-                if (Directory.Exists(_root))
-                    Directory.Delete(_root, recursive: true);
+                CacheTestCleanup.DeleteRoot(_root);
             }
         }
     }

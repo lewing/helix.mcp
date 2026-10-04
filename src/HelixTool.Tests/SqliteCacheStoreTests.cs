@@ -632,7 +632,7 @@ public class SqliteCacheStoreEvalModeTests : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(_parentDir, recursive: true); } catch { /* best-effort */ }
+        CacheTestCleanup.DeleteRoot(_parentDir);
     }
 
     // Writer: normal mode, CacheRoot = _parentDir → DB at _parentDir/public/cache.db = _snapshotDir/cache.db

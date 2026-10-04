@@ -1250,8 +1250,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
 
     private static void TryDelete(string path)
     {
-        try { Directory.Delete(path, recursive: true); }
-        catch { }
+        CacheTestCleanup.DeleteRoot(path);
     }
 
     private sealed record CollectScenario(RecordingAzdoApiClient Azdo, RecordingHelixApiClient Helix);
@@ -1350,7 +1349,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
             };
             configure?.Invoke(options);
             if (!options.Resume && Directory.Exists(ExportPath))
-                Directory.Delete(ExportPath, recursive: true);
+                CacheTestCleanup.DeleteRoot(ExportPath);
 
             await TestConsoleCapture.Lock.WaitAsync();
             var originalOut = Console.Out;

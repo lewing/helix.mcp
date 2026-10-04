@@ -404,7 +404,7 @@ public class EvalModeCompositionTests : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(_parentDir, recursive: true); } catch { }
+        CacheTestCleanup.DeleteRoot(_parentDir);
     }
 
     private (SqliteCacheStore store, CachingAzdoApiClient client) BuildEvalComposition()
@@ -530,7 +530,7 @@ public class SnapshotCiEvidenceScenarioTests : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(_parentDir, recursive: true); } catch { }
+        CacheTestCleanup.DeleteRoot(_parentDir);
     }
 
     [Fact]
@@ -667,7 +667,7 @@ public class EvalModeAzdoAuthTests : IDisposable
         Environment.SetEnvironmentVariable("AZDO_TOKEN", _originalToken);
         Environment.SetEnvironmentVariable("AZDO_TOKEN_TYPE", _originalTokenType);
         Environment.SetEnvironmentVariable(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable, _originalPartition);
-        try { Directory.Delete(_parentDir, recursive: true); } catch { }
+        CacheTestCleanup.DeleteRoot(_parentDir);
     }
 
     [Fact]
@@ -747,7 +747,7 @@ public class EvalModeSnapshotImmutabilityTests : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(_parentDir, recursive: true); } catch { }
+        CacheTestCleanup.DeleteRoot(_parentDir);
     }
 
     /// <summary>
@@ -999,7 +999,7 @@ public class EvalModePrimaryEvidenceTests : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(_parentDir, recursive: true); } catch { }
+        CacheTestCleanup.DeleteRoot(_parentDir);
     }
 
     /// <summary>
@@ -1150,7 +1150,7 @@ public class EvalModeClearRejectionTests : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(_parentDir, recursive: true); } catch { }
+        CacheTestCleanup.DeleteRoot(_parentDir);
     }
 
     /// <summary>
@@ -1216,7 +1216,7 @@ public class EvalModeHelixServiceCompositionTests : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(_parentDir, recursive: true); } catch { /* best-effort */ }
+        CacheTestCleanup.DeleteRoot(_parentDir);
     }
 
     // ── Entry-point A: CLI + embedded MCP (singleton lifetime) ──────────────────
