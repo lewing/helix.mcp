@@ -21,7 +21,7 @@ public sealed class TimelineFourthReviewRegressionTests
         await fixture.SeedAsync(TimelineViewFixture.FullIssueLookup());
         var result = await fixture.RunCliAsync("azdo", "timeline", "1621192", "--record-id", TimelineViewFixture.SyntheticId(5),
             "--projection", "full", "--expand", "none", "--issue-limit", issueLimit.ToString(), "--delivery", delivery, "--json");
-        using var contents = await ReadVerifiedBackingAsync(result.Stdout);
+        using var contents = await ReadVerifiedBackingAsync(result);
         var data = contents.RootElement;
         Assert.True(data.GetProperty("complete").GetBoolean());
         Assert.False(data.GetProperty("truncated").GetBoolean());
@@ -44,7 +44,7 @@ public sealed class TimelineFourthReviewRegressionTests
         // Omit --expand deliberately: an exact seed is not the complete expanded selection.
         var result = await fixture.RunCliAsync("azdo", "timeline", "1621192", "--record-id", TimelineViewFixture.SyntheticId(5),
             "--projection", "full", "--limit", "1", "--delivery", delivery, "--json");
-        using var contents = await ReadVerifiedBackingAsync(result.Stdout);
+        using var contents = await ReadVerifiedBackingAsync(result);
         var data = contents.RootElement;
         Assert.Equal(2, data.GetProperty("selectedTotal").GetInt32());
         Assert.Equal(1, data.GetProperty("returned").GetInt32());
@@ -76,7 +76,7 @@ public sealed class TimelineFourthReviewRegressionTests
         var result = await fixture.RunCliAsync("azdo", "timeline", "1621192", "--record-id", TimelineViewFixture.SyntheticId(5),
             "--projection", "full", "--expand", "ancestors", "--issue-limit", issueComplete ? "5" : "1",
             "--limit", "2000", "--delivery", delivery, "--json");
-        using var contents = await ReadVerifiedBackingAsync(result.Stdout);
+        using var contents = await ReadVerifiedBackingAsync(result);
         var data = contents.RootElement;
         var expectedComplete = graphComplete && issueComplete;
         Assert.Equal(issueComplete, data.GetProperty("issueComplete").GetBoolean());
@@ -89,9 +89,11 @@ public sealed class TimelineFourthReviewRegressionTests
         Assert.Equal(expectedComplete ? 0 : 2, result.ExitCode);
     }
 
-    private static async Task<JsonDocument> ReadVerifiedBackingAsync(string stdout)
+    private static async Task<JsonDocument> ReadVerifiedBackingAsync((string Stdout, string Stderr, int ExitCode) result)
     {
-        using var receipt = JsonDocument.Parse(stdout);
+        Assert.False(string.IsNullOrWhiteSpace(result.Stdout),
+            $"CLI returned no JSON. Exit={result.ExitCode}; stderr={result.Stderr}");
+        using var receipt = JsonDocument.Parse(result.Stdout);
         var descriptor = receipt.RootElement.GetProperty("delivery");
         Assert.True(descriptor.GetProperty("complete").GetBoolean());
         var bytes = await File.ReadAllBytesAsync(descriptor.GetProperty("localPath").GetString()!);

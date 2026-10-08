@@ -6,8 +6,9 @@ namespace HelixTool.Core.Delivery;
 
 /// <summary>
 /// Windows-only directory ACL helpers used by <see cref="FileEvidenceDeliveryStore"/> to create
-/// its private delivery directories with a DACL granting only the current user, and to verify the
-/// owner SID on reuse of a pre-existing directory. All members are guarded by
+/// its private delivery directories with a DACL granting only the current user, and to verify both
+/// the owner SID and the full effective DACL (explicit and inherited Allow ACEs) on reuse of a
+/// pre-existing directory. All members are guarded by
 /// <see cref="OperatingSystem.IsWindows"/> at the call site; calling into
 /// <see cref="System.Security.AccessControl"/> APIs on a non-Windows OS throws
 /// <see cref="PlatformNotSupportedException"/>, so this type must never be touched off-Windows —
@@ -47,7 +48,9 @@ internal static class WindowsDirectorySecurity
     /// <summary>
     /// True when the owner SID of the existing directory at <paramref name="path"/> matches the
     /// current user — a pre-existing directory created by a different principal is not trustworthy
-    /// as a private delivery root even if its DACL happens to look restrictive.
+    /// as a private delivery root even if its DACL happens to look restrictive. Callers should also
+    /// call <see cref="VerifyDacl"/>: owner match alone does not prove no one else has access (the
+    /// owner can still grant broad ACEs, and inherited ACEs apply regardless of owner).
     /// </summary>
     public static bool VerifyOwner(string path)
     {
@@ -59,5 +62,55 @@ internal static class WindowsDirectorySecurity
         var security = new DirectoryInfo(path).GetAccessControl(AccessControlSections.Owner);
         var owner = security.GetOwner(typeof(SecurityIdentifier));
         return owner is not null && owner.Equals(currentUser);
+    }
+
+    /// <summary>
+    /// Well-known SIDs allowed to hold an Allow ACE on a private delivery directory: the current
+    /// user, <c>NT AUTHORITY\SYSTEM</c>, and <c>BUILTIN\Administrators</c>. Any other principal
+    /// (notably <c>Everyone</c>, <c>Authenticated Users</c>, or a plain <c>Users</c> group) with any
+    /// Allow access — explicit or inherited — makes the directory untrustworthy as a private root,
+    /// regardless of who owns it.
+    /// </summary>
+    private static bool IsAllowedPrincipal(SecurityIdentifier sid, SecurityIdentifier currentUser) =>
+        sid.Equals(currentUser) ||
+        sid.IsWellKnown(WellKnownSidType.LocalSystemSid) ||
+        sid.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid);
+
+    /// <summary>
+    /// Validates the *effective* DACL of an existing directory, not just its owner: every Allow ACE
+    /// — explicit or inherited — must name only the current user, SYSTEM, or Administrators (see
+    /// <see cref="IsAllowedPrincipal"/>). A newly-created-by-us directory always passes (it was
+    /// created with exactly one such rule and inheritance disabled), but a *reused* pre-existing
+    /// directory could have been created with a broader DACL (e.g. an inherited Everyone-read ACE
+    /// from its parent) that <see cref="VerifyOwner"/> alone would not catch. Deny ACEs are ignored
+    /// (they only narrow access, never widen it). Fails closed (returns false) if the DACL cannot
+    /// be read or translated.
+    /// </summary>
+    public static bool VerifyDacl(string path)
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        var currentUser = identity.User;
+        if (currentUser is null)
+            return false;
+
+        try
+        {
+            var security = new DirectoryInfo(path).GetAccessControl(AccessControlSections.Access);
+            var rules = security.GetAccessRules(includeExplicit: true, includeInherited: true, typeof(SecurityIdentifier));
+            foreach (FileSystemAccessRule rule in rules)
+            {
+                if (rule.AccessControlType != AccessControlType.Allow)
+                    continue; // Deny rules only narrow access; irrelevant to this check.
+                if (rule.IdentityReference is not SecurityIdentifier sid)
+                    return false; // Unresolvable principal — fail closed rather than guess.
+                if (!IsAllowedPrincipal(sid, currentUser))
+                    return false;
+            }
+            return true;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or InvalidOperationException or IOException)
+        {
+            return false;
+        }
     }
 }

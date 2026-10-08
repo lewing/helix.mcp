@@ -31,7 +31,7 @@ public sealed class DeliveryPrivateDirectoryRegressionTests : IDisposable
         File.SetUnixFileMode(path, OwnerDirectory | grant);
         var error = Assert.Throws<InvalidOperationException>(() => EnsurePrivate(path));
         Assert.Contains(path, error.Message);
-        Assert.Contains("0700", error.Message);
+        Assert.Contains("700", error.Message);
         Assert.Contains("retry", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(OwnerDirectory | grant, File.GetUnixFileMode(path));
     }
@@ -73,6 +73,8 @@ public sealed class DeliveryPrivateDirectoryRegressionTests : IDisposable
         Assert.Equal(OwnerFile, File.GetUnixFileMode(receipt.LocalPath));
         Assert.Equal(OwnerFile, File.GetUnixFileMode(Path.ChangeExtension(receipt.LocalPath, ".meta.json")));
         Assert.Equal(OwnerFile, File.GetUnixFileMode(Path.Combine(Path.GetDirectoryName(receipt.LocalPath)!, ".retention-status.json")));
+        foreach (var path in Directory.EnumerateFiles(Path.GetDirectoryName(receipt.LocalPath)!))
+            Assert.Equal(OwnerFile, File.GetUnixFileMode(path));
     }
 
     [Fact]
@@ -118,7 +120,7 @@ public sealed class DeliveryPrivateDirectoryRegressionTests : IDisposable
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void TrustedSystemBaseAlias_IsAllowedButSymlinkedPrivateChildIsRejected(bool childIsLink)
+    public void EnvironmentSelectedBase_RejectsArbitraryAliasAndLinkedPrivateChild(bool childIsLink)
     {
         if (OperatingSystem.IsWindows())
             return;
@@ -137,9 +139,8 @@ public sealed class DeliveryPrivateDirectoryRegressionTests : IDisposable
         }
         else
         {
-            EnsurePrivate(alias, "private");
-            Assert.Equal(OwnerDirectory, File.GetUnixFileMode(Path.Combine(target, "private")));
-            Assert.Throws<InvalidOperationException>(() => EnsurePrivate(Path.Combine(alias, "private")));
+            Assert.Throws<InvalidOperationException>(() => EnsurePrivate(alias, "private"));
+            Assert.Empty(Directory.EnumerateFileSystemEntries(target));
         }
     }
 
@@ -203,6 +204,49 @@ public sealed class DeliveryPrivateDirectoryRegressionTests : IDisposable
         Assert.All(rules, rule => Assert.Equal(identity.User, rule.IdentityReference));
     }
 
+    [WindowsAclTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    public void ReusedWindowsDirectory_RejectsBroadExplicitAndInheritedAccess(bool inherited)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var parent = Path.Combine(_root, "windows-parent");
+        var leaf = Path.Combine(parent, "private");
+        EnsurePrivate(parent);
+        if (inherited)
+        {
+            AddEveryoneReadGrant(parent);
+            Directory.CreateDirectory(leaf);
+        }
+        else
+        {
+            EnsurePrivate(leaf);
+            AddEveryoneReadGrant(leaf);
+        }
+        var security = new DirectoryInfo(leaf).GetAccessControl();
+        using var identity = WindowsIdentity.GetCurrent();
+        Assert.Equal(identity.User, security.GetOwner(typeof(SecurityIdentifier)));
+        var everyone = new SecurityIdentifier(WellKnownSidType.WorldSid, null);
+        Assert.Contains(security.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>(),
+            rule => rule.IdentityReference.Equals(everyone) && rule.IsInherited == inherited);
+        var error = Assert.Throws<InvalidOperationException>(() => EnsurePrivate(leaf));
+        Assert.Contains("ACL", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(leaf, error.Message);
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static void AddEveryoneReadGrant(string path)
+    {
+        var directory = new DirectoryInfo(path);
+        var security = directory.GetAccessControl();
+        security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+            FileSystemRights.ReadAndExecute, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            PropagationFlags.None, AccessControlType.Allow));
+        directory.SetAccessControl(security);
+    }
+
     private static void EnsurePrivate(params string[] pathArguments)
     {
         var method = typeof(FileEvidenceDeliveryStore).GetMethod("EnsureSecurePrivateDir",
@@ -261,6 +305,15 @@ public sealed class DeliveryPrivateDirectoryRegressionTests : IDisposable
         {
             if (!OperatingSystem.IsWindows())
                 Skip = "Requires Windows owner SID and DACL APIs.";
+        }
+    }
+
+    private sealed class WindowsAclTheoryAttribute : TheoryAttribute
+    {
+        public WindowsAclTheoryAttribute()
+        {
+            if (!OperatingSystem.IsWindows())
+                Skip = "Requires Windows owner SID and inherited/explicit DACL APIs.";
         }
     }
 
