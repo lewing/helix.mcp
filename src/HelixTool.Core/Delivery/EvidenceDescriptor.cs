@@ -46,6 +46,19 @@ public sealed record EvidenceDescriptor
     [JsonPropertyName("capturedAt")]
     public required DateTimeOffset CapturedAt { get; init; }
 
+    /// <summary>
+    /// UTC instant until which this entry is pinned against retention eviction (see
+    /// <see cref="FileEvidenceDeliveryStore"/> remarks): refreshed to
+    /// <c>UtcNow + FileEvidenceDeliveryStore.MinRetentionWindow</c> every time a descriptor for
+    /// this entry is handed out (put, dedupe refresh, read, or lookup). Deliberately not a
+    /// <c>required</c> member: it is persisted in the on-disk <c>.meta.json</c> sidecar, and a
+    /// sidecar written before this field existed must still deserialize — it is simply treated as
+    /// already-expired/unpinned (the default <c>DateTimeOffset</c>) until next handed out, which
+    /// only narrows its protection window rather than breaking deserialization outright.
+    /// </summary>
+    [JsonPropertyName("pinnedUntil")]
+    public DateTimeOffset PinnedUntilUtc { get; init; }
+
     [JsonPropertyName("freshness")]
     public string Freshness { get; init; } = "snapshot";
 
@@ -115,4 +128,39 @@ public sealed record EvidenceContinuation
 
     [JsonPropertyName("arguments")]
     public required IReadOnlyDictionary<string, object?> Arguments { get; init; }
+}
+
+/// <summary>
+/// Outcome of the most recent <see cref="FileEvidenceDeliveryStore"/> retention sweep for one
+/// cache partition, persisted so a caller/operator can see when pinned (leased) evidence pushed
+/// the partition over its soft cap rather than retention silently deleting a live pin. See
+/// <see cref="FileEvidenceDeliveryStore.TryGetRetentionStatus"/>.
+/// </summary>
+public sealed record RetentionStatus
+{
+    [JsonPropertyName("lastSweepUtc")]
+    public required DateTimeOffset LastSweepUtc { get; init; }
+
+    /// <summary>Total bytes across all surviving entries (pinned and unpinned) after the sweep.</summary>
+    [JsonPropertyName("totalBytes")]
+    public required long TotalBytes { get; init; }
+
+    /// <summary>The configured soft cap (<see cref="HelixTool.Core.Cache.CacheOptions.MaxSizeBytes"/>) this partition is measured against.</summary>
+    [JsonPropertyName("capBytes")]
+    public required long CapBytes { get; init; }
+
+    /// <summary><c>true</c> when <see cref="TotalBytes"/> exceeds <see cref="CapBytes"/> after the sweep — only possible when pinned entries alone account for the overage, since all eligible unpinned entries are evicted first.</summary>
+    [JsonPropertyName("capExceeded")]
+    public required bool CapExceeded { get; init; }
+
+    /// <summary>Total bytes held by entries still within their <see cref="EvidenceDescriptor.PinnedUntilUtc"/> protection window, and therefore not eviction candidates this sweep.</summary>
+    [JsonPropertyName("pinnedBytes")]
+    public required long PinnedBytes { get; init; }
+
+    /// <summary>Count of entries contributing to <see cref="PinnedBytes"/>.</summary>
+    [JsonPropertyName("pinnedEntryCount")]
+    public required int PinnedEntryCount { get; init; }
+
+    [JsonPropertyName("message")]
+    public string? Message { get; init; }
 }

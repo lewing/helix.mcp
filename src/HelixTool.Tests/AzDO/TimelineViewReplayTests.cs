@@ -54,6 +54,9 @@ public sealed class TimelineViewReplayTests : IDisposable
         var message = string.Concat(Enumerable.Repeat("immutable full issue \U0001f680 \"\\\"\n", 40000));
         var source = TimelineViewFixture.WithIssues(TimelineViewFixture.Real(1621192), TimelineViewFixture.MonitorTask,
             new AzdoIssue { Type = "warning", Message = message });
+        // Eval hosts share the runtime delivery store. Give this test its own content-addressed
+        // receipt so another test process cannot delete it during our chunked read on cleanup.
+        source = source with { Id = Guid.NewGuid().ToString() };
         await SeedAsync(source);
         var dbPath = Path.Combine(Snapshot, "cache.db");
         var before = await SnapshotEvalTestHarness.HashSharedAsync(dbPath);

@@ -477,13 +477,16 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         });
 
         Assert.Null(result.Thrown);
-        Assert.Equal(0, result.ExitCode);
+        if (result.ExitCode != 0)
+            Assert.Fail($"Concurrent collection exited {result.ExitCode}.\nstdout: {result.Stdout}\nstderr: {result.Stderr}\nmanifest: {File.ReadAllText(harness.ManifestPath)}");
         using var manifestDocument = JsonDocument.Parse(File.ReadAllText(harness.ManifestPath));
         var attempts = Attempts(manifestDocument.RootElement).ToList();
         Assert.Equal(failureCount, attempts.Count(a => Operation(a) == "get_helix_work_item"));
         Assert.Equal(failureCount, attempts.Count(a => Operation(a) == "get_helix_console_log"));
         Assert.Equal(failureCount, attempts.Count(a => Operation(a) == "list_helix_work_item_files"));
         Assert.Equal(failureCount * 3, attempts.Count(a => a.GetProperty("phase").GetString() == "helix.suggested"));
+        Assert.Equal(failureCount, scenario.Helix.ConsoleCalls);
+        Assert.InRange(scenario.Helix.MaxObservedConsoleConcurrency, 1, 64);
     }
 
     [Fact]
@@ -1945,8 +1948,10 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
     private sealed class RecordingHelixApiClient : IHelixApiClient
     {
         private int _currentConsoleConcurrency;
-        public int MaxObservedConsoleConcurrency { get; private set; }
-        public int ConsoleCalls { get; private set; }
+        private int _maxObservedConsoleConcurrency;
+        private int _consoleCalls;
+        public int MaxObservedConsoleConcurrency => Volatile.Read(ref _maxObservedConsoleConcurrency);
+        public int ConsoleCalls => Volatile.Read(ref _consoleCalls);
         public TimeSpan ConsoleDelay { get; set; }
         public ConcurrentDictionary<string, Queue<HlxAcquisitionException>> FailConsoleForWorkItems { get; } = new();
         public ConcurrentDictionary<string, Queue<HlxAcquisitionException>> FailFileForNames { get; } = new();
@@ -1994,9 +1999,16 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
 
         public async Task<Stream> GetConsoleLogAsync(string workItemName, string jobId, CancellationToken ct = default)
         {
-            ConsoleCalls++;
+            Interlocked.Increment(ref _consoleCalls);
             var current = Interlocked.Increment(ref _currentConsoleConcurrency);
-            MaxObservedConsoleConcurrency = Math.Max(MaxObservedConsoleConcurrency, current);
+            int observed;
+            do
+            {
+                observed = Volatile.Read(ref _maxObservedConsoleConcurrency);
+                if (current <= observed)
+                    break;
+            }
+            while (Interlocked.CompareExchange(ref _maxObservedConsoleConcurrency, current, observed) != observed);
             try
             {
                 if (ConsoleDelay > TimeSpan.Zero)
