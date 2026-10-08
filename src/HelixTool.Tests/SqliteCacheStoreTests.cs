@@ -548,7 +548,7 @@ public class SqliteCacheStoreTests : IDisposable
 
     private static async Task InsertRawMetadataAsync(CacheOptions opts, string cacheKey, string value)
     {
-        await using var conn = new SqliteConnection($"Data Source={MetadataDbPath(opts)}");
+        await using var conn = new SqliteConnection($"Data Source={MetadataDbPath(opts)};Pooling=False");
         await conn.OpenAsync();
         using var cmd = conn.CreateCommand();
         var now = DateTimeOffset.UtcNow;
@@ -583,7 +583,7 @@ public class SqliteCacheStoreTests : IDisposable
 
     private static async Task<bool> MetadataRowExistsAsync(CacheOptions opts, string cacheKey)
     {
-        await using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={MetadataDbPath(opts)}");
+        await using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={MetadataDbPath(opts)};Pooling=False");
         await conn.OpenAsync();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT COUNT(*) FROM cache_metadata WHERE cache_key = @key;";
@@ -595,7 +595,7 @@ public class SqliteCacheStoreTests : IDisposable
     private static async Task BackdateMetadataExpiryAsync(CacheOptions opts, string cacheKey, TimeSpan expiredBy)
     {
         var expiredAt = (DateTimeOffset.UtcNow - expiredBy).ToString("O", System.Globalization.CultureInfo.InvariantCulture);
-        await using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={MetadataDbPath(opts)}");
+        await using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={MetadataDbPath(opts)};Pooling=False");
         await conn.OpenAsync();
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "UPDATE cache_metadata SET expires_at = @expires WHERE cache_key = @key;";
@@ -793,12 +793,13 @@ public class SqliteCacheStoreEvalModeTests : IDisposable
         // Seed an artifact via writer.
         using var writer = CreateWriterStore();
         const string key = "job:abc123:wi:test-wi:console";
-        await writer.SetArtifactAsync(key, new MemoryStream(System.Text.Encoding.UTF8.GetBytes("log")));
+        using var content = new MemoryStream(System.Text.Encoding.UTF8.GetBytes("log"));
+        await writer.SetArtifactAsync(key, content);
         writer.Dispose();
 
         // Force a known old timestamp directly in the DB.
         const string oldTimestamp = "2020-01-01T00:00:00.0000000+00:00";
-        await using (var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={DbPath}"))
+        await using (var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={DbPath};Pooling=False"))
         {
             conn.Open();
             using var cmd = conn.CreateCommand();
@@ -817,7 +818,7 @@ public class SqliteCacheStoreEvalModeTests : IDisposable
 
         // Verify last_accessed was NOT updated.
         string? lastAccessed;
-        await using (var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={DbPath}"))
+        await using (var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={DbPath};Pooling=False"))
         {
             conn.Open();
             using var cmd = conn.CreateCommand();
@@ -837,7 +838,7 @@ public class SqliteCacheStoreEvalModeTests : IDisposable
     public void EvalMode_WrongSchemaVersion_ThrowsInvalidOperationException()
     {
         // Create a DB with wrong user_version=99.
-        using (var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={DbPath}"))
+        using (var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={DbPath};Pooling=False"))
         {
             conn.Open();
             using var cmd = conn.CreateCommand();
@@ -846,7 +847,10 @@ public class SqliteCacheStoreEvalModeTests : IDisposable
         }
 
         var opts = new CacheOptions { CacheRoot = _snapshotDir, EvalMode = true };
-        var ex = Assert.Throws<InvalidOperationException>(() => new SqliteCacheStore(opts));
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+        {
+            using var unexpectedStore = new SqliteCacheStore(opts);
+        });
         Assert.Contains("schema", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -854,7 +858,7 @@ public class SqliteCacheStoreEvalModeTests : IDisposable
     public async Task NormalMode_WrongSchemaVersion_MigratesDestructively_NoException()
     {
         // Normal mode drops and recreates — must not throw.
-        using (var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={DbPath}"))
+        using (var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={DbPath};Pooling=False"))
         {
             conn.Open();
             using var cmd = conn.CreateCommand();

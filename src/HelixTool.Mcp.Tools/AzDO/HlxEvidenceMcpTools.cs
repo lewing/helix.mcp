@@ -53,7 +53,18 @@ public sealed class HlxEvidenceMcpTools
 
         try
         {
-            var requested = originallyRequested;
+            // Bound the very first read candidate by the wire budget instead of starting from the
+            // caller's full requested range (the description explicitly invites "no policy maximum,
+            // larger explicit values remain valid" — callers may legitimately pass an enormous or
+            // even long.MaxValue lengthBytes meaning "everything"). Jumping straight to that full
+            // range would read/base64-encode potentially gigabytes of content on this first attempt
+            // purely to discover it is over budget and then halve it down. Seed conservatively
+            // (~0.7x the wire budget, since base64 inflates content ~4/3x and JSON text/escaping adds
+            // its own overhead) and let the existing halving loop still correct for any remaining
+            // overshoot; Finalize still measures completeness against the caller's true
+            // originallyRequested length, so this seeding never changes completeness semantics.
+            var budgetSeedBytes = Math.Max(1, (long)(budget * 0.7));
+            var requested = Math.Min(originallyRequested, budgetSeedBytes);
             EvidenceReadResult? last = null;
             while (requested >= 1)
             {

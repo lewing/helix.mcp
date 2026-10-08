@@ -245,7 +245,14 @@ public static class AzdoTimelineProjector
         if (request.ViewId is not null && !string.Equals(request.ViewId, viewId, StringComparison.Ordinal))
             throw new ArgumentException($"Stale viewId '{request.ViewId}'. The source/view has changed; restart at offset 0 with the new viewId '{viewId}'.");
 
-        var offset = Math.Max(0, request.Offset);
+        var requestedOffset = Math.Max(0, request.Offset);
+        // All (explicit all=true, or delivery=file/chunked which implies All — see AzdoMcpTools)
+        // means "the complete selection", which must start at offset 0: honoring a caller-supplied
+        // nonzero offset here would materialize only the tail of the selection as if it were the
+        // whole thing, silently dropping the earlier rows from a "complete" delivery. Normalize to
+        // 0 (never reject — access-first) and report the ignored value via RequestedOffset so the
+        // caller can see their offset was not applied.
+        var offset = request.All ? 0 : requestedOffset;
         // All retrieves the complete selection regardless of the caller's (possibly small-default)
         // limit — Project() is the single place that decides row counts, so MCP/CLI only need to set
         // this flag rather than separately recomputing "how many rows is everything."
@@ -271,6 +278,7 @@ public static class AzdoTimelineProjector
             Counts = counts,
             IncompleteDetails = incompleteDetails,
             Offset = offset,
+            RequestedOffset = request.All && requestedOffset != 0 ? requestedOffset : null,
             Limit = limit,
             Returned = 0,
             Complete = true,
@@ -428,8 +436,13 @@ public static class AzdoTimelineProjector
                     return;
                 foreach (var child in children)
                 {
-                    if (child.Id is null || !cycleGuard.Add(child.Id))
+                    if (child.Id is null)
                         continue;
+                    if (!cycleGuard.Add(child.Id))
+                    {
+                        graphIssues.CycleDetected = true;
+                        continue;
+                    }
                     if (!matchKindById.ContainsKey(child.Id))
                         matchKindById[child.Id] = recurse ? "descendant" : "child";
                     if (recurse)
@@ -616,80 +629,108 @@ public static class AzdoTimelineProjector
         TimelineProjectionRequest request,
         string viewId)
     {
-        // Single-record explicit issue window.
-        if (request.RecordId is not null && ordered.Count == 1)
+        // Explicit single-record issue window: windows just the exact recordId target's issues,
+        // while any other rows in the page (ancestor/context rows from the default expand=ancestors,
+        // or an explicit children/descendants expansion) pass through unwindowed. ValidateRequest
+        // only requires an exact recordId + projection='full' for a nonzero issueOffset/issueLimit —
+        // it does not require the target to be the *only* selected row — so this must not be gated
+        // on ordered.Count == 1 or a caller's issue window silently does nothing whenever context
+        // rows are present (the common case under the default expand).
+        if (request.RecordId is not null)
         {
-            var rec = ordered[0];
-            var allIssues = rec.Issues ?? [];
-            var issueOffset = Math.Max(0, request.IssueOffset);
-
-            if (request.IssueLimit is null)
+            var targetIndex = ordered.ToList().FindIndex(r => string.Equals(r.Id, request.RecordId, StringComparison.OrdinalIgnoreCase));
+            if (targetIndex >= 0)
             {
-                var windowed = issueOffset >= allIssues.Count ? [] : allIssues.Skip(issueOffset).ToList();
-                // Even with no issueLimit (i.e. "take everything from issueOffset"), a nonzero
-                // issueOffset means the caller has not seen issues [0, issueOffset) — that is not a
-                // complete view of the record's issues, matching the same offset==0-only rule used
-                // for the limited-window branch below and for row pagination.
-                var windowComplete = issueOffset == 0;
+                var targetPage = ordered.Skip(offset).Take(limit).ToList();
+                var pageTargetPos = targetPage.FindIndex(r => string.Equals(r.Id, request.RecordId, StringComparison.OrdinalIgnoreCase));
+                var rowsHasMore = offset + targetPage.Count < selectedTotal;
+                var rowsComplete = offset == 0 && !rowsHasMore;
+                var rowsNext = rowsHasMore ? new TimelineNextPage { Offset = offset + targetPage.Count, Limit = limit, ViewId = viewId } : null;
+
+                // The target itself paged off this row window (e.g. a caller paging through many
+                // context rows) — nothing to window on this page; plain row paging applies.
+                if (pageTargetPos < 0)
+                {
+                    return baseResult with
+                    {
+                        FullRecords = targetPage,
+                        Returned = targetPage.Count,
+                        Total = selectedTotal,
+                        TotalRecords = selectedTotal,
+                        Complete = rowsComplete,
+                        Truncated = !rowsComplete,
+                        Next = rowsNext,
+                        Continuation = rowsComplete ? null : (rowsNext is not null
+                            ? BuildNextPageContinuation(request, rowsNext, viewId)
+                            : BuildWholeSelectionContinuation(request, selectedTotal, viewId))
+                    };
+                }
+
+                var rec = targetPage[pageTargetPos];
+                var allIssues = rec.Issues ?? [];
+                var issueOffset = Math.Max(0, request.IssueOffset);
+
+                List<AzdoIssue> windowedIssues;
+                bool issueComplete;
+                TimelineNextPage? issueNext;
+                if (request.IssueLimit is null)
+                {
+                    windowedIssues = issueOffset >= allIssues.Count ? [] : allIssues.Skip(issueOffset).ToList();
+                    // Even with no issueLimit (i.e. "take everything from issueOffset"), a nonzero
+                    // issueOffset means the caller has not seen issues [0, issueOffset) — that is not a
+                    // complete view of the record's issues, matching the same offset==0-only rule used
+                    // for the limited-window branch below and for row pagination.
+                    issueComplete = issueOffset == 0;
+                    issueNext = null;
+                }
+                else
+                {
+                    windowedIssues = allIssues.Skip(issueOffset).Take(request.IssueLimit.Value).ToList();
+                    var issueHasMore = issueOffset + windowedIssues.Count < allIssues.Count;
+                    // A nonzero final page is not complete, matching list-pagination semantics
+                    // (§2.2): only an offset-0 single-shot response that returns everything is
+                    // "complete".
+                    issueComplete = issueOffset == 0 && !issueHasMore;
+                    issueNext = issueHasMore ? new TimelineNextPage { Offset = issueOffset + windowedIssues.Count, Limit = request.IssueLimit.Value, ViewId = viewId } : null;
+                }
+
+                var windowedPage = targetPage.Select((r, i) => i == pageTargetPos ? r with { Issues = windowedIssues } : r).ToList();
+                var overallComplete = rowsComplete && issueComplete;
+                TimelineAction? continuation = overallComplete ? null
+                    : !issueComplete
+                        ? new TimelineAction
+                        {
+                            Tool = "azdo_timeline",
+                            Arguments = ExtendWithIssueWindow(
+                                BaseArguments(request, offset: offset, limit: limit, viewId: viewId, delivery: null),
+                                issueNext ?? new TimelineNextPage { Offset = 0, Limit = allIssues.Count, ViewId = viewId })
+                        }
+                        : (rowsNext is not null
+                            ? BuildNextPageContinuation(request, rowsNext, viewId)
+                            : BuildWholeSelectionContinuation(request, selectedTotal, viewId));
+
                 return baseResult with
                 {
-                    FullRecords = [rec with { Issues = windowed }],
-                    Returned = 1,
-                    Total = 1,
-                    TotalRecords = 1,
-                    Complete = windowComplete,
-                    Truncated = !windowComplete,
+                    FullRecords = windowedPage,
+                    Returned = windowedPage.Count,
+                    Total = selectedTotal,
+                    TotalRecords = selectedTotal,
+                    Complete = overallComplete,
+                    Truncated = !overallComplete,
+                    Next = rowsNext,
                     IssueWindow = new TimelineIssueWindow
                     {
                         IssueTotal = allIssues.Count,
-                        IssueReturned = windowed.Count,
+                        IssueReturned = windowedIssues.Count,
                         IssueOffset = issueOffset,
-                        IssueLimit = null,
-                        IssueComplete = windowComplete,
-                        IssueTruncated = !windowComplete
+                        IssueLimit = request.IssueLimit,
+                        IssueComplete = issueComplete,
+                        IssueTruncated = !issueComplete,
+                        IssueNext = issueNext
                     },
-                    Continuation = windowComplete ? null : new TimelineAction
-                    {
-                        Tool = "azdo_timeline",
-                        Arguments = ExtendWithIssueWindow(
-                            BaseArguments(request, offset: 0, limit: 1, viewId: viewId, delivery: null),
-                            new TimelineNextPage { Offset = 0, Limit = allIssues.Count, ViewId = viewId })
-                    }
+                    Continuation = continuation
                 };
             }
-
-            var issuePage = allIssues.Skip(issueOffset).Take(request.IssueLimit.Value).ToList();
-            var issueHasMore = issueOffset + issuePage.Count < allIssues.Count;
-            // A nonzero final page is not complete, matching list-pagination semantics (§2.2): only an
-            // offset-0 single-shot response that returns everything is "complete".
-            var issueComplete = issueOffset == 0 && !issueHasMore;
-            var issueNext = issueHasMore ? new TimelineNextPage { Offset = issueOffset + issuePage.Count, Limit = request.IssueLimit.Value, ViewId = viewId } : null;
-            return baseResult with
-            {
-                FullRecords = [rec with { Issues = issuePage }],
-                Returned = 1,
-                Total = 1,
-                TotalRecords = 1,
-                Complete = issueComplete,
-                Truncated = !issueComplete,
-                IssueWindow = new TimelineIssueWindow
-                {
-                    IssueTotal = allIssues.Count,
-                    IssueReturned = issuePage.Count,
-                    IssueOffset = issueOffset,
-                    IssueLimit = request.IssueLimit,
-                    IssueComplete = issueComplete,
-                    IssueTruncated = !issueComplete,
-                    IssueNext = issueNext
-                },
-                Continuation = issueComplete ? null : new TimelineAction
-                {
-                    Tool = "azdo_timeline",
-                    Arguments = ExtendWithIssueWindow(
-                        BaseArguments(request, offset: 0, limit: 1, viewId: viewId, delivery: null),
-                        issueNext ?? new TimelineNextPage { Offset = 0, Limit = allIssues.Count, ViewId = viewId })
-                }
-            };
         }
 
         var page = ordered.Skip(offset).Take(limit).ToList();
@@ -958,6 +999,6 @@ public static class AzdoTimelineProjector
             sb.Append('\u0001');
         }
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString()));
-        return Convert.ToHexString(hash)[..16].ToLowerInvariant();
+        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 }

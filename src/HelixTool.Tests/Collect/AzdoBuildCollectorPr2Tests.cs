@@ -56,6 +56,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
     private readonly string? _originalPartition = Environment.GetEnvironmentVariable(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable);
     private readonly string? _originalToken = Environment.GetEnvironmentVariable("AZDO_TOKEN");
     private readonly string? _originalTokenType = Environment.GetEnvironmentVariable("AZDO_TOKEN_TYPE");
+    private readonly List<IDisposable> _evalResources = [];
 
     public AzdoBuildCollectorPr2Tests()
     {
@@ -66,6 +67,8 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
 
     public void Dispose()
     {
+        foreach (var resource in _evalResources.AsEnumerable().Reverse())
+            resource.Dispose();
         Environment.SetEnvironmentVariable(EvalSnapshotAzdoPartitionSelector.EnvironmentVariable, _originalPartition);
         Environment.SetEnvironmentVariable("AZDO_TOKEN", _originalToken);
         Environment.SetEnvironmentVariable("AZDO_TOKEN_TYPE", _originalTokenType);
@@ -1132,7 +1135,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
             Assert.Equal(JsonValueKind.Null, bytes.ValueKind);
     }
 
-    private static async Task AssertEvalSnapshotCanServeCollectedManifestItemsAsync(string snapshotPath)
+    private async Task AssertEvalSnapshotCanServeCollectedManifestItemsAsync(string snapshotPath)
     {
         var azdoTools = CreateEvalAzdoTools(snapshotPath);
         var helixTools = CreateEvalHelixTools(snapshotPath);
@@ -1159,23 +1162,27 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         Assert.NotEmpty(files.TestResults);
     }
 
-    private static AzdoMcpTools CreateEvalAzdoTools(string snapshotPath)
+    private AzdoMcpTools CreateEvalAzdoTools(string snapshotPath)
     {
         var partition = EvalSnapshotAzdoPartitionSelector.Select(snapshotPath);
         var options = new CacheOptions { CacheRoot = snapshotPath, EvalMode = true, AuthTokenHash = partition.AuthTokenHash };
         var store = new SqliteCacheStore(options);
+        _evalResources.Add(store);
         var client = new CachingAzdoApiClient(new OfflineAzdoApiClient(), store, options);
         var helix = new CachingHelixApiClient(new OfflineHelixApiClient(), store, options);
         return new AzdoMcpTools(new AzdoService(client, helix, new CachingAzdoAcquisitionFailureRecorder(store, options), options),
             Substitute.For<IAzdoTokenAccessor>(), Substitute.For<HelixTool.Core.Delivery.IEvidenceDeliveryStore>());
     }
 
-    private static HelixMcpTools CreateEvalHelixTools(string snapshotPath)
+    private HelixMcpTools CreateEvalHelixTools(string snapshotPath)
     {
         var options = new CacheOptions { CacheRoot = snapshotPath, EvalMode = true };
         var store = new SqliteCacheStore(options);
+        _evalResources.Add(store);
         var client = new CachingHelixApiClient(new OfflineHelixApiClient(), store, options);
-        return new HelixMcpTools(new HelixService(client, new HttpClient()), Substitute.For<IHelixTokenAccessor>());
+        var http = new HttpClient();
+        _evalResources.Add(http);
+        return new HelixMcpTools(new HelixService(client, http), Substitute.For<IHelixTokenAccessor>());
     }
 
     private static IEnumerable<JsonElement> Attempts(JsonElement manifest) =>
@@ -1266,6 +1273,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         private readonly CachingHelixApiClient _helixClient;
         private readonly AzdoService _azdoService;
         private readonly HelixService _helixService;
+        private readonly HttpClient _http = new();
         private readonly IAzdoTokenAccessor _azdoTokenAccessor = Substitute.For<IAzdoTokenAccessor>();
         private readonly IHelixTokenAccessor _helixTokenAccessor = Substitute.For<IHelixTokenAccessor>();
 
@@ -1290,7 +1298,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
             _azdoClient = new CachingAzdoApiClient(_azdo, _store, _cacheOptions, _azdoTokenAccessor);
             _helixClient = new CachingHelixApiClient(_helix, _store, _cacheOptions);
             _azdoService = new AzdoService(_azdoClient, _helixClient, new CachingAzdoAcquisitionFailureRecorder(_store, _cacheOptions), _cacheOptions);
-            _helixService = new HelixService(_helixClient, new HttpClient());
+            _helixService = new HelixService(_helixClient, _http);
         }
 
         public string CacheRoot { get; }
@@ -1391,6 +1399,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         public void Dispose()
         {
             _store.Dispose();
+            _http.Dispose();
         }
 
         private async Task<object?> InvokeCollectAsync(CollectInvocationOptions options, CancellationToken ct)

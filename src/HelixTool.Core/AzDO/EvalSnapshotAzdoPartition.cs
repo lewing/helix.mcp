@@ -87,8 +87,16 @@ public static class EvalSnapshotAzdoPartitionSelector
         // WAL entirely, silently hiding any partition whose only committed record lives there.
         // Plain Mode=ReadOnly still follows an existing WAL correctly (SQLite's normal read-only
         // WAL-reader protocol) without ever writing to the snapshot.
-        using var connection = new SqliteConnection(
-            $"Data Source={dbPath};Mode=ReadOnly;Pooling=False");
+        // Built via SqliteConnectionStringBuilder rather than string interpolation so a dbPath
+        // containing ';' (a valid path character on several filesystems) cannot inject/truncate
+        // connection-string keywords.
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = dbPath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false
+        }.ToString();
+        using var connection = new SqliteConnection(connectionString);
         connection.Open();
 
         ReadKeyPartitions(connection, "cache_metadata", partitions);

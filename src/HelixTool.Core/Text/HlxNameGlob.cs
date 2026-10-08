@@ -1,6 +1,3 @@
-using System.Text;
-using System.Text.RegularExpressions;
-
 namespace HelixTool.Core.Text;
 
 /// <summary>
@@ -10,6 +7,14 @@ namespace HelixTool.Core.Text;
 /// This is intentionally not a general regex engine: no character classes, anchors, or escapes
 /// beyond literal <c>*</c>/<c>?</c>, and traversal-sensitive callers (e.g. ZIP member selection)
 /// must apply their own path-safety checks on top of this match.
+/// <para>
+/// Wildcard matching uses the classic linear two-pointer algorithm (track the most recent '*' and
+/// the candidate position it last matched, backtrack only that one bookmark on a mismatch) rather
+/// than a backtracking regex. A regex built from an adjacent run of <c>*</c>s (e.g.
+/// <c>*a*a*a*a*b</c>) can force catastrophic exponential backtracking against a long non-matching
+/// candidate; this algorithm is bounded by O(candidate.Length * pattern.Length) with no recursion
+/// and no per-call compilation, so it is safe to call once per row across an entire selector scan.
+/// </para>
 /// </summary>
 public static class HlxNameGlob
 {
@@ -34,43 +39,63 @@ public static class HlxNameGlob
             return candidate.Contains(pattern, comparison);
         }
 
-        var regex = BuildRegex(pattern, caseSensitive);
-        return regex.IsMatch(candidate);
+        return MatchGlob(candidate, pattern, caseSensitive);
     }
 
     /// <summary>True when the pattern contains a <c>*</c> or <c>?</c> wildcard.</summary>
     public static bool HasWildcard(string pattern) => pattern.Contains('*') || pattern.Contains('?');
 
-    private static Regex BuildRegex(string pattern, bool caseSensitive)
+    /// <summary>
+    /// Linear-time (no recursion, no backtracking regex) full-string <c>*</c>/<c>?</c> glob match.
+    /// Classic two-pointer wildcard algorithm: on a mismatch, retry from just after the most
+    /// recently seen <c>*</c>, advancing the candidate position it anchors by one each retry —
+    /// each candidate character is revisited at most once per pending <c>*</c>, bounding total work
+    /// to O(candidate.Length * pattern.Length) with constant extra space.
+    /// </summary>
+    private static bool MatchGlob(string candidate, string pattern, bool caseSensitive)
     {
-        // Collapse redundant repeated '*' before translating, so '**' behaves like '*'.
-        var sb = new StringBuilder("^");
-        var prevStar = false;
-        foreach (var ch in pattern)
+        var cLen = candidate.Length;
+        var pLen = pattern.Length;
+        var ci = 0;
+        var pi = 0;
+        var starPi = -1;
+        var starCi = -1;
+
+        bool CharsEqual(char a, char b) =>
+            caseSensitive ? a == b : char.ToUpperInvariant(a) == char.ToUpperInvariant(b);
+
+        while (ci < cLen)
         {
-            if (ch == '*')
+            if (pi < pLen && (pattern[pi] == '?' || CharsEqual(pattern[pi], candidate[ci])))
             {
-                if (prevStar) continue;
-                sb.Append(".*");
-                prevStar = true;
+                ci++;
+                pi++;
             }
-            else if (ch == '?')
+            else if (pi < pLen && pattern[pi] == '*')
             {
-                sb.Append('.');
-                prevStar = false;
+                // Collapse adjacent '*'s: repeatedly recording the latest one is equivalent to a
+                // single '*' at that position, since a '*' can already match zero characters.
+                starPi = pi;
+                starCi = ci;
+                pi++;
+            }
+            else if (starPi >= 0)
+            {
+                // Mismatch with a pending '*': let it consume one more candidate character and
+                // retry the pattern from just after it.
+                pi = starPi + 1;
+                starCi++;
+                ci = starCi;
             }
             else
             {
-                sb.Append(Regex.Escape(ch.ToString()));
-                prevStar = false;
+                return false;
             }
         }
-        sb.Append('$');
 
-        var options = RegexOptions.CultureInvariant | RegexOptions.Compiled;
-        if (!caseSensitive)
-            options |= RegexOptions.IgnoreCase;
+        while (pi < pLen && pattern[pi] == '*')
+            pi++;
 
-        return new Regex(sb.ToString(), options);
+        return pi == pLen;
     }
 }

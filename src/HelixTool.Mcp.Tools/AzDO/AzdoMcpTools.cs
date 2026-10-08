@@ -170,11 +170,11 @@ public sealed class AzdoMcpTools
             "get build timeline",
             ex => GetAzdoNotFoundMessage(ex, buildIdOrUrl));
 
-        if (timeline is null || timeline.Records.Count == 0)
+        if (timeline is null)
         {
             return new TimelineProjectionResult
             {
-                Id = timeline?.Id,
+                Id = null,
                 Projection = projection.ToLowerInvariant(),
                 EffectiveFilter = filter ?? "failed",
                 ViewId = "",

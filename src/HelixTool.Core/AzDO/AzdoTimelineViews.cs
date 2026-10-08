@@ -334,6 +334,13 @@ public sealed record TimelineProjectionResult
     [JsonPropertyName("offset")]
     public required int Offset { get; init; }
 
+    /// <summary>The caller's original nonzero offset when <see cref="TimelineProjectionRequest.All"/>
+    /// forced <see cref="Offset"/> to 0 for a complete-selection delivery (a nonzero offset would
+    /// otherwise materialize only the tail of the selection). Omitted when no offset was ignored.</summary>
+    [JsonPropertyName("requestedOffset")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? RequestedOffset { get; init; }
+
     [JsonPropertyName("limit")]
     public required int Limit { get; init; }
 
