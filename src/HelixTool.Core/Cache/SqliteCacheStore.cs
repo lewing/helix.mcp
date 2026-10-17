@@ -424,12 +424,27 @@ public sealed class SqliteCacheStore : ICacheStore
         var fullPath = Path.Combine(_artifactsDir, relPath);
         CacheSecurity.ValidatePathWithinRoot(fullPath, _artifactsDir);
 
-        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+        var privateBytes = AzDO.AzdoByteDescriptorValidator.IsByteKey(cacheKey);
+        if (privateBytes && !OperatingSystem.IsWindows())
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        else
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
 
         // Write-then-rename pattern (unique temp name to avoid concurrent collisions)
         var tempPath = fullPath + $".tmp.{Guid.NewGuid():N}";
-        await using (var fs = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        try
+        {
+            var writeOptions = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
+            if (privateBytes && !OperatingSystem.IsWindows())
+                writeOptions.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            await using var fs = new FileStream(tempPath, writeOptions);
             await content.CopyToAsync(fs, ct);
+        }
+        catch
+        {
+            File.Delete(tempPath);
+            throw;
+        }
 
         // Choose the publication primitive up front from destination existence:
         //   - Absent: File.Move keeps the original atomic create/rename behavior.
@@ -499,6 +514,17 @@ public sealed class SqliteCacheStore : ICacheStore
 
         // Evict if over cap
         await EvictLruIfOverCapAsync(ct);
+    }
+
+    public Task RetainArtifactsAsync(TimeSpan duration, CancellationToken ct = default)
+        => SetMetadataAsync("hlx:artifact-retention-lease", "true", duration, ct);
+
+    private static bool HasArtifactRetentionLease(SqliteConnection connection)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM cache_metadata WHERE cache_key='hlx:artifact-retention-lease' AND expires_at > @now;";
+        AddTextParameter(cmd, "@now", DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture));
+        return Convert.ToInt64(cmd.ExecuteScalar(), CultureInfo.InvariantCulture) > 0;
     }
 
     public Task<AcquisitionError?> GetAcquisitionErrorAsync(string cacheKey, CancellationToken ct = default)
@@ -820,6 +846,7 @@ public sealed class SqliteCacheStore : ICacheStore
         var cutoff = (asOf - _options.ArtifactMaxAge).ToString(Iso8601Format, CultureInfo.InvariantCulture);
 
         using var conn = OpenConnection();
+        if (HasArtifactRetentionLease(conn)) return Task.CompletedTask;
 
         // Remove expired metadata
         ct.ThrowIfCancellationRequested();
@@ -872,6 +899,7 @@ public sealed class SqliteCacheStore : ICacheStore
         if (_options.MaxSizeBytes <= 0) return Task.CompletedTask;
 
         using var conn = OpenConnection();
+        if (HasArtifactRetentionLease(conn)) return Task.CompletedTask;
 
         // Get total artifact size
         long totalSize;

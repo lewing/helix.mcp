@@ -38,7 +38,7 @@ public sealed partial class IndependentReviewRegressionTests
         Assert.All(result.Manifest.Attempts.Where(a => a.Required), a => Assert.Equal("ok", a.Outcome));
         var optional = Assert.Single(result.Manifest.Attempts, a => a.Operation == "download_helix_file");
         Assert.Equal("skipped", optional.Outcome);
-        Assert.Equal("total_size_limit", optional.Skip?.Kind);
+        Assert.Equal("planning_deferred", optional.Skip?.Kind);
         Assert.DoesNotContain(result.Manifest.IncompleteDetails, d => d.Code == "artifact_missing");
         await using var console = await fixture.Store.GetArtifactAsync(ConsoleKey);
         Assert.NotNull(console);
@@ -90,7 +90,7 @@ public sealed partial class IndependentReviewRegressionTests
         var accepted = Assert.Single(downloads, a => a.Outcome == "ok");
         Assert.Equal(optionalBytes, accepted.Bytes);
         var skipped = Assert.Single(downloads, a => a.Outcome == "skipped");
-        Assert.Equal("total_size_limit", skipped.Skip?.Kind);
+        Assert.Equal("planning_deferred", skipped.Skip?.Kind);
         Assert.Equal(2 * consoleBytes + optionalBytes, (await fixture.Store.GetStatusAsync()).TotalSizeBytes);
         await AssertConsoleSnapshotAsync(fixture.SnapshotPath, [(WorkItem, consoleBytes), (secondWorkItem, consoleBytes)]);
         var options = new CacheOptions { CacheRoot = fixture.SnapshotPath, EvalMode = true };
@@ -187,7 +187,7 @@ public sealed partial class IndependentReviewRegressionTests
         Assert.Equal(0, result.Manifest.ExitCode);
         var optional = Assert.Single(result.Manifest.Attempts, a => a.Operation == "download_helix_file");
         Assert.Equal("skipped", optional.Outcome);
-        Assert.Equal("total_size_limit", optional.Skip?.Kind);
+        Assert.Equal("planning_deferred", optional.Skip?.Kind);
         Assert.Equal(consoleBytes + existingBytes, (await fixture.Store.GetStatusAsync()).TotalSizeBytes);
         await using var retained = await fixture.Store.GetArtifactAsync(existingKey);
         Assert.NotNull(retained);

@@ -101,6 +101,7 @@ public static class EvalSnapshotAzdoPartitionSelector
 
         ReadKeyPartitions(connection, "cache_metadata", partitions);
         ReadKeyPartitions(connection, "cache_acquisition_errors", partitions);
+        ReadKeyPartitions(connection, "cache_artifacts", partitions);
         return partitions;
     }
 

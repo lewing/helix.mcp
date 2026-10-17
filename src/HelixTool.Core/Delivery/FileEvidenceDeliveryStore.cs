@@ -27,6 +27,116 @@ public sealed class FileEvidenceDeliveryStore(CacheOptions cacheOptions) : IEvid
     /// <summary>Minimum protection after a put, dedupe hit, lookup or read.</summary>
     public static readonly TimeSpan MinRetentionWindow = TimeSpan.FromHours(24);
 
+    public FileStream CreateSpool(string cachePartition)
+    {
+        var root = RootFor(cachePartition);
+        CreateDirectory(root);
+        var options = new FileStreamOptions
+        {
+            Mode = FileMode.CreateNew, Access = FileAccess.ReadWrite, Share = FileShare.None,
+            BufferSize = 65536, Options = FileOptions.Asynchronous | FileOptions.DeleteOnClose
+        };
+        if (!OperatingSystem.IsWindows())
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        return new FileStream(Path.Combine(root, $"spool-{Guid.NewGuid():N}.partial"), options);
+    }
+
+    public FileStream CreateTransferSpool(string cachePartition, string transferId)
+    {
+        var root = RootFor(cachePartition);
+        CreateDirectory(root);
+        var path = Path.Combine(root, $"transfer-{SanitizeId(transferId)}.partial");
+        var options = new FileStreamOptions
+        {
+            Mode = FileMode.OpenOrCreate, Access = FileAccess.ReadWrite, Share = FileShare.Delete,
+            BufferSize = 65536, Options = FileOptions.Asynchronous
+        };
+        if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        return new FileStream(path, options);
+    }
+
+    public async Task<EvidenceDescriptor> PutStreamAsync(Stream content, string mediaType,
+        string? sourceFingerprint, string? backingCacheKey, string cachePartition, CancellationToken ct = default)
+    {
+        var root = RootFor(cachePartition);
+        await using var spool = CreateSpool(cachePartition);
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        using var identity = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[65536];
+        var disk = ResolveDrive(spool.Name);
+        long bytes = 0;
+        int read;
+        while ((read = await content.ReadAsync(buffer, ct)) != 0)
+        {
+            if (disk.AvailableFreeSpace < read + 1024L * 1024)
+                throw new IOException($"insufficient_disk_headroom: required={read + 1024L * 1024}, available={disk.AvailableFreeSpace}; select a cache directory on sufficient storage.");
+            await spool.WriteAsync(buffer.AsMemory(0, read), ct);
+            hash.AppendData(buffer.AsSpan(0, read));
+            identity.AppendData(buffer.AsSpan(0, read));
+            bytes += read;
+        }
+        await spool.FlushAsync(ct);
+        var sha = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+        // Include the media type in identity, as for PutBytes, without loading the payload.
+        identity.AppendData(Encoding.UTF8.GetBytes(mediaType));
+        var id = Convert.ToHexString(identity.GetHashAndReset()).ToLowerInvariant();
+        var path = Path.Combine(root, $"{id}.bin");
+        spool.Position = 0;
+        var staging = path + $".{Guid.NewGuid():N}.partial";
+        try
+        {
+            CheckHeadroom(staging, bytes);
+            await using (var output = OpenPrivateFile(staging, FileMode.CreateNew))
+                await spool.CopyToAsync(output, 65536, ct);
+            await using (var verify = File.OpenRead(staging))
+                if (!string.Equals(Convert.ToHexString(await SHA256.HashDataAsync(verify, ct)), sha, StringComparison.OrdinalIgnoreCase))
+                    throw new IOException("Evidence verification failed.");
+            using var connection = OpenDatabase(root);
+            using var transaction = connection.BeginTransaction(deferred: false);
+            var reusable = false;
+            if (File.Exists(path) && new FileInfo(path).Length == bytes)
+            {
+                await using var existing = File.OpenRead(path);
+                reusable = Convert.ToHexString(await SHA256.HashDataAsync(existing, ct)).Equals(sha, StringComparison.OrdinalIgnoreCase);
+            }
+            if (!reusable)
+            {
+                if (File.Exists(path)) File.Replace(staging, path, null);
+                else File.Move(staging, path);
+            }
+            var now = DateTimeOffset.UtcNow;
+            var descriptor = BuildDescriptor(id, cachePartition, path, mediaType, sha, bytes, true,
+                sourceFingerprint ?? sha, backingCacheKey, now) with { PinnedUntilUtc = now + MinRetentionWindow };
+            SaveDescriptor(connection, transaction, descriptor, now);
+            EnforceRetentionCore(root, connection, transaction);
+            transaction.Commit();
+            return descriptor;
+        }
+
+        finally { File.Delete(staging); }
+    }
+
+    public static void CheckHeadroom(string path, long additionalBytes)
+    {
+        var available = ResolveDrive(path).AvailableFreeSpace;
+        if (additionalBytes > available - 1024L * 1024)
+            throw new IOException($"insufficient_disk_headroom: required={additionalBytes + 1024L * 1024}, available={available}; use a cache/output directory on sufficient storage.");
+    }
+
+    public static DriveInfo ResolveDrive(string path)
+    {
+        var full = NormalizePath(path);
+        var comparison = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        // Unix Path.GetPathRoot is "/" even for another mounted output/cache volume.
+        return DriveInfo.GetDrives().OrderByDescending(d => d.Name.Length).FirstOrDefault(d =>
+        {
+            var root = Path.TrimEndingDirectorySeparator(d.Name);
+            return full.Equals(root, comparison) || full.StartsWith(
+                Path.EndsInDirectorySeparator(root) ? root : root + Path.DirectorySeparatorChar, comparison);
+        }) ?? new DriveInfo(Path.GetPathRoot(full)!);
+    }
+
     private readonly CacheOptions _cacheOptions = cacheOptions ?? throw new ArgumentNullException(nameof(cacheOptions));
     private static readonly JsonSerializerOptions DescriptorJsonOptions = new() { PropertyNameCaseInsensitive = true };
 

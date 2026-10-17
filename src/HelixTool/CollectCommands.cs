@@ -54,9 +54,18 @@ public sealed class CollectCommands
     /// <param name="testAttachmentScope">Attachment metadata selection, independent of test scope: diagnostic (default), all, or none. Diagnostic selects Failed, Error, Timeout, Aborted, Inconclusive, Blocked, and Warning. All requires an explicit --max-test-attachments.</param>
     /// <param name="maxTestAttachments">Build-wide attachment-list request cap. Default: 1000 for diagnostic scope. Scope all requires an explicit positive cap; over-cap coverage is manifested as incomplete.</param>
     /// <param name="helixScope">Helix scope: suggested or none. Default: suggested.</param>
-    /// <param name="downloadHelixFiles">Glob for Helix uploaded files to stream with byte caps; over-cap files are skipped (size_limit/total_size_limit), and in-cap files replay offline.</param>
-    /// <param name="maxFileBytes">Maximum bytes per downloaded file. Default: 52428800.</param>
-    /// <param name="maxTotalBytes">Maximum total optional Helix file bytes, including resumed files. Default: 2147483648. Required evidence is acquired and verified first; new downloads share the remaining cache capacity after all existing artifacts, so this run's optional writes cannot cause cache-cap eviction. The manifest records the requested limit, not cache-derived headroom.</param>
+    /// <param name="downloadHelixFiles">Opt-in Helix uploaded-file glob. Explicit files are not denied by the old 50 MiB default or ordinary cache target; deliberate planning thresholds return an exact --allow-large resume action.</param>
+    /// <param name="maxFileBytes">Deliberate Helix file planning threshold when explicitly supplied. The legacy 52428800 default is not an explicit-file access gate; AzDO bytes have no inferred per-object threshold.</param>
+    /// <param name="maxTotalBytes">Optional retained-byte planning target, including resumed files. Default: 2147483648; --allow-large waives the target. Required/active artifacts receive retention protection; physical storage is checked separately.</param>
+    /// <param name="downloadAzdoArtifacts">Explicit artifact-name glob for opt-in byte collection; never silently restricted to failed Logs.</param>
+    /// <param name="artifactByteScope">auto, failed-logs, selected. Auto uses selected for explicit artifact selectors; otherwise failed Logs triage.</param>
+    /// <param name="artifactByteMode">auto, members, archive. Explicit artifact selectors without members preserve whole archives.</param>
+    /// <param name="downloadArtifactMembers">Relative member glob; **/Build.binlog is only the automatic triage default.</param>
+    /// <param name="downloadTestAttachments">Opt-in attachment filename glob, including run-level attachments and explicit all-result coverage even with --test-scope none.</param>
+    /// <param name="downloadAttachmentMembers">Explicit ZIP member glob; no nested recursion.</param>
+    /// <param name="attachmentContentKind">Progress label only; never a size unlock.</param>
+    /// <param name="allowLarge">Waive optional byte planning thresholds; required evidence stays retained and actual storage checks remain.</param>
+    /// <param name="maxTotalStreamBytes">Optional AzDO byte transfer planning target across artifact and attachment families; discarded ZIP bytes count.</param>
     [Command("collect azdo-build")]
     public async Task AzdoBuild(
         [Argument] string buildId,
@@ -85,6 +94,15 @@ public sealed class CollectCommands
         string? downloadHelixFiles = null,
         long maxFileBytes = 50L * 1024 * 1024,
         long maxTotalBytes = 2L * 1024 * 1024 * 1024,
+        string? downloadAzdoArtifacts = null,
+        string artifactByteScope = "auto",
+        string artifactByteMode = "auto",
+        string? downloadArtifactMembers = null,
+        string? downloadTestAttachments = null,
+        string? downloadAttachmentMembers = null,
+        string attachmentContentKind = "auto",
+        bool allowLarge = false,
+        long maxTotalStreamBytes = 2L * 1024 * 1024 * 1024,
         bool schema = false,
         CancellationToken ct = default)
     {
@@ -159,10 +177,28 @@ public sealed class CollectCommands
             DownloadHelixFiles = downloadHelixFiles,
             MaxFileBytes = maxFileBytes,
             MaxTotalBytes = maxTotalBytes,
+            DownloadAzdoArtifacts = downloadAzdoArtifacts,
+            ArtifactByteScope = artifactByteScope,
+            ArtifactByteMode = artifactByteMode,
+            DownloadArtifactMembers = downloadArtifactMembers,
+            DownloadTestAttachments = downloadTestAttachments,
+            DownloadAttachmentMembers = downloadAttachmentMembers,
+            AttachmentContentKind = attachmentContentKind,
+            AllowLarge = allowLarge,
+            MaxTotalStreamBytes = maxTotalStreamBytes,
             Argv = Environment.GetCommandLineArgs().Skip(1).ToList(),
             Options = new Dictionary<string, object?>(StringComparer.Ordinal)
             {
                 ["cacheDir"] = cacheDir,
+                ["downloadAzdoArtifacts"] = downloadAzdoArtifacts,
+                ["artifactByteScope"] = artifactByteScope,
+                ["artifactByteMode"] = artifactByteMode,
+                ["downloadArtifactMembers"] = downloadArtifactMembers,
+                ["downloadTestAttachments"] = downloadTestAttachments,
+                ["downloadAttachmentMembers"] = downloadAttachmentMembers,
+                ["attachmentContentKind"] = attachmentContentKind,
+                ["allowLarge"] = allowLarge,
+                ["maxTotalStreamBytes"] = maxTotalStreamBytes,
                 ["manifest"] = manifest,
                 ["resume"] = resume,
                 ["export"] = export,

@@ -35,6 +35,15 @@ public sealed record CollectPolicy
     public long? MaxTestAttachments { get; init; }
     public string HelixScope { get; init; } = "suggested";
     public string? DownloadHelixFiles { get; init; }
+    public string? DownloadAzdoArtifacts { get; init; }
+    public string ArtifactByteScope { get; init; } = "auto";
+    public string ArtifactByteMode { get; init; } = "auto";
+    public string? DownloadArtifactMembers { get; init; }
+    public string? DownloadTestAttachments { get; init; }
+    public string? DownloadAttachmentMembers { get; init; }
+    public string AttachmentContentKind { get; init; } = "auto";
+    public bool AllowLarge { get; init; }
+    public long MaxTotalStreamBytes { get; init; } = 2L * 1024 * 1024 * 1024;
     public long MaxFileBytes { get; init; } = 50L * 1024 * 1024;
     public long MaxTotalBytes { get; init; } = 2L * 1024 * 1024 * 1024;
     public IReadOnlyList<string> Argv { get; init; } = [];

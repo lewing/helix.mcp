@@ -8,6 +8,17 @@ namespace HelixTool.Core.Delivery;
 /// </summary>
 public interface IEvidenceDeliveryStore
 {
+    /// <summary>Stream a payload to private disk without whole-payload memory buffering.</summary>
+    Task<EvidenceDescriptor> PutStreamAsync(Stream content, string mediaType, string? sourceFingerprint,
+        string? backingCacheKey, string cachePartition, CancellationToken ct = default)
+        => throw new NotSupportedException("This delivery store does not support streaming.");
+
+    /// <summary>Create an owned private seekable spool outside immutable snapshots.</summary>
+    FileStream CreateSpool(string cachePartition)
+        => throw new NotSupportedException("This delivery store does not support spooling.");
+    /// <summary>Open an owned persistent prefix spool for checkpoint/restart, never an exported complete blob.</summary>
+    FileStream CreateTransferSpool(string cachePartition, string transferId) => CreateSpool(cachePartition);
+
     /// <summary>
     /// Materialize UTF-8 text content as a new evidence entry. Returns the complete descriptor;
     /// <see cref="EvidenceDescriptor.Complete"/> is true once the write is verified.

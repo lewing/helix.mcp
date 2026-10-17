@@ -775,7 +775,7 @@ public sealed class CiKnowledgeService
         lines.Add("");
         lines.Add("1. **Helix blob storage** (`helix_files`) — per work item: console logs, crash dumps, binlogs, test results.");
         lines.Add("2. **Pipeline artifacts** (`azdo_artifacts`) — per build: build logs, test containers, packages.");
-        lines.Add("3. **AzDO test attachments** (`azdo_test_attachments`) — ❌ NEVER has data for dotnet repos, don't use.");
+        lines.Add("3. **AzDO test attachments** (`azdo_test_attachments`) — metadata for run/result attachments; use `azdo_download_test_attachments` for actual dump/file bytes. Helix is the efficient default for most dotnet tests, not an access restriction.");
         lines.Add("");
         lines.Add("## Diagnostic Location Quick Reference");
         lines.Add("");
@@ -789,7 +789,10 @@ public sealed class CiKnowledgeService
         lines.Add("");
         lines.Add("- `helix_parse_uploaded_trx` works ONLY for: CoreCLR tests (XUnitWrapperGenerator) and XHarness device tests.");
         lines.Add("- Everything else: use `azdo_test_runs` + `azdo_test_results`.");
-        lines.Add("- `azdo_test_attachments` returns empty arrays across ALL dotnet repos — skip it entirely.");
+        lines.Add("- For an explicitly requested attachment, list its actual run/result scope and use `azdo_download_test_attachments`; omit resultId for run-level attachments. Raw dump bytes are not automatically ZIPs.");
+        lines.Add("- Artifact metadata: `azdo_artifacts`; bytes: `azdo_download_artifacts`. Prefer memberPath='Release/Build.binlog' when known, or memberPattern='**/Build.binlog' for selective ZIP retention. Explicit selectors are not restricted to failed Logs; contentKind is a label, never a size unlock.");
+        lines.Add("- Large byte requests stream to private server-local files/cache. Receipts include SHA and full manifest delivery; use `hlx_read_evidence` for bounded text/base64. Use CLI on the debugger host/shared filesystem for binaries; binlog/dump analysis stays external.");
+        lines.Add("- Snapshot replay can read only captured byte/catalog coverage. Recollect the same selector in live mode with HLX_EVAL_SNAPSHOT unset, export to a new snapshot, then replay it; never mutate the old snapshot. Generated PipelineArtifact ZIP/file routes reject Range, so upstream files restart while verified completed files are reused.");
         lines.Add("- **Use `azdo_helix_jobs` to map an AzDO build to Helix jobs.** It primarily queries Helix `Job.ListAsync(source)` and filters by the `BuildId` property; only its fallback scans AzDO timeline `Task` names containing `helix` (case-insensitive). The SDK name `🟣 Run TestBuild Tests` limits that fallback, not the whole tool. If the primary query is unavailable or empty and the fallback misses, `[HelixJob:GUID]` tokens in `azdo_test_runs` names are a secondary workaround.");
         lines.Add("- **Primary `strategy='helix'` responses filter discovered jobs using AzDO timeline monitor failure evidence, without per-job Helix calls.** `all` returns every discovered job; `running`/`incomplete` select lifecycle state; `pending` returns empty because primary summaries cannot distinguish pending; and `failed`/`issues` return only jobs positively identified by monitor evidence. Counts describe returned rows: `FailedHelixJobs` counts evidence-backed jobs and `outcomeUnknownHelixJobs` counts returned jobs without that evidence. `result` and `state` remain completion vocabulary, not pass/fail outcomes.");
         lines.Add("- **`timelineIssues` preserves build/task evidence independently of job filtering.** If timeline evidence is unavailable, `failed`/`issues` return no jobs and `note` marks the result inconclusive. Monitor evidence can miss test-result-only failures, so use `azdo_test_runs` + `azdo_test_results` when failure status still needs confirmation.");

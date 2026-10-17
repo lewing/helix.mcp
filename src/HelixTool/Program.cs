@@ -128,6 +128,7 @@ services.AddSingleton<AzdoBuildCollector>();
 // files directly; this store exists so CLI-hosted MCP stdio sessions (hlx mcp) can serve remote reads.
 services.AddSingleton<HelixTool.Core.Delivery.IEvidenceDeliveryStore>(sp =>
     new HelixTool.Core.Delivery.FileEvidenceDeliveryStore(sp.GetRequiredService<CacheOptions>()));
+services.AddSingleton<AzdoDownloadService>();
 
 ConsoleApp.ServiceProvider = services.BuildServiceProvider();
 
@@ -135,6 +136,7 @@ var app = ConsoleApp.Create();
 app.UseFilter<AcquisitionErrorCliFilter>();
 app.Add<Commands>();
 app.Add<AzdoCommands>();
+app.Add<AzdoDownloadCommands>();
 app.Add<SnapshotCommands>();
 app.Add<CollectCommands>();
 // When no command is specified: default to MCP server mode if stdin is redirected
@@ -962,7 +964,10 @@ public class Commands
 - `hlx azdo test-runs <buildId> [--limit N|--top N] [--offset N] [--all] [--allow-truncated] [--json]` — List test runs for a build
 - `hlx azdo test-results <buildId> <runId> [--limit N|--top N] [--offset N] [--all] [--allow-truncated] [--json]` — Test results for a test run (defaults to failed)
 - `hlx azdo artifacts <buildId> [--pattern P] [--limit N|--top N] [--offset N] [--all] [--allow-truncated] [--json]` — List build artifacts with optional pattern filter
-- `hlx azdo test-attachments <runId> <resultId> [--org ORG] [--project PROJ] [--limit N|--top N] [--offset N] [--all] [--allow-truncated] [--json]` — Test result attachments
+- `hlx azdo test-attachments <runId> [resultId] [--org ORG] [--project PROJ] [--limit N|--top N] [--offset N] [--all] [--allow-truncated] [--json]` — Run/result attachment metadata
+- `hlx azdo download-artifacts <buildId> --artifact-name NAME|--pattern GLOB [--member-path PATH|--member-pattern GLOB] [--output-dir DIR] [--all] [--all-members] [--delivery file] [--allow-large] [--json]` — Stream selected artifact archives/members with SHA and evidence receipts
+- `hlx azdo download-test-attachments <runId> [--result-id ID] --attachment-id ID|--pattern GLOB [--member-pattern GLOB] [--output-dir DIR] [--all] [--delivery file] [--json]` — Stream original attachments/dumps or selected ZIP members
+- `hlx evidence read <evidence-id> [--offset-bytes N] [--length-bytes N] [--encoding base64|utf8|auto] [--output PATH] [--json]` — Scoped bounded reads or complete local file delivery
 
 Updated AzDO list commands emit `{ ok, results, returned, total, offset, limit, complete, truncated, next, cache, note }` with `--json`; truncated output exits 2 unless `--allow-truncated` is supplied.
 
@@ -992,7 +997,9 @@ Updated AzDO list commands emit `{ ok, results, returned, total, offset, limit, 
 - `azdo_test_runs` — List test runs for a build (total/passed/failed counts)
 - `azdo_test_results` — Get test results for a test run (outcome, duration, error details). Defaults to failed only (top 200)
 - `azdo_artifacts` — List build artifacts with optional pattern filter (e.g., '*.binlog'). Default top: 100
-- `azdo_test_attachments` — List attachments for a test result (screenshots, logs, dumps). Default top: 100
+- `azdo_test_attachments` — List attachment metadata; omit resultId for run scope. Default top: 100
+- `azdo_download_artifacts` — Stream selected archives or native/ZIP members to cache/disk; bounded SHA/path/evidence receipts
+- `azdo_download_test_attachments` — Stream run/result attachment and dump bytes or explicitly selected ZIP members; no content-type size gates
 
 ## Authentication
 Set HELIX_ACCESS_TOKEN env var for internal Helix jobs. Public jobs need no auth.
@@ -1125,6 +1132,7 @@ Available as `failureCategory` in JSON and MCP output.
         // Shared evidence delivery store (P0-1 design 2.1a); backs hlx_read_evidence for the stdio MCP server.
         builder.Services.AddSingleton<HelixTool.Core.Delivery.IEvidenceDeliveryStore>(sp =>
             new HelixTool.Core.Delivery.FileEvidenceDeliveryStore(sp.GetRequiredService<CacheOptions>()));
+        builder.Services.AddSingleton<AzdoDownloadService>();
 
         builder.Services
             .AddMcpServer(options =>
@@ -2462,7 +2470,7 @@ public class AzdoCommands
     /// <param name="json">Output as structured JSON.</param>
     [McpEquivalent("azdo_test_attachments")]
     [Command("azdo test-attachments")]
-    public async Task TestAttachments([Argument] int runId, [Argument] int resultId,
+    public async Task TestAttachments([Argument] int runId, [Argument] int? resultId = null,
         string org = "dnceng-public", string project = "public",
         int? top = null, int offset = 0, int? limit = null, bool all = false,
         bool allowTruncated = false, bool json = false, bool schema = false)

@@ -10,6 +10,27 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ### Added
 
+- **AzDO artifact/member and test-attachment bytes (CLI + MCP):**
+  `azdo_download_artifacts` / `hlx azdo download-artifacts` and
+  `azdo_download_test_attachments` / `hlx azdo download-test-attachments` stream
+  selected evidence to private cache-backed disk, return verified SHA-256 receipts,
+  and reuse `hlx_read_evidence` for bounded text/base64 ranges. Exact PipelineArtifact
+  members use `format=file&subPath=/relative/path`; member globs use seekable disk
+  spooling, selected extraction with CRC/SHA validation, and catalog coverage.
+  Whole archives/original dump bytes remain explicitly available; content labels
+  and the ordinary cache target are not download eligibility gates.
+- **Opt-in byte collection:** artifact-name/member and attachment filename/member
+  selectors, `--artifact-byte-scope`, `--artifact-byte-mode`, `--allow-large`,
+  and streamed-byte planning; byte-enabled manifests include source provenance and
+  verified selected blob/descriptor pairs. Catalogs do not imply unselected byte
+  coverage. Run-level attachment listing is additive: omit `resultId`.
+- **Local evidence CLI:** `hlx evidence read` supports byte offsets, bounded
+  UTF-8/base64, and full `--output` delivery. Native provider transfers restart the
+  current interrupted file without assuming HTTP Range support; verified completed
+  files are reused and incomplete prefixes/checkpoints are not snapshot blobs.
+  Binary paths are server-local; binlog/dump analysis and remote binary hosting
+  remain outside scope.
+
 - **`azdo_timeline` triage view, selectors, and access-first delivery:** `azdo_timeline` (MCP) and
   `hlx azdo timeline` (CLI) now default to a **triage** projection — at most 10 rows, ancestors
   included, Phase rows omitted, errors/Helix-first ordering, and up to 5 deduplicated issue

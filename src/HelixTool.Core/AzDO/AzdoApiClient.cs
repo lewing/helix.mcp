@@ -11,7 +11,7 @@ namespace HelixTool.Core.AzDO;
 /// HTTP-based implementation of <see cref="IAzdoApiClient"/>.
 /// Uses Azure DevOps REST API v7.0 with Bearer or Basic auth.
 /// </summary>
-public sealed class AzdoApiClient : IAzdoApiClient
+public sealed partial class AzdoApiClient : IAzdoApiClient
 {
     private const int ErrorBodySnippetLimit = 500;
     /// <summary>

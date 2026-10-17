@@ -8,6 +8,8 @@ namespace HelixTool.Core.Cache;
 /// </summary>
 public interface ICacheStore : IDisposable
 {
+    /// <summary>Protect the current required/active artifact set during explicit streamed acquisition.</summary>
+    Task RetainArtifactsAsync(TimeSpan duration, CancellationToken ct = default) => Task.CompletedTask;
     /// <summary>Get cached JSON metadata by key, or null if missing/expired.</summary>
     Task<string?> GetMetadataAsync(string cacheKey, CancellationToken ct = default);
 

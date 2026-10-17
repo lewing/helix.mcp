@@ -12,7 +12,7 @@ using HelixTool.Core.Paging;
 
 namespace HelixTool.Core.Collect;
 
-public sealed class AzdoBuildCollector
+public sealed partial class AzdoBuildCollector
 {
     private static readonly JsonSerializerOptions s_jsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -253,6 +253,7 @@ public sealed class AzdoBuildCollector
                 await CollectHelixSuggestedFetchesAsync(attempts, priorAttempts, policy, evidencePlan, ct);
             }
 
+            var byteDownloads = await CollectAzdoBytesAsync(attempts, policy, org, project, buildId, evidencePlan, progress, ct);
             attempts = await VerifyCollectedEvidenceAsync(attempts, ct);
             attempts = attempts.OrderBy(a => a.Phase, StringComparer.Ordinal)
                 .ThenBy(a => a.ParentId, StringComparer.Ordinal)
@@ -304,9 +305,10 @@ public sealed class AzdoBuildCollector
                 exitCode,
                 snapshot: new CollectSnapshotInfo());
 
-            await WriteManifestAsync(manifestPath, manifest, ct);
-
             string? snapshotPath = null;
+            manifest = manifest with { ByteDownloads = byteDownloads.Count == 0 ? null : byteDownloads,
+                SchemaVersion = byteDownloads.Count == 0 ? manifest.SchemaVersion : 2 };
+            await WriteManifestAsync(manifestPath, manifest, ct);
             if (!string.IsNullOrWhiteSpace(policy.ExportPath))
             {
                 progress?.Invoke("Exporting snapshot...");
@@ -980,6 +982,20 @@ public sealed class AzdoBuildCollector
         attempts.AddRange(verified);
         var cacheStatus = await _cacheStore.GetStatusAsync(ct);
         var remainingCacheCapacity = Math.Max(0, _cacheOptions.MaxSizeBytes - cacheStatus.TotalSizeBytes);
+        if (policy.DownloadHelixFiles is not null)
+        {
+            await _cacheStore.RetainArtifactsAsync(TimeSpan.FromHours(24), ct);
+            remainingCacheCapacity = long.MaxValue;
+            // A cache retention target and the old 50 MiB default are not download eligibility.
+            policy = policy with
+            {
+                MaxFileBytes = policy.AllowLarge ||
+                    policy.MaxFileBytes == 50L * 1024 * 1024 &&
+                    !policy.Argv.Any(arg => arg == "--max-file-bytes" || arg.StartsWith("--max-file-bytes=", StringComparison.Ordinal))
+                        ? long.MaxValue : policy.MaxFileBytes,
+                MaxTotalBytes = policy.AllowLarge ? long.MaxValue : policy.MaxTotalBytes
+            };
+        }
         var downloadBudget = new HelixFileDownloadBudget(policy.MaxTotalBytes, remainingCacheCapacity);
         var optionalAttempts = await ForEachCollectAsync(
             fileLists.OrderBy(item => item.JobId, StringComparer.Ordinal)
@@ -1085,7 +1101,7 @@ public sealed class AzdoBuildCollector
                     cachedBytes > policy.MaxFileBytes ? "size_limit" : "total_size_limit",
                     cachedBytes > policy.MaxFileBytes
                         ? $"Cached Helix uploaded file '{fileName}' exceeds --max-file-bytes {policy.MaxFileBytes}."
-                        : $"Cached Helix uploaded file '{fileName}' would exceed --max-total-bytes {policy.MaxTotalBytes}."));
+                        : $"Cached Helix uploaded file '{fileName}' would exceed --max-total-bytes {policy.MaxTotalBytes}.", policy));
                 return;
             }
         }
@@ -1104,7 +1120,7 @@ public sealed class AzdoBuildCollector
                 started,
                 stopwatch.ElapsedMilliseconds,
                 "size_limit",
-                $"Helix uploaded file '{fileName}' was not opened because --max-file-bytes is 0."));
+                $"Helix uploaded file '{fileName}' was not opened because --max-file-bytes is 0.", policy));
             return;
         }
 
@@ -1122,7 +1138,7 @@ public sealed class AzdoBuildCollector
                 started,
                 stopwatch.ElapsedMilliseconds,
                 "total_size_limit",
-                $"Helix uploaded file '{fileName}' was not opened because --max-total-bytes {policy.MaxTotalBytes} or remaining cache capacity is exhausted."));
+                $"Helix uploaded file '{fileName}' was not opened because --max-total-bytes {policy.MaxTotalBytes} or remaining cache capacity is exhausted.", policy));
             return;
         }
 
@@ -1166,7 +1182,7 @@ public sealed class AzdoBuildCollector
                                 started,
                                 stopwatch.ElapsedMilliseconds,
                                 "size_limit",
-                                $"Helix uploaded file '{fileName}' exceeded --max-file-bytes {policy.MaxFileBytes}."));
+                                $"Helix uploaded file '{fileName}' exceeded --max-file-bytes {policy.MaxFileBytes}.", policy));
                             return;
                         }
 
@@ -1185,7 +1201,7 @@ public sealed class AzdoBuildCollector
                                 started,
                                 stopwatch.ElapsedMilliseconds,
                                 "total_size_limit",
-                                $"Helix uploaded file '{fileName}' would exceed --max-total-bytes {policy.MaxTotalBytes} or the remaining cache capacity of {downloadBudget.MaxCacheBytes} bytes after required evidence acquisition."));
+                                $"Helix uploaded file '{fileName}' would exceed --max-total-bytes {policy.MaxTotalBytes} or the remaining cache capacity of {downloadBudget.MaxCacheBytes} bytes after required evidence acquisition.", policy));
                             return;
                         }
 
@@ -1337,7 +1353,7 @@ public sealed class AzdoBuildCollector
         }
     }
 
-    private static CollectFetchAttempt SkipAttempt(
+    private CollectFetchAttempt SkipAttempt(
         string id,
         string phase,
         bool required,
@@ -1348,7 +1364,8 @@ public sealed class AzdoBuildCollector
         DateTimeOffset started,
         long durationMs,
         string skipKind,
-        string message)
+        string message,
+        CollectPolicy policy)
         => new()
         {
             Id = id,
@@ -1364,7 +1381,12 @@ public sealed class AzdoBuildCollector
             DurationMs = durationMs,
             AttemptCount = 1,
             Outcome = "skipped",
-            Skip = new CollectSkipInfo { Kind = skipKind, Message = message }
+            Skip = new CollectSkipInfo
+            {
+                Kind = skipKind is "size_limit" or "total_size_limit" ? "planning_deferred" : skipKind,
+                Message = message + " Resume the original scope with --allow-large.",
+                Recovery = PlanningRecovery(policy)
+            }
         };
 
     private async Task<T?> RunAsync<T>(
@@ -1691,6 +1713,17 @@ public sealed class AzdoBuildCollector
                 return (false, AcquisitionErrorKind.InvalidResponse,
                 $"Collected artifact evidence for {attempt.Operation} changed size before export: expected {expectedBytes} byte(s), found {stream.Length}.");
             }
+            if (attempt.Operation == "download_azdo_bytes")
+            {
+                var sha = Convert.ToHexString(await SHA256.HashDataAsync(stream, ct)).ToLowerInvariant();
+                var json = await _cacheStore.GetMetadataIgnoringTtlAsync(attempt.CacheKey, ct);
+                if (json is null || sha != attempt.Sha256)
+                    return (false, AcquisitionErrorKind.InvalidResponse, "Collected byte descriptor/blob pair failed SHA verification.");
+                var descriptor = JsonSerializer.Deserialize<AzdoByteDescriptor>(json, AzdoDownloadService.JsonOptions);
+                if (descriptor is null || descriptor.Sha256 != sha)
+                    return (false, AcquisitionErrorKind.InvalidResponse, "Collected byte descriptor does not match its blob.");
+                AzdoByteDescriptorValidator.Validate(attempt.CacheKey, descriptor);
+            }
 
             return (true, AcquisitionErrorKind.NotInSnapshot, "");
         }
@@ -1738,7 +1771,7 @@ public sealed class AzdoBuildCollector
     }
 
     private static bool IsArtifactOperation(string operation)
-        => operation is "get_helix_console_log" or "download_helix_file";
+        => operation is "get_helix_console_log" or "download_helix_file" or "download_azdo_bytes";
 
     private static IEnumerable<AzdoHelixEvidenceFetch> DefaultHelixFetches(AzdoHelixEvidenceFailure failure)
     {
@@ -1947,6 +1980,12 @@ public sealed class AzdoBuildCollector
             throw new ArgumentException("Invalid --helix-scope. Must be suggested or none.", nameof(policy));
         if (policy.MaxFileBytes < 0 || policy.MaxTotalBytes < 0)
             throw new ArgumentOutOfRangeException(nameof(policy), "byte caps must be non-negative.");
+        if (!IsOneOf(policy.ArtifactByteScope, "auto", "failed-logs", "selected") ||
+            !IsOneOf(policy.ArtifactByteMode, "auto", "members", "archive"))
+            throw new ArgumentException("Invalid artifact byte scope/mode.");
+        if (policy.ArtifactByteMode == "archive" && policy.DownloadArtifactMembers is not null)
+            throw new ArgumentException("--artifact-byte-mode archive conflicts with --download-artifact-members.");
+        if (policy.MaxTotalStreamBytes <= 0) throw new ArgumentOutOfRangeException(nameof(policy), "Stream planning target must be positive.");
     }
 
     private static bool IsOneOf(string value, params string[] allowed)

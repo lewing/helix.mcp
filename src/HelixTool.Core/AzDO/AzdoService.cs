@@ -825,9 +825,11 @@ public class AzdoService
     /// Org/project are provided explicitly since runId/resultId are scoped to org/project.
     /// </summary>
     public async Task<IReadOnlyList<AzdoTestAttachment>> GetTestAttachmentsAsync(
-        string org, string project, int runId, int resultId, int top = 50, CancellationToken ct = default)
+        string org, string project, int runId, int? resultId, int top = 50, CancellationToken ct = default)
     {
-        var results = await _client.GetTestAttachmentsAsync(org, project, runId, resultId, top, ct);
+        var results = resultId is int id
+            ? await _client.GetTestAttachmentsAsync(org, project, runId, id, top, ct)
+            : await _client.GetRunTestAttachmentsAsync(org, project, runId, top, ct);
         if (results.Count <= top)
             return results;
         return results.Take(top).ToList();
@@ -838,18 +840,22 @@ public class AzdoService
         string org,
         string project,
         int runId,
-        int resultId,
+        int? resultId,
         HlxPageRequest page,
         int defaultLimit = 100,
         CancellationToken ct = default)
     {
-        var all = await _client.GetTestAttachmentsAsync(org, project, runId, resultId, int.MaxValue, ct);
+        var all = resultId is int id
+            ? await _client.GetTestAttachmentsAsync(org, project, runId, id, int.MaxValue, ct)
+            : await _client.GetRunTestAttachmentsAsync(org, project, runId, int.MaxValue, ct);
         return CreateEnvelope(
             all,
             page,
             defaultLimit,
-            AzdoListCacheKeys.TestAttachmentsComplete(_cacheOptions, org, project, runId, resultId),
-            request => AzdoListCacheKeys.TestAttachmentsWindow(_cacheOptions, org, project, runId, resultId, request.Offset, request.EffectiveLimit(defaultLimit)),
+            resultId is int result ? AzdoListCacheKeys.TestAttachmentsComplete(_cacheOptions, org, project, runId, result)
+                : AzdoCacheKeys.MetadataKey(_cacheOptions, org, project, $"testrunattachments:v1:{runId}:all"),
+            request => resultId is int result ? AzdoListCacheKeys.TestAttachmentsWindow(_cacheOptions, org, project, runId, result, request.Offset, request.EffectiveLimit(defaultLimit))
+                : AzdoCacheKeys.MetadataKey(_cacheOptions, org, project, $"testrunattachments:v1:{runId}:window:{request.Offset}:{request.EffectiveLimit(defaultLimit)}"),
             "azdo test-attachments",
             "Re-run with --all or --offset {0} --limit {1}.");
     }

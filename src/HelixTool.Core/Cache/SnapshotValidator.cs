@@ -254,7 +254,7 @@ public static class SnapshotValidator
 
                     command.Parameters.Clear();
                     command.CommandText = """
-                        SELECT file_path, file_size
+                        SELECT cache_key, file_path, file_size
                         FROM cache_artifacts
                         ORDER BY file_path;
                         """;
@@ -262,7 +262,7 @@ public static class SnapshotValidator
                     while (reader.Read())
                     {
                         ct.ThrowIfCancellationRequested();
-                        artifactRows.Add(new ArtifactRow(reader.GetString(0), reader.GetInt64(1)));
+                        artifactRows.Add(new ArtifactRow(reader.GetString(0), reader.GetString(1), reader.GetInt64(2)));
                     }
                 }
 
@@ -427,6 +427,32 @@ public static class SnapshotValidator
                     $"Artifact file size mismatch for '{row.FilePath}': " +
                     $"expected {row.FileSize}, found {artifactHash.FileSize}.");
             }
+            if (AzdoByteDescriptorValidator.IsByteKey(row.CacheKey))
+            {
+                try
+                {
+                    using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+                    {
+                        DataSource = dbPath, Mode = SqliteOpenMode.ReadOnly, Pooling = false
+                    }.ToString());
+                    connection.Open();
+                    using var command = connection.CreateCommand();
+                    command.CommandText = "SELECT json_value FROM cache_metadata WHERE cache_key=@key;";
+                    command.Parameters.AddWithValue("@key", row.CacheKey);
+                    var raw = command.ExecuteScalar() as string
+                        ?? throw new InvalidDataException("Blob lacks its positive byte descriptor.");
+                    var descriptor = JsonSerializer.Deserialize<AzdoByteDescriptor>(SqliteCacheStore.DecodeMetadataValue(raw)
+                        ?? throw new InvalidDataException("Missing byte descriptor JSON."),
+                        AzdoDownloadService.JsonOptions) ?? throw new InvalidDataException("Invalid byte descriptor.");
+                    AzdoByteDescriptorValidator.Validate(row.CacheKey, descriptor);
+                    if (descriptor.Bytes != artifactHash.FileSize || !descriptor.Sha256.Equals(artifactHash.Sha256, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidDataException("Byte descriptor/blob SHA-256 or length mismatch.");
+                }
+                catch (Exception ex) when (ex is JsonException or InvalidDataException)
+                {
+                    errors.Add($"Invalid AzDO byte evidence '{row.CacheKey}': {ex.Message}");
+                }
+            }
         }
 
         if (missingFiles > MaxMissingFileErrors)
@@ -547,6 +573,38 @@ public static class SnapshotValidator
             var cacheKey = reader.GetString(0);
             var rawValue = reader.GetString(1);
             var decodedValue = SqliteCacheStore.DecodeMetadataValue(rawValue);
+            if (AzdoCacheKeys.TryParse(cacheKey, out var catalogKey) &&
+                catalogKey.ResourceKind is "artifactmembers" or "testattachmentmembers")
+            {
+                try
+                {
+                    var catalog = JsonSerializer.Deserialize<AzdoMemberCatalog>(decodedValue ?? "",
+                        AzdoDownloadService.JsonOptions) ?? throw new InvalidDataException("Missing catalog.");
+                    AzdoDownloadService.ValidateCatalog(catalog);
+                }
+                catch (Exception ex) when (ex is JsonException or InvalidDataException)
+                {
+                    errors.Add($"Invalid AzDO member catalog '{cacheKey}': {ex.Message}");
+                }
+            }
+            if (AzdoByteDescriptorValidator.IsByteKey(cacheKey))
+            {
+                try
+                {
+                    var descriptor = JsonSerializer.Deserialize<AzdoByteDescriptor>(decodedValue ?? throw new InvalidDataException("Missing byte descriptor JSON."), AzdoDownloadService.JsonOptions)
+                        ?? throw new InvalidDataException("Missing byte descriptor.");
+                    AzdoByteDescriptorValidator.Validate(cacheKey, descriptor);
+                    using var pair = command.Connection!.CreateCommand();
+                    pair.CommandText = "SELECT COUNT(*) FROM cache_artifacts WHERE cache_key=@key;";
+                    pair.Parameters.AddWithValue("@key", cacheKey);
+                    if (Convert.ToInt64(pair.ExecuteScalar(), CultureInfo.InvariantCulture) != 1)
+                        throw new InvalidDataException("Positive byte descriptor lacks its matching blob.");
+                }
+                catch (Exception ex) when (ex is JsonException or InvalidDataException)
+                {
+                    errors.Add($"Invalid AzDO byte descriptor '{cacheKey}': {ex.Message}");
+                }
+            }
             if (IsAzdoRawLogKey(cacheKey) &&
                 (string.IsNullOrEmpty(decodedValue) ||
                  string.Equals(decodedValue, CachingAzdoApiClient.RawTextPrefix, StringComparison.Ordinal)))
@@ -691,5 +749,5 @@ public static class SnapshotValidator
         List<string> warnings)
         => new(false, errors, warnings, 0, 0, 0, 0);
 
-    private sealed record ArtifactRow(string FilePath, long FileSize);
+    private sealed record ArtifactRow(string CacheKey, string FilePath, long FileSize);
 }

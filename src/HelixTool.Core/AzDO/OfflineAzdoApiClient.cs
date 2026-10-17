@@ -10,6 +10,14 @@ namespace HelixTool.Core.AzDO;
 /// </summary>
 public sealed class OfflineAzdoApiClient : IAzdoApiClient
 {
+    public Task<IReadOnlyList<AzdoTestAttachment>> GetRunTestAttachmentsAsync(string org, string project, int runId, int top = 50, CancellationToken ct = default)
+        => throw Blocked("list_run_test_attachments", Resource(org, project, ("runId", runId)));
+    public Task<AzdoByteStream> OpenArtifactAsync(string org, string project, int buildId, AzdoBuildArtifact artifact,
+        string? memberPath = null, CancellationToken ct = default)
+        => throw Blocked("download_artifact", Resource(org, project, ("buildId", buildId), ("artifactId", artifact.Id), ("memberPath", memberPath)));
+    public Task<AzdoByteStream> OpenTestAttachmentAsync(string org, string project, int runId, int? resultId,
+        int attachmentId, CancellationToken ct = default)
+        => throw Blocked("download_test_attachment", Resource(org, project, ("runId", runId), ("resultId", resultId), ("attachmentId", attachmentId)));
     private static HlxAcquisitionException Blocked(
         string operation,
         IReadOnlyDictionary<string, object?> resource)

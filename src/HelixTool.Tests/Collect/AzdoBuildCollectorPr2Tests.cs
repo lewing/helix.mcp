@@ -277,7 +277,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         var skip = Attempts(manifestDocument.RootElement)
             .Single(attempt => Operation(attempt) == "download_helix_file" && ResourceString(attempt, "fileName") == "oversized.binlog");
         Assert.Equal("skipped", skip.GetProperty("outcome").GetString());
-        Assert.Equal("size_limit", skip.GetProperty("skip").GetProperty("kind").GetString());
+        Assert.Equal("planning_deferred", skip.GetProperty("skip").GetProperty("kind").GetString());
         AssertNoSecrets(manifestDocument.RootElement.GetRawText());
 
         var tools = CreateEvalHelixTools(harness.ExportPath);
@@ -318,7 +318,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         Assert.Contains(Attempts(manifestDocument.RootElement), attempt =>
             Operation(attempt) == "download_helix_file"
             && attempt.GetProperty("outcome").GetString() == "skipped"
-            && attempt.GetProperty("skip").GetProperty("kind").GetString() == "total_size_limit");
+            && attempt.GetProperty("skip").GetProperty("kind").GetString() == "planning_deferred");
     }
 
     [Fact]
@@ -843,7 +843,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
         var skip = Attempts(manifestDocument.RootElement)
             .Single(a => Operation(a) == "download_helix_file" && ResourceString(a, "fileName") == "blocked.binlog");
         Assert.Equal("skipped", skip.GetProperty("outcome").GetString());
-        Assert.Equal("total_size_limit", skip.GetProperty("skip").GetProperty("kind").GetString());
+        Assert.Equal("planning_deferred", skip.GetProperty("skip").GetProperty("kind").GetString());
     }
 
     [Fact]
@@ -1599,6 +1599,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
 
         private static string? StringValue(string name, CollectInvocationOptions options)
         {
+            if (name is "artifactByteScope" or "ArtifactByteScope" or "artifactByteMode" or "ArtifactByteMode" or "attachmentContentKind" or "AttachmentContentKind") return "auto";
             if (name.Contains("build", StringComparison.OrdinalIgnoreCase)) return options.BuildIdOrUrl;
             if (name.Contains("cache", StringComparison.OrdinalIgnoreCase)) return options.CacheDir;
             if (name.Contains("manifest", StringComparison.OrdinalIgnoreCase)) return options.Manifest;
@@ -1638,6 +1639,7 @@ public sealed class AzdoBuildCollectorPr2Tests : IDisposable
 
         private static object? LongValue(string name, CollectInvocationOptions options)
         {
+            if (name.Equals("maxTotalStreamBytes", StringComparison.OrdinalIgnoreCase)) return 2L * 1024 * 1024 * 1024;
             if (name.Contains("maxFileBytes", StringComparison.OrdinalIgnoreCase)) return options.MaxFileBytes;
             if (name.Contains("maxTotalBytes", StringComparison.OrdinalIgnoreCase)) return options.MaxTotalBytes;
             return null;

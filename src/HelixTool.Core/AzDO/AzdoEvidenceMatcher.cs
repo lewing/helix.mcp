@@ -108,8 +108,11 @@ public static class AzdoEvidenceMatcher
     public static AzdoBuiltPlanResult BuildPlanFromSelectedJobs(
         IReadOnlyList<AzdoTimelineRecord> selectedJobs,
         IEnumerable<AzdoBuildArtifact> artifacts,
-        AzdoEvidencePlanOptions options)
+        AzdoEvidencePlanOptions options,
+        bool includeAll = false)
     {
+        var maxEntries = includeAll ? int.MaxValue : MaxPlanEntries;
+        var maxCandidates = includeAll ? int.MaxValue : MaxCandidatesPerEntry;
         var strategy = AzdoEvidenceMatchStrategy.Canonicalize(options.Match);
         var jobs = selectedJobs;
         var artifactList = artifacts is IReadOnlyList<AzdoBuildArtifact> l ? l : artifacts.ToList();
@@ -144,14 +147,14 @@ public static class AzdoEvidenceMatcher
             }
         }
 
-        var entries = new List<AzdoEvidencePlanEntry>(Math.Min(jobs.Count, MaxPlanEntries));
+        var entries = new List<AzdoEvidencePlanEntry>(Math.Min(jobs.Count, maxEntries));
         var totalJobs = jobs.Count;
         var entriesTruncated = false;
         var truncatedCandidateLists = 0;
 
         foreach (var record in jobs)
         {
-            if (entries.Count >= MaxPlanEntries)
+            if (entries.Count >= maxEntries)
             {
                 entriesTruncated = true;
                 break;
@@ -209,7 +212,7 @@ public static class AzdoEvidenceMatcher
             }
 
             var count = rawCandidates?.Count ?? 0;
-            var candidatesTruncated = count > MaxCandidatesPerEntry;
+            var candidatesTruncated = count > maxCandidates;
             if (candidatesTruncated)
                 truncatedCandidateLists++;
 
@@ -228,7 +231,7 @@ public static class AzdoEvidenceMatcher
                     .OrderByDescending(pa => pa.Attempt ?? 0)
                     .ThenBy(pa => pa.Artifact.Name ?? "", StringComparer.Ordinal)
                     .ThenBy(pa => pa.Artifact.Id)
-                    .Take(MaxCandidatesPerEntry);
+                    .Take(maxCandidates);
 
                 var rank = 0;
                 foreach (var pa in sorted)
