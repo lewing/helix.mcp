@@ -58,7 +58,9 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
   Length/SHA/CRC failures are classified per resource/member without dropping other
   successful selections. Cached members are checked against the current catalog
   before reuse; native transfers honor known catalog length/CRC. Required collector
-  member selections with no matches record an incomplete gap. Incomplete source
+  member selections with no matches record an incomplete gap, including attachment
+  member globs aggregated across all selected run/result scopes (independent of
+  artifact matches). Empty files still count as matched members. Incomplete source
   coverage stays truncated even when all rows fit, and storage recovery requires
   a different sufficient-storage location rather than repeating the failed command.
 

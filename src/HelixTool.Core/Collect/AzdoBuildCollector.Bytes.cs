@@ -190,10 +190,12 @@ public sealed partial class AzdoBuildCollector
                             ContentKind = policy.AttachmentContentKind
                         }, progress, ct));
             }
-            if (reports.Count == initialReports)
+            var selectedAttachments = reports.Skip(initialReports).SelectMany(report => report.Results);
+            if (!selectedAttachments.Any(result => policy.DownloadAttachmentMembers is null || result.MembersTotal > 0))
                 AddSkip(attempts, "azdo.attachment-bytes:no-matches", "azdo_bytes", true, "azdo", "download_azdo_bytes",
-                    Resource(("buildId", buildId), ("pattern", policy.DownloadTestAttachments)), "no_matches",
-                    "Explicit attachment byte selection matched no files in the complete run/result scope.");
+                    Resource(("buildId", buildId), ("pattern", policy.DownloadTestAttachments),
+                        ("memberPattern", policy.DownloadAttachmentMembers)), "no_matches",
+                    "Explicit attachment byte selection matched no files or selected ZIP members in the complete run/result scope.");
         }
         return reports;
     }
