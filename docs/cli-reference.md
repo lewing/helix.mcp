@@ -990,7 +990,7 @@ When a direct build-log body is empty, hlx validates the logId against the build
 | `AZDO_TOKEN_TYPE` | Optional `AZDO_TOKEN` classification override. Use `pat` or `bearer` when live AzDO token auto-detection misclassifies the token. Snapshot replay does not require this variable. |
 | `HLX_EVAL_SNAPSHOT` | Path to a snapshot directory (created with `hlx snapshot export`) for offline replay mode. When set, hlx loads the snapshot's cached data instead of making live API calls. Overrides all cache configuration and auth. |
 | `HLX_EVAL_AZDO_PARTITION` | Optional eval-mode AzDO cache partition selector. Use `public` or `cache-xxxxxxxx` when a snapshot contains multiple AzDO partitions, or to override automatic single-partition/manifest selection. |
-| `HLX_CACHE_MAX_SIZE_MB` | Max cache size in MB (default: 1024, set to `0` to disable). `hlx collect azdo-build` requires caching and rejects `0`. |
+| `HLX_CACHE_MAX_SIZE_MB` | Max cache size in MB (default: 1024, set to `0` to disable caching). File evidence delivery has a separate 25% soft sub-budget and 24-hour pins; with `0`, delivery still works under the per-user base cache root’s `delivery-ephemeral/` with a 256 MiB soft budget. `hlx collect azdo-build` requires caching and rejects `0`. |
 | `HLX_DISABLE_FILE_SEARCH` | Set to `true` to disable file content search tools |
 | `HLX_API_KEY` | Require API key for HTTP MCP server access |
 

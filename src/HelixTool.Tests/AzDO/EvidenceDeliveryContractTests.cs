@@ -6,9 +6,10 @@ using Xunit;
 
 namespace HelixTool.Tests.AzDO;
 
+[Collection("AzdoTokenEnv")]
 public sealed class EvidenceDeliveryContractTests : IDisposable
 {
-    private readonly string _root = Path.Combine(Path.GetTempPath(), $"hlx-evidence-reader-{Guid.NewGuid():N}");
+    private readonly string _root = Path.GetFullPath(Path.Combine(".test-runtime", $"hlx-evidence-reader-{Guid.NewGuid():N}"));
 
     [Fact]
     public void EvidenceReference_IsPartitionScopedAndVerified_NotAnArbitraryPathReader()
@@ -28,6 +29,76 @@ public sealed class EvidenceDeliveryContractTests : IDisposable
         Assert.Equal(Encoding.UTF8.GetString(bytes), read.Text);
         Assert.True(read.SourceComplete);
         Assert.True(read.RangeComplete);
+    }
+
+    [Fact]
+    public void Delivery_UsesEffectiveCacheRoot_AndSeparateAuthRootsCannotReadEachOthersReceipts()
+    {
+        var optionsA = new CacheOptions { CacheRoot = _root, CacheRootHash = "aaaaaaaa" };
+        var optionsB = optionsA with { CacheRootHash = "bbbbbbbb" };
+        var storeA = new FileEvidenceDeliveryStore(optionsA);
+        var storeB = new FileEvidenceDeliveryStore(optionsB);
+        var receiptA = storeA.PutText("partition A", "text/plain", null, null, "public");
+        var receiptB = storeB.PutText("partition B", "text/plain", null, null, "public");
+
+        Assert.Equal(Path.Combine(optionsA.GetEffectiveCacheRoot(), "delivery", "public"),
+            Path.GetDirectoryName(receiptA.LocalPath));
+        Assert.Equal(Path.Combine(optionsB.GetEffectiveCacheRoot(), "delivery", "public"),
+            Path.GetDirectoryName(receiptB.LocalPath));
+        Assert.Null(storeB.TryGetDescriptor(receiptA.EvidenceId, "public"));
+        Assert.Null(storeA.TryGetDescriptor(receiptB.EvidenceId, "public"));
+        Assert.Throws<EvidenceNotFoundException>(() => storeB.Read(receiptA.EvidenceId, 0, 100, "utf8", "public"));
+        Assert.Throws<EvidenceNotFoundException>(() => storeA.Read(receiptB.EvidenceId, 0, 100, "utf8", "public"));
+        Assert.Equal("partition A", storeA.Read(receiptA.EvidenceId, 0, 100, "utf8", "public").Text);
+        Assert.Equal("partition B", storeB.Read(receiptB.EvidenceId, 0, 100, "utf8", "public").Text);
+    }
+
+    [Fact]
+    public void CacheDisabled_DeliveryStillPublishesAndReadsAccessFirst()
+    {
+        var options = new CacheOptions { CacheRoot = _root, MaxSizeBytes = 0 };
+        var store = new FileEvidenceDeliveryStore(options);
+        var receipt = store.PutText("evidence with caching disabled", "text/plain", null, null, "public");
+        Assert.True(receipt.Complete);
+        Assert.Equal(Path.Combine(_root, "delivery-ephemeral", "public"), Path.GetDirectoryName(receipt.LocalPath));
+        var independentReader = new FileEvidenceDeliveryStore(options);
+        Assert.Equal("evidence with caching disabled",
+            independentReader.Read(receipt.EvidenceId, 0, 100, "utf8", "public").Text);
+        Assert.False(Directory.Exists(Path.Combine(options.GetEffectiveCacheRoot(), "delivery")));
+    }
+
+    [Fact]
+    public void DeliveryBytes_AreAccountedAgainstDerivedCacheSizeBudgetWithoutDoubleCounting()
+    {
+        var options = new CacheOptions { CacheRoot = _root, MaxSizeBytes = 40 };
+        var store = new FileEvidenceDeliveryStore(options);
+        var receipt = store.PutText("delivery bytes", "text/plain", null, null, "public");
+        var status = store.TryGetRetentionStatus("public");
+        Assert.NotNull(status);
+        Assert.Equal(options.MaxSizeBytes / 4, status.CapBytes);
+        Assert.Equal(receipt.Bytes, status.TotalBytes);
+        Assert.Equal(receipt.Bytes, status.PinnedBytes);
+        Assert.True(status.CapExceeded);
+        store.PutText("delivery bytes", "text/plain", null, null, "public");
+        Assert.Equal(receipt.Bytes, store.TryGetRetentionStatus("public")!.TotalBytes);
+        Assert.Equal("delivery bytes", store.Read(receipt.EvidenceId, 0, 100, "utf8", "public").Text);
+    }
+
+    [Fact]
+    public async Task ConcurrentFirstUse_AcrossIndependentStoresReturnsReadableReceipts()
+    {
+        using var start = new SemaphoreSlim(0);
+        var publications = Enumerable.Range(0, 32).Select(i => Task.Run(async () =>
+        {
+            await start.WaitAsync();
+            var store = new FileEvidenceDeliveryStore(new CacheOptions { CacheRoot = _root });
+            var content = $"concurrent initialization {i}";
+            var receipt = store.PutText(content, "text/plain", null, null, "public");
+            Assert.True(receipt.Complete);
+            Assert.Equal(content, store.Read(receipt.EvidenceId, 0, 1000, "utf8", "public").Text);
+        })).ToArray();
+        start.Release(publications.Length);
+        await Task.WhenAll(publications);
     }
 
     [Fact]
@@ -84,18 +155,43 @@ public sealed class EvidenceDeliveryContractTests : IDisposable
     {
         var snapshot = Path.Combine(_root, "snapshot");
         Directory.CreateDirectory(snapshot);
-        var store = new FileEvidenceDeliveryStore(new CacheOptions { CacheRoot = snapshot, EvalMode = true });
-        var descriptor = store.PutText("derived full record", "application/json", "fingerprint",
-            "azdo:dnceng-public:public:timeline:1621192", "public");
-        Assert.True(descriptor.Complete);
-        var relative = Path.GetRelativePath(snapshot, Path.GetFullPath(descriptor.LocalPath));
-        Assert.StartsWith("..", relative);
-        Assert.Empty(Directory.EnumerateFileSystemEntries(snapshot));
-        File.Delete(descriptor.LocalPath);
-        var metadata = Path.ChangeExtension(descriptor.LocalPath, ".meta.json");
-        if (File.Exists(metadata))
-            File.Delete(metadata);
+        File.WriteAllText(Path.Combine(snapshot, "cache.db"), "immutable snapshot bytes");
+        Directory.CreateDirectory(Path.Combine(snapshot, "artifacts"));
+        File.WriteAllText(Path.Combine(snapshot, "artifacts", "evidence.txt"), "source evidence");
+        var before = HashTree(snapshot);
+        var xdg = Environment.GetEnvironmentVariable("XDG_CACHE_HOME");
+        try
+        {
+            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", Path.Combine(_root, "base-cache"));
+            var baseRoot = new CacheOptions().GetBaseCacheRoot();
+            var store = new FileEvidenceDeliveryStore(new CacheOptions { CacheRoot = snapshot, EvalMode = true });
+            var descriptor = store.PutText("derived full record", "application/json", "fingerprint",
+                "azdo:dnceng-public:public:timeline:1621192", "public");
+            Assert.True(descriptor.Complete);
+            var snapshotIdentity = OperatingSystem.IsWindows() ? Path.GetFullPath(snapshot).ToUpperInvariant() : Path.GetFullPath(snapshot);
+            var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(snapshotIdentity)));
+            Assert.Equal(Path.Combine(baseRoot, "eval-delivery", hash, "public"), Path.GetDirectoryName(descriptor.LocalPath));
+            Assert.False(Path.GetFullPath(descriptor.LocalPath).StartsWith("/tmp/", StringComparison.Ordinal));
+            Assert.False(Path.GetFullPath(descriptor.LocalPath).StartsWith("/private/tmp/", StringComparison.Ordinal));
+            Assert.Equal("derived full record", store.Read(descriptor.EvidenceId, 0, 1000, "utf8", "public").Text);
+            Assert.NotNull(store.TryGetDescriptor(descriptor.EvidenceId, "public"));
+            Assert.Equal(before, HashTree(snapshot));
+            if (OperatingSystem.IsWindows())
+                Directory.Delete(Path.Combine(baseRoot, "eval-delivery", hash), recursive: true);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", xdg);
+        }
     }
+
+    private static string[] HashTree(string root) =>
+        Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+            .Order(StringComparer.Ordinal)
+            .Select(path => $"{Path.GetRelativePath(root, path)}:{Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)))}")
+            .Concat(Directory.EnumerateDirectories(root, "*", SearchOption.AllDirectories)
+                .Order(StringComparer.Ordinal).Select(path => $"directory:{Path.GetRelativePath(root, path)}"))
+            .ToArray();
 
     public void Dispose()
     {

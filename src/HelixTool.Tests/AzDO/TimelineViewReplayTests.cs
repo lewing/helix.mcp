@@ -152,7 +152,6 @@ public sealed class TimelineViewReplayTests : IDisposable
                     finally
                     {
                         File.Delete(path);
-                        File.Delete(Path.ChangeExtension(path, ".meta.json"));
                     }
                     return;
                 }

@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace HelixTool.Core.Delivery;
 
 /// <summary>
-/// Descriptor for a payload materialized into the private runtime delivery directory because it
+/// Descriptor for a payload materialized into the per-user cache delivery directory because it
 /// did not fit an inline shaping target. Not a parallel snapshot/bundle format: the backing data
 /// is always reconstructable from the existing complete cache entry named by
 /// <see cref="BackingCacheKey"/>, and this descriptor is scoped to the credential/cache partition
@@ -51,10 +51,8 @@ public sealed record EvidenceDescriptor
     /// <see cref="FileEvidenceDeliveryStore"/> remarks): refreshed to
     /// <c>UtcNow + FileEvidenceDeliveryStore.MinRetentionWindow</c> every time a descriptor for
     /// this entry is handed out (put, dedupe refresh, read, or lookup). Deliberately not a
-    /// <c>required</c> member: it is persisted in the on-disk <c>.meta.json</c> sidecar, and a
-    /// sidecar written before this field existed must still deserialize — it is simply treated as
-    /// already-expired/unpinned (the default <c>DateTimeOffset</c>) until next handed out, which
-    /// only narrows its protection window rather than breaking deserialization outright.
+    /// <c>required</c> member for descriptor compatibility. Pins are persisted transactionally
+    /// in delivery.db alongside size accounting; the descriptor exposes the latest issued pin.
     /// </summary>
     [JsonPropertyName("pinnedUntil")]
     public DateTimeOffset PinnedUntilUtc { get; init; }
@@ -145,11 +143,11 @@ public sealed record RetentionStatus
     [JsonPropertyName("totalBytes")]
     public required long TotalBytes { get; init; }
 
-    /// <summary>The configured soft cap (<see cref="HelixTool.Core.Cache.CacheOptions.MaxSizeBytes"/>) this partition is measured against.</summary>
+    /// <summary>Delivery sub-budget: one quarter of configured cache bytes, or 256 MiB when caching is disabled.</summary>
     [JsonPropertyName("capBytes")]
     public required long CapBytes { get; init; }
 
-    /// <summary><c>true</c> when <see cref="TotalBytes"/> exceeds <see cref="CapBytes"/> after the sweep — only possible when pinned entries alone account for the overage, since all eligible unpinned entries are evicted first.</summary>
+    /// <summary><c>true</c> when <see cref="TotalBytes"/> exceeds <see cref="CapBytes"/> after the sweep — pinned entries and files that could not be deleted may leave a soft-cap overage.</summary>
     [JsonPropertyName("capExceeded")]
     public required bool CapExceeded { get; init; }
 

@@ -87,6 +87,29 @@ hlx cache status   # Show cache size, entry count, oldest/newest entries
 hlx cache clear    # Wipe all cached data
 ```
 
+### Delivered evidence retention
+
+Oversized MCP responses delivered as files live inside the existing per-user cache trust boundary:
+`<effective-cache-root>/delivery/<credential-partition>/`. The effective root already isolates
+live auth contexts. Offline replay never writes into its immutable snapshot: delivery goes to
+`<normal-user-cache-root>/eval-delivery/<SHA256-of-normalized-snapshot-path>/<credential-partition>/`.
+The normal user root is `%LOCALAPPDATA%/hlx` on Windows or `$XDG_CACHE_HOME/hlx`
+(default `~/.cache/hlx`) on Unix; `XDG_RUNTIME_DIR` and `HLX_DELIVERY_RUNTIME_DIR` are not used.
+
+Each delivery partition has a separate soft sub-budget of **25% of `HLX_CACHE_MAX_SIZE_MB`**
+(minimum one byte), tracked in `delivery.db` rather than included in `hlx cache status` artifact
+bytes. Every put, dedupe hit, descriptor lookup, and read renews a **24-hour pin**. Expired unpinned
+entries follow the cache's artifact-age limit and oldest-access-first size eviction. Pins always
+win over the soft cap; `FileEvidenceDeliveryStore.TryGetRetentionStatus` reports pinned bytes and
+any overage. SQLite transactions serialize pins and eviction across processes.
+
+With `HLX_CACHE_MAX_SIZE_MB=0`, file delivery still works under
+`<base-cache-root>/delivery-ephemeral/<credential-partition>/`, with the same pins and retention
+and a **256 MiB** soft budget. Delivery is reconstructable evidence, not part of snapshot exports;
+`hlx cache clear` clears the primary cache, not delivery evidence protected by these pins. Delivery
+follows the cache's trust model without separate owner/ACL checks. New Unix directories/files are
+created with modes 0700/0600 as defense in depth.
+
 ### Offline Snapshots
 
 Export the current cache as a portable snapshot for offline replay, testing, or reproducible scenarios:

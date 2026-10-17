@@ -1,45 +1,33 @@
-using System.Collections.Concurrent;
 using System.Reflection;
-using System.Runtime.InteropServices;
-using System.Text.Json.Nodes;
 using HelixTool.Core.Cache;
 using HelixTool.Core.Delivery;
+using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace HelixTool.Tests.AzDO;
 
-[Collection("AzdoTokenEnv")]
 public sealed class DeliveryCrossProcessPinRegressionTests : IDisposable
 {
     private readonly string _root = Path.GetFullPath(Path.Combine(".test-runtime", $"cross-process-pin-{Guid.NewGuid():N}"));
 
     [Fact]
-    public async Task ExpiredSnapshotAndIndependentProcessRenewal_CannotInvalidateRenewedReceipt()
+    public async Task RetentionTransactionAndIndependentPublication_CannotInvalidateRenewedReceipt()
     {
-        var options = new CacheOptions { CacheRoot = _root, MaxSizeBytes = 1, ArtifactMaxAge = TimeSpan.FromHours(1) };
+        var options = new CacheOptions { CacheRoot = _root, MaxSizeBytes = 4, ArtifactMaxAge = TimeSpan.FromHours(1) };
         var sweeper = new FileEvidenceDeliveryStore(options);
         var publisher = new FileEvidenceDeliveryStore(options);
-        const string content = "renewed across independent process locks";
+        const string content = "renewed across independent SQLite connections";
         var initial = sweeper.PutText(content, "text/plain", null, null, "public");
-        Assert.NotNull(publisher.TryGetRetentionStatus("public"));
         var root = Path.GetDirectoryName(initial.LocalPath)!;
-        var metaPath = Path.ChangeExtension(initial.LocalPath, ".meta.json");
-        var metadata = JsonNode.Parse(File.ReadAllText(metaPath))!.AsObject();
-        metadata["pinnedUntil"] = DateTimeOffset.UtcNow.AddDays(-1);
-        File.WriteAllText(metaPath, metadata.ToJsonString());
-        File.SetLastAccessTimeUtc(initial.LocalPath, DateTime.UtcNow.AddDays(-2));
+        Expire(root, initial);
 
-        var locksField = typeof(FileEvidenceDeliveryStore).GetField("PartitionLocks", BindingFlags.NonPublic | BindingFlags.Static);
-        Assert.NotNull(locksField);
-        var locks = Assert.IsType<ConcurrentDictionary<string, object>>(locksField.GetValue(null));
-        var originalLock = locks[root];
         var snapshot = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var renewalStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var releaseSweep = new ManualResetEventSlim();
         SetSnapshotHook(sweeper, () =>
         {
             snapshot.TrySetResult();
-            Assert.True(releaseSweep.Wait(TimeSpan.FromSeconds(15)), "Test coordinator failed to release the captured sweep.");
+            Assert.True(releaseSweep.Wait(TimeSpan.FromSeconds(15)));
         });
         Task? sweep = null;
         Task<EvidenceDescriptor>? renewal = null;
@@ -47,10 +35,6 @@ public sealed class DeliveryCrossProcessPinRegressionTests : IDisposable
         {
             sweep = Task.Run(() => Sweep(sweeper, root));
             await snapshot.Task.WaitAsync(TimeSpan.FromSeconds(10));
-            // Different processes do not share PartitionLocks. Replace only this test's unique
-            // root entry while the first sweep still holds its original monitor.
-            locks[root] = new object();
-            AssertCrossProcessLeaseHeld(root);
             renewal = Task.Run(() =>
             {
                 renewalStarted.TrySetResult();
@@ -60,13 +44,11 @@ public sealed class DeliveryCrossProcessPinRegressionTests : IDisposable
             releaseSweep.Set();
             await sweep.WaitAsync(TimeSpan.FromSeconds(10));
             var receipt = await renewal.WaitAsync(TimeSpan.FromSeconds(10));
-            Assert.True(receipt.Complete);
             Assert.Equal(initial.EvidenceId, receipt.EvidenceId);
-            var read = publisher.Read(receipt.EvidenceId, 0, 1000, "utf8", "public");
-            Assert.True(read.SourceComplete);
-            Assert.Equal(content, read.Text);
-            Assert.True(File.Exists(receipt.LocalPath));
-            Assert.NotNull(publisher.TryGetDescriptor(receipt.EvidenceId, "public"));
+            Assert.True(receipt.Complete);
+            Sweep(sweeper, root);
+            Assert.Equal(content, sweeper.Read(receipt.EvidenceId, 0, 1000, "utf8", "public").Text);
+            Assert.True(publisher.TryGetDescriptor(receipt.EvidenceId, "public")!.PinnedUntilUtc > DateTimeOffset.UtcNow.AddHours(23));
         }
         finally
         {
@@ -75,51 +57,52 @@ public sealed class DeliveryCrossProcessPinRegressionTests : IDisposable
                 await sweep.WaitAsync(TimeSpan.FromSeconds(20));
             if (renewal is not null)
                 await renewal.WaitAsync(TimeSpan.FromSeconds(20));
-            locks[root] = originalLock;
             SetSnapshotHook(sweeper, null);
         }
     }
 
-    private static void AssertCrossProcessLeaseHeld(string root)
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task IndependentReaderRenewal_IsVisibleToConcurrentRetention(bool descriptorLookup)
     {
-        var field = typeof(FileEvidenceDeliveryStore).GetField("CrossProcessLockFileName",
-            BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static);
-        Assert.NotNull(field);
-        var path = Path.Combine(root, Assert.IsType<string>(field.GetRawConstantValue()));
-        if (OperatingSystem.IsWindows())
+        var options = new CacheOptions { CacheRoot = _root, MaxSizeBytes = 4, ArtifactMaxAge = TimeSpan.FromHours(1) };
+        var sweeper = new FileEvidenceDeliveryStore(options);
+        var reader = new FileEvidenceDeliveryStore(options);
+        var receipt = sweeper.PutText("persisted renewal", "text/plain", null, null, "public");
+        var root = Path.GetDirectoryName(receipt.LocalPath)!;
+        Expire(root, receipt);
+        if (descriptorLookup)
+            Assert.NotNull(reader.TryGetDescriptor(receipt.EvidenceId, "public"));
+        else
+            Assert.Equal("persisted renewal", reader.Read(receipt.EvidenceId, 0, 100, "utf8", "public").Text);
+        await Task.WhenAll(
+            Task.Run(() => Sweep(sweeper, root)),
+            Task.Run(() => Assert.Equal("persisted renewal", reader.Read(receipt.EvidenceId, 0, 100, "utf8", "public").Text)));
+        Assert.Equal("persisted renewal", sweeper.Read(receipt.EvidenceId, 0, 100, "utf8", "public").Text);
+    }
+
+    private static void Expire(string root, EvidenceDescriptor receipt)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
-            Assert.Throws<IOException>(() =>
-            {
-                using var competing = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-            });
-            return;
-        }
-        var fd = Open(path, 2);
-        Assert.True(fd >= 0, $"Unable to open the owned partition lock, errno={Marshal.GetLastPInvokeError()}.");
-        try
-        {
-            var result = Flock(fd, 2 | 4);
-            var error = Marshal.GetLastPInvokeError();
-            if (result == 0)
-                Flock(fd, 8);
-            Assert.Equal(-1, result);
-            Assert.Contains(error, new[] { 11, 35 });
-        }
-        finally { Close(fd); }
+            DataSource = Path.Combine(root, "delivery.db"), Pooling = false
+        }.ToString());
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE entries SET pinned_until = @pin, last_access = @access WHERE id = @id";
+        command.Parameters.AddWithValue("@pin", DateTimeOffset.UtcNow.AddDays(-1).ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("@access", DateTimeOffset.UtcNow.AddDays(-2).ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("@id", receipt.EvidenceId);
+        Assert.Equal(1, command.ExecuteNonQuery());
     }
 
     private static void SetSnapshotHook(FileEvidenceDeliveryStore store, Action? callback)
     {
-        const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance;
-        var field = typeof(FileEvidenceDeliveryStore).GetField("RetentionSnapshotCapturedForTesting", flags);
-        if (field is not null)
-        {
-            field.SetValue(store, callback);
-            return;
-        }
-        var property = typeof(FileEvidenceDeliveryStore).GetProperty("RetentionSnapshotCapturedForTesting", flags);
-        Assert.NotNull(property);
-        property.SetValue(store, callback);
+        var field = typeof(FileEvidenceDeliveryStore).GetField("RetentionSnapshotCapturedForTesting",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(field);
+        field.SetValue(store, callback);
     }
 
     private static void Sweep(FileEvidenceDeliveryStore store, string root)
@@ -132,15 +115,6 @@ public sealed class DeliveryCrossProcessPinRegressionTests : IDisposable
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
         }
     }
-
-    [DllImport("libc", EntryPoint = "open", SetLastError = true)]
-    private static extern int Open(string path, int flags);
-
-    [DllImport("libc", EntryPoint = "flock", SetLastError = true)]
-    private static extern int Flock(int fd, int operation);
-
-    [DllImport("libc", EntryPoint = "close")]
-    private static extern int Close(int fd);
 
     public void Dispose()
     {

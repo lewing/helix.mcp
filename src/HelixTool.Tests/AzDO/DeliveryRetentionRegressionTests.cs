@@ -1,9 +1,8 @@
 using System.Reflection;
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using HelixTool.Core.Cache;
 using HelixTool.Core.Delivery;
+using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace HelixTool.Tests.AzDO;
@@ -29,7 +28,7 @@ public sealed class DeliveryRetentionRegressionTests : IDisposable
     {
         var store = CreateStore(cap: 3);
         var first = Put(store, "AA");
-        File.SetLastAccessTimeUtc(first.LocalPath, DateTime.UtcNow.AddDays(-2));
+        SetLastAccess(first, DateTimeOffset.UtcNow.AddDays(-2));
         var second = Put(store, "BB");
         Assert.True(first.Complete);
         Assert.True(second.Complete);
@@ -48,12 +47,12 @@ public sealed class DeliveryRetentionRegressionTests : IDisposable
         var first = Put(store, "identical");
         var oldAccess = DateTime.UtcNow.AddDays(-2);
         ExpirePin(first);
-        File.SetLastAccessTimeUtc(first.LocalPath, oldAccess);
+        SetLastAccess(first, oldAccess);
         var second = Put(store, "identical");
         Assert.Equal(first.EvidenceId, second.EvidenceId);
         Assert.Equal(first.LocalPath, second.LocalPath);
         Assert.Equal(first.Sha256, second.Sha256);
-        Assert.True(File.GetLastAccessTimeUtc(first.LocalPath) > oldAccess.AddDays(1));
+        Assert.True(GetEntryTimestamp(first, "last_access") > oldAccess.AddDays(1));
         Assert.Single(Directory.EnumerateFiles(Path.GetDirectoryName(first.LocalPath)!, "*.bin"));
         Sweep(store);
         AssertReadable(store, first, "identical");
@@ -70,12 +69,12 @@ public sealed class DeliveryRetentionRegressionTests : IDisposable
         var newest = Put(store, "newestCC");
         foreach (var receipt in new[] { oldest, middle, newest })
             ExpirePin(receipt);
-        File.SetLastAccessTimeUtc(oldest.LocalPath, DateTime.UtcNow.AddMinutes(-3));
-        File.SetLastAccessTimeUtc(middle.LocalPath, DateTime.UtcNow.AddMinutes(-2));
-        File.SetLastAccessTimeUtc(newest.LocalPath, DateTime.UtcNow.AddMinutes(-1));
+        SetLastAccess(oldest, DateTimeOffset.UtcNow.AddMinutes(-3));
+        SetLastAccess(middle, DateTimeOffset.UtcNow.AddMinutes(-2));
+        SetLastAccess(newest, DateTimeOffset.UtcNow.AddMinutes(-1));
         Sweep(store);
         Assert.False(File.Exists(oldest.LocalPath));
-        Assert.False(File.Exists(Path.ChangeExtension(oldest.LocalPath, ".meta.json")));
+        AssertEntryRemoved(oldest);
         Assert.False(File.Exists(middle.LocalPath));
         Assert.True(File.Exists(newest.LocalPath));
         AssertReadable(store, newest, "newestCC");
@@ -88,11 +87,11 @@ public sealed class DeliveryRetentionRegressionTests : IDisposable
         var expired = Put(store, "expired");
         var pinned = Put(store, "still issued");
         ExpirePin(expired);
-        File.SetLastAccessTimeUtc(expired.LocalPath, DateTime.UtcNow.AddDays(-2));
-        File.SetLastAccessTimeUtc(pinned.LocalPath, DateTime.UtcNow.AddDays(-3));
+        SetLastAccess(expired, DateTimeOffset.UtcNow.AddDays(-2));
+        SetLastAccess(pinned, DateTimeOffset.UtcNow.AddDays(-3));
         Sweep(store);
         Assert.False(File.Exists(expired.LocalPath));
-        Assert.False(File.Exists(Path.ChangeExtension(expired.LocalPath, ".meta.json")));
+        AssertEntryRemoved(expired);
         AssertReadable(store, pinned, "still issued");
     }
 
@@ -105,9 +104,9 @@ public sealed class DeliveryRetentionRegressionTests : IDisposable
         var newestEligible = Put(store, "newestCC");
         ExpirePin(oldestEligible);
         ExpirePin(newestEligible);
-        File.SetLastAccessTimeUtc(pinned.LocalPath, DateTime.UtcNow.AddMinutes(-3));
-        File.SetLastAccessTimeUtc(oldestEligible.LocalPath, DateTime.UtcNow.AddMinutes(-2));
-        File.SetLastAccessTimeUtc(newestEligible.LocalPath, DateTime.UtcNow.AddMinutes(-1));
+        SetLastAccess(pinned, DateTimeOffset.UtcNow.AddMinutes(-3));
+        SetLastAccess(oldestEligible, DateTimeOffset.UtcNow.AddMinutes(-2));
+        SetLastAccess(newestEligible, DateTimeOffset.UtcNow.AddMinutes(-1));
         Sweep(store);
         Assert.True(File.Exists(pinned.LocalPath));
         Assert.False(File.Exists(oldestEligible.LocalPath));
@@ -133,21 +132,18 @@ public sealed class DeliveryRetentionRegressionTests : IDisposable
         else
             Assert.Equal("renewed", store.Read(receipt.EvidenceId, 0, 100, "utf8", "public").Text);
         AssertPinRenewed(receipt);
-        File.SetLastAccessTimeUtc(receipt.LocalPath, DateTime.UtcNow.AddDays(-2));
+        SetLastAccess(receipt, DateTimeOffset.UtcNow.AddDays(-2));
         Sweep(store);
         AssertReadable(store, receipt, "renewed");
     }
 
     [Fact]
-    public void LegacySidecarWithoutPin_RemainsReadableAndAcquiresProtectionOnHandout()
+    public void UnpinnedDatabaseEntry_RemainsReadableAndAcquiresProtectionOnHandout()
     {
         var store = CreateStore(cap: 10000);
-        var receipt = Put(store, "legacy receipt");
-        var path = Path.ChangeExtension(receipt.LocalPath, ".meta.json");
-        var metadata = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
-        metadata.Remove("pinnedUntil");
-        File.WriteAllText(path, metadata.ToJsonString());
-        AssertReadable(store, receipt, "legacy receipt");
+        var receipt = Put(store, "unprotected receipt");
+        SetEntryTimestamp(receipt, "pinned_until", DateTimeOffset.UnixEpoch);
+        AssertReadable(store, receipt, "unprotected receipt");
         AssertPinRenewed(receipt);
     }
 
@@ -209,7 +205,7 @@ public sealed class DeliveryRetentionRegressionTests : IDisposable
 
     private FileEvidenceDeliveryStore CreateStore(long cap) => new(new CacheOptions
     {
-        CacheRoot = _root, MaxSizeBytes = cap, ArtifactMaxAge = TimeSpan.FromHours(1)
+        CacheRoot = _root, MaxSizeBytes = cap * 4, ArtifactMaxAge = TimeSpan.FromHours(1)
     });
 
     private static EvidenceDescriptor Put(FileEvidenceDeliveryStore store, string content) =>
@@ -226,17 +222,55 @@ public sealed class DeliveryRetentionRegressionTests : IDisposable
 
     private static void ExpirePin(EvidenceDescriptor receipt)
     {
-        var path = Path.ChangeExtension(receipt.LocalPath, ".meta.json");
-        var metadata = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
-        metadata["pinnedUntil"] = DateTimeOffset.UtcNow.AddDays(-1);
-        File.WriteAllText(path, metadata.ToJsonString());
+        SetEntryTimestamp(receipt, "pinned_until", DateTimeOffset.UtcNow.AddDays(-1));
     }
 
     private static void AssertPinRenewed(EvidenceDescriptor receipt)
     {
-        using var metadata = JsonDocument.Parse(File.ReadAllText(Path.ChangeExtension(receipt.LocalPath, ".meta.json")));
-        Assert.True(metadata.RootElement.GetProperty("pinnedUntil").GetDateTimeOffset() > DateTimeOffset.UtcNow.AddHours(23),
+        Assert.True(GetEntryTimestamp(receipt, "pinned_until") > DateTimeOffset.UtcNow.AddHours(23),
             "Every successful hand-out must renew the persisted minimum 24-hour protection window.");
+    }
+
+    private static void SetLastAccess(EvidenceDescriptor receipt, DateTimeOffset value) =>
+        SetEntryTimestamp(receipt, "last_access", value);
+
+    private static void SetEntryTimestamp(EvidenceDescriptor receipt, string column, DateTimeOffset value)
+    {
+        using var connection = OpenDatabase(receipt);
+        using var command = connection.CreateCommand();
+        command.CommandText = $"UPDATE entries SET {column} = @value WHERE id = @id";
+        command.Parameters.AddWithValue("@value", value.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("@id", receipt.EvidenceId);
+        Assert.Equal(1, command.ExecuteNonQuery());
+    }
+
+    private static DateTimeOffset GetEntryTimestamp(EvidenceDescriptor receipt, string column)
+    {
+        using var connection = OpenDatabase(receipt);
+        using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT {column} FROM entries WHERE id = @id";
+        command.Parameters.AddWithValue("@id", receipt.EvidenceId);
+        return DateTimeOffset.FromUnixTimeMilliseconds(Assert.IsType<long>(command.ExecuteScalar()));
+    }
+
+    private static void AssertEntryRemoved(EvidenceDescriptor receipt)
+    {
+        using var connection = OpenDatabase(receipt);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM entries WHERE id = @id";
+        command.Parameters.AddWithValue("@id", receipt.EvidenceId);
+        Assert.Equal(0L, command.ExecuteScalar());
+    }
+
+    private static SqliteConnection OpenDatabase(EvidenceDescriptor receipt)
+    {
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = Path.Combine(Path.GetDirectoryName(receipt.LocalPath)!, "delivery.db"),
+            Pooling = false
+        }.ToString());
+        connection.Open();
+        return connection;
     }
 
     private static void AssertSoftCapExceeded(FileEvidenceDeliveryStore store, long expectedBytes, int expectedPins, long cap)

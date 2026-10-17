@@ -1,7 +1,7 @@
 namespace HelixTool.Core.Delivery;
 
 /// <summary>
-/// Scoped store for materializing oversized response payloads into the private runtime delivery
+/// Scoped store for materializing oversized response payloads into the per-user cache delivery
 /// directory and reading them back in bounded text/base64 chunks. This is not an arbitrary
 /// filesystem reader: reads are scoped to the credential/cache partition that produced the
 /// descriptor, and every entry is reconstructable from the existing complete backing cache key.
@@ -47,7 +47,7 @@ public interface IEvidenceDeliveryStore
 /// <summary>Thrown when an evidenceId is unknown, expired, or outside the caller's cache partition.</summary>
 public sealed class EvidenceNotFoundException(string evidenceId) : Exception(
     $"Evidence reference '{evidenceId}' was not found in this credential/cache partition. " +
-    "It may have come from a different auth context, or the runtime delivery directory was cleared. " +
+    "It may have come from a different auth context, or the cache delivery directory was cleared. " +
     "Re-run the originating tool call to regenerate it.")
 {
     public string EvidenceId { get; } = evidenceId;

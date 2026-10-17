@@ -946,7 +946,6 @@ internal sealed class TimelineViewHost : IAsyncDisposable
         foreach (var path in _deliveryFiles)
         {
             File.Delete(path);
-            File.Delete(Path.ChangeExtension(path, ".meta.json"));
         }
         CacheTestCleanup.DeleteRoot(_runtimeRoot);
     }

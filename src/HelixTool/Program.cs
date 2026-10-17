@@ -124,7 +124,7 @@ services.AddSingleton<AzdoBuildCollector>();
 }
 
 // Shared evidence delivery store (P0-1 design 2.1a): materializes oversized tool payloads into the
-// private runtime delivery directory and backs hlx_read_evidence. CLI commands with --output write
+// per-user cache delivery directory and backs hlx_read_evidence. CLI commands with --output write
 // files directly; this store exists so CLI-hosted MCP stdio sessions (hlx mcp) can serve remote reads.
 services.AddSingleton<HelixTool.Core.Delivery.IEvidenceDeliveryStore>(sp =>
     new HelixTool.Core.Delivery.FileEvidenceDeliveryStore(sp.GetRequiredService<CacheOptions>()));
