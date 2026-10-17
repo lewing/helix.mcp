@@ -605,15 +605,15 @@ to ZIPs. ZIP selection is explicit, nonrecursive, and available for either scope
 | `--member-path PATH` / `--member-pattern GLOB` | Exclusive relative-path selectors; no synthetic artifact-name prefix. `**/` matches zero or more directories; plain `*` does not cross directories. |
 | `--member-offset N`, `--member-limit N` | 0 / 10; report windows, not source-access ceilings. Nonzero member offset requires exact-resource scope and its `viewId`. |
 | `--offset N`, `--limit N`, `--view-id ID` | 0 / 10 / absent; exact next report coordinates, with observation fingerprints. |
-| `--all`, `--all-members` | Request full resource/member reports; full selected acquisition is independent of inline response size. |
+| `--all`, `--all-members` | Request full resource/member reports; full selected acquisition is independent of inline response size. `--all-members` alone never changes an archive/original-attachment request into extraction; supply `--member-path` or `--member-pattern` to select members. |
 | `--delivery auto\|inline\|file\|chunked` | `auto`; oversized reports always have a verified full manifest and reader action. |
 | `--output-dir DIR`, `--overwrite` | Private server-local delivery by default; optional Windows-safe, resource-qualified copies. Different existing content is not overwritten without consent. |
 | `--output PATH` | Save the complete JSON download report, independently of binary `--output-dir`; verified complete file delivery exits 0. |
-| `--resume true\|false` | `true`; completed SHA-verified blobs are reused. Incomplete prefixes/checkpoints are not successful cache keys. |
+| `--resume true\|false` | `true`; completed SHA-verified blobs are reused. Corrupt cached blobs/descriptors/catalogs are reacquired in live mode; snapshot integrity failures remain read-only errors. Offline replay uses available verified bytes even with `false`. Incomplete prefixes/checkpoints are not successful cache keys. |
 | `--content-kind auto\|logs\|binlog\|dump\|other` | Routing/progress label only, never permission to obtain bytes. |
 | `--max-file-bytes`, `--max-archive-bytes` | Optional intentional planning bounds; **no inferred 50/512 MiB limit**. |
 | `--max-total-bytes`, `--max-total-stream-bytes` | Optional intentional retained/source planning bounds; discarded and retried source bytes count as transfer. |
-| `--allow-large` | Waive logical planning thresholds, not disk/authentication/integrity checks. |
+| `--allow-large` | Waive logical planning thresholds, not disk/authentication/integrity checks. Recovery preserves resource/member selection and resets observation cursors so the retry can report the new complete observation. |
 | `--max-response-bytes N` | 12288; inline shaping target, effective 8192–16384. Full data remains accessible. |
 | `--cache-dir DIR` | Choose live cache storage before acquisition. Cannot replace an active read-only eval snapshot. |
 | `--json`, `--schema` | Bounded structured receipts / report schema. No unsolicited binary stdout. |

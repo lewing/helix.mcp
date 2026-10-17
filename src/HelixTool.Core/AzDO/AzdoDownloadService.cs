@@ -186,7 +186,7 @@ public sealed class AzdoDownloadService(
                     "transfer_interrupted: provider body failed. Resume the exact selection; verified completed files are retained.")
                 });
             }
-            catch (Exception ex) when (ex is IOException or NotSupportedException or JsonException)
+            catch (Exception ex) when (ex is IOException or InvalidDataException or NotSupportedException or JsonException)
             {
                 results.Add(resource.Result with
                 {
@@ -253,7 +253,11 @@ public sealed class AzdoDownloadService(
         }).ToArray();
         var complete = fullComplete && pageResults.Length == results.Count && pageResults.All(r => r.MembersComplete);
         var nextArgs = new Dictionary<string, object?>(arguments) { ["offset"] = options.Offset + pageResults.Length, ["viewId"] = view };
-        var recoveryArgs = new Dictionary<string, object?>(arguments) { ["all"] = true, ["allMembers"] = true, ["delivery"] = "file", ["allowLarge"] = true };
+        var recoveryArgs = new Dictionary<string, object?>(arguments)
+        {
+            ["all"] = true, ["allMembers"] = true, ["delivery"] = "file", ["allowLarge"] = true,
+            ["offset"] = 0, ["memberOffset"] = 0, ["viewId"] = null
+        };
         var recovery = BuildRecovery(tool, recoveryArgs, options, results);
         full = full with
         {
@@ -362,7 +366,7 @@ public sealed class AzdoDownloadService(
     {
         var archiveKey = Key(org, project, resource.ArchiveSuffix);
         var exact = options.MemberPath is null ? null : AzdoDownloadPaths.NormalizeMember(options.MemberPath);
-        var memberMode = exact is not null || options.MemberPattern is not null || options.AllMembers;
+        var memberMode = exact is not null || options.MemberPattern is not null;
         if (!memberMode)
         {
             var published = await CachedAsync(archiveKey, options, ct, resource.ProviderIdentity);
@@ -429,15 +433,23 @@ public sealed class AzdoDownloadService(
 
         var catalogKey = Key(org, project, resource.CatalogSuffix);
         var catalogJson = await cache.GetMetadataAsync(catalogKey, ct);
-        var catalog = catalogJson is null ? null : JsonSerializer.Deserialize<Catalog>(catalogJson, JsonOptions);
-        if (catalog is not null) ValidateCatalog(catalog);
+        Catalog? catalog = null;
+        try
+        {
+            catalog = catalogJson is null ? null : JsonSerializer.Deserialize<Catalog>(catalogJson, JsonOptions);
+            if (catalog is not null) ValidateCatalog(catalog);
+        }
+        catch (Exception ex) when (!cacheOptions.EvalMode && ex is InvalidDataException or JsonException)
+        {
+            catalog = null;
+        }
         if (catalog is not null && resource.ProviderIdentity is not null &&
             catalog.Source.ProviderIdentity != resource.ProviderIdentity)
         {
             if (cacheOptions.EvalMode) throw new InvalidDataException("Catalog provider identity does not match captured artifact metadata.");
             catalog = null;
         }
-        if (catalog is not null && options.Resume)
+        if (catalog is not null && (options.Resume || cacheOptions.EvalMode))
         {
             var matched = Select(catalog.Members, exact, options).ToArray();
             var members = new List<AzdoDownloadedMember>();
@@ -555,7 +567,7 @@ public sealed class AzdoDownloadService(
                         entry.MemberPath, "member", zipSource, options, counters, false, progress, ct, network: false);
                     output.Add(await MemberAsync(entry.MemberPath, key, published, resource, options, false, ct));
                 }
-                catch (Exception ex) when (ex is IOException or PlanningDeferredException or HlxAcquisitionException)
+                catch (Exception ex) when (ex is IOException or InvalidDataException or PlanningDeferredException or HlxAcquisitionException)
                 {
                     output.Add(new AzdoDownloadedMember
                     {
@@ -652,26 +664,33 @@ public sealed class AzdoDownloadService(
         string key, AzdoDownloadOptions options, CancellationToken ct, string? providerIdentity = null)
     {
         if (!options.Resume && !cacheOptions.EvalMode) return null;
-        var json = await cache.GetMetadataAsync(key, ct);
-        if (json is null) return null;
-        var descriptor = JsonSerializer.Deserialize<AzdoByteDescriptor>(json, JsonOptions)
-            ?? throw new InvalidDataException("Invalid byte descriptor.");
-        AzdoByteDescriptorValidator.Validate(key, descriptor);
-        if (providerIdentity is not null && descriptor.Source.ProviderIdentity != providerIdentity)
+        try
         {
-            if (cacheOptions.EvalMode) throw new InvalidDataException("Byte provider identity does not match captured artifact metadata.");
+            var json = await cache.GetMetadataAsync(key, ct);
+            if (json is null) return null;
+            var descriptor = JsonSerializer.Deserialize<AzdoByteDescriptor>(json, JsonOptions)
+                ?? throw new InvalidDataException("Invalid byte descriptor.");
+            AzdoByteDescriptorValidator.Validate(key, descriptor);
+            if (providerIdentity is not null && descriptor.Source.ProviderIdentity != providerIdentity)
+            {
+                if (cacheOptions.EvalMode) throw new InvalidDataException("Byte provider identity does not match captured artifact metadata.");
+                return null;
+            }
+            await using var stream = await cache.GetArtifactAsync(key, ct);
+            if (stream is null)
+            {
+                if (cacheOptions.EvalMode) EnsureLive(key);
+                return null;
+            }
+            var evidence = await deliveryStore.PutStreamAsync(stream, descriptor.ContentType, descriptor.Sha256, key, Partition, ct);
+            if (evidence.Bytes != descriptor.Bytes || evidence.Sha256 != descriptor.Sha256)
+                throw new InvalidDataException("Cached byte evidence failed SHA-256/length verification.");
+            return (descriptor, evidence);
+        }
+        catch (Exception ex) when (!cacheOptions.EvalMode && ex is InvalidDataException or JsonException)
+        {
             return null;
         }
-        await using var stream = await cache.GetArtifactAsync(key, ct);
-        if (stream is null)
-        {
-            if (cacheOptions.EvalMode) EnsureLive(key);
-            return null;
-        }
-        var evidence = await deliveryStore.PutStreamAsync(stream, descriptor.ContentType, descriptor.Sha256, key, Partition, ct);
-        if (evidence.Bytes != descriptor.Bytes || evidence.Sha256 != descriptor.Sha256)
-            throw new InvalidDataException("Cached byte evidence failed SHA-256/length verification.");
-        return (descriptor, evidence);
     }
 
     private async Task<(AzdoByteDescriptor Descriptor, EvidenceDescriptor Evidence)> PublishAsync(
@@ -918,7 +937,7 @@ public sealed class AzdoDownloadService(
             {
                 var cap = archive ? options.MaxArchiveBytes : options.MaxFileBytes;
                 if (cap is long c && _read > c ||
-                    !archive && options.MaxTotalBytes is long total && _read > total - counters.Retained ||
+                    (!archive || !network) && options.MaxTotalBytes is long total && _read > total - counters.Retained ||
                     network && options.MaxTotalStreamBytes is long stream && counters.Streamed > stream)
                     throw new PlanningDeferredException("Selected planning threshold reached; resume the same request with allowLarge=true.");
             }

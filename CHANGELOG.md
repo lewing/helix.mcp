@@ -45,6 +45,16 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
   `--all`/`--output` escape hatches and `--raw-json` for the legacy `{id, records}` shape used by
   offline snapshot replay (works for every projection, not just `--raw-json`).
 
+### Fixed
+
+- Byte downloads preserve original archives/attachments when `--all-members` only
+  expands the report, enforce retained totals for unknown-length archives, and reset
+  stale observation cursors in same-scope recovery actions. Live resume reacquires
+  corrupt cache pairs/catalogs; offline replay remains read-only and works with
+  resume disabled. Unsolicited partial HTTP bodies are never published as complete.
+  Length/SHA/CRC failures are classified per resource/member without dropping other
+  successful selections.
+
 ### BREAKING
 
 - **`azdo_timeline` default output shape changed.** The default MCP response is now a bounded

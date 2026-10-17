@@ -12,7 +12,7 @@ using Xunit;
 namespace HelixTool.Tests.AzDO;
 
 [Collection("AzdoTokenEnv")]
-public sealed class AzdoByteDownloadTests : IDisposable
+public sealed partial class AzdoByteDownloadTests : IDisposable
 {
     private readonly string _root = Path.GetFullPath(Path.Combine(".test-runtime", $"azdo-bytes-{Guid.NewGuid():N}"));
     private readonly IAzdoApiClient _client = Substitute.For<IAzdoApiClient>();
@@ -125,8 +125,10 @@ public sealed class AzdoByteDownloadTests : IDisposable
         Assert.Equal(2, full.RootElement.GetProperty("results")[0].GetProperty("members").GetArrayLength());
     }
 
-    [Fact]
-    public async Task Snapshot_ReplaysOnlySelectedMembersOnCurrentHostWithoutNetwork()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Snapshot_ReplaysOnlySelectedMembersOnCurrentHostWithoutNetwork(bool resume)
     {
         var zip = Zip(("drop/Build.binlog", "selected"), ("drop/Restore.binlog", "not selected"));
         _client.OpenArtifactAsync("dnceng-public", "public", 42, _artifact, null, Arg.Any<CancellationToken>())
@@ -143,7 +145,7 @@ public sealed class AzdoByteDownloadTests : IDisposable
         var offline = new CachingAzdoApiClient(new OfflineAzdoApiClient(), offlineStore, evalOptions);
         var delivery = new FileEvidenceDeliveryStore(new CacheOptions { CacheRoot = Path.Combine(_root, "current-host-delivery") });
         var replay = new AzdoDownloadService(offline, offlineStore, evalOptions, delivery);
-        var available = await replay.DownloadArtifactsAsync("42", selected);
+        var available = await replay.DownloadArtifactsAsync("42", selected with { Resume = resume });
         Assert.True(available.Complete);
         Assert.Equal(0, available.StreamedBytes);
         Assert.Contains("current-host-delivery", Assert.Single(Assert.Single(available.Results).Members).LocalPath);

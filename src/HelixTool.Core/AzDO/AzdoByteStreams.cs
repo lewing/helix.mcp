@@ -98,6 +98,8 @@ public sealed partial class AzdoApiClient
                     continue;
                 }
                 await ThrowOnUnexpectedError(response, operation, resource, ct);
+                if (response.StatusCode == HttpStatusCode.PartialContent || response.Content.Headers.ContentRange is not null)
+                    throw new InvalidDataException("Provider returned a partial body without a validated Range request; restart the exact request without Range.");
                 var mediaType = response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
                 if (mediaType.Contains("html", StringComparison.OrdinalIgnoreCase) ||
                     mediaType.Contains("json", StringComparison.OrdinalIgnoreCase))
