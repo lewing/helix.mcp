@@ -33,7 +33,7 @@ public class AzdoEvidenceSurfaceTests
     {
         _mockApi = Substitute.For<IAzdoApiClient>();
         _svc = new AzdoService(_mockApi);
-        _tools = new AzdoMcpTools(_svc, Substitute.For<IAzdoTokenAccessor>());
+        _tools = new AzdoMcpTools(_svc, Substitute.For<IAzdoTokenAccessor>(), Substitute.For<HelixTool.Core.Delivery.IEvidenceDeliveryStore>());
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -595,8 +595,7 @@ public class AzdoEvidenceSurfaceTests
         }
         finally
         {
-            if (Directory.Exists(cacheRoot))
-                Directory.Delete(cacheRoot, recursive: true);
+            CacheTestCleanup.DeleteRoot(cacheRoot);
         }
     }
 
@@ -2049,17 +2048,7 @@ public class AzdoEvidenceSurfaceTests
 
     private static void CleanupSnapshot(string cacheRoot)
     {
-        if (!Directory.Exists(cacheRoot))
-            return;
-
-        try
-        {
-            Directory.Delete(cacheRoot, recursive: true);
-        }
-        catch (IOException)
-        {
-            // Best-effort cleanup; a locked snapshot file must not fail the test.
-        }
+        CacheTestCleanup.DeleteRoot(cacheRoot);
     }
 
     private void SetupMockPlanForOrg(string org, string project, int buildId)

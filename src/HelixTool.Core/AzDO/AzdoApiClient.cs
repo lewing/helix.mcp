@@ -345,7 +345,7 @@ public sealed class AzdoApiClient : IAzdoApiClient
         if (credential is null || string.IsNullOrEmpty(credential.Token))
             return null;
 
-        _cacheOptions.UpdateAuthContext(credential.CacheIdentity ?? AzdoCredential.BuildCacheIdentity(credential.Source, credential.DisplayToken));
+        _cacheOptions.UpdateAuthContext(credential.ResolveCacheIdentity());
 
         request.Headers.Authorization = credential.Scheme switch
         {

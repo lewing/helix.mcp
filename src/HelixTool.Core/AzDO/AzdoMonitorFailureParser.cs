@@ -340,16 +340,20 @@ internal static class AzdoMonitorFailureParser
         return workItemName.Length > 0;
     }
 
-    private static bool IsMonitorLikeMessage(string message) =>
+    /// <summary>True when a single issue message looks like Helix monitor failure-shaped text, parsed or not.</summary>
+    public static bool IsMonitorLikeMessage(string message) =>
         message.Contains("Failed work item information:", StringComparison.OrdinalIgnoreCase)
         || (message.Contains("Work item '", StringComparison.OrdinalIgnoreCase)
             && message.Contains(" in job '", StringComparison.OrdinalIgnoreCase)
             && message.Contains(" failed", StringComparison.OrdinalIgnoreCase));
 
-    private static bool ContainsMonitorAndHelix(string? value) =>
+    /// <summary>True when a record/job name hints at a Helix monitor step; not proof of an actual Helix failure.</summary>
+    public static bool IsMonitorLikeName(string? value) =>
         value is not null
         && value.Contains("monitor", StringComparison.OrdinalIgnoreCase)
         && value.Contains("helix", StringComparison.OrdinalIgnoreCase);
+
+    private static bool ContainsMonitorAndHelix(string? value) => IsMonitorLikeName(value);
 
     private static string? GetOptionalGroupValue(Match match, string groupName)
     {

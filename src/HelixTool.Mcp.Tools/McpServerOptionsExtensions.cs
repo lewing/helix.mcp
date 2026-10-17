@@ -21,13 +21,16 @@ public static class McpServerOptionsExtensions
     // canonical are present without the canonical key. All aliases are processed in a single pass so that callers
     // passing aliases for different canonicals (e.g. build_id + result on azdo_search_timeline) have all entries
     // renamed before strict-mode unmapped-member checking fires.
-    private static readonly (string Alias, string Canonical)[] s_argumentAliases =
+    // ToolName null = applies to every tool; a specific tool name scopes the alias so it cannot clobber another
+    // tool's own canonical parameter of the same name (azdo_timeline.result is canonical, not an alias target).
+    private static readonly (string? ToolName, string Alias, string Canonical)[] s_argumentAliases =
     [
-        ("build_id", "buildIdOrUrl"),
-        ("buildId", "buildIdOrUrl"),
-        ("buildUrl", "buildIdOrUrl"),
+        (null, "build_id", "buildIdOrUrl"),
+        (null, "buildId", "buildIdOrUrl"),
+        (null, "buildUrl", "buildIdOrUrl"),
         // azdo_search_timeline exposes the filter param as 'resultFilter'; callers historically pass 'result'.
-        ("result", "resultFilter"),
+        // Scoped to that tool only — azdo_timeline/azdo_builds declare their own canonical 'result' parameter.
+        ("azdo_search_timeline", "result", "resultFilter"),
     ];
 
     public static McpServerOptions AddBindingErrorFilter(this McpServerOptions options, ILogger? logger = null)
@@ -302,8 +305,15 @@ public static class McpServerOptionsExtensions
             return;
         }
 
-        foreach (var (alias, canonical) in s_argumentAliases)
+        var toolName = parameters?.Name;
+
+        foreach (var (scopedToolName, alias, canonical) in s_argumentAliases)
         {
+            // A tool-scoped alias only applies to that exact tool, so it can never clobber a
+            // different tool's own canonical parameter of the same name.
+            if (scopedToolName is not null && !string.Equals(scopedToolName, toolName, StringComparison.Ordinal))
+                continue;
+
             var aliasKey = FindArgumentKey(arguments, alias);
             if (aliasKey is null)
                 continue;

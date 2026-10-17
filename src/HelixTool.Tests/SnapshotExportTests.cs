@@ -932,14 +932,7 @@ public class SnapshotExporterTests : IDisposable
     {
         foreach (var workspace in _workspaces)
         {
-            try
-            {
-                Directory.Delete(workspace, recursive: true);
-            }
-            catch
-            {
-                // Best effort only.
-            }
+            CacheTestCleanup.DeleteRoot(workspace);
         }
     }
 
@@ -2907,14 +2900,7 @@ public class SnapshotValidatorTests : IDisposable
     {
         foreach (var workspace in _workspaces)
         {
-            try
-            {
-                Directory.Delete(workspace, recursive: true);
-            }
-            catch
-            {
-                // Best effort only.
-            }
+            CacheTestCleanup.DeleteRoot(workspace);
         }
     }
 
@@ -3790,14 +3776,7 @@ public class SnapshotCommandOutputTests : IDisposable
 
     public void Dispose()
     {
-        try
-        {
-            Directory.Delete(_workspace, recursive: true);
-        }
-        catch
-        {
-            // Best effort only.
-        }
+        CacheTestCleanup.DeleteRoot(_workspace);
     }
 
     [Fact]

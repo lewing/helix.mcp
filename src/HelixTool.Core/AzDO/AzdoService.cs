@@ -193,6 +193,18 @@ public class AzdoService
     }
 
     /// <summary>
+    /// Resolve the backing cache key and credential/cache partition for a build's timeline, without
+    /// performing acquisition. Used by delivery/evidence helpers that must key materialized views to
+    /// the same complete backing entry that <see cref="GetTimelineAsync"/> reads from.
+    /// </summary>
+    public (string CacheKey, string CachePartition) ResolveTimelineCacheIdentity(string buildIdOrUrl)
+    {
+        var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
+        var cacheKey = AzdoCacheKeys.MetadataKey(_cacheOptions, org, project, $"timeline:{buildId}");
+        return (cacheKey, _cacheOptions.AuthTokenHash ?? "public");
+    }
+
+    /// <summary>
     /// Get build log content by build ID or AzDO URL and log ID.
     /// Optionally returns only the last N lines.
     /// </summary>

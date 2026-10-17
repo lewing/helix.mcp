@@ -150,7 +150,7 @@ public sealed class SnapshotMissCacheStoreTests : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(_root, recursive: true); } catch { }
+        CacheTestCleanup.DeleteRoot(_root);
     }
 
     [Fact]
@@ -301,7 +301,7 @@ public sealed class SnapshotMissCacheStoreTests : IDisposable
         }
         finally
         {
-            try { Directory.Delete(destination, recursive: true); } catch { }
+            CacheTestCleanup.DeleteRoot(destination);
         }
     }
 }
@@ -312,7 +312,7 @@ public sealed class SnapshotMissSnapshotValidationTests : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(_root, recursive: true); } catch { }
+        CacheTestCleanup.DeleteRoot(_root);
     }
 
     [Fact]
@@ -393,7 +393,7 @@ public sealed class SnapshotMissReplayTests : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(_root, recursive: true); } catch { }
+        CacheTestCleanup.DeleteRoot(_root);
     }
 
     [Fact]

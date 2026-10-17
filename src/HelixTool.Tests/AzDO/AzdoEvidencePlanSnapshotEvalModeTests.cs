@@ -42,7 +42,7 @@ public class AzdoEvidencePlanSnapshotEvalModeTests : IDisposable
     public void Dispose()
     {
         _evalStore?.Dispose();
-        try { Directory.Delete(_parentDir, recursive: true); } catch { }
+        CacheTestCleanup.DeleteRoot(_parentDir);
     }
 
     /// <summary>

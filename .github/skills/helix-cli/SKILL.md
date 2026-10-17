@@ -107,9 +107,14 @@ hlx status "$JOB" all --json \
 # Recent builds (.[] .id, .definition.name, .sourceBranch, .triggerInfo["pr.number"])
 hlx azdo builds --pr-number 118282 --top 20 --json \
   | jq -r '.[] | select(.result == "failed") | [.id, .definition.name, .sourceBranch, (.triggerInfo // {} | .["pr.number"] // "-")] | @tsv'
-# Failed timeline records (.records[].type, .records[].name, .records[].log.id)
+# Failed timeline records (.results[].type, .results[].name, .results[].log.id)
+# Default projection is triage (<=10 rows/page, Phase omitted); check .complete/.truncated/.next
+# before trusting this as the whole failure set — a truthy .next means more pages remain.
 hlx azdo timeline "$BUILD" --filter failed --json \
-  | jq -r '.records[] | select(.log != null) | [.type, .name, (.log.id | tostring)] | @tsv'
+  | jq -r '.results[] | select(.log != null) | [.type, .name, (.log.id | tostring)] | @tsv'
+# Walk every page instead of silently stopping at the first (pass --view-id "$VIEW_ID" once known):
+# hlx azdo timeline "$BUILD" --filter failed --limit 50 --output /tmp/timeline.json --allow-truncated
+# then check .complete/.results in /tmp/timeline.json, or pass --all/--raw-json for the full set.
 # Ranked AzDO log hits (.steps[].logId, .steps[].stepName, .steps[].stepResult, .steps[].matchCount)
 hlx azdo search-log "$BUILD" --pattern error --max-matches 20 --json \
   | jq -r '.steps[] | [.logId, .stepName, .stepResult, (.matchCount | tostring)] | @tsv'

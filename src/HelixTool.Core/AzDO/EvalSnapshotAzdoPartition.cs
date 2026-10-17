@@ -82,12 +82,21 @@ public static class EvalSnapshotAzdoPartitionSelector
         if (!File.Exists(dbPath))
             return partitions;
 
-        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        // Read-only (not immutable): partition prefixes can be committed only to WAL, same as
+        // payloads — immutable=1 tells SQLite the file will never change and skips consulting the
+        // WAL entirely, silently hiding any partition whose only committed record lives there.
+        // Plain Mode=ReadOnly still follows an existing WAL correctly (SQLite's normal read-only
+        // WAL-reader protocol) without ever writing to the snapshot.
+        // Built via SqliteConnectionStringBuilder rather than string interpolation so a dbPath
+        // containing ';' (a valid path character on several filesystems) cannot inject/truncate
+        // connection-string keywords.
+        var connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = dbPath,
             Mode = SqliteOpenMode.ReadOnly,
             Pooling = false
-        }.ToString());
+        }.ToString();
+        using var connection = new SqliteConnection(connectionString);
         connection.Open();
 
         ReadKeyPartitions(connection, "cache_metadata", partitions);

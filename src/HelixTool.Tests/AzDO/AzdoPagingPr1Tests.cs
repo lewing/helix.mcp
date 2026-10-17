@@ -521,8 +521,7 @@ public sealed class AzdoPagingPr1CliTests
 
     private static void TryDelete(string path)
     {
-        try { Directory.Delete(path, recursive: true); }
-        catch { }
+        CacheTestCleanup.DeleteRoot(path);
     }
 
     private sealed class ContinuationTokenHandler : HttpMessageHandler
@@ -651,7 +650,7 @@ public sealed class AzdoPagingPr1CacheCompatibilityTests : IDisposable
 
         using var evalStore = new SqliteCacheStore(new CacheOptions { CacheRoot = snapshotRoot, EvalMode = true });
         var client = new CachingAzdoApiClient(new OfflineAzdoApiClient(), evalStore, new CacheOptions { CacheRoot = snapshotRoot, EvalMode = true });
-        var tools = new AzdoMcpTools(new AzdoService(client), Substitute.For<IAzdoTokenAccessor>());
+        var tools = new AzdoMcpTools(new AzdoService(client), Substitute.For<IAzdoTokenAccessor>(), Substitute.For<HelixTool.Core.Delivery.IEvidenceDeliveryStore>());
 
         var result = await tools.TestResults("42", 101);
 
@@ -677,7 +676,7 @@ public sealed class AzdoPagingPr1CacheCompatibilityTests : IDisposable
 
         using var evalStore = new SqliteCacheStore(new CacheOptions { CacheRoot = snapshotRoot, EvalMode = true });
         var client = new CachingAzdoApiClient(new OfflineAzdoApiClient(), evalStore, new CacheOptions { CacheRoot = snapshotRoot, EvalMode = true });
-        var tools = new AzdoMcpTools(new AzdoService(client), Substitute.For<IAzdoTokenAccessor>());
+        var tools = new AzdoMcpTools(new AzdoService(client), Substitute.For<IAzdoTokenAccessor>(), Substitute.For<HelixTool.Core.Delivery.IEvidenceDeliveryStore>());
 
         var result = await tools.TestResults("42", 101);
 
@@ -703,7 +702,7 @@ public sealed class AzdoPagingPr1CacheCompatibilityTests : IDisposable
 
         using var evalStore = new SqliteCacheStore(new CacheOptions { CacheRoot = snapshotRoot, EvalMode = true });
         var client = new CachingAzdoApiClient(new OfflineAzdoApiClient(), evalStore, new CacheOptions { CacheRoot = snapshotRoot, EvalMode = true });
-        var tools = new AzdoMcpTools(new AzdoService(client), Substitute.For<IAzdoTokenAccessor>());
+        var tools = new AzdoMcpTools(new AzdoService(client), Substitute.For<IAzdoTokenAccessor>(), Substitute.For<HelixTool.Core.Delivery.IEvidenceDeliveryStore>());
 
         var result = await tools.TestResults("42", 101);
 
@@ -729,7 +728,7 @@ public sealed class AzdoPagingPr1CacheCompatibilityTests : IDisposable
 
         using var evalStore = new SqliteCacheStore(new CacheOptions { CacheRoot = snapshotRoot, EvalMode = true });
         var client = new CachingAzdoApiClient(new OfflineAzdoApiClient(), evalStore, new CacheOptions { CacheRoot = snapshotRoot, EvalMode = true });
-        var tools = new AzdoMcpTools(new AzdoService(client), Substitute.For<IAzdoTokenAccessor>());
+        var tools = new AzdoMcpTools(new AzdoService(client), Substitute.For<IAzdoTokenAccessor>(), Substitute.For<HelixTool.Core.Delivery.IEvidenceDeliveryStore>());
 
         var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() => tools.TestResults("42", 101));
 
@@ -813,7 +812,7 @@ public sealed class AzdoPagingPr1CacheCompatibilityTests : IDisposable
         var snapshotRoot = Path.Combine(_cacheRoot, "public");
         using var evalStore = new SqliteCacheStore(new CacheOptions { CacheRoot = snapshotRoot, EvalMode = true });
         var evalClient = new CachingAzdoApiClient(new OfflineAzdoApiClient(), evalStore, new CacheOptions { CacheRoot = snapshotRoot, EvalMode = true });
-        var tools = new AzdoMcpTools(new AzdoService(evalClient), Substitute.For<IAzdoTokenAccessor>());
+        var tools = new AzdoMcpTools(new AzdoService(evalClient), Substitute.For<IAzdoTokenAccessor>(), Substitute.For<HelixTool.Core.Delivery.IEvidenceDeliveryStore>());
 
         var tail = await tools.Log("42", 7);
 
@@ -888,8 +887,7 @@ public sealed class AzdoPagingPr1CacheCompatibilityTests : IDisposable
 
     private static void TryDelete(string path)
     {
-        try { Directory.Delete(path, recursive: true); }
-        catch { }
+        CacheTestCleanup.DeleteRoot(path);
     }
 
     private sealed class TestResultsContinuationSkipHandler : HttpMessageHandler

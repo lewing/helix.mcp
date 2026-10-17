@@ -666,7 +666,7 @@ public class McpServerOptionsExtensionsTests
     private static AzdoMcpTools CreateAzdoTools(out IAzdoApiClient client)
     {
         client = Substitute.For<IAzdoApiClient>();
-        return new AzdoMcpTools(new AzdoService(client), Substitute.For<IAzdoTokenAccessor>());
+        return new AzdoMcpTools(new AzdoService(client), Substitute.For<IAzdoTokenAccessor>(), Substitute.For<HelixTool.Core.Delivery.IEvidenceDeliveryStore>());
     }
 
     private static JsonElement AssertBuildIdOrUrl(RequestContext<CallToolRequestParams> request)

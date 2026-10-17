@@ -255,3 +255,199 @@ topic: Evidence plan Helix documentation scope
 # Implementation note: evidence plan Helix documentation scope
 
 Implemented Dallas's Helix-aware evidence-plan behavior in Core, CLI help/XML comments, and MCP tool descriptions only. Did not update README.md or docs/cli-reference.md per charter scope (XML doc comments, MCP descriptions, and CLI help text only).
+# 2026-10-02: Post-merge review fixes, volume guard, and release v0.11.0
+
+## User directive: GPT alternation experiment
+
+### 2026-10-02T16:22:25-05:00: User directive (supersedes 16:21 version)
+**By:** Larry Ewing (via Copilot)
+**What:** Wherever the coordinator's model selection, fallback chains, or "switch to code specialist" rules would pick a GPT model (gpt-5.x, gpt-5.x-codex, gpt-5.x-mini, gpt-4.1), use a MIX of `gpt-6.1-sol` and `hydrafusion` instead — alternate between them across spawns (experiment) and note which model each agent ran on so results can be compared. Claude/Gemini choices are unaffected.
+**Why:** User request — trying the two side by side to see how they perform.
+
+## Design decisions and implementation deviations
+
+### PR1: paging and cache-key compatibility
+
+**Date:** 2026-10-02T13:45:00-05:00
+**Author:** Ripley
+**Status:** Implemented — no deviations from Dallas's PR 1 design
+**Note:** Snapshot replay was validated with `AZDO_TOKEN`/`AZDO_TOKEN_TYPE=bearer` to work around dnceng-public test API 302 redirect under anonymous auth.
+
+### PR2: hlx collect azdo-build implementation
+
+**Date:** 2026-10-02T14:15:00-05:00
+**Author:** Ripley
+**Status:** Implemented with documented deviations
+
+1. `--download-helix-files <glob>` v1 records matching uploaded files as explicit `skipped` attempts (`skip.kind=size_limit`) instead of downloading bytes. The Helix file-list model exposes name/link but not a trusted byte length before `GetFileAsync`; downloading first would populate the cache before enforcing `--max-file-bytes`. Default behavior remains: no arbitrary Helix uploaded-file bytes.
+
+2. Live replay validation for dnceng-public build 1621192 required `AZDO_TOKEN`/`AZDO_TOKEN_TYPE=bearer` to collect and replay AzDO test-run data. Anonymous public Build/Timeline/Log calls replay, but AzDO test APIs returned auth/redirect without a token. Manifest records `auth.azdo.replay=environment_token_required`.
+
+### Independent review (findings 1–8): implementation fixes and deviations
+
+**Date:** 2026-10-02T16:45:00-05:00
+**Author:** Ripley
+**Status:** Implemented with noted deviations
+
+1. **Transport failures (Finding #1):** Added `ReadResponseBodyAsync` helper classifying `HttpRequestException`/`IOException` as `transport_error`, non-caller `TaskCanceledException` as `timeout`. Added Helix stream exception handling in `HelixService.GetConsoleLogContentAsync`. Last-resort catches in `AzdoBuildCollector.RunAsync` and CLI boundary.
+
+2. **Helix failures not recorded (Finding #2):** All `HelixApiClient` methods now use shared `ClassifyAsync` helper. Discovered Azure.Core wrapper: `Azure.RequestFailedException` with `Status == 0` falls back to inner `HttpRequestException?.StatusCode`. Real-SDK gap found via throwaway probe; added `HelixAcquisition.FromRequestFailed` fallback. Existing test fake insufficient; Lambert's new `IndependentReviewRegressionTests.cs` uses real client + fake handler (recommended pattern).
+
+3. **Export isolation (Finding #3):** Choose "isolated per-run temp cache dir" — `collect azdo-build --export <dir>` without `--cache-dir` now collects into `{TempPath}/hlx-collect-cache/{guid}` and records resolved path in manifest. Live validation (build 1621192): snapshot's `cache.db` contains only `azdo:7af1ee30:...:1621192` keys.
+
+4. **Snapshot validation completeness (Finding #4):** `!validation.IsValid` now sets `Complete = false` and appends `snapshot_validation_failed` incomplete detail. Added progress hook immediately before `SnapshotValidator.ValidateAsync`.
+
+5. **Test outcome coverage (Finding #5):** Replaced outcome list with full `TestOutcome` enum (verified against Microsoft Learn), excluding `NotRunnable` per PR156 finding that AzDO rejects it.
+
+6. **Optional budget eviction (Finding #6):** Clamp optional budget to remaining cache capacity: `min(--max-total-bytes, cacheCap - requiredBytesThisRun)`. Conservative reserve computed once per `CollectHelixSuggestedFetchesAsync`; does not account for concurrent metadata fetches (acceptable residual risk at `MaxConcurrency=6`).
+
+7. **TTL-filtered verification (Finding #7):** Added `ICacheStore.GetMetadataIgnoringTtlAsync` default-interface method. `SqliteCacheStore` overrides with true TTL-bypass. `VerifyCacheEvidenceAsync` uses it for metadata presence checks. Binary artifact reads already TTL-unfiltered.
+
+**Also:** Manifest path defaults to `{EffectiveCacheRoot}/hlx-collect-manifest.json` instead of CWD.
+
+**Test seam note (for Lambert):** `SnapshotValidationFailure_FailsClosedInBothManifests_IndepReview4` required progress hook before `SnapshotValidator.ValidateAsync` to properly hook artifact corruption. Transient early failure resolved after hook addition; test now passes reliably. No residual issue, documented for reference.
+
+### PR156: review fixes and performance gate
+
+**Date:** 2026-10-02T16:00:00-05:00
+**Author:** Ripley
+**Status:** Implemented with documented deviations
+
+1. Live `--test-scope all` validation for build 1621192 started but was stopped after 15 minutes with no observable progress. Implementation path covered by focused tests and required-attempt verification; requested release-path live validation completed with default scope.
+
+2. **AzDO rejection of `NotRunnable`:** Provider rejects `NotRunnable` in test-results `outcomes` query despite docs/tools listing it. Collector's `all` scope now omits that unsupported outcome while deriving and verifying default `Failed` cache key.
+
+3. Snapshot validation run via supported `hlx snapshot validate <snapshot>` form; `--json` flag not supported by this command.
+
+### Post-merge review (items 1–18) and NUL data-loss fix
+
+**Date:** 2026-10-02T15:55:00-05:00
+**Author:** Dallas (reviewing commit 85c5bd1)
+**Status:** Approved after two rounds of fixes
+
+#### First gate (15:55) — REJECT
+
+**Blockers:** unbounded continuation paging, incomplete marker-prefix backward compatibility for SQLite NUL encoding.
+
+**Required fixes:**
+
+1. **Unbounded AzDO continuation paging:** `GetListAsync` follows `x-ms-continuationtoken` indefinitely with no max-page guard. Malformed/hostile AzDO responses can make list commands loop unbounded. Required: explicit bound, cycle detection, structured acquisition error. Added tests for repeated token and page-cap failure.
+
+2. **Marker-prefix ambiguity:** New writes correctly encode values with NUL or `hlx:nul-base64\n` prefix. Invalid legacy plaintext starting with that prefix whose suffix is valid Base64 silently decodes differently. Required: move encoded rows to unambiguous marker/version or validate decoded values. Added regression where legacy-plaintext Base64-valid suffix round-trips unchanged.
+
+#### Second gate (16:20) — APPROVE
+
+**Fixes verified:**
+
+- `AzdoApiClient.GetListAsync` caps continuation-token paging at `MaxContinuationPages = 1000`, detects repeated tokens/URLs, fails with `invalid_response`.
+- `SqliteCacheStore` v2 envelope: `hlx:b64:v2:<length>:<sha256>\n<base64>`. Validates length/SHA-256 on decode. Legacy `hlx:nul-base64\n` only decoded when proven from old encoder (NUL or marker-prefixed). Valid-Base64 plaintext no longer collides.
+- Snapshot validation decodes metadata before raw-log corruption checks. Exported/eval snapshots replay collected items. v1 snapshots accepted with compatibility warnings.
+- Local targeted validation: 78 passed / 0 failed / 0 skipped (paging/cache-key/collector/auth/immutability/SQLite/export/validator tests).
+
+#### Release-note items (if fixes land)
+
+- **Breaking changes:** CLI list commands have new JSON envelope/paging semantics; truncated output exits 2 unless `--allow-truncated`; `hlx collect azdo-build` has deterministic manifest completeness; eval-mode AzDO snapshots may require `HLX_EVAL_AZDO_PARTITION`.
+- **Security/privacy:** collection redacts URL credentials, query secrets, fragments from argv; auth-scoped snapshots use non-secret cache partition IDs.
+- **Data-loss/corruption fix:** SQLite cache metadata now preserves NUL-containing values. Users should clear caches and re-collect snapshots from v0.10.3 or earlier; already-truncated zero-byte rows cannot be recovered.
+- **Reliability:** Retry-After honored beyond configured backoff cap with one-hour safety ceiling; collect verifies evidence before export, records replayable provider failures.
+
+### PR156 comprehensive pre-release gate
+
+**Date:** 2026-10-02T16:20:00-05:00 onwards
+**Reviewer:** Dallas
+**Final Status:** REJECT for release (blockers R1–R3 require fixes before tag)
+
+#### Executive summary
+
+Accept Lambert's three required volume/progress revisions. Do not tag: independent finding 6 (eviction) is unresolved, job-list classification missed real SDK exception, documentation inaccurate. Ripley/Lambert both authored rejected implementation artifact; escalate to Larry. Kane eligible for documentation-only updates.
+
+#### Validation evidence
+
+All-test acquisition on build `1621192` run `44916566`:
+- **133,036 distinct results** (IDs 100000..233035)
+- **14 HTTP-200 pages** (10K rows each + final 3,036)
+- **285,338,304 bytes** before projection
+- **66.745 seconds** with 180-second cancellation timeout
+- CLI independently completed in **60.765 seconds**, exit 0
+
+Without guard, full build entails **~1.4 million attachment-list calls** (all selected results, including passed/not-applicable). Current stall reproduces: attachment work captured in cache but no observable stderr progress.
+
+#### Release blockers
+
+**R1 – Required Helix evidence still evicted by optional downloads**
+
+Probe with `MaxConcurrency=1`, 1MB cache cap, 614K required console, 716K optional file:
+- Pre-Helix reserve: only 4,766–4,767 bytes
+- Optional file fit advertised budget
+- Actual write evicted previously acquired console
+- File remained `ok`, console became `failed/not_in_snapshot`, `artifact_missing`, `complete=false`
+
+Current test `OptionalDownloads_CannotEvictRequiredEvidenceUnderSmallCacheCap_IndepReview6` passes only because optional files exceed per-file caps; it does not test individually in-budget file causing eviction.
+
+**Required revision:** Protect run's required artifacts across whole acquisition, including concurrent console fetches. Options: finish required acquisition before determining optional headroom; coordinate publication/eviction; pin evidence. Add single-worker, multi-work-item/concurrent cases, snapshot validation and offline replay. Remove eviction-guarantee language.
+
+**R2 – Helix job discovery leaks Azure SDK exceptions**
+
+Six metadata methods use `ClassifyAsync` including `Azure.RequestFailedException` branch. `ListJobsByBuildAsync` retains separate catch omitting that exception.
+
+Probe: fake transport throws HTTP 403. Both `ListJobsByBuildAsync` and `AzdoService.GetHelixJobsAsync` threw raw `Azure.RequestFailedException`. Service only catches `HlxAcquisitionException` on primary path.
+
+**Required revision:** Route job-list call through same client-boundary classifier, preserving cancellation and `list_helix_jobs_by_build` operation. Add real-SDK transport-wrapper regressions proving service fallback to timeline with classified primary error.
+
+**R3 – Release documentation inaccurate**
+
+- Multi-partition snapshot claim vs. actual `EvalSnapshotAzdoPartitionSelector.Select` precedence (explicit env > manifest > single partition > fail).
+- Export isolation per-command with fresh cache; resume does not rediscover old temp root. Show cache-dir reuse workflow.
+- Unreleased notes should record export isolation fix, cache-local manifest default, mid-body transport classification, invalid-snapshot completeness, outcome coverage, TTL-independent verification.
+- Align optional-download docs with corrected R1 behavior. Manifest `policy.caps.maxTotalBytes` records requested value, not cache-derived budget.
+
+Kane may revise Markdown docs/CHANGELOG. Source-help and behavioral fixes escalate to Larry.
+
+#### Accepted changes (all other items)
+
+- Build-wide result guard: 64-bit sum, 10K default boundary, explicit consent, negative fail-closed, `test_result_limit`, resume recheck, policy-only allow-incomplete.
+- Safe attachment policy: diagnostic outcomes by default, 1K build-wide cap, wider scope requires explicit cap, deterministic selection, aggregate exclusions, failed-result replay.
+- Observable progress: synchronized stderr reporting, 2-second throttle, 5-second heartbeat, cancellation joins timer tasks, JSON stdout parseable.
+- Finding 1 (transport): classified failures, retries, persisted manifest, caller cancellation preserved.
+- Finding 2 (Helix): six named operations classified, real-SDK negative coverage, test-fake insufficient (Lambert's real client + fake handler pattern correct).
+- Finding 3 (export): fresh per-run temp root before lazy store, unrelated rows stay out, explicit cache-dir still includes whole directory.
+- Finding 4 (validation): validation failure sets complete=false, exit 1, snapshot_validation_failed in manifests.
+- Finding 5 (outcomes): all 15 TestOutcome values, excluding NotRunnable, derived Failed retained/verified.
+- Finding 6 (eviction): **REJECTED** — reproducible required-evidence destruction; documented as R1 blocker above.
+- Finding 7 (TTL): TTL-bypassing verification without changing live TTL reads; expired-but-present rows export/replay.
+- Test seam: CreateForTesting internal static, SDK-taking private, no public reflection path, existing friend assembly unchanged.
+- Manifest cleanup/default: accidental tracked manifest removed/ignored, default standalone manifest at cache-root, exported manifest at manifest/path.
+
+Six original Copilot fixes remain: structured cache-key parsing, raw-log recognition, suggested-fetch dedup/legacy handling, derived-Failed verification, streamed file classification/budget, bounded continuation. v1/v2 snapshot and legacy capped-key compatibility covered.
+
+#### Validation results
+
+- Focused selection: 136 passed, zero failed/skipped
+- Complete suite (.NET 11 preview): 2,330 passed, 9 skipped, zero failed, zero warnings
+- CLI on 1621192 isolated cache, logs/Helix disabled: ordinary all scope refused 1,405,433 rows in 2.16 seconds, exit 2, zero attachments, one required-budget skip. JSON parseable, stderr included 49-run estimate and remediation.
+- Lambert's 311-second opted-in live all-scope: 1,405,433 rows/five attachments, default/resume/offline regressions.
+- No production/test/README/CLI-ref/CHANGELOG edits; only decision/history appends and disposable diagnostics.
+
+## hlx usage audit synthesis
+
+**Date:** 2026-10-02
+**Author:** Ash
+**Status:** Proposed
+
+Audited 372 hlx pain-point findings from 199 local Copilot sessions against current code, changelog, commits #153–#156. Larry's "bundle = offline snapshot" directive: every direct AzDO/Helix/GitHub fallback becomes offline hard failure unless `hlx collect azdo-build` collects evidence into cache snapshot first.
+
+**Current branch fixes foundation:** structured acquisition errors, `not_in_snapshot`, recorded provider failures, CLI list paging (AzDO list commands), `hlx collect azdo-build`, manifest verification, credential-free replay, Retry-After handling, NUL raw-log cache corruption detection.
+
+**Still-open product gaps:** build-set discovery, AzDO artifact/binlog bytes, test attachment/dump bytes, timeline/log/search cursors/selectors, cross-build history, Helix bulk/file collection beyond selected globs.
+
+**Recommended PR groups:**
+- (A) build discovery + collector driver
+- (B) AzDO artifact/attachment byte downloads with caps
+- (C) timeline/search complete projections
+- (D) cross-build history
+- (E) Helix bulk offline collection
+
+**Full audit artifact:** `/Users/lewing/.copilot/session-state/1b1a6aa5-b654-4dc2-9570-aff958b3d0d2/files/hlx-audit/hlx-usage-audit.md`
+
+---
+

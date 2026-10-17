@@ -17,7 +17,7 @@ public class AzdoMcpExceptionCoverageTests
     {
         _api = Substitute.For<IAzdoApiClient>();
         var service = new AzdoService(_api);
-        _tools = new AzdoMcpTools(service, Substitute.For<IAzdoTokenAccessor>());
+        _tools = new AzdoMcpTools(service, Substitute.For<IAzdoTokenAccessor>(), Substitute.For<HelixTool.Core.Delivery.IEvidenceDeliveryStore>());
     }
 
     [Fact(Skip = RequiresCentralization)]
