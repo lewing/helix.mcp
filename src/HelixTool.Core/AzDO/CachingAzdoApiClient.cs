@@ -671,9 +671,7 @@ public sealed class CachingAzdoApiClient : IAzdoApiClient, IAzdoCachedBuildLogRe
             return;
 
         var credential = await _tokenAccessor.GetAccessTokenAsync(ct).ConfigureAwait(false);
-        var authContext = credential is null
-            ? null
-            : credential.CacheIdentity ?? AzdoCredential.BuildCacheIdentity(credential.Source, credential.DisplayToken);
+        var authContext = credential?.ResolveCacheIdentity();
         _options.UpdateAuthContext(authContext);
     }
 

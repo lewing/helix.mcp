@@ -22,6 +22,9 @@ public sealed record AzdoCredential(string Token, string Scheme, string Source)
     public string? CacheIdentity { get; init; }
     public DateTimeOffset? ExpiresOnUtc { get; init; }
 
+    /// <summary>Resolves the credential identity shared by cache acquisition and evidence reads.</summary>
+    public string ResolveCacheIdentity() => CacheIdentity ?? BuildCacheIdentity(Source, DisplayToken);
+
     /// <summary>
     /// Legacy compatibility conversion from a raw token string.
     /// Warning: this assumes a Bearer token and preserves the raw token as <see cref="DisplayToken"/>.

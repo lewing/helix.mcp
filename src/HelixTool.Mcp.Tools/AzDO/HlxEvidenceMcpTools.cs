@@ -97,7 +97,7 @@ public sealed class HlxEvidenceMcpTools
             return _cacheOptions.AuthTokenHash ?? "public";
 
         var credential = await _tokenAccessor.GetAccessTokenAsync(ct).ConfigureAwait(false);
-        var authContext = credential?.CacheIdentity ?? credential?.Source;
+        var authContext = credential?.ResolveCacheIdentity();
         // Mirror CachingAzdoApiClient.EnsureAuthTokenHashAsync's side effect: populate this
         // request-scoped CacheOptions' own AuthTokenHash, not just a locally-computed partition
         // string, so anything else in this scope that reads CacheOptions.AuthTokenHash directly

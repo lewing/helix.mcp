@@ -1,7 +1,11 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using HelixTool.Core.AzDO;
 using HelixTool.Core.Cache;
 using HelixTool.Core.Delivery;
+using HelixTool.Mcp.Tools;
+using NSubstitute;
 using Xunit;
 
 namespace HelixTool.Tests.AzDO;
@@ -10,6 +14,75 @@ namespace HelixTool.Tests.AzDO;
 public sealed class EvidenceDeliveryContractTests : IDisposable
 {
     private readonly string _root = Path.GetFullPath(Path.Combine(".test-runtime", $"hlx-evidence-reader-{Guid.NewGuid():N}"));
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("explicit-identity")]
+    public async Task FollowUpRead_FreshOptionsResolveSameCredentialPartitionAsAcquisition(string? cacheIdentity)
+    {
+        var credential = new AzdoCredential("wire-token", "Bearer", "AzureCliCredential")
+        {
+            DisplayToken = "fallback-token",
+            CacheIdentity = cacheIdentity
+        };
+        var accessor = Substitute.For<IAzdoTokenAccessor>();
+        accessor.GetAccessTokenAsync(Arg.Any<CancellationToken>()).Returns(credential);
+        var inner = Substitute.For<IAzdoApiClient>();
+        inner.GetBuildAsync("org", "proj", 1, Arg.Any<CancellationToken>())
+            .Returns(new AzdoBuild { Id = 1, Status = "completed" });
+        var cache = Substitute.For<ICacheStore>();
+        cache.GetMetadataAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns((string?)null);
+        var acquisitionOptions = new CacheOptions { CacheRoot = _root };
+        var client = new CachingAzdoApiClient(inner, cache, acquisitionOptions, accessor);
+        await client.GetBuildAsync("org", "proj", 1);
+
+        var expectedIdentity = cacheIdentity ?? AzdoCredential.BuildCacheIdentity(credential.Source, credential.DisplayToken);
+        var expectedHash = CacheOptions.ComputeAuthContextHash(expectedIdentity);
+        Assert.Equal(expectedHash, acquisitionOptions.AuthTokenHash);
+        var descriptor = new FileEvidenceDeliveryStore(acquisitionOptions)
+            .PutText("authenticated evidence", "text/plain", null, null, acquisitionOptions.AuthTokenHash!);
+
+        var readOptions = new CacheOptions { CacheRoot = _root };
+        Assert.Null(readOptions.AuthTokenHash);
+        var reader = new HlxEvidenceMcpTools(new FileEvidenceDeliveryStore(readOptions), readOptions, accessor);
+        var read = await reader.ReadEvidence(descriptor.EvidenceId);
+
+        Assert.Equal("authenticated evidence", read.Text);
+        Assert.True(read.SourceComplete);
+        Assert.Equal(expectedIdentity, readOptions.AuthCacheIdentity);
+        Assert.Equal(expectedHash, readOptions.AuthTokenHash);
+    }
+
+    [Fact]
+    public void TriageContinuation_OversizedLaterRowPreservesViewAndDeliversEvidence()
+    {
+        var source = TimelineViewFixture.EscapedLongNameWithSecondRow(4000);
+        source = source with { Records = [source.Records[1], source.Records[0]] };
+        var request = new TimelineProjectionRequest
+        {
+            Filter = "all", Projection = "triage", Expand = "none", Limit = 1,
+            PreviewChars = 200, PreviewIssueLimit = 3, MaxResponseBytes = 8192
+        };
+        var store = new FileEvidenceDeliveryStore(new CacheOptions { CacheRoot = _root });
+        TimelineProjectionResult Project(TimelineProjectionRequest candidate) => AzdoTimelineProjector.Project(source, candidate);
+        var (first, _) = McpPresentationBudget.ShapeTimeline(request, Project, store, "public", null);
+        Assert.Equal(source.Records[0].Id, Assert.Single(first.TriageRows!).Id);
+        Assert.Null(first.Delivery);
+        Assert.NotNull(first.Next);
+
+        var continuation = request with { Offset = first.Next.Offset, Limit = first.Next.Limit, ViewId = first.Next.ViewId };
+        var (receipt, _) = McpPresentationBudget.ShapeTimeline(continuation, Project, store, "public", null);
+
+        Assert.Equal(first.ViewId, receipt.ViewId);
+        Assert.Equal(request.PreviewChars, receipt.PreviewChars);
+        Assert.Equal(request.PreviewIssueLimit, receipt.PreviewIssueLimit);
+        Assert.NotNull(receipt.Delivery);
+        Assert.True(receipt.Delivery.Complete);
+        Assert.Equal("hlx_read_evidence", receipt.Continuation!.Tool);
+        using var backing = JsonDocument.Parse(File.ReadAllBytes(receipt.Delivery.LocalPath));
+        var expected = JsonSerializer.SerializeToElement(Project(continuation), McpPresentationBudget.ProductionToolJsonOptions);
+        Assert.True(JsonElement.DeepEquals(expected, backing.RootElement));
+    }
 
     [Fact]
     public void EvidenceReference_IsPartitionScopedAndVerified_NotAnArbitraryPathReader()

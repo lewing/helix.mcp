@@ -94,8 +94,9 @@ public static class McpPresentationBudget
         // Even a single row does not fit. For triage, shrink preview shaping before giving up on an
         // inline page (compact/full/summary rows don't use previewChars/previewIssueLimit, so
         // attempting this would only mutate the view's own fingerprint without changing its bytes).
+        // Continuations must preserve the preview settings bound into the incoming viewId.
         var unshrunkBest = best;
-        if (baseRequest.Projection.Equals("triage", StringComparison.OrdinalIgnoreCase))
+        if (baseRequest.ViewId is null && baseRequest.Projection.Equals("triage", StringComparison.OrdinalIgnoreCase))
         {
             var shrinkChars = baseRequest.PreviewChars;
             var shrinkPreviews = baseRequest.PreviewIssueLimit;

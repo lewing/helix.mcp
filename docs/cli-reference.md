@@ -177,6 +177,10 @@ re-invocation — it omits the filter/selector/projection settings of the curren
 present, a row/action's `continuation` field (`{ tool, arguments }`) is the exact full
 `azdo_timeline` invocation, preserving every selector and setting, and is what to use to
 reliably resume or reproduce the current view.
+Preview settings are part of `viewId`: continuations preserve them even when a later row
+exceeds the inline budget, delivering that page as evidence instead of changing the view.
+Authenticated `hlx_read_evidence` follow-ups resolve the same credential identity as acquisition,
+including the source/display-token fallback when no explicit cache identity is available.
 
 `--all` requests the complete selected scope, ignoring the row-count/byte-shaping target, and
 retrieves the complete selection — the same as the MCP `delivery="file"` path it corresponds
