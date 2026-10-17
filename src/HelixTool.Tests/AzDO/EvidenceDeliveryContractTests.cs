@@ -168,7 +168,8 @@ public sealed class EvidenceDeliveryContractTests : IDisposable
             var descriptor = store.PutText("derived full record", "application/json", "fingerprint",
                 "azdo:dnceng-public:public:timeline:1621192", "public");
             Assert.True(descriptor.Complete);
-            var snapshotIdentity = OperatingSystem.IsWindows() ? Path.GetFullPath(snapshot).ToUpperInvariant() : Path.GetFullPath(snapshot);
+            var snapshotIdentity = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+                ? Path.GetFullPath(snapshot).ToUpperInvariant() : Path.GetFullPath(snapshot);
             var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(snapshotIdentity)));
             Assert.Equal(Path.Combine(baseRoot, "eval-delivery", hash, "public"), Path.GetDirectoryName(descriptor.LocalPath));
             Assert.False(Path.GetFullPath(descriptor.LocalPath).StartsWith("/tmp/", StringComparison.Ordinal));
@@ -182,6 +183,97 @@ public sealed class EvidenceDeliveryContractTests : IDisposable
         finally
         {
             Environment.SetEnvironmentVariable("XDG_CACHE_HOME", xdg);
+        }
+    }
+
+    [Theory]
+    [InlineData("equal")]
+    [InlineData("snapshot-inside-cache")]
+    [InlineData("cache-inside-snapshot")]
+    [InlineData("read-only-snapshot")]
+    [InlineData("unwritable-cache")]
+    [InlineData("symlink-cache")]
+    [InlineData("symlink-delivery")]
+    [InlineData("symlink-snapshot")]
+    public void EvalDelivery_OverlappingOrUnwritableCacheFallsBackWithoutChangingSnapshot(string layout)
+    {
+        // XDG_CACHE_HOME and Unix permissions let these cases run without touching the real user cache.
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var xdgRoot = Path.Combine(_root, "xdg");
+        var baseRoot = Path.Combine(xdgRoot, "hlx");
+        var snapshot = layout switch
+        {
+            "equal" or "read-only-snapshot" => baseRoot,
+            "snapshot-inside-cache" => Path.Combine(baseRoot, "snapshot"),
+            _ => Path.Combine(_root, "snapshot")
+        };
+        if (layout == "cache-inside-snapshot")
+        {
+            xdgRoot = Path.Combine(snapshot, "xdg");
+            baseRoot = Path.Combine(xdgRoot, "hlx");
+        }
+        Directory.CreateDirectory(snapshot);
+        File.WriteAllText(Path.Combine(snapshot, "cache.db"), "immutable snapshot bytes");
+        Directory.CreateDirectory(Path.Combine(snapshot, "artifacts"));
+        File.WriteAllText(Path.Combine(snapshot, "artifacts", "evidence.txt"), "source evidence");
+        if (layout == "symlink-cache")
+        {
+            Directory.CreateDirectory(xdgRoot);
+            Directory.CreateSymbolicLink(baseRoot, snapshot);
+        }
+        else if (layout == "unwritable-cache")
+        {
+            Directory.CreateDirectory(xdgRoot);
+            File.WriteAllText(baseRoot, "a file prevents delivery directory creation");
+        }
+        else
+            Directory.CreateDirectory(baseRoot);
+
+        if (layout == "symlink-delivery")
+        {
+            var identity = OperatingSystem.IsMacOS() ? snapshot.ToUpperInvariant() : snapshot;
+            var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
+            Directory.CreateDirectory(Path.Combine(baseRoot, "eval-delivery"));
+            Directory.CreateSymbolicLink(Path.Combine(baseRoot, "eval-delivery", hash), snapshot);
+        }
+        var configuredSnapshot = snapshot;
+        if (layout == "symlink-snapshot")
+        {
+            configuredSnapshot = Path.Combine(_root, "snapshot-link");
+            Directory.CreateSymbolicLink(configuredSnapshot, snapshot);
+            Directory.Delete(baseRoot);
+            Directory.CreateSymbolicLink(baseRoot, snapshot);
+        }
+
+        var before = HashTree(snapshot);
+        var originalMode = File.GetUnixFileMode(snapshot);
+        var originalXdg = Environment.GetEnvironmentVariable("XDG_CACHE_HOME");
+        string? deliveryRoot = null;
+        try
+        {
+            if (layout == "read-only-snapshot")
+                File.SetUnixFileMode(snapshot, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", xdgRoot);
+            var options = new CacheOptions { CacheRoot = Path.Combine(configuredSnapshot, "."), EvalMode = true };
+            var store = new FileEvidenceDeliveryStore(options);
+            var descriptor = store.PutText("derived evidence", "text/plain", null, null, "public");
+            deliveryRoot = Path.GetDirectoryName(Path.GetDirectoryName(descriptor.LocalPath))!;
+            Assert.Contains("delivery-ephemeral", descriptor.LocalPath);
+            Assert.False(Path.GetFullPath(descriptor.LocalPath).StartsWith(
+                Path.GetFullPath(snapshot) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+            Assert.Equal("derived evidence", new FileEvidenceDeliveryStore(options)
+                .Read(descriptor.EvidenceId, 0, 1000, "utf8", "public").Text);
+            Assert.NotNull(store.TryGetDescriptor(descriptor.EvidenceId, "public"));
+            Assert.Equal(before, HashTree(snapshot));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", originalXdg);
+            File.SetUnixFileMode(snapshot, originalMode);
+            if (deliveryRoot is not null)
+                Directory.Delete(deliveryRoot, recursive: true);
         }
     }
 

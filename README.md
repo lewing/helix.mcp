@@ -95,6 +95,11 @@ live auth contexts. Offline replay never writes into its immutable snapshot: del
 `<normal-user-cache-root>/eval-delivery/<SHA256-of-normalized-snapshot-path>/<credential-partition>/`.
 The normal user root is `%LOCALAPPDATA%/hlx` on Windows or `$XDG_CACHE_HOME/hlx`
 (default `~/.cache/hlx`) on Unix; `XDG_RUNTIME_DIR` and `HLX_DELIVERY_RUNTIME_DIR` are not used.
+If that root overlaps the snapshot in either direction or delivery cannot write there, replay
+uses `<LocalApplicationData>/hlx/delivery-ephemeral/<snapshot-hash>/<credential-partition>/`,
+falling back to `~/.hlx/delivery-ephemeral/<snapshot-hash>/<credential-partition>/` if needed.
+Fallbacks must be writable and outside the snapshot. Overlap checks normalize full paths,
+resolve existing directory symlinks, and ignore case on Windows/macOS.
 
 Each delivery partition has a separate soft sub-budget of **25% of `HLX_CACHE_MAX_SIZE_MB`**
 (minimum one byte), tracked in `delivery.db` rather than included in `hlx cache status` artifact
@@ -105,7 +110,8 @@ any overage. SQLite transactions serialize pins and eviction across processes.
 
 With `HLX_CACHE_MAX_SIZE_MB=0`, file delivery still works under
 `<base-cache-root>/delivery-ephemeral/<credential-partition>/`, with the same pins and retention
-and a **256 MiB** soft budget. Delivery is reconstructable evidence, not part of snapshot exports;
+and a **256 MiB** soft budget. An unwritable root uses the same external per-user fallback folders
+(without a snapshot hash). Delivery is reconstructable evidence, not part of snapshot exports;
 `hlx cache clear` clears the primary cache, not delivery evidence protected by these pins. Delivery
 follows the cache's trust model without separate owner/ACL checks. New Unix directories/files are
 created with modes 0700/0600 as defense in depth.

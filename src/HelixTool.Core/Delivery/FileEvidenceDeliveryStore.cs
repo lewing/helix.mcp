@@ -10,7 +10,8 @@ namespace HelixTool.Core.Delivery;
 /// Content-addressed evidence inside the existing per-user cache trust boundary. Live entries
 /// use the effective (auth-partitioned) cache root's delivery directory. Immutable snapshots
 /// instead use the normal user cache root's eval-delivery/{snapshot-path-hash} directory;
-/// disabled caches use base-root/delivery-ephemeral. Neither fallback writes into a snapshot.
+/// disabled caches use base-root/delivery-ephemeral. Overlapping or unwritable eval roots
+/// fall back to an external per-user delivery-ephemeral directory, never into a snapshot.
 /// No separate ownership/ACL policy is imposed: this has the same trust model as cache.db.
 /// </summary>
 /// <remarks>
@@ -42,17 +43,87 @@ public sealed class FileEvidenceDeliveryStore(CacheOptions cacheOptions) : IEvid
         if (_cacheOptions.EvalMode)
         {
             // CacheRoot denotes the immutable snapshot in eval mode, not the user's normal root.
-            var snapshotIdentity = Path.GetFullPath(_cacheOptions.GetEffectiveCacheRoot());
-            if (OperatingSystem.IsWindows())
+            var snapshotPath = NormalizePath(_cacheOptions.GetEffectiveCacheRoot());
+            var snapshotIdentity = snapshotPath;
+            if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS())
                 snapshotIdentity = snapshotIdentity.ToUpperInvariant();
             var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(snapshotIdentity))).ToLowerInvariant();
-            root = Path.Combine(new CacheOptions().GetBaseCacheRoot(), "eval-delivery", hash);
+            var baseRoot = new CacheOptions().GetBaseCacheRoot();
+            root = Path.Combine(baseRoot, "eval-delivery", hash);
+            if (PathsOverlap(baseRoot, snapshotPath) ||
+                PathsOverlap(Path.Combine(root, CacheSecurity.SanitizeCacheKeySegment(cachePartition)), snapshotPath) ||
+                !IsWritable(Path.Combine(root, CacheSecurity.SanitizeCacheKeySegment(cachePartition))))
+                root = ExternalFallbackRoot(snapshotPath, hash, cachePartition);
         }
         else if (_cacheOptions.MaxSizeBytes <= 0)
+        {
             root = Path.Combine(_cacheOptions.GetBaseCacheRoot(), "delivery-ephemeral");
+            if (!IsWritable(Path.Combine(root, CacheSecurity.SanitizeCacheKeySegment(cachePartition))))
+                root = ExternalFallbackRoot(null, null, cachePartition);
+        }
         else
             root = Path.Combine(_cacheOptions.GetEffectiveCacheRoot(), "delivery");
         return Path.Combine(root, CacheSecurity.SanitizeCacheKeySegment(cachePartition));
+    }
+
+    private static string ExternalFallbackRoot(string? snapshotPath, string? snapshotHash, string cachePartition)
+    {
+        var candidates = new[]
+        {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "hlx", "delivery-ephemeral"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".hlx", "delivery-ephemeral")
+        };
+        foreach (var candidate in candidates)
+        {
+            var root = snapshotHash is null ? candidate : Path.Combine(candidate, snapshotHash);
+            if ((snapshotPath is null ||
+                 !PathsOverlap(Path.Combine(root, CacheSecurity.SanitizeCacheKeySegment(cachePartition)), snapshotPath)) &&
+                IsWritable(Path.Combine(root, CacheSecurity.SanitizeCacheKeySegment(cachePartition))))
+                return root;
+        }
+        throw new IOException("No writable per-user evidence delivery directory outside the snapshot is available.");
+    }
+
+    private static bool PathsOverlap(string first, string second)
+    {
+        first = NormalizePath(first);
+        second = NormalizePath(second);
+        var comparison = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return string.Equals(first, second, comparison) ||
+            first.StartsWith(Path.EndsInDirectorySeparator(second) ? second : second + Path.DirectorySeparatorChar, comparison) ||
+            second.StartsWith(Path.EndsInDirectorySeparator(first) ? first : first + Path.DirectorySeparatorChar, comparison);
+    }
+
+    private static string NormalizePath(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var current = Path.GetPathRoot(fullPath)!;
+        // Resolve existing ancestors too: the delivery directory itself usually does not exist yet.
+        foreach (var segment in fullPath[current.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, segment);
+            if (Directory.Exists(current))
+                current = new DirectoryInfo(current).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? current;
+        }
+        return Path.TrimEndingDirectorySeparator(current);
+    }
+
+    private static bool IsWritable(string root)
+    {
+        try
+        {
+            CreateDirectory(root);
+            var probe = Path.Combine(root, $".write-probe-{Guid.NewGuid():N}");
+            using var file = OpenPrivateFile(probe, FileMode.CreateNew, FileShare.None);
+            file.Dispose();
+            File.Delete(probe);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private static void CreateDirectory(string path)
