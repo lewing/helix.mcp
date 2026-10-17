@@ -83,6 +83,11 @@ reads always support exact byte offsets. Selected byte/cache descriptor pairs ex
 in the existing cache snapshot; metadata-only older snapshots cannot supply missing
 bytes. Recollect in live mode into a **new** snapshot rather than modifying the old one.
 
+Current scope is not full collector-design compliance: broad test-result and
+attachment-volume recovery repairs remain follow-up work. ZIP bodies spool to disk,
+but member catalogs and full download-report serialization still materialize in
+memory; bounded inline windows do not imply bounded-memory acquisition.
+
 ## Cross-Process Caching
 
 ```

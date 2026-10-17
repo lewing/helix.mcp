@@ -7,6 +7,8 @@ using System.Text.Json;
 using HelixTool.Core.Acquisition;
 using HelixTool.Core.AzDO;
 using HelixTool.Core.Cache;
+using HelixTool.Core.Collect;
+using HelixTool.Core.Helix;
 using HelixTool.Core.Delivery;
 using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
@@ -16,6 +18,128 @@ namespace HelixTool.Tests.AzDO;
 
 public sealed partial class AzdoByteDownloadTests
 {
+    [Theory]
+    [InlineData("NEW")]
+    [InlineData("changed-A")]
+    public async Task RefetchedCatalog_ReextractsStaleCachedMembers(string changed)
+    {
+        var zip = Zip(("drop/A.binlog", "one"), ("drop/B.binlog", "two"));
+        _client.OpenArtifactAsync("dnceng-public", "public", 42, _artifact, null, Arg.Any<CancellationToken>())
+            .Returns(_ => new AzdoByteStream(new MemoryStream(zip), "application/zip", zip.Length));
+        var options = new AzdoDownloadOptions { ArtifactName = "drop", MemberPattern = "*.binlog" };
+        var initial = await _service.DownloadArtifactsAsync("42", options);
+        var invalidated = Assert.Single(Assert.Single(initial.Results).Members, m => m.MemberPath == "B.binlog");
+        await _cache.SetMetadataAsync(invalidated.CacheKey, "{invalid", TimeSpan.FromHours(4));
+        zip = Zip(("drop/A.binlog", changed), ("drop/B.binlog", "new-B"));
+
+        var refreshed = await _service.DownloadArtifactsAsync("42", options);
+
+        Assert.True(refreshed.Complete);
+        var members = Assert.Single(refreshed.Results).Members;
+        Assert.Equal(changed, await File.ReadAllTextAsync(Assert.Single(members, m => m.MemberPath == "A.binlog").LocalPath!));
+        Assert.Equal("new-B", await File.ReadAllTextAsync(Assert.Single(members, m => m.MemberPath == "B.binlog").LocalPath!));
+        Assert.All(members, m => Assert.Equal("ok", m.Outcome));
+        Assert.Equal(changed.Length + 5, refreshed.Bytes);
+        var replay = await _service.DownloadArtifactsAsync("42", options);
+        Assert.True(replay.Complete);
+        Assert.Equal(0, replay.StreamedBytes);
+        Assert.Equal(refreshed.Bytes, replay.Bytes);
+    }
+
+    [Theory]
+    [InlineData("x", 1L)]
+    [InlineData("x", null)]
+    [InlineData("evil", 4L)]
+    public async Task NativeMember_MustMatchExistingCatalogBeforePublication(string response, long? declaredLength)
+    {
+        var zip = Zip(("drop/Build.binlog", "root"));
+        _client.OpenArtifactAsync("dnceng-public", "public", 42, _artifact, null, Arg.Any<CancellationToken>())
+            .Returns(_ => new AzdoByteStream(new MemoryStream(zip), "application/zip", zip.Length));
+        var initial = await _service.DownloadArtifactsAsync("42", new() { ArtifactName = "drop", MemberPattern = "*.binlog" });
+        var key = Assert.Single(Assert.Single(initial.Results).Members).CacheKey;
+        await _cache.SetMetadataAsync(key, "{invalid", TimeSpan.FromHours(4));
+        _client.OpenArtifactAsync("dnceng-public", "public", 42, _artifact, "Build.binlog", Arg.Any<CancellationToken>())
+            .Returns(_ => new AzdoByteStream(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(response)),
+                "application/octet-stream", declaredLength));
+
+        var report = await _service.DownloadArtifactsAsync("42", new() { ArtifactName = "drop", MemberPath = "Build.binlog" });
+
+        Assert.False(report.Complete);
+        Assert.False(report.Ok);
+        Assert.True(report.Truncated);
+        var member = Assert.Single(Assert.Single(report.Results).Members);
+        Assert.Equal("failed", member.Outcome);
+        Assert.Equal(AcquisitionErrorKind.InvalidResponse, member.Error!.Kind);
+        Assert.Null(member.Delivery);
+        Assert.Equal(0, report.Bytes);
+        Assert.Equal("{invalid", await _cache.GetMetadataAsync(key));
+        await using var retained = await _cache.GetArtifactAsync(key);
+        using var reader = new StreamReader(retained!);
+        Assert.Equal("root", await reader.ReadToEndAsync());
+    }
+
+    [Fact]
+    public async Task RequiredCollectorMemberSelection_WithExistingArtifactButNoMembers_RecordsGap()
+    {
+        var zip = Zip(("drop/Build.binlog", "root"));
+        _client.OpenArtifactAsync("dnceng-public", "public", 42, _artifact, null, Arg.Any<CancellationToken>())
+            .Returns(_ => new AzdoByteStream(new MemoryStream(zip), "application/zip", zip.Length));
+        _client.GetBuildAsync("dnceng-public", "public", 42, Arg.Any<CancellationToken>())
+            .Returns(new AzdoBuild { Id = 42, Status = "completed" });
+        _client.GetTimelineAsync("dnceng-public", "public", 42, Arg.Any<CancellationToken>())
+            .Returns(new AzdoTimeline { Records = [new() { Id = "job", Type = "Job", Name = "Build", State = "completed", Result = "succeeded" }] });
+        var cachedClient = new CachingAzdoApiClient(_client, _cache, _options);
+        var helix = Substitute.For<IHelixApiClient>();
+        var token = Substitute.For<IAzdoTokenAccessor>();
+        token.AuthStatusAsync(Arg.Any<CancellationToken>())
+            .Returns(new AzdoAuthStatus { IsAuthenticated = false, Source = "anonymous", Path = "anonymous" });
+        using var http = new HttpClient();
+        var collector = new AzdoBuildCollector(new AzdoService(cachedClient), cachedClient,
+            new HelixService(helix, http), helix, token, Substitute.For<IHelixTokenAccessor>(), _options, _cache);
+        var pattern = "**/does-not-exist.binlog";
+
+        var result = await collector.CollectAzdoBuildAsync(new()
+        {
+            BuildIdOrUrl = "42", ManifestPath = Path.Combine(_root, "manifest.json"),
+            DownloadAzdoArtifacts = "drop", DownloadArtifactMembers = pattern,
+            TestScope = "none", LogScope = "none", HelixScope = "none"
+        });
+
+        Assert.False(result.Manifest.Complete);
+        Assert.Equal(2, result.Manifest.ExitCode);
+        var gap = Assert.Single(result.Manifest.Attempts, a => a.Skip?.Kind == "no_matches");
+        Assert.True(gap.Required);
+        Assert.Equal("azdo_bytes", gap.Phase);
+        Assert.Equal("download_azdo_bytes", Assert.Single(result.Manifest.IncompleteDetails).Operation);
+        var direct = await _service.DownloadArtifactsAsync("42", new() { ArtifactName = "drop", MemberPattern = pattern });
+        Assert.True(direct.Complete);
+        Assert.Empty(Assert.Single(direct.Results).Members);
+    }
+
+    [Fact]
+    public async Task StorageRecovery_RequiresDifferentStorageInsteadOfRepeatingFailedCommand()
+    {
+        _client.OpenArtifactAsync("dnceng-public", "public", 42, _artifact, "Build.binlog", Arg.Any<CancellationToken>())
+            .Returns<AzdoByteStream>(_ => throw new IOException("insufficient_disk_headroom: required=1048576, available=0"));
+        var report = await _service.DownloadArtifactsAsync("42", new()
+        {
+            ArtifactName = "drop", MemberPath = "Build.binlog", OutputDir = Path.Combine(_root, "output")
+        });
+
+        Assert.False(report.Complete);
+        Assert.True(report.Truncated);
+        var recovery = JsonSerializer.SerializeToElement(report.Recovery, AzdoDownloadService.JsonOptions);
+        Assert.Equal("insufficient_disk_headroom", recovery.GetProperty("kind").GetString());
+        Assert.Equal(JsonValueKind.Null, recovery.GetProperty("command").ValueKind);
+        Assert.Equal(JsonValueKind.Null, recovery.GetProperty("argv").ValueKind);
+        var action = recovery.GetProperty("requiredStorageAction");
+        Assert.Equal("--cache-dir", action.GetProperty("option").GetString());
+        Assert.Equal(_options.GetBaseCacheRoot(), action.GetProperty("currentPath").GetString());
+        Assert.Contains("different cache directory", action.GetProperty("instruction").GetString());
+        Assert.Equal("Build.binlog", recovery.GetProperty("arguments").GetProperty("memberPath").GetString());
+        Assert.Contains("allowLarge does not create disk space", recovery.GetProperty("note").GetString());
+    }
+
     [Fact]
     public async Task AllMembers_WithoutMemberSelector_PreservesWholeArchiveAndItsHash()
     {
@@ -72,6 +196,10 @@ public sealed partial class AzdoByteDownloadTests
         var deferred = await _service.DownloadArtifactsAsync("42", options);
 
         Assert.False(deferred.Complete);
+        Assert.True(deferred.Ok);
+        Assert.True(deferred.Truncated);
+        Assert.Null(deferred.Next);
+        Assert.NotNull(deferred.Recovery);
         Assert.Equal("planning_deferred", Assert.Single(deferred.Results).Skip);
         Assert.Equal(zip.Length, deferred.StreamedBytes);
         Assert.Equal(0, deferred.Bytes);

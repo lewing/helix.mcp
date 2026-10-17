@@ -276,7 +276,7 @@ public sealed class AzdoDownloadService(
             Offset = options.Offset,
             Limit = options.Limit,
             Complete = complete,
-            Truncated = !complete && fullComplete || pageResults.Length != results.Count || pageResults.Any(r => r.MembersTruncated),
+            Truncated = !complete,
             Delivery = manifest,
             Continuation = read,
             Next = !options.All && options.Offset + pageResults.Length < results.Count ? new(tool, nextArgs) : null,
@@ -347,8 +347,14 @@ public sealed class AzdoDownloadService(
             tool,
             arguments,
             executionHost = OperatingSystem.IsWindows() ? "powershell" : "posix",
-            argv,
-            command = string.Join(" ", argv.Select(Quote)),
+            argv = storage ? null : argv,
+            command = storage ? null : string.Join(" ", argv.Select(Quote)),
+            requiredStorageAction = storage ? new
+            {
+                option = "--cache-dir",
+                currentPath = liveCache,
+                instruction = "Choose a different cache directory on a volume with sufficient available storage, then rerun the same selection with that --cache-dir. If output storage also failed, change --output-dir too."
+            } : null,
             sourceMode = offline ? "live; unset HLX_EVAL_SNAPSHOT before acquisition" : "current",
             snapshotDestination = offline ? snapshot : null,
             exportArgv = offline ? exportArgv : null,
@@ -399,38 +405,6 @@ public sealed class AzdoDownloadService(
             };
         }
 
-        if (exact is not null)
-        {
-            var key = Key(org, project, resource.MemberSuffix(exact));
-            var cached = await CachedAsync(key, options, ct, resource.ProviderIdentity);
-            if (cached is not null)
-            {
-                counters.Retain(key, cached.Value.Descriptor.Bytes);
-                return MembersResult(resource, options, [await MemberAsync(exact, key, cached.Value, resource, options, true, ct)], cached.Value.Descriptor.Source);
-            }
-            if (!cacheOptions.EvalMode && resource.NativeMode != "attachment_file")
-            {
-                try
-                {
-                    // Exact paths are native files; do not broaden auth/not-found failures into archive downloads.
-                    await using var source = await OpenWithRetryAsync(resource, exact, progress, ct);
-                    if (source.ContentType.Contains("zip", StringComparison.OrdinalIgnoreCase) && !exact.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
-                        throw new InvalidDataException("Native member endpoint returned a ZIP rather than the selected file.");
-                    var published = await PublishAsync(source.Content, source.ContentType, source.Length, key, resource,
-                        exact, "member", new AzdoByteSource { TransferMode = resource.NativeMode, ProviderIdentity = resource.ProviderIdentity },
-                        options, counters, false, progress, ct);
-                    return MembersResult(resource, options, [await MemberAsync(exact, key, published, resource, options, false, ct)], published.Descriptor.Source);
-                }
-                catch (HlxAcquisitionException ex) when (
-                    ex.Error.HttpStatus is 405 or 501 ||
-                    ex.Error.HttpStatus == 400 && ex.Error.Message.Contains("unsupported", StringComparison.OrdinalIgnoreCase) &&
-                    ex.Error.Message.Contains("format", StringComparison.OrdinalIgnoreCase))
-                {
-                    progress?.Invoke("Provider explicitly rejected native member selection; retaining the same exact member from its ZIP.");
-                }
-            }
-        }
-
         var catalogKey = Key(org, project, resource.CatalogSuffix);
         var catalogJson = await cache.GetMetadataAsync(catalogKey, ct);
         Catalog? catalog = null;
@@ -449,6 +423,53 @@ public sealed class AzdoDownloadService(
             if (cacheOptions.EvalMode) throw new InvalidDataException("Catalog provider identity does not match captured artifact metadata.");
             catalog = null;
         }
+        var exactEntry = catalog?.Members.SingleOrDefault(e => e.MemberPath == exact);
+
+        if (exact is not null)
+        {
+            var key = Key(org, project, resource.MemberSuffix(exact));
+            var cached = await CachedAsync(key, options, ct, resource.ProviderIdentity);
+            if (cached is not null && (catalog is null || exactEntry is not null &&
+                await MatchesCatalogAsync(cached.Value, exactEntry, ct)))
+            {
+                counters.Retain(key, cached.Value.Descriptor.Bytes);
+                return MembersResult(resource, options, [await MemberAsync(exact, key, cached.Value, resource, options, true, ct)], cached.Value.Descriptor.Source);
+            }
+            if (!cacheOptions.EvalMode && resource.NativeMode != "attachment_file")
+            {
+                try
+                {
+                    // Exact paths are native files; do not broaden auth/not-found failures into archive downloads.
+                    await using var source = await OpenWithRetryAsync(resource, exact, progress, ct);
+                    if (source.ContentType.Contains("zip", StringComparison.OrdinalIgnoreCase) && !exact.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidDataException("Native member endpoint returned a ZIP rather than the selected file.");
+                    if (exactEntry is not null && source.Length is long declared && declared != exactEntry.Bytes)
+                        throw new InvalidDataException("Native member declared length does not match the captured catalog.");
+                    await using var checkedInput = exactEntry is null ? null : new CrcReadStream(source.Content, exactEntry.Crc32);
+                    var published = await PublishAsync(checkedInput ?? source.Content, source.ContentType, exactEntry?.Bytes ?? source.Length, key, resource,
+                        exact, "member", new AzdoByteSource { TransferMode = resource.NativeMode, ProviderIdentity = resource.ProviderIdentity },
+                        options, counters, false, progress, ct);
+                    return MembersResult(resource, options, [await MemberAsync(exact, key, published, resource, options, false, ct)], published.Descriptor.Source);
+                }
+                catch (InvalidDataException ex)
+                {
+                    var error = AcquisitionErrorFactory.Create(AcquisitionErrorKind.InvalidResponse, "azdo", "download_member",
+                        new Dictionary<string, object?> { ["memberPath"] = exact }, ex.Message);
+                    return MembersResult(resource, options, [new AzdoDownloadedMember
+                    {
+                        MemberPath = exact, CacheKey = key, Outcome = "failed", Error = error
+                    }], catalog?.Source ?? new AzdoByteSource { TransferMode = resource.NativeMode });
+                }
+                catch (HlxAcquisitionException ex) when (
+                    ex.Error.HttpStatus is 405 or 501 ||
+                    ex.Error.HttpStatus == 400 && ex.Error.Message.Contains("unsupported", StringComparison.OrdinalIgnoreCase) &&
+                    ex.Error.Message.Contains("format", StringComparison.OrdinalIgnoreCase))
+                {
+                    progress?.Invoke("Provider explicitly rejected native member selection; retaining the same exact member from its ZIP.");
+                }
+            }
+        }
+
         if (catalog is not null && (options.Resume || cacheOptions.EvalMode))
         {
             var matched = Select(catalog.Members, exact, options).ToArray();
@@ -457,13 +478,13 @@ public sealed class AzdoDownloadService(
             {
                 var key = Key(org, project, resource.MemberSuffix(entry.MemberPath));
                 var cached = await CachedAsync(key, options, ct, resource.ProviderIdentity);
-                if (cached is null) break;
-                counters.Retain(key, cached.Value.Descriptor.Bytes);
+                if (cached is null || !await MatchesCatalogAsync(cached.Value, entry, ct)) break;
                 members.Add(await MemberAsync(entry.MemberPath, key, cached.Value, resource, options, true, ct));
             }
             if (members.Count == matched.Length)
             {
                 if (exact is not null && matched.Length == 0) throw Missing("artifact_member", new Dictionary<string, object?> { ["memberPath"] = exact });
+                foreach (var member in members) counters.Retain(member.CacheKey, member.Bytes);
                 return MembersResult(resource, options, members, catalog.Source);
             }
             if (cacheOptions.EvalMode && await cache.GetMetadataAsync(archiveKey, ct) is null)
@@ -472,7 +493,7 @@ public sealed class AzdoDownloadService(
                 {
                     var key = Key(org, project, resource.MemberSuffix(entry.MemberPath));
                     var available = await CachedAsync(key, options, ct, resource.ProviderIdentity);
-                    if (available is not null)
+                    if (available is not null && await MatchesCatalogAsync(available.Value, entry, ct))
                     {
                         counters.Retain(key, available.Value.Descriptor.Bytes);
                         members.Add(await MemberAsync(entry.MemberPath, key, available.Value, resource, options, true, ct));
@@ -488,6 +509,7 @@ public sealed class AzdoDownloadService(
                                 "Catalog coverage exists, but this member's bytes were not selected into the snapshot.")
                         });
                 }
+                foreach (var member in members.Where(m => m.Outcome == "cached")) counters.Retain(member.CacheKey, member.Bytes);
                 return MembersResult(resource, options, members, catalog.Source);
             }
         }
@@ -555,7 +577,7 @@ public sealed class AzdoDownloadService(
                 try
                 {
                     var cached = await CachedAsync(key, options, ct, resource.ProviderIdentity);
-                    if (cached is not null)
+                    if (cached is not null && await MatchesCatalogAsync(cached.Value, entry, ct))
                     {
                         counters.Retain(key, cached.Value.Descriptor.Bytes);
                         output.Add(await MemberAsync(entry.MemberPath, key, cached.Value, resource, options, true, ct));
@@ -659,6 +681,24 @@ public sealed class AzdoDownloadService(
             Error = members.FirstOrDefault(m => m.Error is not null)?.Error,
             Skip = members.FirstOrDefault(m => m.Skip is not null)?.Skip
         };
+
+    private async Task<bool> MatchesCatalogAsync(
+        (AzdoByteDescriptor Descriptor, EvidenceDescriptor Evidence) cached, CatalogEntry entry, CancellationToken ct)
+    {
+        try
+        {
+            if (cached.Descriptor.MemberPath != entry.MemberPath || cached.Descriptor.Bytes != entry.Bytes)
+                throw new InvalidDataException("Cached member length/path does not match the current catalog.");
+            await using var input = File.OpenRead(cached.Evidence.LocalPath);
+            await using var checkedInput = new CrcReadStream(input, entry.Crc32);
+            await checkedInput.CopyToAsync(Stream.Null, ct);
+            return true;
+        }
+        catch (InvalidDataException) when (!cacheOptions.EvalMode)
+        {
+            return false;
+        }
+    }
 
     private async Task<(AzdoByteDescriptor Descriptor, EvidenceDescriptor Evidence)?> CachedAsync(
         string key, AzdoDownloadOptions options, CancellationToken ct, string? providerIdentity = null)

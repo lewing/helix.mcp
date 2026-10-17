@@ -618,6 +618,11 @@ to ZIPs. ZIP selection is explicit, nonrecursive, and available for either scope
 | `--cache-dir DIR` | Choose live cache storage before acquisition. Cannot replace an active read-only eval snapshot. |
 | `--json`, `--schema` | Bounded structured receipts / report schema. No unsolicited binary stdout. |
 
+ZIP bodies spool to disk, but member catalogs and full-report serialization still
+materialize in memory; inline shaping does not guarantee bounded-memory behavior.
+Broad collector test-result/attachment-volume recovery repairs remain follow-up
+work; byte collection does not claim full collector-design compliance.
+
 Receipts expose `results`, resource/member windows, `bytes`, `streamedBytes`,
 source mode/provenance, paths, SHA-256, errors, cache keys, `delivery`, `next`,
 `continuation`, and `recovery`. The full manifest retains every selected outcome.
@@ -710,7 +715,7 @@ By default, it does not download AzDO artifact ZIP/file bytes, binlogs, dumps, a
 
 **Manifest schema:**
 
-The manifest is stable, versioned JSON with top-level fields `schemaVersion`, `kind`, `manifestId`, `hlxVersion`, `generatedAt`, `completedAt`, `command`, `source`, `auth`, `policy`, `cache`, `snapshot`, `complete`, `exitCode`, `incompleteDetails`, `summary`, and `attempts`. `kind` is `hlx.collect.azdo-build`; metadata-only manifests remain version `1`. Byte-enabled manifests use version `2` and add `byteDownloads` with complete selected outcomes, provenance, counters and recovery. Manifest versions are separate from cache schema v1/v2 compatibility. Existing v1 manifests remain readable.
+The manifest is stable, versioned JSON with top-level fields `schemaVersion`, `kind`, `manifestId`, `hlxVersion`, `generatedAt`, `completedAt`, `command`, `source`, `auth`, `policy`, `cache`, `snapshot`, `complete`, `exitCode`, `incompleteDetails`, `summary`, and `attempts`. `kind` is `hlx.collect.azdo-build`; metadata-only manifests remain version `1`. Byte-enabled manifests use version `2` and add `byteDownloads` with selected outcomes, provenance, counters and recovery (including failures and deferrals). Manifest versions are separate from cache schema v1/v2 compatibility. Existing v1 manifests remain readable.
 
 Each `attempts[]` entry has `id`, optional `parentId`, `phase`, `required`, `provider`, `operation`, `resource`, optional `cacheKey`, optional `completeCacheKey`, `startedAt`, `finishedAt`, `durationMs`, `attemptCount`, `outcome`, nullable `bytes`, optional `sha256`, optional `paging`, optional `error`, and optional `skip`. `outcome` is one of:
 

@@ -93,10 +93,11 @@ public sealed partial class AzdoBuildCollector
                         });
                 }
             }
-            if (report.Total == 0 && requireMatch)
+            if (requireMatch && (report.Total == 0 || report.Results.All(r =>
+                r.Format == "members" && r.MembersTotal == 0 && r.Outcome is "ok" or "cached")))
                 AddSkip(attempts, $"azdo.bytes:no-matches:{reports.Count}", "azdo_bytes", true, "azdo", "download_azdo_bytes",
                     Resource(("buildId", buildId)), "no_matches",
-                    "Explicit byte selection matched no resources. Inspect the complete artifact/attachment metadata index and revise the selector.");
+                    "Explicit byte selection matched no resources or members. Inspect the complete artifact/attachment metadata index and revise the selector.");
         }
 
         void AddByteAttempt(string key, long bytes, string? sha, string outcome, IReadOnlyDictionary<string, object?> resource)

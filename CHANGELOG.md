@@ -23,7 +23,10 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
   selectors, `--artifact-byte-scope`, `--artifact-byte-mode`, `--allow-large`,
   and streamed-byte planning; byte-enabled manifests include source provenance and
   verified selected blob/descriptor pairs. Catalogs do not imply unselected byte
-  coverage. Run-level attachment listing is additive: omit `resultId`.
+  coverage. Run-level attachment listing is additive: omit `resultId`. Broad
+  test-result/attachment-volume recovery repairs remain deferred; this is not full
+  collector-design compliance. ZIP catalogs and full-report serialization remain
+  in-memory, so disk spooling/inline windows do not promise bounded memory.
 - **Local evidence CLI:** `hlx evidence read` supports byte offsets, bounded
   UTF-8/base64, and full `--output` delivery. Native provider transfers restart the
   current interrupted file without assuming HTTP Range support; verified completed
@@ -53,7 +56,11 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
   corrupt cache pairs/catalogs; offline replay remains read-only and works with
   resume disabled. Unsolicited partial HTTP bodies are never published as complete.
   Length/SHA/CRC failures are classified per resource/member without dropping other
-  successful selections.
+  successful selections. Cached members are checked against the current catalog
+  before reuse; native transfers honor known catalog length/CRC. Required collector
+  member selections with no matches record an incomplete gap. Incomplete source
+  coverage stays truncated even when all rows fit, and storage recovery requires
+  a different sufficient-storage location rather than repeating the failed command.
 
 ### BREAKING
 
