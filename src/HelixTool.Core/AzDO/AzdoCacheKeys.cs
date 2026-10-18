@@ -189,9 +189,25 @@ internal static class AzdoCacheKeys
             "testruns" => IsValidTestRunsSuffix(suffix),
             "testresults" => IsValidTestResultsSuffix(suffix),
             "testattachments" => IsValidTestAttachmentsSuffix(suffix),
+            "testrunattachments" => suffix.Length == 4 && suffix[1] == "v1" && IsInteger(suffix[2]) && suffix[3] == "all"
+                || suffix.Length == 6 && suffix[1] == "v1" && IsInteger(suffix[2]) && suffix[3] == "window" && IsInteger(suffix[4]) && IsInteger(suffix[5]),
+            "artifactbytes" => suffix.Length == 5 && suffix[1] == "v1" && IsInteger(suffix[2]) && IsInteger(suffix[3]) && suffix[4] == "zip",
+            "artifactmembers" => suffix.Length == 5 && suffix[1] == "v1" && IsInteger(suffix[2]) && IsInteger(suffix[3]) && suffix[4] == "all"
+                || suffix.Length == 6 && suffix[1] == "v1" && IsInteger(suffix[2]) && IsInteger(suffix[3]) && suffix[4] == "scope" && IsPathHash(suffix[5]),
+            "artifactmemberbytes" => suffix.Length == 6 && suffix[1] == "v1" && IsInteger(suffix[2]) && IsInteger(suffix[3]) && IsPathHash(suffix[4]) && suffix[5] == "content",
+            "testattachmentbytes" => IsAttachmentByteSuffix(suffix, member: false, catalog: false),
+            "testattachmentmemberbytes" => IsAttachmentByteSuffix(suffix, member: true, catalog: false),
+            "testattachmentmembers" => IsAttachmentByteSuffix(suffix, member: false, catalog: true),
             _ => false
         };
     }
+
+    private static bool IsPathHash(string value) => value.Length == 64 && value.All(Uri.IsHexDigit);
+    private static bool IsAttachmentByteSuffix(ReadOnlySpan<string> suffix, bool member, bool catalog)
+        => suffix.Length == (member ? 8 : 7) && suffix[1] == "v1" && IsInteger(suffix[2])
+           && suffix[3] is "run" or "result" && IsInteger(suffix[4]) && IsInteger(suffix[5])
+           && (suffix[3] == "run" ? suffix[4] == "0" : suffix[4] != "0")
+           && (member ? IsPathHash(suffix[6]) && suffix[7] == "content" : suffix[6] == (catalog ? "all" : "content"));
 
     private static bool IsValidChangesSuffix(ReadOnlySpan<string> suffix)
         => suffix.Length == 3 && IsInteger(suffix[1]) && IsOptionalInteger(suffix[2])

@@ -14,7 +14,7 @@ namespace HelixTool.Core.AzDO;
 ///   - Test runs/results: 1h (stable after build)
 /// Pass-through when <see cref="CacheOptions.MaxSizeBytes"/> is 0 (disabled).
 /// </summary>
-public sealed class CachingAzdoApiClient : IAzdoApiClient, IAzdoCachedBuildLogReader
+public sealed partial class CachingAzdoApiClient : IAzdoApiClient, IAzdoCachedBuildLogReader
 {
     private const int CompleteListTopSentinel = int.MaxValue;
 

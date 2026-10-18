@@ -354,15 +354,14 @@ public sealed partial class IndependentReviewRegressionTests
         Assert.All(result.Manifest.Attempts.Where(a => a.Required), a => Assert.Equal("ok", a.Outcome));
         var downloads = result.Manifest.Attempts.Where(a => a.Operation == "download_helix_file").ToList();
         Assert.Equal(2, downloads.Count);
-        Assert.All(downloads, a =>
-        {
-            Assert.Equal("skipped", a.Outcome);
-            Assert.Contains(a.Skip?.Kind, new[] { "total_size_limit", "size_limit" });
-        });
-        Assert.Contains(downloads, a => a.Skip?.Kind == "total_size_limit");
+        var accepted = Assert.Single(downloads, a => a.Outcome == "ok");
+        Assert.Equal(64 * 1024, accepted.Bytes);
+        var deferred = Assert.Single(downloads, a => a.Outcome == "skipped");
+        Assert.Equal("planning_deferred", deferred.Skip?.Kind);
+        Assert.NotNull(deferred.Skip?.Recovery);
         await using var console = await fixture.Store.GetArtifactAsync(ConsoleKey);
         Assert.NotNull(console);
-        Assert.InRange((await fixture.Store.GetStatusAsync()).TotalSizeBytes, 1, fixture.Options.MaxSizeBytes);
+        Assert.True((await fixture.Store.GetStatusAsync()).TotalSizeBytes > fixture.Options.MaxSizeBytes);
         var validation = await SnapshotValidator.ValidateAsync(fixture.SnapshotPath);
         Assert.True(validation.IsValid, string.Join("\n", validation.Errors));
         using var replayStore = new SqliteCacheStore(new CacheOptions { CacheRoot = fixture.SnapshotPath, EvalMode = true });
@@ -371,6 +370,8 @@ public sealed partial class IndependentReviewRegressionTests
         await using var replayedConsole = await replay.GetConsoleLogAsync(WorkItem, JobId);
         using var reader = new StreamReader(replayedConsole);
         Assert.Contains("required console", await reader.ReadToEndAsync(), StringComparison.Ordinal);
+        await using var replayedFile = await replay.GetFileAsync("budget.bin", WorkItem, JobId);
+        Assert.Equal(64 * 1024, replayedFile.Length);
     }
 
     [Fact]

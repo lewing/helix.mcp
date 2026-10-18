@@ -8,7 +8,45 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+### Fixed
+
+- AzDO byte-cache files use portable hashed paths on Windows. SQLite WAL stores
+  use private page caches for concurrent writers, and byte-test cleanup clears
+  only the exact live/read-only connection-string pools after stores are disposed.
+- Download/evidence output guards resolve physical snapshot and ancestor paths;
+  full evidence copies verify staged length and SHA-256 before publication,
+  including overwrites. Requested JSON/HTML files remain downloadable, and member
+  globs handle literal stars in member names.
+- Byte descriptors survive their metadata TTL while blobs remain retained;
+  expiration and LRU eviction remove blob/descriptor pairs together. Collector
+  byte scope/mode routing is case-insensitive, and shared retained/streamed budgets
+  preserve zero remaining capacity across scopes unless `--allow-large` is set.
+
 ### Added
+
+- **AzDO artifact/member and test-attachment bytes (CLI + MCP):**
+  `azdo_download_artifacts` / `hlx azdo download-artifacts` and
+  `azdo_download_test_attachments` / `hlx azdo download-test-attachments` stream
+  selected evidence to private cache-backed disk, return verified SHA-256 receipts,
+  and reuse `hlx_read_evidence` for bounded text/base64 ranges. Exact PipelineArtifact
+  members use `format=file&subPath=/relative/path`; member globs use seekable disk
+  spooling, selected extraction with CRC/SHA validation, and catalog coverage.
+  Whole archives/original dump bytes remain explicitly available; content labels
+  and the ordinary cache target are not download eligibility gates.
+- **Opt-in byte collection:** artifact-name/member and attachment filename/member
+  selectors, `--artifact-byte-scope`, `--artifact-byte-mode`, `--allow-large`,
+  and streamed-byte planning; byte-enabled manifests include source provenance and
+  verified selected blob/descriptor pairs. Catalogs do not imply unselected byte
+  coverage. Run-level attachment listing is additive: omit `resultId`. Broad
+  test-result/attachment-volume recovery repairs remain deferred; this is not full
+  collector-design compliance. ZIP catalogs and full-report serialization remain
+  in-memory, so disk spooling/inline windows do not promise bounded memory.
+- **Local evidence CLI:** `hlx evidence read` supports byte offsets, bounded
+  UTF-8/base64, and full `--output` delivery. Native provider transfers restart the
+  current interrupted file without assuming HTTP Range support; verified completed
+  files are reused and incomplete prefixes/checkpoints are not snapshot blobs.
+  Binary paths are server-local; binlog/dump analysis and remote binary hosting
+  remain outside scope.
 
 - **`azdo_timeline` triage view, selectors, and access-first delivery:** `azdo_timeline` (MCP) and
   `hlx azdo timeline` (CLI) now default to a **triage** projection — at most 10 rows, ancestors
@@ -23,6 +61,22 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
   `hlx_read_evidence` reader instead of being dropped or erroring. CLI JSON gains `--delivery`-style
   `--all`/`--output` escape hatches and `--raw-json` for the legacy `{id, records}` shape used by
   offline snapshot replay (works for every projection, not just `--raw-json`).
+
+### Fixed
+
+- Byte downloads preserve original archives/attachments when `--all-members` only
+  expands the report, enforce retained totals for unknown-length archives, and reset
+  stale observation cursors in same-scope recovery actions. Live resume reacquires
+  corrupt cache pairs/catalogs; offline replay remains read-only and works with
+  resume disabled. Unsolicited partial HTTP bodies are never published as complete.
+  Length/SHA/CRC failures are classified per resource/member without dropping other
+  successful selections. Cached members are checked against the current catalog
+  before reuse; native transfers honor known catalog length/CRC. Required collector
+  member selections with no matches record an incomplete gap, including attachment
+  member globs aggregated across all selected run/result scopes (independent of
+  artifact matches). Empty files still count as matched members. Incomplete source
+  coverage stays truncated even when all rows fit, and storage recovery requires
+  a different sufficient-storage location rather than repeating the failed command.
 
 ### BREAKING
 

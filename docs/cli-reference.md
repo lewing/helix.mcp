@@ -546,9 +546,11 @@ if [ "$status" -eq 2 ]; then
 fi
 ```
 
-### `hlx azdo test-attachments <runId> <resultId> [--org ORG] [--project PROJ] [--limit N|--top N] [--offset N] [--all] [--allow-truncated]`
+### `hlx azdo test-attachments <runId> [resultId] [--org ORG] [--project PROJ] [--limit N|--top N] [--offset N] [--all] [--allow-truncated]`
 
-List attachments for a test result (screenshots, logs, dumps). Defaults: `--org dnceng-public --project public --limit 100`.
+List attachment metadata for a test result (screenshots, logs, dumps), or omit
+`resultId` for run-level attachments. Defaults: `--org dnceng-public --project public --limit 100`.
+Use `download-test-attachments` for actual bytes.
 
 ```bash
 hlx azdo test-attachments 98765 1234
@@ -556,6 +558,106 @@ hlx azdo test-attachments 98765 1234 --all
 ```
 
 ## Collect Commands
+
+### `hlx azdo download-artifacts <build-id-or-url> [options]`
+
+Download an exact `--artifact-name NAME`, explicit `--pattern GLOB`, or `--all`.
+With no resource selector, return choices and a complete-scope action rather than
+silently downloading the entire build.
+
+```bash
+hlx azdo download-artifacts 1621192 \
+  --artifact-name Logs_Build_Attempt1_browser_wasm_linux_Release_LibraryTestsCoreCLR \
+  --member-path Release/Build.binlog --output-dir ./evidence --json
+hlx azdo download-artifacts 1621192 --pattern 'Logs_Build_*' \
+  --member-pattern '**/Build.binlog' --all --all-members --delivery file --json
+hlx azdo download-artifacts 1621192 --artifact-name drop --delivery file --json
+```
+
+Exact known members use native file transfer. PipelineArtifact sends
+`format=file&subPath=/Release/Build.binlog`; the leading slash matters.
+Do not use `format=zip` with a file path: the measured provider returns a
+22-byte empty ZIP. Glob selection downloads a seekable private ZIP spool and
+persists only selected members plus its full covering catalog. A generated source
+ZIP's SHA is transfer provenance, not member cache identity. No member selector
+means the requested whole archive.
+
+### `hlx azdo download-test-attachments <run-id> [options]`
+
+Omit `--result-id` for run-level attachments; otherwise select that test result.
+Use `--attachment-id ID` or `--pattern GLOB`, mutually exclusive, or `--all`.
+Organization/project defaults match attachment listing.
+
+```bash
+hlx azdo download-test-attachments 98765 --result-id 1234 \
+  --attachment-id 77 --content-kind dump --output-dir ./evidence --json
+hlx azdo download-test-attachments 98765 --pattern '*.zip' \
+  --member-pattern '**/*.dmp' --all-members --delivery file --json
+```
+
+Original attachment bytes/content type are preserved; raw dumps are not renamed
+to ZIPs. ZIP selection is explicit, nonrecursive, and available for either scope.
+
+#### Shared download flags and receipts
+
+| Flag | Default / meaning |
+|---|---|
+| `--member-path PATH` / `--member-pattern GLOB` | Exclusive relative-path selectors; no synthetic artifact-name prefix. `**/` matches zero or more directories; plain `*` does not cross directories. |
+| `--member-offset N`, `--member-limit N` | 0 / 10; report windows, not source-access ceilings. Nonzero member offset requires exact-resource scope and its `viewId`. |
+| `--offset N`, `--limit N`, `--view-id ID` | 0 / 10 / absent; exact next report coordinates, with observation fingerprints. |
+| `--all`, `--all-members` | Request full resource/member reports; full selected acquisition is independent of inline response size. `--all-members` alone never changes an archive/original-attachment request into extraction; supply `--member-path` or `--member-pattern` to select members. |
+| `--delivery auto\|inline\|file\|chunked` | `auto`; oversized reports always have a verified full manifest and reader action. |
+| `--output-dir DIR`, `--overwrite` | Private server-local delivery by default; optional Windows-safe, resource-qualified copies. Different existing content is not overwritten without consent. |
+| `--output PATH` | Save the complete JSON download report, independently of binary `--output-dir`; verified complete file delivery exits 0. |
+| `--resume true\|false` | `true`; completed SHA-verified blobs are reused. Corrupt cached blobs/descriptors/catalogs are reacquired in live mode; snapshot integrity failures remain read-only errors. Offline replay uses available verified bytes even with `false`. Incomplete prefixes/checkpoints are not successful cache keys. |
+| `--content-kind auto\|logs\|binlog\|dump\|other` | Routing/progress label only, never permission to obtain bytes. |
+| `--max-file-bytes`, `--max-archive-bytes` | Optional intentional planning bounds; **no inferred 50/512 MiB limit**. |
+| `--max-total-bytes`, `--max-total-stream-bytes` | Optional nonnegative retained/source planning bounds; zero defers nonempty transfers. Collection shares these budgets across all selected scopes without replenishing exhausted allowances. Cached bytes count toward retained totals; discarded and retried source bytes count as transfer. |
+| `--allow-large` | Waive logical planning thresholds, not disk/authentication/integrity checks. Recovery preserves resource/member selection and resets observation cursors so the retry can report the new complete observation. |
+| `--max-response-bytes N` | 12288; inline shaping target, effective 8192–16384. Full data remains accessible. |
+| `--cache-dir DIR` | Choose live cache storage before acquisition. Cannot replace an active read-only eval snapshot. |
+| `--json`, `--schema` | Bounded structured receipts / report schema. No unsolicited binary stdout. |
+
+ZIP bodies spool to disk, but member catalogs and full-report serialization still
+materialize in memory; inline shaping does not guarantee bounded-memory behavior.
+Broad collector test-result/attachment-volume recovery repairs remain follow-up
+work; byte collection does not claim full collector-design compliance.
+
+Receipts expose `results`, resource/member windows, `bytes`, `streamedBytes`,
+source mode/provenance, paths, SHA-256, errors, cache keys, `delivery`, `next`,
+`continuation`, and `recovery`. The full manifest retains every selected outcome.
+An inline partial page exits 2; a failed download exits 1. Explicit file/output
+delivery exits 0 when the requested transfer/report is complete. Follow the
+manifest's outcome/completeness, not just HTTP 200 or a local filename.
+
+Transfers use 64 KiB buffers, private disk spools and actual free-space checks.
+Active required artifacts receive a 24-hour cache retention lease rather than
+being evicted to enforce the ordinary cache target. Source counters are separate
+from retained member bytes. Authentication/unsafe paths/corruption remain errors.
+Explicit artifact members and attachments may themselves contain JSON or HTML;
+their MIME type or prefix alone never makes a successful file response an error.
+Byte descriptors stay available while their blobs are retained, and maintenance
+removes both halves together when evicting bytes. Snapshot output guards resolve
+symlinked snapshots and ancestor chains before checking containment.
+
+The measured public PipelineArtifact route rejects HTTP Range on both file and
+ZIP requests. Current transfers therefore **restart that upstream file** without
+Range rather than append unvalidated bytes; already completed files remain
+reusable. Local evidence is always seekable. Use CLI on the debugger host or a
+shared filesystem for binary delivery; no public download service or auto-upload
+is provided. Analyze binlogs/dumps with external tools.
+
+### `hlx evidence read <evidence-id> [options]`
+
+Reads only scoped hlx-owned references, not arbitrary filesystem paths.
+`--offset-bytes 0 --length-bytes 2048 --encoding auto|utf8|base64` returns bounded
+data with an exact next action. Large requested lengths remain valid and advance
+in chunks. Binary `auto` offers its file delivery rather than unsolicited base64.
+`--output PATH` copies the **complete** verified backing payload, independently
+of inline range selectors. `--resume true` reuses identical output;
+`--overwrite` authorizes replacement. `--json` and `--schema` are supported.
+Use the same `--cache-dir DIR` as the originating CLI download when reading a
+reference produced under an explicitly selected live cache root.
 
 ### `hlx collect azdo-build <build-id-or-url> [options]`
 
@@ -584,6 +686,15 @@ The command cannot run when `HLX_EVAL_SNAPSHOT` is set or when caching is disabl
 | `--retry-initial-delay <duration>` | `2s` | Initial retry delay. Accepts `TimeSpan` values or suffixes such as `2s`, `5m`, or `1h`. |
 | `--retry-max-delay <duration>` | `30s` | Maximum computed exponential-backoff delay. Accepts the same duration formats as `--retry-initial-delay`; provider `retryAfterSeconds` / `Retry-After` delays are honored separately up to 1 hour. |
 | `--artifact-pattern <glob>` | `*` | Artifact-name glob used by evidence planning. |
+| `--download-azdo-artifacts <glob>` | absent | Opt-in explicit artifact-byte set; does not silently add a failed-leg or Logs predicate. |
+| `--artifact-byte-scope auto\|failed-logs\|selected` | `auto` | Explicit artifact globs use selected scope; otherwise opted-in automatic triage uses failed Logs. `selected` without a name constraint requests all artifacts. |
+| `--artifact-byte-mode auto\|members\|archive` | `auto` | Triage uses Build.binlog members. Explicit artifact globs without member selection request original archives. |
+| `--download-artifact-members <glob>` | absent | Explicit relative member selection. `**/Build.binlog` is only the automatic triage default. |
+| `--download-test-attachments <glob>` | absent | Opt-in filename selection over run/result scope, independent of broad `--test-scope none`. |
+| `--download-attachment-members <glob>` | absent | Explicit ZIP members, without automatic nested extraction. |
+| `--attachment-content-kind` | `auto` | Progress/routing label only; never a dump-size unlock. |
+| `--max-total-stream-bytes` | 2147483648 | Unattended AzDO source-transfer planning target across artifact/attachment families; discarded ZIP bytes count. |
+| `--allow-large` | `false` | Waive retained/source planning targets while keeping real storage/integrity/auth protections. |
 | `--artifact-job-prefix <prefix>` | `null` | Prefix stripped from artifact names before matching. |
 | `--keep-attempt-prefix` | `false` | Keep `AttemptN_` in artifact names instead of stripping it. |
 | `--match <mode>` | `auto` | Evidence match strategy: `auto`, `source-id`, `normalized-exact`, or `exact`. |
@@ -594,9 +705,9 @@ The command cannot run when `HLX_EVAL_SNAPSHOT` is set or when caching is disabl
 | `--test-attachment-scope <diagnostic\|all\|none>` | `diagnostic` | Select attachment metadata independently of result scope. Diagnostic selects `Failed,Error,Timeout,Aborted,Inconclusive,Blocked,Warning`; other rows are recorded as aggregate policy exclusions. `all` requires an explicit positive `--max-test-attachments`; `none` excludes all attachment metadata. |
 | `--max-test-attachments <long>` | `1000` (implicit) | Build-wide cap on selected attachment-list requests. Eligible rows are selected deterministically by run/result ID. Remaining eligible coverage is recorded as `test_attachment_limit`, `complete=false`, and exit 2 by default. Resume/cache reads count toward selected coverage but avoid additional provider calls. |
 | `--helix-scope <suggested\|none>` | `suggested` | `suggested` follows Helix `suggestedFetches[]` from the evidence plan; `none` records a policy skip. |
-| `--download-helix-files <glob>` | `null` | Downloads matching Helix uploaded files by glob after metadata is listed. Bytes stream through `--max-file-bytes` and cumulative `--max-total-bytes` caps before cache writes; over-cap files are deleted, recorded as skipped with `size_limit` or `total_size_limit`, and never cached. In-cap files are cached and replay offline. Unmatched files are recorded as policy-excluded skips. |
-| `--max-file-bytes <long>` | `52428800` | Per-file byte cap for `--download-helix-files`; files over the cap are skipped with `size_limit`. |
-| `--max-total-bytes <long>` | `2147483648` | Total byte cap for `--download-helix-files`; files that would exceed the remaining budget are skipped with `total_size_limit`. |
+| `--download-helix-files <glob>` | `null` | Stream matching uploaded files after metadata collection. The old inferred 50 MiB ceiling and ordinary cache retention target no longer deny an explicit file. Deliberate planning thresholds defer with `planning_deferred` and an exact same-scope `--allow-large` resume action. |
+| `--max-file-bytes <long>` | legacy CLI value `52428800` | A deliberate Helix file planning bound when supplied explicitly; the implicit legacy value is not an access gate. `--allow-large` waives logical bounds. AzDO byte tools have no inferred per-object default. |
+| `--max-total-bytes <long>` | `2147483648` | Optional retained-byte planning target across selected byte collection, including resumed files. `--allow-large` waives it; required/active evidence stays retained and actual storage checks still apply. |
 | `--schema` | `false` | Print the `CollectManifest` JSON schema and exit. |
 
 **Default collection policy:**
@@ -609,7 +720,7 @@ By default, it does not download AzDO artifact ZIP/file bytes, binlogs, dumps, a
 
 **Manifest schema:**
 
-The manifest is stable, versioned JSON with top-level fields `schemaVersion`, `kind`, `manifestId`, `hlxVersion`, `generatedAt`, `completedAt`, `command`, `source`, `auth`, `policy`, `cache`, `snapshot`, `complete`, `exitCode`, `incompleteDetails`, `summary`, and `attempts`. `kind` is `hlx.collect.azdo-build`; `schemaVersion` is `1`.
+The manifest is stable, versioned JSON with top-level fields `schemaVersion`, `kind`, `manifestId`, `hlxVersion`, `generatedAt`, `completedAt`, `command`, `source`, `auth`, `policy`, `cache`, `snapshot`, `complete`, `exitCode`, `incompleteDetails`, `summary`, and `attempts`. `kind` is `hlx.collect.azdo-build`; metadata-only manifests remain version `1`. Byte-enabled manifests use version `2` and add `byteDownloads` with selected outcomes, provenance, counters and recovery (including failures and deferrals). Manifest versions are separate from cache schema v1/v2 compatibility. Existing v1 manifests remain readable.
 
 Each `attempts[]` entry has `id`, optional `parentId`, `phase`, `required`, `provider`, `operation`, `resource`, optional `cacheKey`, optional `completeCacheKey`, `startedAt`, `finishedAt`, `durationMs`, `attemptCount`, `outcome`, nullable `bytes`, optional `sha256`, optional `paging`, optional `error`, and optional `skip`. `outcome` is one of:
 
@@ -619,7 +730,7 @@ Each `attempts[]` entry has `id`, optional `parentId`, `phase`, `required`, `pro
 - `failed` — A retried/transient acquisition exhausted the retry budget or an acquisition failed without a recordable provider error.
 - `skipped` — The resource was intentionally not fetched by policy or cap.
 
-`paging`, when present, contains `returned`, nullable `total`, `offset`, nullable `limit`, `complete`, `truncated`, and `next`. `skip.kind` is emitted as `policy_excluded`, `not_selected`, `size_limit`, `total_size_limit`, `test_result_limit`, or `test_attachment_limit`. Test-volume skips include requested counts, effective budgets, and remediation text; attachment exclusions are aggregated per run rather than adding one manifest row for every passed test. `policy.caps` records effective `maxTestResults` and `maxTestAttachments`, `policy.maxTestResultsExplicit` distinguishes consent from the default, and `policy.testAttachmentScope` records selected coverage. These additive fields preserve older manifest readability. `bytes` is `null` for skips. `error` reuses the `AcquisitionError` shape from [Errors and exit codes](#errors-and-exit-codes): `kind`, `provider`, `operation`, `resource`, optional `httpStatus`, optional `retryAfterSeconds`, optional `source`, optional `replayed`, optional `recordedAt`, and `message`.
+`paging`, when present, contains `returned`, nullable `total`, `offset`, nullable `limit`, `complete`, `truncated`, and `next`. Byte planning deferrals use `skip.kind=planning_deferred` with an exact recovery argv; explicit empty byte selections are visible as required `no_matches` gaps. Attachment member matches are aggregated across the selected run/result attachment scope: a zero-byte matched member counts, but a selected ZIP/catalog with no matching members does not. Empty direct-download member selections remain valid successes. Other scopes retain `policy_excluded`, `not_selected`, `test_result_limit`, and `test_attachment_limit`. Historical `size_limit`/`total_size_limit` manifests remain readable, but new byte-planning deferrals do not use those labels as eligibility gates. Test-volume skips include requested counts, effective budgets, and remediation text; attachment exclusions are aggregated per run rather than adding one manifest row for every passed test. `policy.caps` records effective `maxTestResults` and `maxTestAttachments`, `policy.maxTestResultsExplicit` distinguishes consent from the default, and `policy.testAttachmentScope` records selected coverage. These additive fields preserve older manifest readability. `bytes` is `null` for skips. `error` reuses the `AcquisitionError` shape from [Errors and exit codes](#errors-and-exit-codes): `kind`, `provider`, `operation`, `resource`, optional `httpStatus`, optional `retryAfterSeconds`, optional `source`, optional `replayed`, optional `recordedAt`, and `message`.
 
 `summary` contains `attempted`, `ok`, `cached`, `recordedFailure`, `failed`, `skipped`, and `bytes`. `auth.azdo.cachePartition` is the non-secret replay partition (`public` or `cache-xxxxxxxx`); `auth.azdo.replay` is `public` or `snapshot_partition`; `auth.helix.path` is `anonymous`, `environment`, or `stored-credential`. `snapshot.manifestPath` is `manifest/hlx-collect-manifest.json` when `--export` succeeds; the standalone manifest path is the `--manifest` value or `hlx-collect-manifest.json` inside the effective cache directory (which includes the auth-partition subdirectory, e.g. `public/`).
 

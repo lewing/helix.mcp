@@ -37,13 +37,13 @@ public sealed partial class IndependentReviewRegressionTests
         Assert.Equal(0, result.Manifest.ExitCode);
         Assert.All(result.Manifest.Attempts.Where(a => a.Required), a => Assert.Equal("ok", a.Outcome));
         var optional = Assert.Single(result.Manifest.Attempts, a => a.Operation == "download_helix_file");
-        Assert.Equal("skipped", optional.Outcome);
-        Assert.Equal("total_size_limit", optional.Skip?.Kind);
+        Assert.Equal("ok", optional.Outcome);
+        Assert.Null(optional.Skip);
         Assert.DoesNotContain(result.Manifest.IncompleteDetails, d => d.Code == "artifact_missing");
         await using var console = await fixture.Store.GetArtifactAsync(ConsoleKey);
         Assert.NotNull(console);
         Assert.Equal(consoleBytes, console.Length);
-        Assert.Equal(consoleBytes, (await fixture.Store.GetStatusAsync()).TotalSizeBytes);
+        Assert.Equal(consoleBytes + optionalBytes, (await fixture.Store.GetStatusAsync()).TotalSizeBytes);
         await AssertConsoleSnapshotAsync(fixture.SnapshotPath, [(WorkItem, consoleBytes)]);
     }
 
@@ -87,17 +87,23 @@ public sealed partial class IndependentReviewRegressionTests
         Assert.Equal(2, downloadsStarted);
         Assert.All(result.Manifest.Attempts.Where(a => a.Required), a => Assert.Equal("ok", a.Outcome));
         var downloads = result.Manifest.Attempts.Where(a => a.Operation == "download_helix_file").ToList();
-        var accepted = Assert.Single(downloads, a => a.Outcome == "ok");
-        Assert.Equal(optionalBytes, accepted.Bytes);
-        var skipped = Assert.Single(downloads, a => a.Outcome == "skipped");
-        Assert.Equal("total_size_limit", skipped.Skip?.Kind);
-        Assert.Equal(2 * consoleBytes + optionalBytes, (await fixture.Store.GetStatusAsync()).TotalSizeBytes);
+        Assert.Equal(2, downloads.Count);
+        Assert.All(downloads, a =>
+        {
+            Assert.Equal("ok", a.Outcome);
+            Assert.Equal(optionalBytes, a.Bytes);
+            Assert.Null(a.Skip);
+        });
+        Assert.Equal(2 * (consoleBytes + optionalBytes), (await fixture.Store.GetStatusAsync()).TotalSizeBytes);
         await AssertConsoleSnapshotAsync(fixture.SnapshotPath, [(WorkItem, consoleBytes), (secondWorkItem, consoleBytes)]);
         var options = new CacheOptions { CacheRoot = fixture.SnapshotPath, EvalMode = true };
         using var store = new SqliteCacheStore(options);
         var replay = new CachingHelixApiClient(new OfflineHelixApiClient(), store, options);
-        await using var optional = await replay.GetFileAsync("optional.bin", accepted.Resource["workItem"]!.ToString()!, JobId);
-        Assert.Equal(optionalBytes, optional.Length);
+        foreach (var accepted in downloads)
+        {
+            await using var optional = await replay.GetFileAsync("optional.bin", accepted.Resource["workItem"]!.ToString()!, JobId);
+            Assert.Equal(optionalBytes, optional.Length);
+        }
 
         async Task<Stream> OpenOptionalAsync(CancellationToken ct)
         {
@@ -186,9 +192,9 @@ public sealed partial class IndependentReviewRegressionTests
         Assert.True(result.Manifest.Complete, string.Join("\n", result.Manifest.IncompleteDetails.Select(d => d.Message)));
         Assert.Equal(0, result.Manifest.ExitCode);
         var optional = Assert.Single(result.Manifest.Attempts, a => a.Operation == "download_helix_file");
-        Assert.Equal("skipped", optional.Outcome);
-        Assert.Equal("total_size_limit", optional.Skip?.Kind);
-        Assert.Equal(consoleBytes + existingBytes, (await fixture.Store.GetStatusAsync()).TotalSizeBytes);
+        Assert.Equal("ok", optional.Outcome);
+        Assert.Null(optional.Skip);
+        Assert.Equal(consoleBytes + existingBytes + 200 * 1024, (await fixture.Store.GetStatusAsync()).TotalSizeBytes);
         await using var retained = await fixture.Store.GetArtifactAsync(existingKey);
         Assert.NotNull(retained);
         Assert.Equal(existingBytes, retained.Length);

@@ -41,6 +41,53 @@ Every tool is designed to minimize token consumption in agent context windows:
 - Use `helix_parse_uploaded_trx` only when the work item uploads structured test results to Helix (runtime CoreCLR, XHarness device tests).
 - Otherwise use `azdo_test_runs` → `azdo_test_results` for structured results, or `helix_search` when the signal is in console output.
 
+### Artifact bytes, binlogs, and attachments
+
+`azdo_artifacts` and `azdo_test_attachments` list **metadata**. Use
+`azdo_download_artifacts` / `azdo_download_test_attachments` (MCP), or:
+
+```bash
+hlx azdo download-artifacts 1621192 \
+  --artifact-name Logs_Build_Attempt1_browser_wasm_linux_Release_LibraryTestsCoreCLR \
+  --member-path Release/Build.binlog --output-dir ./evidence --json
+hlx azdo download-test-attachments 98765 --result-id 1234 \
+  --pattern '*.dmp' --output-dir ./evidence --json
+hlx azdo download-test-attachments 98765 --all --delivery file --json
+```
+
+Exact artifact member paths use native file transfer (including PipelineArtifact's
+leading-slash `subPath`); member globs spool the archive to private disk and retain
+only matched decoded files and a covering catalog. Without member selectors, the
+requested original archive/binary is preserved. `**/Build.binlog` also matches root
+members; `*/Build.binlog` requires a directory.
+
+Explicit selectors are not restricted to failed Logs or a content classification.
+There is no inferred 50/512 MiB per-object ceiling. Optional caller planning bounds
+can be waived with `--allow-large`; physical storage, authentication, unsafe paths,
+and integrity checks remain real protections. Progress goes to stderr; JSON contains
+SHA-256, server-local paths, bounded report windows, and a verified full-report
+delivery reference. Continue through `hlx_read_evidence`, or
+`hlx evidence read <evidence-id> --encoding base64 --offset-bytes 0 --length-bytes 2048`.
+Use CLI on the debugger host or a deliberately shared filesystem for binaries:
+there is no public transfer endpoint, automatic upload, dump debugging, or binlog
+event parsing.
+
+Collection stays metadata-only unless byte flags are supplied:
+`--download-azdo-artifacts <glob>`, `--download-artifact-members <glob>`, and
+`--download-test-attachments <glob>`. Explicit artifact-name globs select that set,
+not an implicit failed-only subset. Automatic `--artifact-byte-scope failed-logs`
+prefers failed-leg Logs/Build.binlog. Unattended retained/streamed byte planning
+defaults to 2 GiB; `--allow-large` resumes the original scope. Verified files survive
+retries; interrupted upstream files restart without Range, while local evidence
+reads always support exact byte offsets. Selected byte/cache descriptor pairs export
+in the existing cache snapshot; metadata-only older snapshots cannot supply missing
+bytes. Recollect in live mode into a **new** snapshot rather than modifying the old one.
+
+Current scope is not full collector-design compliance: broad test-result and
+attachment-volume recovery repairs remain follow-up work. ZIP bodies spool to disk,
+but member catalogs and full download-report serialization still materialize in
+memory; bounded inline windows do not imply bounded-memory acquisition.
+
 ## Cross-Process Caching
 
 ```

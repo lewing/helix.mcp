@@ -291,7 +291,7 @@ public sealed class AzdoMcpTools
 
     [McpServerTool(Name = "azdo_artifacts", Title = "AzDO Build Artifacts", ReadOnly = true, Idempotent = true, UseStructuredContent = true,
                    OutputSchemaType = typeof(MinimalObjectSchema)),
-     Description("List Azure DevOps (AzDO) build artifacts such as logs, test results, and binlogs. Supports glob-style artifact-name filtering.")]
+     Description("List AzDO artifact metadata, not bytes. Supports artifact-name filtering. Use azdo_download_artifacts for archives or selected binlog members.")]
     public async Task<LimitedResults<AzdoBuildArtifact>> Artifacts(
         [Description("AzDO build ID as a JSON string (for example, '1438863') or full Azure DevOps build URL; not a Helix job ID")] string buildIdOrUrl,
         [Description("Artifact name glob. Default: all")] string pattern = "*",
@@ -369,10 +369,10 @@ public sealed class AzdoMcpTools
 
     [McpServerTool(Name = "azdo_test_attachments", Title = "AzDO Test Attachments", ReadOnly = true, Idempotent = true, UseStructuredContent = true,
                    OutputSchemaType = typeof(MinimalObjectSchema)),
-     Description("List Azure DevOps (AzDO) attachments for a test result, such as screenshots, logs, and dumps. Requires run ID and result ID from azdo_test_results.")]
+     Description("List AzDO attachment metadata, not bytes. Omit resultId for run-level attachments. Use azdo_download_test_attachments for original files/dumps or selected ZIP members.")]
     public async Task<LimitedResults<AzdoTestAttachment>> TestAttachments(
         [Description("Azure DevOps test run ID from azdo_test_runs")] int runId,
-        [Description("Azure DevOps test result ID from azdo_test_results")] int resultId,
+        [Description("Azure DevOps test result ID; omit for run-level attachments")] int? resultId = null,
         [Description("Azure DevOps project"), AllowedValues("public", "internal")] string project = "public",
         [Description("Azure DevOps organization"), AllowedValues("dnceng-public", "dnceng", "devdiv")] string org = "dnceng-public",
         [Description("Maximum results to return. Default: 100")] int top = 100)

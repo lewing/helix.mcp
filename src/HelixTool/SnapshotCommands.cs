@@ -21,7 +21,7 @@ public class SnapshotCommands
     /// replace, or mutate entries in that parent during export.
     /// </param>
     [Command("snapshot export")]
-    public async Task Export([Argument] string destination, CancellationToken ct = default)
+    public async Task Export([Argument] string destination, CancellationToken ct = default, string? cacheDir = null)
     {
         if (_cacheOptions.EvalMode)
         {
@@ -33,6 +33,7 @@ public class SnapshotCommands
             return;
         }
 
+        if (cacheDir is not null) _cacheOptions.CacheRoot = Path.GetFullPath(cacheDir);
         var sourceRoot = _cacheOptions.GetEffectiveCacheRoot();
         var destFull = Path.GetFullPath(destination);
 
@@ -47,6 +48,10 @@ public class SnapshotCommands
             "      Eval/offline replay needs no credentials and selects the recorded partition");
         Console.Error.WriteLine(
             "      automatically.");
+        Console.Error.WriteLine(
+            "      Partition discovery includes artifact-only keys. Byte-enabled collection uses manifest v2;");
+        Console.Error.WriteLine(
+            "      manifest v1 remains readable, independently of cache schema v1/v2 compatibility.");
         Console.Error.WriteLine(
             "      Snapshots with multiple AzDO partitions fail closed unless");
         Console.Error.WriteLine(

@@ -6,6 +6,50 @@ namespace HelixTool.Tests;
 public sealed class CacheTestCleanupTests
 {
     [Fact]
+    public void DeleteRoot_RemovesDirectoryAndFileSymlinks_WithoutDeletingTargets()
+    {
+        var root = Path.GetFullPath($"hlx-cleanup-links-{Guid.NewGuid():N}");
+        var target = root + "-target";
+        var nested = Path.Combine(root, "nested");
+        Directory.CreateDirectory(nested);
+        Directory.CreateDirectory(Path.Combine(target, "artifacts"));
+        var targetFile = Path.Combine(target, "artifacts", "evidence.txt");
+        File.WriteAllText(targetFile, "preserved evidence");
+        File.WriteAllText(Path.Combine(nested, "regular.txt"), "fixture");
+        try
+        {
+            try
+            {
+                var mid = Path.Combine(root, "mid-link");
+                Directory.CreateSymbolicLink(mid, target);
+                Directory.CreateSymbolicLink(Path.Combine(nested, "outer-link"), Path.Combine(mid, "artifacts"));
+                Directory.CreateSymbolicLink(Path.Combine(nested, "cycle-link"), root);
+                File.CreateSymbolicLink(Path.Combine(nested, "file-link"), targetFile);
+                Directory.CreateSymbolicLink(Path.Combine(nested, "missing-directory-link"), Path.Combine(target, "missing"));
+                File.CreateSymbolicLink(Path.Combine(nested, "missing-file-link"), Path.Combine(target, "missing.txt"));
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or PlatformNotSupportedException
+                || ex is IOException { HResult: unchecked((int)0x80070522) or unchecked((int)0x80070032) })
+            {
+                // Some local Windows environments lack symlink privileges or filesystem support.
+                return;
+            }
+
+            CacheTestCleanup.DeleteRoot(root);
+
+            Assert.False(Directory.Exists(root));
+            Assert.Equal("preserved evidence", File.ReadAllText(targetFile));
+            Assert.Equal(new[] { targetFile }, Directory.GetFiles(target, "*", SearchOption.AllDirectories));
+            CacheTestCleanup.DeleteRoot(root);
+        }
+        finally
+        {
+            CacheTestCleanup.DeleteRoot(root);
+            CacheTestCleanup.DeleteRoot(target);
+        }
+    }
+
+    [Fact]
     public void DeleteRoot_ClearsLiveAndEvalPoolsInNestedPartitions_LeavesSiblingPoolWarm()
     {
         var root = Path.GetFullPath($"hlx-cleanup-{Guid.NewGuid():N}");

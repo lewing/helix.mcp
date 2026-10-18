@@ -5,6 +5,9 @@ namespace HelixTool.Core.Collect;
 
 public sealed record CollectManifest
 {
+    [JsonPropertyName("byteDownloads")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<AzDO.AzdoDownloadReport>? ByteDownloads { get; init; }
     [JsonPropertyName("schemaVersion")]
     public int SchemaVersion { get; init; } = 1;
 
@@ -348,6 +351,9 @@ public sealed record CollectPagingInfo
 
 public sealed record CollectSkipInfo
 {
+    [JsonPropertyName("recovery")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public object? Recovery { get; init; }
     [JsonPropertyName("kind")]
     public string Kind { get; init; } = "";
 

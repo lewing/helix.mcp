@@ -124,6 +124,7 @@ new AzdoService(
 // per-request auth-context partitioning.
 builder.Services.AddScoped<HelixTool.Core.Delivery.IEvidenceDeliveryStore>(sp =>
     new HelixTool.Core.Delivery.FileEvidenceDeliveryStore(sp.GetRequiredService<CacheOptions>()));
+builder.Services.AddScoped<AzdoDownloadService>();
 
 builder.Services
     .AddMcpServer(options =>

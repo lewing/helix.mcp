@@ -6,6 +6,16 @@ namespace HelixTool.Core.AzDO;
 /// </summary>
 public interface IAzdoApiClient
 {
+    Task<IReadOnlyList<AzdoTestAttachment>> GetRunTestAttachmentsAsync(string org, string project, int runId, int top = 50, CancellationToken ct = default)
+        => throw new NotSupportedException("Run attachments are unavailable from this client.");
+    Task<AzdoByteStream> OpenArtifactAsync(string org, string project, int buildId, AzdoBuildArtifact artifact,
+        string? memberPath = null, CancellationToken ct = default)
+        => throw new NotSupportedException("Artifact bytes are unavailable from this client.");
+    Task<AzdoByteStream> OpenTestAttachmentAsync(string org, string project, int runId, int? resultId,
+        int attachmentId, CancellationToken ct = default)
+        => throw new NotSupportedException("Attachment bytes are unavailable from this client.");
+    Task<IReadOnlyList<AzdoBuildArtifact>> RefreshBuildArtifactsAsync(string org, string project, int buildId, CancellationToken ct = default)
+        => GetBuildArtifactsAsync(org, project, buildId, ct);
     Task<AzdoBuild?> GetBuildAsync(string org, string project, int buildId, CancellationToken ct = default);
     Task<IReadOnlyList<AzdoBuild>> ListBuildsAsync(string org, string project, AzdoBuildFilter filter, CancellationToken ct = default);
     Task<AzdoTimeline?> GetTimelineAsync(string org, string project, int buildId, CancellationToken ct = default);
