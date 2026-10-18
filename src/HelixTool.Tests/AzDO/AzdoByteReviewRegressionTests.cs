@@ -30,6 +30,13 @@ public sealed partial class AzdoByteDownloadTests
             Path.Combine(outer, "new-directory", "output.bin"), options));
         Assert.Throws<ArgumentException>(() => AzdoDownloadPaths.ValidateOutputOutsideSnapshot(
             Path.Combine(snapshot, "new-output.bin"), options));
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Throws<ArgumentException>(() => AzdoDownloadPaths.ValidateOutputOutsideSnapshot(
+                snapshot.ToUpperInvariant(), options));
+            Assert.Throws<ArgumentException>(() => AzdoDownloadPaths.ValidateOutputOutsideSnapshot(
+                Path.Combine(snapshot.ToUpperInvariant(), "new-directory", "output.bin"), options));
+        }
         AzdoDownloadPaths.ValidateOutputOutsideSnapshot(Path.Combine(_root, "safe", "output.bin"), options);
     }
 

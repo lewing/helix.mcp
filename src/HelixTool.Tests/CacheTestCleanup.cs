@@ -25,7 +25,11 @@ internal static class CacheTestCleanup
             return;
 
         ClearPools(root);
-        DeleteWithRetry(() => Directory.Delete(root, recursive: true), Thread.Sleep, () =>
+        DeleteWithRetry(() =>
+        {
+            RemoveReparsePoints(new DirectoryInfo(root));
+            Directory.Delete(root, recursive: true);
+        }, Thread.Sleep, () =>
         {
             if (OperatingSystem.IsWindows())
             {
@@ -38,6 +42,26 @@ internal static class CacheTestCleanup
 
         foreach (var pool in RegisteredPools.Where(pool => IsUnderRoot(root, pool.Value)))
             RegisteredPools.TryRemove(pool.Key, out _);
+    }
+
+    private static void RemoveReparsePoints(DirectoryInfo directory)
+    {
+        foreach (var entry in directory.EnumerateFileSystemInfos("*", new EnumerationOptions
+        {
+            AttributesToSkip = 0,
+            IgnoreInaccessible = false
+        }))
+        {
+            if ((entry.Attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                // Delete the link itself, never traverse a directory symlink or junction.
+                entry.Delete();
+            }
+            else if (entry is DirectoryInfo child)
+            {
+                RemoveReparsePoints(child);
+            }
+        }
     }
 
     internal static void ClearPools(string root)
