@@ -25,8 +25,8 @@ public sealed partial class AzdoBuildCollector
             Delivery = "file",
             Resume = true,
             AllowLarge = policy.AllowLarge,
-            MaxTotalBytes = policy.AllowLarge ? null : Math.Max(1, policy.MaxTotalBytes - retained),
-            MaxTotalStreamBytes = policy.AllowLarge ? null : Math.Max(1, policy.MaxTotalStreamBytes - streamed)
+            MaxTotalBytes = policy.AllowLarge ? null : Math.Max(0, policy.MaxTotalBytes - retained),
+            MaxTotalStreamBytes = policy.AllowLarge ? null : Math.Max(0, policy.MaxTotalStreamBytes - streamed)
         };
 
         async Task RecordAsync(AzdoDownloadReport report, bool requireMatch = false)

@@ -11,7 +11,7 @@ namespace HelixTool.Core.Cache;
 /// SQLite-backed implementation of <see cref="ICacheStore"/>.
 /// Uses WAL mode for concurrent read access across processes.
 /// Artifact files are stored on disk and tracked in SQLite.
-/// Uses connection-per-operation with <c>Cache=Shared</c> for thread-safe concurrent access.
+/// Uses connection-per-operation with private page caches and WAL for concurrent access.
 /// </summary>
 public sealed class SqliteCacheStore : ICacheStore
 {
@@ -56,7 +56,7 @@ public sealed class SqliteCacheStore : ICacheStore
         // read-only connections follow the WAL without checkpointing it.
         _connectionString = options.EvalMode
             ? $"Data Source={dbPath};Mode=ReadOnly"
-            : $"Data Source={dbPath};Cache=Shared";
+            : $"Data Source={dbPath};Cache=Private";
 
         if (options.EvalMode)
         {
@@ -233,8 +233,13 @@ public sealed class SqliteCacheStore : ICacheStore
         }
         else
         {
-            cmd.CommandText = "SELECT json_value FROM cache_metadata WHERE cache_key = @key AND expires_at > @now;";
+            cmd.CommandText = """
+                SELECT json_value FROM cache_metadata WHERE cache_key = @key AND
+                    (expires_at > @now OR (@bytes AND EXISTS
+                        (SELECT 1 FROM cache_artifacts WHERE cache_key = @key)));
+                """;
             AddTextParameter(cmd, "@key", cacheKey);
+            cmd.Parameters.AddWithValue("@bytes", AzDO.AzdoByteDescriptorValidator.IsByteKey(cacheKey));
             AddTextParameter(cmd, "@now", DateTimeOffset.UtcNow.ToString(Iso8601Format, CultureInfo.InvariantCulture));
         }
 
@@ -402,10 +407,18 @@ public sealed class SqliteCacheStore : ICacheStore
 
         if (!File.Exists(fullPath) && !_options.EvalMode)
         {
+            using var tx = conn.BeginTransaction();
             using var del = conn.CreateCommand();
+            del.Transaction = tx;
             del.CommandText = "DELETE FROM cache_artifacts WHERE cache_key = @key;";
             AddTextParameter(del, "@key", cacheKey);
             del.ExecuteNonQuery();
+            if (AzDO.AzdoByteDescriptorValidator.IsByteKey(cacheKey))
+            {
+                del.CommandText = "DELETE FROM cache_metadata WHERE cache_key = @key;";
+                del.ExecuteNonQuery();
+            }
+            tx.Commit();
         }
         return null;
     }
@@ -420,6 +433,13 @@ public sealed class SqliteCacheStore : ICacheStore
         // Build relative path: {jobId[0:8]}/{rest-of-key-sanitized}
         var prefix = CacheSecurity.SanitizePathSegment(jobId.Length >= 8 ? jobId[..8] : jobId);
         var safeName = CacheSecurity.SanitizePathSegment(cacheKey.Replace(':', '_'));
+        if (AzDO.AzdoByteDescriptorValidator.IsByteKey(cacheKey))
+        {
+            // Opaque keys are not portable filenames (colons, reserved names, and long paths).
+            var hash = AzDO.AzdoDownloadPaths.Hash(cacheKey);
+            prefix = hash[..2];
+            safeName = hash;
+        }
         var relPath = Path.Combine(prefix, safeName);
         var fullPath = Path.Combine(_artifactsDir, relPath);
         CacheSecurity.ValidatePathWithinRoot(fullPath, _artifactsDir);
@@ -852,7 +872,14 @@ public sealed class SqliteCacheStore : ICacheStore
         ct.ThrowIfCancellationRequested();
         using (var cmd = conn.CreateCommand())
         {
-            cmd.CommandText = "DELETE FROM cache_metadata WHERE expires_at < @now;";
+            cmd.CommandText = """
+                DELETE FROM cache_metadata WHERE expires_at < @now AND NOT (
+                    (cache_key GLOB 'azdo:*:artifactbytes:v1:*' OR
+                     cache_key GLOB 'azdo:*:artifactmemberbytes:v1:*' OR
+                     cache_key GLOB 'azdo:*:testattachmentbytes:v1:*' OR
+                     cache_key GLOB 'azdo:*:testattachmentmemberbytes:v1:*')
+                    AND EXISTS (SELECT 1 FROM cache_artifacts a WHERE a.cache_key = cache_metadata.cache_key));
+                """;
             AddTextParameter(cmd, "@now", now);
             cmd.ExecuteNonQuery();
         }
@@ -936,6 +963,8 @@ public sealed class SqliteCacheStore : ICacheStore
 
     private void DeleteArtifactRows(SqliteConnection conn, List<(string Key, string Path)> items, CancellationToken ct)
     {
+        if (items.Count == 0) return;
+        using var tx = conn.BeginTransaction();
         foreach (var (key, relPath) in items)
         {
             ct.ThrowIfCancellationRequested();
@@ -944,10 +973,17 @@ public sealed class SqliteCacheStore : ICacheStore
 
             // Delete row
             using var del = conn.CreateCommand();
+            del.Transaction = tx;
             del.CommandText = "DELETE FROM cache_artifacts WHERE cache_key = @key;";
             AddTextParameter(del, "@key", key);
             del.ExecuteNonQuery();
+            if (AzDO.AzdoByteDescriptorValidator.IsByteKey(key))
+            {
+                del.CommandText = "DELETE FROM cache_metadata WHERE cache_key = @key;";
+                del.ExecuteNonQuery();
+            }
         }
+        tx.Commit();
     }
 
     private void TryDeleteArtifactFile(string relPath)

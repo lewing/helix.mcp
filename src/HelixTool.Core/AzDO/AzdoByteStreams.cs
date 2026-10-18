@@ -54,7 +54,7 @@ public sealed partial class AzdoApiClient
             url = WithQueryParameter(url, "subPath", "/" + path);
         }
         return OpenBytesAsync(org, project, url,
-            Resource(org, project, ("buildId", buildId), ("artifactId", artifact.Id)), ct);
+            Resource(org, project, ("buildId", buildId), ("artifactId", artifact.Id)), ct, requestedFile: memberPath is not null);
     }
 
     public Task<AzdoByteStream> OpenTestAttachmentAsync(string org, string project, int runId,
@@ -63,11 +63,11 @@ public sealed partial class AzdoApiClient
         var scope = resultId is int id ? $"results/{id}/" : "";
         return OpenBytesAsync(org, project,
             BuildUrl(org, project, $"test/runs/{runId}/{scope}attachments/{attachmentId}"),
-            Resource(org, project, ("runId", runId), ("resultId", resultId), ("attachmentId", attachmentId)), ct);
+            Resource(org, project, ("runId", runId), ("resultId", resultId), ("attachmentId", attachmentId)), ct, requestedFile: true);
     }
 
     private async Task<AzdoByteStream> OpenBytesAsync(string org, string project, string url,
-        IReadOnlyDictionary<string, object?> resource, CancellationToken ct)
+        IReadOnlyDictionary<string, object?> resource, CancellationToken ct, bool requestedFile)
     {
         const string operation = "download_bytes";
         var uri = new Uri(url, UriKind.Absolute);
@@ -97,12 +97,15 @@ public sealed partial class AzdoApiClient
                     response.Dispose();
                     continue;
                 }
+                if (response.StatusCode == HttpStatusCode.NonAuthoritativeInformation)
+                    throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(AcquisitionErrorKind.AccessDenied,
+                        "azdo", operation, resource, "AzDO returned a sign-in response instead of the requested file."));
                 await ThrowOnUnexpectedError(response, operation, resource, ct);
                 if (response.StatusCode == HttpStatusCode.PartialContent || response.Content.Headers.ContentRange is not null)
                     throw new InvalidDataException("Provider returned a partial body without a validated Range request; restart the exact request without Range.");
                 var mediaType = response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
-                if (mediaType.Contains("html", StringComparison.OrdinalIgnoreCase) ||
-                    mediaType.Contains("json", StringComparison.OrdinalIgnoreCase))
+                if (!requestedFile && (mediaType.Contains("html", StringComparison.OrdinalIgnoreCase) ||
+                    mediaType.Contains("json", StringComparison.OrdinalIgnoreCase)))
                     throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
                         mediaType.Contains("html", StringComparison.OrdinalIgnoreCase) ? AcquisitionErrorKind.AccessDenied : AcquisitionErrorKind.InvalidResponse,
                         "azdo", operation, resource, "AzDO returned a sign-in or metadata document instead of binary evidence."));
@@ -110,8 +113,8 @@ public sealed partial class AzdoApiClient
                 var prefix = new byte[512];
                 var count = await body.ReadAtLeastAsync(prefix, prefix.Length, throwOnEndOfStream: false, ct);
                 var text = System.Text.Encoding.UTF8.GetString(prefix, 0, count).TrimStart();
-                if (text.StartsWith("<html", StringComparison.OrdinalIgnoreCase) ||
-                    text.StartsWith("<!doctype html", StringComparison.OrdinalIgnoreCase))
+                if (!requestedFile && (text.StartsWith("<html", StringComparison.OrdinalIgnoreCase) ||
+                    text.StartsWith("<!doctype html", StringComparison.OrdinalIgnoreCase)))
                     throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(AcquisitionErrorKind.AccessDenied,
                         "azdo", operation, resource, "Provider returned a sign-in HTML body instead of evidence bytes."));
                 return new AzdoByteStream(new PrefixStream(body, prefix.AsMemory(0, count)), mediaType,

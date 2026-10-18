@@ -17,7 +17,7 @@ public class SqliteCacheStoreConcurrencyTests : IDisposable
 
     public SqliteCacheStoreConcurrencyTests()
     {
-        _tempDir = Path.Combine(Path.GetTempPath(), $"hlx-concurrency-{Guid.NewGuid():N}");
+        _tempDir = Path.GetFullPath(Path.Combine(".test-runtime", $"hlx-concurrency-{Guid.NewGuid():N}"));
         _opts = new CacheOptions { CacheRoot = _tempDir };
         _store = new SqliteCacheStore(_opts);
     }
@@ -25,7 +25,7 @@ public class SqliteCacheStoreConcurrencyTests : IDisposable
     public void Dispose()
     {
         _store.Dispose();
-        try { Directory.Delete(_tempDir, recursive: true); } catch { /* cleanup best-effort */ }
+        CacheTestCleanup.DeleteRoot(_tempDir);
     }
 
     // =========================================================================
@@ -245,7 +245,7 @@ public class SqliteCacheStoreConcurrencyTests : IDisposable
 
         var tasks = new List<Task>();
 
-        // Store1 writes, Store2 reads
+        // Both stores write while separate connections read the same WAL database.
         for (int i = 0; i < 10; i++)
         {
             var idx = i;
@@ -255,6 +255,7 @@ public class SqliteCacheStoreConcurrencyTests : IDisposable
             }));
             tasks.Add(Task.Run(async () =>
             {
+                await store2.SetMetadataAsync($"job:dual-{idx}:other", "{\"s\":2}", TimeSpan.FromHours(1));
                 // May return null (written by store1 hasn't committed yet) — that's OK
                 await store2.GetMetadataAsync($"job:dual-{idx}:details");
             }));
@@ -262,14 +263,12 @@ public class SqliteCacheStoreConcurrencyTests : IDisposable
 
         await Task.WhenAll(tasks);
 
-        // After all tasks complete, store2 should be able to read at least some entries
-        var found = 0;
+        // Every committed write must be visible across store instances.
         for (int i = 0; i < 10; i++)
         {
-            var result = await store2.GetMetadataAsync($"job:dual-{i}:details");
-            if (result != null) found++;
+            Assert.Equal("{\"s\":1}", await store2.GetMetadataAsync($"job:dual-{i}:details"));
+            Assert.Equal("{\"s\":2}", await _store.GetMetadataAsync($"job:dual-{i}:other"));
         }
-        Assert.True(found > 0, "Store2 should read at least some entries written by store1");
     }
 
     // =========================================================================

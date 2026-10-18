@@ -54,6 +54,7 @@ internal static class CacheTestCleanup
             // Include the default pool used by raw SQL fixture probes as well as store pools.
             connectionStrings.Add($"Data Source={database}");
             connectionStrings.Add($"Data Source={database};Cache=Shared");
+            connectionStrings.Add($"Data Source={database};Cache=Private");
             connectionStrings.Add($"Data Source={database};Mode=ReadOnly");
         }
 

@@ -55,6 +55,12 @@ public sealed class AzdoDownloadCommands(IServiceProvider services)
                     await using (var source = File.OpenRead(read.Delivery.LocalPath))
                     await using (var target = AzdoDownloadPaths.CreatePrivateOutput(staging))
                         await source.CopyToAsync(target, 65536, ct);
+                    await using (var staged = File.OpenRead(staging))
+                    {
+                        if (staged.Length != read.TotalBytes ||
+                            Convert.ToHexString(await System.Security.Cryptography.SHA256.HashDataAsync(staged, ct)).ToLowerInvariant() != read.Sha256)
+                            throw new InvalidDataException("Evidence payload length or SHA-256 does not match its descriptor.");
+                    }
                     File.Move(staging, path, overwrite);
                 }
                 finally { File.Delete(staging); }

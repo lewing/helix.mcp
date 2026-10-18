@@ -8,12 +8,34 @@ public static class AzdoDownloadPaths
     public static void ValidateOutputOutsideSnapshot(string path, Cache.CacheOptions options)
     {
         if (!options.EvalMode) return;
-        var output = Path.GetFullPath(path);
-        var snapshot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(options.GetEffectiveCacheRoot()));
+        var output = ResolvePhysicalPath(Path.GetFullPath(path));
+        var snapshot = Path.TrimEndingDirectorySeparator(ResolvePhysicalPath(Path.GetFullPath(options.GetEffectiveCacheRoot())));
         var comparison = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
             ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
         if (output.Equals(snapshot, comparison) || output.StartsWith(snapshot + Path.DirectorySeparatorChar, comparison))
             throw new ArgumentException("Output cannot modify an active read-only snapshot. Re-run with an output directory outside HLX_EVAL_SNAPSHOT.");
+    }
+
+    public static string ResolvePhysicalPath(string fullPath) => ResolvePhysicalPath(fullPath, 0);
+
+    private static string ResolvePhysicalPath(string fullPath, int depth)
+    {
+        if (depth > 64)
+            throw new IOException("Cannot safely resolve a cyclic or excessively nested symlink path.");
+        var root = Path.GetPathRoot(fullPath) ?? string.Empty;
+        var components = fullPath[root.Length..].Split(
+            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
+        var current = root;
+        foreach (var component in components)
+        {
+            current = Path.Combine(current, component);
+            FileSystemInfo info = Directory.Exists(current) ? new DirectoryInfo(current) : new FileInfo(current);
+            if (!info.Exists && info.LinkTarget is null) continue;
+            var target = info.ResolveLinkTarget(returnFinalTarget: true)?.FullName;
+            if (target is not null)
+                current = ResolvePhysicalPath(target, depth + 1);
+        }
+        return current;
     }
     public static string NormalizeMember(string path)
     {
@@ -65,8 +87,8 @@ public static class AzdoDownloadPaths
         var restart = 0;
         while (v < value.Length)
         {
-            if (p < pattern.Length && (pattern[p] == '?' || pattern[p] == value[v])) { p++; v++; }
-            else if (p < pattern.Length && pattern[p] == '*') { star = p++; restart = v; }
+            if (p < pattern.Length && pattern[p] == '*') { star = p++; restart = v; }
+            else if (p < pattern.Length && (pattern[p] == '?' || pattern[p] == value[v])) { p++; v++; }
             else if (star >= 0) { p = star + 1; v = ++restart; }
             else return false;
         }

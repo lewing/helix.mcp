@@ -110,12 +110,19 @@ public sealed class AzdoDownloadService(
         public AzdoByteDescriptor Descriptor { get; } = descriptor;
         public EvidenceDescriptor Evidence { get; } = evidence;
     }
-    private sealed class Counters
+    private sealed class Counters(AzdoDownloadOptions options)
     {
         public long Streamed;
         public long Retained;
         private readonly HashSet<string> _retainedKeys = new(StringComparer.Ordinal);
-        public void Retain(string key, long bytes) { if (_retainedKeys.Add(key)) Retained += bytes; }
+        public void Retain(string key, long bytes)
+        {
+            if (_retainedKeys.Contains(key)) return;
+            if (!options.AllowLarge && options.MaxTotalBytes is long total && bytes > total - Retained)
+                throw new PlanningDeferredException("Selected retained-byte threshold reached; resume the same request with allowLarge=true.");
+            _retainedKeys.Add(key);
+            Retained += bytes;
+        }
     }
 
     private async Task<AzdoDownloadReport> DownloadAsync(string org, string project, ResourceSpec[] resources,
@@ -126,7 +133,7 @@ public sealed class AzdoDownloadService(
         if ((options.Offset > 0 || options.MemberOffset > 0) && options.ViewId is null)
             throw new ArgumentException("Nonzero offsets require viewId from the preceding report.");
         var results = new List<AzdoDownloadResult>();
-        var counters = new Counters();
+        var counters = new Counters(options);
         if (acquire && !cacheOptions.EvalMode)
             await cache.RetainArtifactsAsync(TimeSpan.FromHours(24), ct);
         foreach (var resource in resources)
@@ -742,7 +749,8 @@ public sealed class AzdoDownloadService(
         {
             var bound = archive ? options.MaxArchiveBytes : options.MaxFileBytes;
             if (bound is long cap && expected > cap ||
-                options.MaxTotalBytes is long total && expected > total - counters.Retained)
+                options.MaxTotalBytes is long total && expected > total - counters.Retained ||
+                network && options.MaxTotalStreamBytes is long streamed && expected > streamed - counters.Streamed)
                 throw new PlanningDeferredException("Selected planning threshold reached. Resume this exact request with allowLarge=true.");
         }
         await using var captured = network ? await CaptureBodyAsync(content, expectedBytes, key, resource, member, options,
@@ -957,8 +965,8 @@ public sealed class AzdoDownloadService(
         if (o.MemberPattern is not null) AzdoDownloadPaths.NormalizeMember(o.MemberPattern);
         if (o.Offset < 0 || o.MemberOffset < 0 || o.Limit <= 0 || o.MemberLimit <= 0 || o.MaxResponseBytes <= 0)
             throw new ArgumentException("Offsets must be nonnegative; limits and response targets must be positive.");
-        if (o.MaxFileBytes <= 0 || o.MaxArchiveBytes <= 0 || o.MaxTotalBytes <= 0 || o.MaxTotalStreamBytes <= 0)
-            throw new ArgumentException("Explicit planning byte thresholds must be positive.");
+        if (o.MaxFileBytes <= 0 || o.MaxArchiveBytes <= 0 || o.MaxTotalBytes < 0 || o.MaxTotalStreamBytes < 0)
+            throw new ArgumentException("File/archive thresholds must be positive; total byte thresholds must be nonnegative.");
         if (o.Delivery is not ("auto" or "inline" or "file" or "chunked")) throw new ArgumentException("Invalid delivery mode.");
         if (o.ContentKind is not ("auto" or "logs" or "binlog" or "dump" or "other")) throw new ArgumentException("Invalid contentKind label.");
     }

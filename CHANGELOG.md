@@ -8,6 +8,20 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+### Fixed
+
+- AzDO byte-cache files use portable hashed paths on Windows. SQLite WAL stores
+  use private page caches for concurrent writers, and byte-test cleanup clears
+  only the exact live/read-only connection-string pools after stores are disposed.
+- Download/evidence output guards resolve physical snapshot and ancestor paths;
+  full evidence copies verify staged length and SHA-256 before publication,
+  including overwrites. Requested JSON/HTML files remain downloadable, and member
+  globs handle literal stars in member names.
+- Byte descriptors survive their metadata TTL while blobs remain retained;
+  expiration and LRU eviction remove blob/descriptor pairs together. Collector
+  byte scope/mode routing is case-insensitive, and shared retained/streamed budgets
+  preserve zero remaining capacity across scopes unless `--allow-large` is set.
+
 ### Added
 
 - **AzDO artifact/member and test-attachment bytes (CLI + MCP):**

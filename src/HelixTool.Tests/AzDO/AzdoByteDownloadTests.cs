@@ -285,6 +285,6 @@ public sealed partial class AzdoByteDownloadTests : IDisposable
     public void Dispose()
     {
         _cache.Dispose();
-        if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
+        CacheTestCleanup.DeleteRoot(_root);
     }
 }

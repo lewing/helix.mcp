@@ -612,7 +612,7 @@ to ZIPs. ZIP selection is explicit, nonrecursive, and available for either scope
 | `--resume true\|false` | `true`; completed SHA-verified blobs are reused. Corrupt cached blobs/descriptors/catalogs are reacquired in live mode; snapshot integrity failures remain read-only errors. Offline replay uses available verified bytes even with `false`. Incomplete prefixes/checkpoints are not successful cache keys. |
 | `--content-kind auto\|logs\|binlog\|dump\|other` | Routing/progress label only, never permission to obtain bytes. |
 | `--max-file-bytes`, `--max-archive-bytes` | Optional intentional planning bounds; **no inferred 50/512 MiB limit**. |
-| `--max-total-bytes`, `--max-total-stream-bytes` | Optional intentional retained/source planning bounds; discarded and retried source bytes count as transfer. |
+| `--max-total-bytes`, `--max-total-stream-bytes` | Optional nonnegative retained/source planning bounds; zero defers nonempty transfers. Collection shares these budgets across all selected scopes without replenishing exhausted allowances. Cached bytes count toward retained totals; discarded and retried source bytes count as transfer. |
 | `--allow-large` | Waive logical planning thresholds, not disk/authentication/integrity checks. Recovery preserves resource/member selection and resets observation cursors so the retry can report the new complete observation. |
 | `--max-response-bytes N` | 12288; inline shaping target, effective 8192–16384. Full data remains accessible. |
 | `--cache-dir DIR` | Choose live cache storage before acquisition. Cannot replace an active read-only eval snapshot. |
@@ -634,6 +634,11 @@ Transfers use 64 KiB buffers, private disk spools and actual free-space checks.
 Active required artifacts receive a 24-hour cache retention lease rather than
 being evicted to enforce the ordinary cache target. Source counters are separate
 from retained member bytes. Authentication/unsafe paths/corruption remain errors.
+Explicit artifact members and attachments may themselves contain JSON or HTML;
+their MIME type or prefix alone never makes a successful file response an error.
+Byte descriptors stay available while their blobs are retained, and maintenance
+removes both halves together when evicting bytes. Snapshot output guards resolve
+symlinked snapshots and ancestor chains before checking containment.
 
 The measured public PipelineArtifact route rejects HTTP Range on both file and
 ZIP requests. Current transfers therefore **restart that upstream file** without

@@ -76,6 +76,11 @@ public sealed partial class AzdoBuildCollector
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(policy);
+        policy = policy with
+        {
+            ArtifactByteScope = policy.ArtifactByteScope.ToLowerInvariant(),
+            ArtifactByteMode = policy.ArtifactByteMode.ToLowerInvariant()
+        };
         // Argument/config validation happens before any manifest location can be known, so these
         // two checks deliberately stay plain thrown exceptions: the CLI reports them as a bare
         // usage error (exit 1) with no manifest. See the "collect azdo-build" command help.
@@ -1985,7 +1990,7 @@ public sealed partial class AzdoBuildCollector
             throw new ArgumentException("Invalid artifact byte scope/mode.");
         if (policy.ArtifactByteMode == "archive" && policy.DownloadArtifactMembers is not null)
             throw new ArgumentException("--artifact-byte-mode archive conflicts with --download-artifact-members.");
-        if (policy.MaxTotalStreamBytes <= 0) throw new ArgumentOutOfRangeException(nameof(policy), "Stream planning target must be positive.");
+        if (policy.MaxTotalStreamBytes < 0) throw new ArgumentOutOfRangeException(nameof(policy), "Stream planning target must be nonnegative.");
     }
 
     private static bool IsOneOf(string value, params string[] allowed)

@@ -1934,41 +1934,7 @@ public class AzdoCommands
     /// check entirely). The not-yet-existing trailing segments (e.g. the output file itself) are
     /// re-appended to the resolved real ancestor unchanged.
     /// </summary>
-    private static string ResolvePhysicalPath(string fullPath) => ResolvePhysicalPath(fullPath, 0);
-
-    private static string ResolvePhysicalPath(string fullPath, int depth)
-    {
-        // True realpath semantics: resolve one path component at a time from the root, following
-        // any symlink found at EACH ancestor as soon as it is reached, not only the deepest
-        // existing prefix as a single opaque target. A resolved target can itself contain further
-        // unresolved symlinks as one of ITS OWN path components (e.g. `outside-link ->
-        // mid/artifacts`, where `mid` is a separate symlink into the snapshot): `outside-link`
-        // resolves in one hop to a path whose final component ("artifacts") is an ordinary
-        // directory, so a single-hop resolve stops there and never re-examines `mid`. Recursing on
-        // every resolved target — re-running this same component walk on it — guarantees every
-        // ancestor in the chain is actually resolved, not just the first symlink encountered.
-        if (depth > 64)
-            return fullPath; // bounded against a pathological/cyclic symlink chain
-
-        var root = Path.GetPathRoot(fullPath) ?? string.Empty;
-        var relative = fullPath[root.Length..];
-        var components = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
-
-        var current = string.IsNullOrEmpty(root) ? Path.DirectorySeparatorChar.ToString() : root;
-        foreach (var component in components)
-        {
-            current = Path.Combine(current, component);
-            if (!Directory.Exists(current) && !File.Exists(current))
-                continue; // not-yet-existing trailing segment; nothing on disk to resolve further
-
-            FileSystemInfo info = Directory.Exists(current) ? new DirectoryInfo(current) : new FileInfo(current);
-            var target = info.ResolveLinkTarget(returnFinalTarget: true)?.FullName;
-            if (target is not null)
-                current = ResolvePhysicalPath(target, depth + 1);
-        }
-
-        return current;
-    }
+    private static string ResolvePhysicalPath(string fullPath) => AzdoDownloadPaths.ResolvePhysicalPath(fullPath);
 
     /// <summary>
     /// Reconstructs an equivalent `hlx azdo timeline` invocation with the unsafe --output destination
