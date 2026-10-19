@@ -9,7 +9,8 @@ public interface IHelixApiClientFactory
     IHelixApiClient Create(string? accessToken);
 }
 
-public sealed class HelixApiClientFactory : IHelixApiClientFactory
+public sealed class HelixApiClientFactory(HttpClient? downloadClient = null) : IHelixApiClientFactory
 {
-    public IHelixApiClient Create(string? accessToken) => new HelixApiClient(accessToken);
+    public IHelixApiClient Create(string? accessToken) =>
+        new HelixApiClient(accessToken, downloadClient);
 }

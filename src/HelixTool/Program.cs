@@ -42,7 +42,8 @@ services.AddHttpClient("AzDO", c =>
 services.AddSingleton<ICredentialStore, GitCredentialStore>();
 services.AddSingleton<ChainedHelixTokenAccessor>();
 services.AddSingleton<IHelixTokenAccessor>(sp => sp.GetRequiredService<ChainedHelixTokenAccessor>());
-services.AddSingleton<IHelixApiClientFactory, HelixApiClientFactory>();
+services.AddSingleton<IHelixApiClientFactory>(sp =>
+    new HelixApiClientFactory(sp.GetRequiredService<IHttpClientFactory>().CreateClient("HelixDownload")));
 
 var evalSnapshotDir = Environment.GetEnvironmentVariable("HLX_EVAL_SNAPSHOT");
 if (!string.IsNullOrEmpty(evalSnapshotDir))
@@ -82,7 +83,7 @@ services.AddSingleton<ICacheStore>(sp => new SqliteCacheStore(sp.GetRequiredServ
 services.AddSingleton(sp => new Lazy<HelixApiClient>(() =>
 {
     var token = sp.GetRequiredService<IHelixTokenAccessor>().GetAccessToken();
-    return new HelixApiClient(token);
+    return new HelixApiClient(token, sp.GetRequiredService<IHttpClientFactory>().CreateClient("HelixDownload"));
 }));
 services.AddSingleton<HelixApiClient>(sp => sp.GetRequiredService<Lazy<HelixApiClient>>().Value);
 services.AddSingleton<IHelixApiClient>(sp =>
@@ -1054,7 +1055,8 @@ Available as `failureCategory` in JSON and MCP output.
         }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
         builder.Services.AddSingleton<IHelixTokenAccessor>(_ =>
             new EnvironmentHelixTokenAccessor(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
-        builder.Services.AddSingleton<IHelixApiClientFactory, HelixApiClientFactory>();
+        builder.Services.AddSingleton<IHelixApiClientFactory>(sp =>
+            new HelixApiClientFactory(sp.GetRequiredService<IHttpClientFactory>().CreateClient("HelixDownload")));
 
         var mcpEvalSnapshotDir = Environment.GetEnvironmentVariable("HLX_EVAL_SNAPSHOT");
         if (!string.IsNullOrEmpty(mcpEvalSnapshotDir))
@@ -1090,7 +1092,7 @@ Available as `failureCategory` in JSON and MCP output.
         builder.Services.AddSingleton(sp => new Lazy<HelixApiClient>(() =>
         {
             var token = sp.GetRequiredService<IHelixTokenAccessor>().GetAccessToken();
-            return new HelixApiClient(token);
+            return new HelixApiClient(token, sp.GetRequiredService<IHttpClientFactory>().CreateClient("HelixDownload"));
         }));
         builder.Services.AddSingleton<HelixApiClient>(sp => sp.GetRequiredService<Lazy<HelixApiClient>>().Value);
         builder.Services.AddSingleton<IHelixApiClient>(sp =>
