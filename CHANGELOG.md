@@ -8,29 +8,11 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
-### Fixed
-
-- Helix uploaded-file downloads use the absolute blob URL from file listing,
-  avoiding broken relative redirects and misleading JSON errors in downloads,
-  uploaded-file search, test-result parsing, and evidence collection. Resolved
-  links and cached listings are reused across downloads without bypassing the
-  artifact-byte cache. Expired cached blob links refresh their listing and retry
-  once on HTTP 401/403/404/410, without extra listing requests on successful downloads.
-- AzDO byte-cache files use portable hashed paths on Windows. SQLite WAL stores
-  use private page caches for concurrent writers, and byte-test cleanup clears
-  only the exact live/read-only connection-string pools after stores are disposed.
-- Download/evidence output guards resolve physical snapshot and ancestor paths;
-  full evidence copies verify staged length and SHA-256 before publication,
-  including overwrites. Requested JSON/HTML files remain downloadable, and member
-  globs handle literal stars in member names.
-- Byte descriptors survive their metadata TTL while blobs remain retained;
-  expiration and LRU eviction remove blob/descriptor pairs together. Collector
-  byte scope/mode routing is case-insensitive, and shared retained/streamed budgets
-  preserve zero remaining capacity across scopes unless `--allow-large` is set.
+## [0.12.0] - 2026-10-19
 
 ### Added
 
-- **AzDO artifact/member and test-attachment bytes (CLI + MCP):**
+- **AzDO artifact/member and test-attachment bytes (CLI + MCP)** (#161):
   `azdo_download_artifacts` / `hlx azdo download-artifacts` and
   `azdo_download_test_attachments` / `hlx azdo download-test-attachments` stream
   selected evidence to private cache-backed disk, return verified SHA-256 receipts,
@@ -39,7 +21,7 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
   spooling, selected extraction with CRC/SHA validation, and catalog coverage.
   Whole archives/original dump bytes remain explicitly available; content labels
   and the ordinary cache target are not download eligibility gates.
-- **Opt-in byte collection:** artifact-name/member and attachment filename/member
+- **Opt-in byte collection** (#161): artifact-name/member and attachment filename/member
   selectors, `--artifact-byte-scope`, `--artifact-byte-mode`, `--allow-large`,
   and streamed-byte planning; byte-enabled manifests include source provenance and
   verified selected blob/descriptor pairs. Catalogs do not imply unselected byte
@@ -47,14 +29,14 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
   test-result/attachment-volume recovery repairs remain deferred; this is not full
   collector-design compliance. ZIP catalogs and full-report serialization remain
   in-memory, so disk spooling/inline windows do not promise bounded memory.
-- **Local evidence CLI:** `hlx evidence read` supports byte offsets, bounded
+- **Local evidence CLI** (#161): `hlx evidence read` supports byte offsets, bounded
   UTF-8/base64, and full `--output` delivery. Native provider transfers restart the
   current interrupted file without assuming HTTP Range support; verified completed
   files are reused and incomplete prefixes/checkpoints are not snapshot blobs.
   Binary paths are server-local; binlog/dump analysis and remote binary hosting
   remain outside scope.
 
-- **`azdo_timeline` triage view, selectors, and access-first delivery:** `azdo_timeline` (MCP) and
+- **`azdo_timeline` triage view, selectors, and access-first delivery** (#159): `azdo_timeline` (MCP) and
   `hlx azdo timeline` (CLI) now default to a **triage** projection — at most 10 rows, ancestors
   included, Phase rows omitted, errors/Helix-first ordering, and up to 5 deduplicated issue
   previews (200 Unicode scalars each) per row with log IDs and counts. New selectors `recordId`,
@@ -64,33 +46,17 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
   `summary` (aggregate counts only) join the existing `full` (original record detail). Paging adds
   `offset`/`limit`/`viewId`/`next` with stale-`viewId` rejection. Large rows/records/issue windows
   are never refused: they are delivered as a verified evidence file/reference via the shared
-  `hlx_read_evidence` reader instead of being dropped or erroring. CLI JSON gains `--delivery`-style
-  `--all`/`--output` escape hatches and `--raw-json` for the legacy `{id, records}` shape used by
-  offline snapshot replay (works for every projection, not just `--raw-json`).
+  `hlx_read_evidence` reader instead of being dropped or erroring. CLI gains `--delivery auto|inline|file|chunked`,
+  `--all`/`--output` escape hatches, and `--raw-json` for the legacy `{id, records}` shape.
+  Offline snapshot replay works for every projection, not just `--raw-json`.
 
-### Fixed
+### Changed
 
-- Byte downloads preserve original archives/attachments when `--all-members` only
-  expands the report, enforce retained totals for unknown-length archives, and reset
-  stale observation cursors in same-scope recovery actions. Live resume reacquires
-  corrupt cache pairs/catalogs; offline replay remains read-only and works with
-  resume disabled. Unsolicited partial HTTP bodies are never published as complete.
-  Length/SHA/CRC failures are classified per resource/member without dropping other
-  successful selections. Cached members are checked against the current catalog
-  before reuse; native transfers honor known catalog length/CRC. Required collector
-  member selections with no matches record an incomplete gap, including attachment
-  member globs aggregated across all selected run/result scopes (independent of
-  artifact matches). Empty files still count as matched members. Incomplete source
-  coverage stays truncated even when all rows fit, and storage recovery requires
-  a different sufficient-storage location rather than repeating the failed command.
-
-### BREAKING
-
-- **`azdo_timeline` default output shape changed.** The default MCP response is now a bounded
+- **`azdo_timeline` default output shape changed (BREAKING, #159).** The default MCP response is now a bounded
   triage view (≤10 rows, Phase omitted, issue text shortened to previews) instead of the full,
   unbounded record list. Pass `projection=full` (and page/`delivery=file` as needed) to recover the
   previous full-detail shape.
-- **`hlx azdo timeline --json` now emits a `.results[]`-keyed envelope** (`ok`, `results`,
+- **`hlx azdo timeline --json` (#159) now emits a `.results[]`-keyed envelope** (`ok`, `results`,
   `returned`, `complete`, `next`, `viewId`, `cache`, ...) instead of the legacy bare `{id, records}`
   object, and **exits 2** when the printed page is incomplete and `--allow-truncated` was not
   passed. Scripts/`jq` pipelines reading `.records[]` must switch to `.results[]` and handle
@@ -109,6 +75,47 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 - **Per-request evidence auth:** `hlx_read_evidence` resolves the AzDO auth-context partition for
   each read independently, matching the identity the originating authenticated call used instead
   of relying on scope-sharing.
+
+- **Evidence delivery lives in the hlx cache root** (#159): verified delivery files use
+  `<effective-cache-root>/delivery/<credential-partition>/`, not an unrelated temporary
+  directory. Eval replay writes outside the immutable snapshot under the normal user
+  cache root; overlapping cache/snapshot paths use the documented ephemeral fallback.
+  Delivery has its own soft budget and 24-hour pins; disabling the ordinary cache does
+  not disable delivery.
+
+### Fixed
+
+- **Helix uploaded-file downloads** (#164, fixes #162; contributed by Vitek Karas) use the absolute blob URL from file listing,
+  avoiding broken relative redirects and misleading JSON errors in downloads,
+  uploaded-file search, test-result parsing, and evidence collection. Resolved
+  links and cached listings are reused across downloads without bypassing the
+  artifact-byte cache. Expired cached blob links refresh their listing and retry
+  once on HTTP 401/403/404/410, without extra listing requests on successful downloads.
+- **AzDO byte-cache portability and concurrency** (#161): byte-cache files use portable hashed paths on Windows. SQLite WAL stores
+  use private page caches for concurrent writers, and byte-test cleanup clears
+  only the exact live/read-only connection-string pools after stores are disposed.
+- Download/evidence output guards (#159, #161) resolve physical snapshot and ancestor paths;
+  full evidence copies verify staged length and SHA-256 before publication,
+  including overwrites. Requested JSON/HTML files remain downloadable, and member
+  globs handle literal stars in member names.
+- Byte descriptors (#161) survive their metadata TTL while blobs remain retained;
+  expiration and LRU eviction remove blob/descriptor pairs together. Collector
+  byte scope/mode routing is case-insensitive, and shared retained/streamed budgets
+  preserve zero remaining capacity across scopes unless `--allow-large` is set.
+
+- Byte downloads (#161) preserve original archives/attachments when `--all-members` only
+  expands the report, enforce retained totals for unknown-length archives, and reset
+  stale observation cursors in same-scope recovery actions. Live resume reacquires
+  corrupt cache pairs/catalogs; offline replay remains read-only and works with
+  resume disabled. Unsolicited partial HTTP bodies are never published as complete.
+  Length/SHA/CRC failures are classified per resource/member without dropping other
+  successful selections. Cached members are checked against the current catalog
+  before reuse; native transfers honor known catalog length/CRC. Required collector
+  member selections with no matches record an incomplete gap, including attachment
+  member globs aggregated across all selected run/result scopes (independent of
+  artifact matches). Empty files still count as matched members. Incomplete source
+  coverage stays truncated even when all rows fit, and storage recovery requires
+  a different sufficient-storage location rather than repeating the failed command.
 
 ## [v0.11.0] — 2026-10-02
 
