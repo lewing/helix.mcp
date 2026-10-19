@@ -9,7 +9,7 @@ namespace HelixTool.Core.Helix;
 /// surface as explicit <see cref="AcquisitionErrorKind.NotInSnapshot"/> errors rather than
 /// silently falling through to live Helix.
 /// </summary>
-public sealed class OfflineHelixApiClient : IHelixApiClient
+public sealed class OfflineHelixApiClient : IHelixApiClient, IResolvedHelixFileClient
 {
     private static HlxAcquisitionException Blocked(
         string operation,
@@ -41,6 +41,9 @@ public sealed class OfflineHelixApiClient : IHelixApiClient
 
     public Task<Stream> GetFileAsync(string fileName, string workItemName, string jobId, CancellationToken ct = default)
         => throw Blocked("download_helix_file", HelixAcquisition.Resource(("jobId", jobId), ("workItem", workItemName), ("fileName", fileName)));
+
+    public Task<Stream> GetFileAsync(IWorkItemFile file, string workItemName, string jobId, CancellationToken ct = default)
+        => GetFileAsync(file.Name, workItemName, jobId, ct);
 
     /// <inheritdoc />
     public Task<IReadOnlyList<IHelixJobSummary>> ListJobsByBuildAsync(

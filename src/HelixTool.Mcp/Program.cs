@@ -34,7 +34,8 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<IHelixTokenAccessor, HttpContextHelixTokenAccessor>();
 
 // Factories are singleton — create instances on demand
-builder.Services.AddSingleton<IHelixApiClientFactory, HelixApiClientFactory>();
+builder.Services.AddSingleton<IHelixApiClientFactory>(sp =>
+    new HelixApiClientFactory(sp.GetRequiredService<IHttpClientFactory>().CreateClient("HelixDownload")));
 builder.Services.AddSingleton<ICacheStoreFactory, CacheStoreFactory>();
 
 var mcpEvalSnapshotDir = Environment.GetEnvironmentVariable("HLX_EVAL_SNAPSHOT");

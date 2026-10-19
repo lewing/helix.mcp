@@ -43,6 +43,21 @@ public interface IHelixApiClient
         string source, string buildId, int count = 100_000, CancellationToken ct = default);
 }
 
+/// <summary>Optional capability to download an already listed file without resolving its name again.</summary>
+public interface IResolvedHelixFileClient
+{
+    Task<Stream> GetFileAsync(IWorkItemFile file, string workItemName, string jobId, CancellationToken ct = default);
+}
+
+internal static class HelixFileClientExtensions
+{
+    internal static Task<Stream> GetFileAsync(
+        this IHelixApiClient client, IWorkItemFile file, string workItemName, string jobId, CancellationToken ct = default)
+        => client is IResolvedHelixFileClient resolved
+            ? resolved.GetFileAsync(file, workItemName, jobId, ct)
+            : client.GetFileAsync(file.Name, workItemName, jobId, ct);
+}
+
 /// <summary>
 /// Optional companion for cache decorators that can expose uncached file bytes to callers
 /// that must validate policy before publishing a cache artifact.

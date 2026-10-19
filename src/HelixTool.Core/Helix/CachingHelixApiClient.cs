@@ -11,7 +11,7 @@ namespace HelixTool.Core.Helix;
 /// Console logs for running jobs are never cached (append-only streams).
 /// Pass-through when <see cref="CacheOptions.MaxSizeBytes"/> is 0 (disabled).
 /// </summary>
-public sealed class CachingHelixApiClient : IHelixApiClient, IUncachedHelixFileClient
+public sealed class CachingHelixApiClient : IHelixApiClient, IUncachedHelixFileClient, IResolvedHelixFileClient
 {
     private static readonly TimeSpan RunningShortTtl = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan RunningMediumTtl = TimeSpan.FromSeconds(30);
@@ -144,12 +144,16 @@ public sealed class CachingHelixApiClient : IHelixApiClient, IUncachedHelixFileC
         }
     }
 
-    public async Task<IReadOnlyList<IWorkItemFile>> ListWorkItemFilesAsync(string workItemName, string jobId, CancellationToken ct = default)
+    public Task<IReadOnlyList<IWorkItemFile>> ListWorkItemFilesAsync(string workItemName, string jobId, CancellationToken ct = default)
+        => ListWorkItemFilesAsync(workItemName, jobId, bypassCache: false, ct);
+
+    private async Task<IReadOnlyList<IWorkItemFile>> ListWorkItemFilesAsync(
+        string workItemName, string jobId, bool bypassCache, CancellationToken ct)
     {
         if (!_enabled) return await _inner.ListWorkItemFilesAsync(workItemName, jobId, ct);
 
         var cacheKey = $"job:{CacheSecurity.SanitizeCacheKeySegment(jobId)}:wi:{CacheSecurity.SanitizeCacheKeySegment(workItemName)}:files";
-        var cached = await _cache.GetMetadataAsync(cacheKey, ct);
+        var cached = bypassCache ? null : await _cache.GetMetadataAsync(cacheKey, ct);
         if (cached != null)
         {
             var dtos = TryDeserialize<List<WorkItemFileDto>>(cached, cacheKey);
@@ -227,9 +231,18 @@ public sealed class CachingHelixApiClient : IHelixApiClient, IUncachedHelixFileC
         return await _inner.GetConsoleLogAsync(workItemName, jobId, ct);
     }
 
-    public async Task<Stream> GetFileAsync(string fileName, string workItemName, string jobId, CancellationToken ct = default)
+    public Task<Stream> GetFileAsync(string fileName, string workItemName, string jobId, CancellationToken ct = default)
+        => GetFileCoreAsync(fileName, workItemName, jobId,
+            () => GetFileUncachedAsync(fileName, workItemName, jobId, ct), ct);
+
+    public Task<Stream> GetFileAsync(IWorkItemFile file, string workItemName, string jobId, CancellationToken ct = default)
+        => GetFileCoreAsync(file.Name, workItemName, jobId,
+            () => DownloadResolvedFileAsync(file, workItemName, jobId, ct), ct);
+
+    private async Task<Stream> GetFileCoreAsync(
+        string fileName, string workItemName, string jobId, Func<Task<Stream>> download, CancellationToken ct)
     {
-        if (!_enabled) return await _inner.GetFileAsync(fileName, workItemName, jobId, ct);
+        if (!_enabled) return await download();
 
         var cacheKey = $"job:{CacheSecurity.SanitizeCacheKeySegment(jobId)}:wi:{CacheSecurity.SanitizeCacheKeySegment(workItemName)}:file:{CacheSecurity.SanitizeCacheKeySegment(fileName)}";
         var cachedStream = await _cache.GetArtifactAsync(cacheKey, ct);
@@ -240,7 +253,7 @@ public sealed class CachingHelixApiClient : IHelixApiClient, IUncachedHelixFileC
             await ThrowReplayedSnapshotErrorIfPresentAsync(cacheKey, ct);
 
         var stream = await CallAndMaybeRecordAsync(
-            () => _inner.GetFileAsync(fileName, workItemName, jobId, ct),
+            download,
             cacheKey,
             CompletedLongTtl,
             () => IsJobCompletedAsync(jobId, ct),
@@ -251,11 +264,64 @@ public sealed class CachingHelixApiClient : IHelixApiClient, IUncachedHelixFileC
         var storedStream = await _cache.GetArtifactAsync(cacheKey, ct);
         if (storedStream != null)
             return storedStream;
-        return await _inner.GetFileAsync(fileName, workItemName, jobId, ct);
+        return await download();
     }
 
-    public Task<Stream> GetFileUncachedAsync(string fileName, string workItemName, string jobId, CancellationToken ct = default)
-        => _inner.GetFileAsync(fileName, workItemName, jobId, ct);
+    public async Task<Stream> GetFileUncachedAsync(string fileName, string workItemName, string jobId, CancellationToken ct = default)
+    {
+        // Offline misses must retain their file-download error, rather than a listing error.
+        if (_inner is not IResolvedHelixFileClient || _options.EvalMode)
+            return await _inner.GetFileAsync(fileName, workItemName, jobId, ct);
+
+        var file = await ResolveFileAsync(fileName, workItemName, jobId, bypassCache: false, ct);
+        return await DownloadResolvedFileAsync(file, workItemName, jobId, ct);
+    }
+
+    private async Task<Stream> DownloadResolvedFileAsync(
+        IWorkItemFile file, string workItemName, string jobId, CancellationToken ct)
+    {
+        try
+        {
+            return await _inner.GetFileAsync(file, workItemName, jobId, ct);
+        }
+        catch (HlxAcquisitionException ex) when (
+            _enabled && !_options.EvalMode && file is WorkItemFileDto &&
+            ex.Error.Operation == "download_helix_file" &&
+            ex.Error.HttpStatus is 401 or 403 or 404 or 410)
+        {
+            // Cached listing URLs may expire before the metadata TTL. Refresh only after
+            // a blob failure, and let a second failure retain its original classification.
+            var fresh = await ResolveFileAsync(file.Name, workItemName, jobId, bypassCache: true, ct);
+            return await _inner.GetFileAsync(fresh, workItemName, jobId, ct);
+        }
+    }
+
+    private async Task<IWorkItemFile> ResolveFileAsync(
+        string fileName, string workItemName, string jobId, bool bypassCache, CancellationToken ct)
+    {
+        IReadOnlyList<IWorkItemFile> files;
+        try
+        {
+            files = await ListWorkItemFilesAsync(workItemName, jobId, bypassCache, ct);
+        }
+        catch (HlxAcquisitionException ex)
+        {
+            // Name resolution is part of this download, including when listing metadata fails.
+            throw new HlxAcquisitionException(ex.Error with
+            {
+                Operation = "download_helix_file",
+                Resource = HelixAcquisition.Resource(("jobId", jobId), ("workItem", workItemName), ("fileName", fileName))
+            }, ex.InnerException ?? ex);
+        }
+        var file = files.FirstOrDefault(f => string.Equals(f.Name, fileName, StringComparison.Ordinal));
+        if (file is null)
+            throw HelixAcquisition.FromHttp(
+                new HttpRequestException("The requested uploaded file was not found.", null, System.Net.HttpStatusCode.NotFound),
+                "download_helix_file",
+                HelixAcquisition.Resource(("jobId", jobId), ("workItem", workItemName), ("fileName", fileName)));
+
+        return file;
+    }
 
     /// <inheritdoc />
     /// <remarks>Not cached — source-scoped queries span many jobs; callers get fresh results.</remarks>

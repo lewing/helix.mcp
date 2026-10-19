@@ -1,3 +1,5 @@
+using System.Net;
+using HelixTool.Core.Acquisition;
 using Microsoft.DotNet.Helix.Client;
 using Microsoft.DotNet.Helix.Client.Models;
 using Newtonsoft.Json.Linq;
@@ -9,22 +11,28 @@ namespace HelixTool.Core.Helix;
 /// This is the single instantiation point for <c>HelixApi</c> in the codebase (decision D2).
 /// Registered as a singleton in both CLI and MCP hosts.
 /// </summary>
-public sealed class HelixApiClient : IHelixApiClient
+public sealed class HelixApiClient : IHelixApiClient, IResolvedHelixFileClient
 {
+    private static readonly HttpClient s_defaultDownloadClient = new() { Timeout = TimeSpan.FromMinutes(5) };
     private readonly HelixApi _api;
+    private readonly HttpClient _downloadClient;
 
-    public HelixApiClient(string? accessToken = null)
+    static HelixApiClient() => HelixToolUserAgent.Apply(s_defaultDownloadClient);
+
+    public HelixApiClient(string? accessToken = null, HttpClient? downloadClient = null)
     {
         var options = !string.IsNullOrEmpty(accessToken)
             ? new HelixApiOptions(new HelixApiTokenCredential(accessToken))
             : new HelixApiOptions();
         HelixToolUserAgent.Apply(options);
         _api = new HelixApi(options);
+        _downloadClient = downloadClient ?? s_defaultDownloadClient;
     }
 
-    private HelixApiClient(HelixApi api)
+    private HelixApiClient(HelixApi api, HttpClient? downloadClient)
     {
         _api = api;
+        _downloadClient = downloadClient ?? s_defaultDownloadClient;
     }
 
     /// <summary>
@@ -33,10 +41,10 @@ public sealed class HelixApiClient : IHelixApiClient
     /// <c>Retry.MaxRetries = 0</c>) so tests can exercise the real <see cref="HelixApi"/> SDK and
     /// this class's exception classification without reflection into a private field.
     /// </summary>
-    internal static HelixApiClient CreateForTesting(HelixApiOptions options)
+    internal static HelixApiClient CreateForTesting(HelixApiOptions options, HttpClient? downloadClient = null)
     {
         ArgumentNullException.ThrowIfNull(options);
-        return new HelixApiClient(new HelixApi(options));
+        return new HelixApiClient(new HelixApi(options), downloadClient);
     }
 
     /// <inheritdoc />
@@ -82,7 +90,33 @@ public sealed class HelixApiClient : IHelixApiClient
     public Task<Stream> GetFileAsync(string fileName, string workItemName, string jobId, CancellationToken ct = default)
     {
         var resource = HelixAcquisition.Resource(("jobId", jobId), ("workItem", workItemName), ("fileName", fileName));
-        return ClassifyAsync(() => _api.WorkItem.GetFileAsync(fileName, workItemName, jobId, cancellationToken: ct), "download_helix_file", resource, ct);
+        return ClassifyAsync(async () =>
+        {
+            // The SDK's GetFile endpoint can redirect to a blob path on the Helix host,
+            // returning HTML instead of file bytes. ListFiles provides the absolute blob URL.
+            var files = await _api.WorkItem.ListFilesAsync(workItemName, jobId, cancellationToken: ct);
+            var file = files.FirstOrDefault(f => string.Equals(f.Name, fileName, StringComparison.Ordinal));
+            if (file is null)
+                throw new HttpRequestException("The requested uploaded file was not found.", null, HttpStatusCode.NotFound);
+
+            return await GetFileAsync(new WorkItemFileAdapter(file), workItemName, jobId, ct);
+        }, "download_helix_file", resource, ct);
+    }
+
+    /// <inheritdoc />
+    public Task<Stream> GetFileAsync(IWorkItemFile file, string workItemName, string jobId, CancellationToken ct = default)
+    {
+        var resource = HelixAcquisition.Resource(("jobId", jobId), ("workItem", workItemName), ("fileName", file.Name));
+        return ClassifyAsync(async () =>
+        {
+            if (!Uri.TryCreate(file.Link, UriKind.Absolute, out var uri) ||
+                (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
+                throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                    AcquisitionErrorKind.InvalidResponse, "helix", "download_helix_file", resource,
+                    "Helix returned an uploaded file without an absolute HTTP download URL."));
+
+            return await _downloadClient.GetStreamAsync(uri, ct);
+        }, "download_helix_file", resource, ct);
     }
 
     /// <summary>
