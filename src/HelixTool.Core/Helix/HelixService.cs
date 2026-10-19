@@ -441,7 +441,7 @@ public class HelixService
         foreach (var f in matching)
         {
             await using var stream = await ClassifyHelixApiAsync(
-                () => _api.GetFileAsync(f.Name, workItem, id, cancellationToken),
+                () => _api.GetFileAsync(f, workItem, id, cancellationToken),
                 "download_helix_file",
                 HelixAcquisition.Resource(("jobId", id), ("workItem", workItem), ("fileName", f.Name)),
                 cancellationToken);
@@ -1055,7 +1055,7 @@ public class HelixService
         foreach (var f in files)
         {
             await using var stream = await ClassifyHelixApiAsync(
-                () => _api.GetFileAsync(f.Name, workItem, jobId, cancellationToken),
+                () => _api.GetFileAsync(f, workItem, jobId, cancellationToken),
                 "download_helix_file",
                 HelixAcquisition.Resource(("jobId", jobId), ("workItem", workItem), ("fileName", f.Name)),
                 cancellationToken);

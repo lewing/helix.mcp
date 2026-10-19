@@ -11,7 +11,7 @@ namespace HelixTool.Core.Helix;
 /// This is the single instantiation point for <c>HelixApi</c> in the codebase (decision D2).
 /// Registered as a singleton in both CLI and MCP hosts.
 /// </summary>
-public sealed class HelixApiClient : IHelixApiClient
+public sealed class HelixApiClient : IHelixApiClient, IResolvedHelixFileClient
 {
     private static readonly HttpClient s_defaultDownloadClient = new() { Timeout = TimeSpan.FromMinutes(5) };
     private readonly HelixApi _api;
@@ -99,6 +99,16 @@ public sealed class HelixApiClient : IHelixApiClient
             if (file is null)
                 throw new HttpRequestException("The requested uploaded file was not found.", null, HttpStatusCode.NotFound);
 
+            return await GetFileAsync(new WorkItemFileAdapter(file), workItemName, jobId, ct);
+        }, "download_helix_file", resource, ct);
+    }
+
+    /// <inheritdoc />
+    public Task<Stream> GetFileAsync(IWorkItemFile file, string workItemName, string jobId, CancellationToken ct = default)
+    {
+        var resource = HelixAcquisition.Resource(("jobId", jobId), ("workItem", workItemName), ("fileName", file.Name));
+        return ClassifyAsync(async () =>
+        {
             if (!Uri.TryCreate(file.Link, UriKind.Absolute, out var uri) ||
                 (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
                 throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
