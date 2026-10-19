@@ -331,6 +331,87 @@ public sealed class HelixUploadedFileDownloadTests
         Assert.Equal(1, handler.BlobRequests);
     }
 
+    [Theory]
+    [InlineData("name", HttpStatusCode.Unauthorized)]
+    [InlineData("name", HttpStatusCode.Forbidden)]
+    [InlineData("name", HttpStatusCode.NotFound)]
+    [InlineData("name", HttpStatusCode.Gone)]
+    [InlineData("resolved", HttpStatusCode.Unauthorized)]
+    [InlineData("resolved", HttpStatusCode.Forbidden)]
+    [InlineData("resolved", HttpStatusCode.NotFound)]
+    [InlineData("resolved", HttpStatusCode.Gone)]
+    [InlineData("uncached", HttpStatusCode.Forbidden)]
+    public async Task GetFileAsync_ExpiredCachedLinkRefreshesListingOnce(string path, HttpStatusCode status)
+    {
+        using var handler = new FileHandler { RotateLink = true, ExpiredLinkStatus = status };
+        using var http = new HttpClient(handler);
+        var client = new CachingHelixApiClient(CreateClient(http), CreateCache(), new CacheOptions());
+        await client.ListWorkItemFilesAsync(WorkItem, JobId);
+        var cachedFile = Assert.Single(await client.ListWorkItemFilesAsync(WorkItem, JobId));
+
+        await using (var stream = await DownloadAsync(client, cachedFile, path))
+        {
+            using var reader = new StreamReader(stream, leaveOpen: true);
+            Assert.Equal(ResultsXml, await reader.ReadToEndAsync());
+        }
+
+        var refreshedFile = Assert.Single(await client.ListWorkItemFilesAsync(WorkItem, JobId));
+        Assert.Equal(BlobUrl + "&generation=2", refreshedFile.Link);
+        Assert.Equal(2, handler.ListingRequests);
+        Assert.Equal(2, handler.BlobRequests);
+        Assert.Equal(new[] { new Uri(BlobUrl), new Uri(refreshedFile.Link!) },
+            handler.Requests.Where(uri => uri.Host == "results.blob.core.windows.net"));
+    }
+
+    [Theory]
+    [InlineData("name")]
+    [InlineData("resolved")]
+    [InlineData("uncached")]
+    public async Task GetFileAsync_PersistentForbiddenRetriesOnlyOnceAndPreservesAccessDenied(string path)
+    {
+        using var handler = new FileHandler { RotateLink = true, BlobStatus = HttpStatusCode.Forbidden };
+        using var http = new HttpClient(handler);
+        var client = new CachingHelixApiClient(CreateClient(http), CreateCache(), new CacheOptions());
+        await client.ListWorkItemFilesAsync(WorkItem, JobId);
+        var cachedFile = Assert.Single(await client.ListWorkItemFilesAsync(WorkItem, JobId));
+
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() => DownloadAsync(client, cachedFile, path));
+
+        var error = AcquisitionAssertions.Error(ex, AcquisitionErrorKind.AccessDenied, "helix", "download_helix_file", 403);
+        AcquisitionAssertions.Resource(error, "jobId", JobId);
+        AcquisitionAssertions.Resource(error, "workItem", WorkItem);
+        AcquisitionAssertions.Resource(error, "fileName", FileName);
+        Assert.Equal(2, handler.ListingRequests);
+        Assert.Equal(2, handler.BlobRequests);
+    }
+
+    [Theory]
+    [InlineData(false, HttpStatusCode.Forbidden)]
+    [InlineData(true, HttpStatusCode.TooManyRequests)]
+    [InlineData(true, HttpStatusCode.InternalServerError)]
+    public async Task GetFileAsync_NonCachedOrNonExpiryFailureDoesNotRefresh(bool cached, HttpStatusCode status)
+    {
+        using var handler = new FileHandler { BlobStatus = status };
+        using var http = new HttpClient(handler);
+        var client = new CachingHelixApiClient(CreateClient(http), CreateCache(), new CacheOptions());
+        if (cached)
+            await client.ListWorkItemFilesAsync(WorkItem, JobId);
+
+        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(() => client.GetFileAsync(FileName, WorkItem, JobId));
+
+        Assert.Equal((int)status, ex.Error.HttpStatus);
+        Assert.Equal(1, handler.ListingRequests);
+        Assert.Equal(1, handler.BlobRequests);
+    }
+
+    private static Task<Stream> DownloadAsync(CachingHelixApiClient client, IWorkItemFile file, string path)
+        => path switch
+        {
+            "resolved" => client.GetFileAsync(file, WorkItem, JobId),
+            "uncached" => client.GetFileUncachedAsync(FileName, WorkItem, JobId),
+            _ => client.GetFileAsync(FileName, WorkItem, JobId)
+        };
+
     private static ICacheStore CreateCache()
     {
         var cache = Substitute.For<ICacheStore>();
@@ -371,6 +452,8 @@ public sealed class HelixUploadedFileDownloadTests
         public string Name { get; init; } = FileName;
         public string? Link { get; init; } = BlobUrl;
         public HttpStatusCode BlobStatus { get; init; } = HttpStatusCode.OK;
+        public bool RotateLink { get; init; }
+        public HttpStatusCode? ExpiredLinkStatus { get; init; }
         public Action? BeforeDownload { get; init; }
         public List<Uri> Requests { get; } = [];
         public MemoryStream? Body { get; private set; }
@@ -389,21 +472,27 @@ public sealed class HelixUploadedFileDownloadTests
                     Content = new StringContent(JsonSerializer.Serialize(Enumerable.Range(0, FileCount).Select(i => new
                     {
                         Name = FileCount == 1 ? Name : $"file-{i}.xml",
-                        Link = FileCount == 1 ? Link : $"{BlobUrl}&file={i}"
+                        Link = FileCount == 1
+                            ? RotateLink && ListingRequests > 1 ? $"{Link}&generation=2" : Link
+                            : $"{BlobUrl}&file={i}"
                     })),
                         Encoding.UTF8, "application/json")
                 });
             }
 
             Assert.Contains(uri, Enumerable.Range(0, FileCount)
-                .Select(i => new Uri(FileCount == 1 ? Link! : $"{BlobUrl}&file={i}")));
+                .Select(i => new Uri(FileCount == 1 ? Link! : $"{BlobUrl}&file={i}"))
+                .Concat(RotateLink ? new[] { new Uri($"{Link}&generation=2") } : []));
             Assert.Null(request.Headers.Authorization);
             BlobRequests++;
             BeforeDownload?.Invoke();
+            var status = ExpiredLinkStatus.HasValue && uri == new Uri(Link!)
+                ? ExpiredLinkStatus.Value
+                : BlobStatus;
             Body = new MemoryStream(Encoding.UTF8.GetBytes(ResultsXml));
-            return Task.FromResult(new HttpResponseMessage(BlobStatus)
+            return Task.FromResult(new HttpResponseMessage(status)
             {
-                Content = BlobStatus == HttpStatusCode.OK
+                Content = status == HttpStatusCode.OK
                     ? new StreamContent(Body)
                     : new StringContent("<!DOCTYPE html><title>Error - Helix</title>", Encoding.UTF8, "text/html")
             });

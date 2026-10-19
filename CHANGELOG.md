@@ -14,7 +14,8 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
   avoiding broken relative redirects and misleading JSON errors in downloads,
   uploaded-file search, test-result parsing, and evidence collection. Resolved
   links and cached listings are reused across downloads without bypassing the
-  artifact-byte cache.
+  artifact-byte cache. Expired cached blob links refresh their listing and retry
+  once on HTTP 401/403/404/410, without extra listing requests on successful downloads.
 - AzDO byte-cache files use portable hashed paths on Windows. SQLite WAL stores
   use private page caches for concurrent writers, and byte-test cleanup clears
   only the exact live/read-only connection-string pools after stores are disposed.
