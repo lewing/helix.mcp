@@ -127,15 +127,20 @@ public sealed partial class AzdoBuildCollector
         };
         async Task SaveAsync()
         {
+            var complete = finished && incomplete.Count == 0;
+            var exitCode = !finished ? 2 :
+                members.Any(m => m.ExitCode == 1) || incomplete.Any(d => d.Code is "collector_hard_error" or "snapshot_validation_failed") ? 1 :
+                complete || policy.AllowIncomplete && incomplete.All(IsPolicyAllowedIncomplete) ? 0 : 2;
             var framework = BuildManifest(policy, started, source, manifest.Auth.Azdo, manifest.Auth.Helix, attempts, incomplete,
-                incomplete.Count == 0, incomplete.Count == 0 ? 0 : 2, manifest.Snapshot);
+                complete, exitCode, manifest.Snapshot);
             manifest = manifest with
             {
                 HlxVersion = framework.HlxVersion, Summary = framework.Summary, Cache = framework.Cache,
                 Policy = framework.Policy with { Caps = framework.Policy.Caps with
                 {
                     MaxBuilds = set.MaxBuilds, MaxDefinitions = set.MaxDefinitions, MaxScanBuilds = set.MaxScanBuilds,
-                    MaxSetTestResults = set.MaxSetTestResults, MaxSetTestAttachments = set.MaxSetTestAttachments
+                    MaxSetTestResults = set.MaxSetTestResults, MaxSetTestAttachments = set.MaxSetTestAttachments,
+                    MaxTestAttachments = policy.MaxTestAttachments ?? set.MaxSetTestAttachments
                 } },
                 Source = source, Attempts = attempts.OrderBy(a => a.Phase, StringComparer.Ordinal).ThenBy(a => a.Id, StringComparer.Ordinal).ToArray(),
                 Builds = members.ToArray(), ByteDownloads = reports.Count == 0 ? null : reports.ToArray(),
@@ -143,8 +148,8 @@ public sealed partial class AzdoBuildCollector
                 {
                     Code = "collection_in_progress", Message = "Checkpoint retained; resume the original query: " + string.Join(" ", RecoveryArgv(policy).Select(QuoteArgument))
                 }]).ToArray(),
-                Complete = finished && incomplete.Count == 0,
-                ExitCode = finished && incomplete.Count == 0 ? 0 : 2, CompletedAt = finished ? DateTimeOffset.UtcNow : null
+                Complete = complete,
+                ExitCode = exitCode, CompletedAt = finished ? DateTimeOffset.UtcNow : null
             };
             await WriteManifestAsync(path, manifest, ct);
         }
@@ -234,7 +239,7 @@ public sealed partial class AzdoBuildCollector
                             Resource(("org", set.Query.Org), ("project", set.Query.Project), ("buildId", build.Id)),
                             AzdoCacheKeys.MetadataKey(_cacheOptions, set.Query.Org, set.Query.Project, $"build:{build.Id}")),
                         policy, token => _azdoClient.GetBuildAsync(set.Query.Org, set.Query.Project, build.Id, token), metadata: true, ct);
-                    members.Add(new CollectBuildMember(build.Id, url, fetched is not null, fetched is not null ? 0 : 1, $"build:{build.Id}:"));
+                    members.Add(new CollectBuildMember(build.Id, url, fetched is not null, fetched is not null ? 0 : 2, $"build:{build.Id}:"));
                 }
                 else
                 {
@@ -244,6 +249,7 @@ public sealed partial class AzdoBuildCollector
                     var memberPolicy = policy with
                     {
                         BuildIdOrUrl = url, ManifestPath = path, PersistManifest = false, ExportPath = null, PriorAttempts = prior, SetBudget = setBudget,
+                        MaxTestAttachments = policy.MaxTestAttachments ?? set.MaxSetTestAttachments,
                         DownloadAzdoArtifacts = null, DownloadArtifactMembers = null, DownloadTestAttachments = null, DownloadHelixFiles = null,
                         ArtifactByteScope = "auto", ArtifactByteMode = "auto"
                     };
@@ -254,7 +260,10 @@ public sealed partial class AzdoBuildCollector
                             Id = prefix + attempt.Id, ParentId = attempt.ParentId is null ? null : prefix + attempt.ParentId,
                             Resource = new Dictionary<string, object?>(attempt.Resource) { ["buildId"] = build.Id }
                         });
-                    incomplete.AddRange(result.Manifest.IncompleteDetails);
+                    incomplete.AddRange(result.Manifest.IncompleteDetails.Select(detail => detail with
+                    {
+                        Resource = new Dictionary<string, object?>(detail.Resource ?? new Dictionary<string, object?>()) { ["buildId"] = build.Id }
+                    }));
                     members.Add(new CollectBuildMember(build.Id, url, result.Manifest.Complete, result.Manifest.ExitCode, $"build:{build.Id}:"));
                 }
                 await SaveAsync();
@@ -267,30 +276,46 @@ public sealed partial class AzdoBuildCollector
                 {
                     var bytePolicy = policy with
                     {
+                        BuildIdOrUrl = $"https://dev.azure.com/{Uri.EscapeDataString(set.Query.Org)}/{Uri.EscapeDataString(set.Query.Project)}/_build/results?buildId={build.Id}",
                         MaxTotalBytes = Math.Max(0, policy.MaxTotalBytes - byteCount),
                         MaxTotalStreamBytes = Math.Max(0, policy.MaxTotalStreamBytes - streamCount)
                     };
                     var byteAttempts = new List<CollectFetchAttempt>();
-                    AzdoEvidencePlan? plan = null;
-                    if (policy.DownloadHelixFiles is not null || policy.ArtifactByteScope != "auto" || policy.ArtifactByteMode != "auto")
+                    try
                     {
-                        var preparation = new List<CollectFetchAttempt>();
-                        plan = await CollectEvidencePlanPagesAsync(preparation, new Dictionary<string, CollectFetchAttempt>(), incomplete,
-                            policy with { BuildIdOrUrl = $"https://dev.azure.com/{Uri.EscapeDataString(set.Query.Org)}/{Uri.EscapeDataString(set.Query.Project)}/_build/results?buildId={build.Id}" },
-                            set.Query.Org, set.Query.Project, build.Id, ct);
-                        if (policy.DownloadHelixFiles is not null && plan is not null)
+                        AzdoEvidencePlan? plan = null;
+                        if (policy.DownloadHelixFiles is not null || policy.ArtifactByteScope != "auto" || policy.ArtifactByteMode != "auto")
                         {
-                            await CollectHelixSuggestedFetchesAsync(preparation, new Dictionary<string, CollectFetchAttempt>(), bytePolicy, plan, ct);
-                            var helixBytes = preparation.Where(a => a.Operation == "download_helix_file").ToArray();
-                            byteAttempts.AddRange(helixBytes);
-                            var used = helixBytes.Where(a => a.Outcome is "ok" or "cached").Sum(a => a.Bytes ?? 0);
-                            byteCount += used;
-                            bytePolicy = bytePolicy with { MaxTotalBytes = Math.Max(0, policy.MaxTotalBytes - byteCount) };
+                            var preparation = new List<CollectFetchAttempt>();
+                            plan = await CollectEvidencePlanPagesAsync(preparation, new Dictionary<string, CollectFetchAttempt>(), incomplete,
+                                bytePolicy, set.Query.Org, set.Query.Project, build.Id, ct);
+                            if (policy.DownloadHelixFiles is not null && plan is not null)
+                            {
+                                await CollectHelixSuggestedFetchesAsync(preparation, new Dictionary<string, CollectFetchAttempt>(), bytePolicy, plan, ct);
+                                var helixBytes = preparation.Where(a => a.Operation == "download_helix_file").ToArray();
+                                byteAttempts.AddRange(helixBytes);
+                                var used = helixBytes.Where(a => a.Outcome is "ok" or "cached").Sum(a => a.Bytes ?? 0);
+                                byteCount += used;
+                                bytePolicy = bytePolicy with { MaxTotalBytes = Math.Max(0, policy.MaxTotalBytes - byteCount) };
+                            }
                         }
+                        var downloaded = await CollectAzdoBytesAsync(byteAttempts, bytePolicy, set.Query.Org, set.Query.Project, build.Id, plan, progress, ct);
+                        byteCount += downloaded.Sum(r => r.Bytes); streamCount += downloaded.Sum(r => r.StreamedBytes);
+                        reports.AddRange(downloaded);
                     }
-                    var downloaded = await CollectAzdoBytesAsync(byteAttempts, bytePolicy, set.Query.Org, set.Query.Project, build.Id, plan, progress, ct);
-                    byteCount += downloaded.Sum(r => r.Bytes); streamCount += downloaded.Sum(r => r.StreamedBytes);
-                    reports.AddRange(downloaded);
+                    catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+                    {
+                        var failure = BuildHardErrorManifest(bytePolicy, started, source, [], [], ex);
+                        byteAttempts.AddRange(failure.Attempts.Select(a => a with { Id = "azdo.byte-phase", Phase = "azdo_bytes" }));
+                        incomplete.AddRange(failure.IncompleteDetails.Select(detail => detail with
+                        {
+                            Code = ex is Acquisition.HlxAcquisitionException ? "fetch_failed" : detail.Code,
+                            Resource = new Dictionary<string, object?>(detail.Resource ?? new Dictionary<string, object?>()) { ["buildId"] = build.Id }
+                        }));
+                        var memberIndex = members.FindIndex(m => m.BuildId == build.Id);
+                        members[memberIndex] = members[memberIndex] with { Complete = false,
+                            ExitCode = members[memberIndex].ExitCode == 1 || ex is not Acquisition.HlxAcquisitionException ? 1 : 2 };
+                    }
                     foreach (var attempt in byteAttempts)
                     {
                         var id = $"build:{build.Id}:" + attempt.Id;
@@ -302,13 +327,27 @@ public sealed partial class AzdoBuildCollector
                 }
             }
             attempts = await VerifyCollectedEvidenceAsync(attempts, ct);
-            if (attempts.Any(a => a.Required && a.Outcome is not "ok" and not "cached"))
-                incomplete.Add(new CollectIncompleteDetail { Code = "evidence_incomplete", Message = "Required evidence was not acquired or failed verification; see attempts and exact recovery actions." });
+            foreach (var attempt in attempts.Where(a => a.Required && a.Outcome is not "ok" and not "cached" &&
+                !(a.Outcome == "skipped" && a.Skip?.Kind == "policy_excluded")))
+            {
+                var code = attempt.Outcome == "skipped" ? attempt.Skip?.Kind ?? "fetch_skipped" : "fetch_failed";
+                if (incomplete.Any(d => d.Code == code && d.Operation == attempt.Operation && d.Resource is not null &&
+                    d.Resource.TryGetValue("buildId", out var id) && attempt.Resource.TryGetValue("buildId", out var buildId) && Equals(id, buildId)))
+                    continue;
+                incomplete.Add(new CollectIncompleteDetail
+                {
+                    Code = code,
+                    Message = attempt.Error?.Message ?? attempt.Skip?.Message ?? "Required evidence failed verification.",
+                    Operation = attempt.Operation, Resource = attempt.Resource
+                });
+            }
             for (var i = 0; i < members.Count; i++)
             {
                 var prefix = members[i].AttemptIdPrefix;
-                if (attempts.Any(a => a.Id.StartsWith(prefix, StringComparison.Ordinal) && a.Required && a.Outcome is not "ok" and not "cached"))
-                    members[i] = members[i] with { Complete = false, ExitCode = 2 };
+                if (attempts.Any(a => a.Id.StartsWith(prefix, StringComparison.Ordinal) && a.Required && a.Outcome is not "ok" and not "cached" &&
+                    !(a.Outcome == "skipped" && a.Skip?.Kind == "policy_excluded")))
+                    members[i] = members[i] with { Complete = false, ExitCode = members[i].ExitCode == 1 ? 1 :
+                        policy.AllowIncomplete && incomplete.Where(d => d.Resource?.TryGetValue("buildId", out var id) == true && Equals(id, members[i].BuildId)).All(IsPolicyAllowedIncomplete) ? 0 : 2 };
             }
             finished = true;
             await SaveAsync();

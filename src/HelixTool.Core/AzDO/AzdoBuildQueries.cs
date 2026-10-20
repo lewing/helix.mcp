@@ -282,10 +282,18 @@ public sealed class AzdoBuildQueryExecutor(IAzdoApiClient client, ICacheStore? c
         }
         var hash = AzdoBuildQueries.Hash(query);
         var completeKey = Key(org, project, $"builds:v2:{hash}:all");
-        var key = completeKey;
-        var json = cache is null ? null : await cache.GetMetadataAsync(key, ct);
+        var key = request.ResumeCacheKey ?? completeKey;
+        if (request.ResumeCacheKey is not null &&
+            (!key.StartsWith(Key(org, project, $"builds:v2:{hash}:"), StringComparison.Ordinal) || !AzdoCacheKeys.TryParse(key, out _)))
+            throw new ArgumentException("Discovery checkpoint does not match the query or partition.");
+        var json = cache is null ? null : request.ResumeCacheKey is not null
+            ? await cache.GetMetadataIgnoringTtlAsync(key, ct) : await cache.GetMetadataAsync(key, ct);
+        if (request.ResumeCacheKey is not null && json is null)
+            throw new InvalidDataException("Discovery checkpoint is missing; restore the original collection cache before resuming.");
         var source = json is null ? null : JsonSerializer.Deserialize<AzdoBuildQuerySource>(json, AzdoBuildQueries.JsonOptions);
-        if (source is not null && !_options.EvalMode && !request.Frozen && DateTimeOffset.UtcNow - source.CapturedAt > TimeSpan.FromSeconds(30)) source = null;
+        if (request.ResumeCacheKey is not null && source is null)
+            throw new InvalidDataException("Discovery checkpoint is invalid; restore the original collection cache before resuming.");
+        if (source is not null && !_options.EvalMode && !request.Frozen && request.ResumeCacheKey is null && DateTimeOffset.UtcNow - source.CapturedAt > TimeSpan.FromSeconds(30)) source = null;
         if (source is null && _options.EvalMode && cache is not null)
         {
             source = await FindCoveredSourceAsync(org, project, query, ct);
@@ -349,13 +357,6 @@ public sealed class AzdoBuildQueryExecutor(IAzdoApiClient client, ICacheStore? c
             }
             throw MissingSnapshot(org, project, query);
         }
-        if (source is null && request.ResumeCacheKey is { } resumeKey && cache is not null)
-        {
-            var prefix = Key(org, project, $"builds:v2:{hash}:");
-            if (!resumeKey.StartsWith(prefix, StringComparison.Ordinal)) throw new ArgumentException("Discovery checkpoint does not match the query or partition.");
-            var checkpoint = await cache.GetMetadataIgnoringTtlAsync(resumeKey, ct);
-            if (checkpoint is not null) source = JsonSerializer.Deserialize<AzdoBuildQuerySource>(checkpoint, AzdoBuildQueries.JsonOptions);
-        }
         List<AzdoBuild> rows = [];
         var locations = new Dictionary<int, (string Key, int Index)>();
         AzdoBuild IndexRow(AzdoBuild build) => cache is null ? build : build with
@@ -367,7 +368,10 @@ public sealed class AzdoBuildQueryExecutor(IAzdoApiClient client, ICacheStore? c
         };
         if (source is not null)
         {
-            if (source.QueryHash != AzdoBuildQueries.Hash(source.Query)) throw new InvalidDataException("Invalid build-query coverage descriptor.");
+            if (source.QueryHash != AzdoBuildQueries.Hash(source.Query) ||
+                !key.StartsWith(Key(org, project, $"builds:v2:{source.QueryHash}:"), StringComparison.Ordinal) ||
+                source.QueryHash != hash && !AzdoBuildQueries.Covers(source.Query, query))
+                throw new InvalidDataException("Invalid build-query coverage descriptor.");
             foreach (var pk in source.PageKeys)
             {
                 if (!pk.StartsWith(Key(org, project, $"builds:v2:{source.QueryHash}:page:"), StringComparison.Ordinal)) throw new InvalidDataException("Build-query page outside source partition.");
@@ -428,9 +432,18 @@ public sealed class AzdoBuildQueryExecutor(IAzdoApiClient client, ICacheStore? c
                 scanned += page.Results.Count;
                 var pageRows = page.Results.Where(b => AzdoBuildQueries.Matches(b, query with { MaxTime = effective.MaxTime }) && ids.Add(b.Id)).ToArray();
                 rows.AddRange(pageRows.Select(IndexRow));
-                var pk = Key(org, project, $"builds:v2:{hash}:page:{pages.Count}"); pages.Add(pk);
-                for (var i = 0; i < pageRows.Length; i++) locations[pageRows[i].Id] = (pk, i);
                 var pageJson = JsonSerializer.Serialize(pageRows, AzdoBuildQueries.JsonOptions);
+                var ordinal = pages.Count;
+                var pk = Key(org, project, $"builds:v2:{hash}:page:{ordinal}");
+                // Captures of the same semantic query share Q. Never overwrite a frozen capture's backing pages.
+                if (cache is not null)
+                {
+                    while (await cache.GetMetadataIgnoringTtlAsync(pk, ct) is { } existing &&
+                        (existing != pageJson || pages.Contains(pk)))
+                        pk = Key(org, project, $"builds:v2:{hash}:page:{checked(++ordinal)}");
+                }
+                pages.Add(pk);
+                for (var i = 0; i < pageRows.Length; i++) locations[pageRows[i].Id] = (pk, i);
                 pageHashes[pk] = AzdoBuildQueries.Digest(pageJson);
                 if (cache is not null) await cache.SetMetadataAsync(pk, pageJson, Retention, ct);
                 token = string.IsNullOrWhiteSpace(page.ContinuationToken) ? null : page.ContinuationToken;
@@ -534,7 +547,13 @@ public sealed class AzdoBuildQueryExecutor(IAzdoApiClient client, ICacheStore? c
         var expected = Key(org, project, $"builds:v2:{AzdoBuildQueries.Hash(covered)}:all");
         if (discovery.CacheKey != expected) return null;
         var saved = await cache!.GetMetadataAsync(expected, ct);
-        return saved is null ? null : JsonSerializer.Deserialize<AzdoBuildQuerySource>(saved, AzdoBuildQueries.JsonOptions);
+        if (saved is null) return null;
+        var source = JsonSerializer.Deserialize<AzdoBuildQuerySource>(saved, AzdoBuildQueries.JsonOptions);
+        if (source is null || !source.SourceComplete || source.QueryHash != manifest.Source.QueryHash ||
+            source.QueryHash != AzdoBuildQueries.Hash(covered) || source.QueryHash != AzdoBuildQueries.Hash(source.Query) ||
+            source.CapturedAt != discovery.CapturedAt || source.EffectiveQuery.MaxTime != effectiveCovered.MaxTime)
+            throw new InvalidDataException("Build-query coverage descriptor does not match the collected discovery.");
+        return source;
     }
 }
 

@@ -728,6 +728,10 @@ All single-build retry/concurrency/cache/export/resume/log/test/attachment/Helix
 policy flags are supported. Members run sequentially with the existing resource semaphore
 (default six), avoiding a nested concurrency multiplier. Required evidence for the whole
 set precedes optional binary transfers; those share retained/source-byte budgets.
+Provider failures are isolated per build, including during optional transfers: later members
+are still collected, and each failed member retains its own attempts and exit code.
+An explicit `--max-set-test-attachments` replaces the default per-build attachment allowance
+unless `--max-test-attachments` supplies a separate per-build limit.
 `--export` without `--cache-dir` uses an isolated `.hlx-collections/<id>` run cache, not the
 shared cache. Keep the printed cache and manifest paths for continuation.
 
@@ -737,6 +741,11 @@ partial manifest and exact original argv plus `--allow-large --resume`, the orig
 manifest paths and a fresh export destination. Run that returned argv rather than guessing
 which numeric cap to increase. Resume preserves the original ceiling/mapping/membership;
 changing criteria is a new collection. Progress goes to stderr; cancellation retains work.
+Resume reads the named checkpoint before newer browsing captures and verifies its backing
+pages. A missing checkpoint is an error, not permission to silently discover a different set.
+Policy-excluded phases remain complete; `--allow-incomplete` permits exit 0 for policy-only
+deferrals without changing `complete=false`. Acquisition failures exit 2; internal hard
+errors remain exit 1 even when other builds finish.
 
 Schema-v2 manifests use `kind="hlx.collect.azdo-builds"`, `source.query`, `effectiveQuery`,
 `queryHash`, resolved definition IDs/paths, discovery cache/completeness/count/scan/capture/

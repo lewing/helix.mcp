@@ -265,6 +265,9 @@ public sealed partial class IndependentReviewRegressionTests
             key.Contains("aaaaaaaa-bbbb-cccc-dddd-000000000002", StringComparison.Ordinal));
         Assert.Contains(AzdoCacheKeys.MetadataKey(fixture.Options, Org, Project, $"build:{BuildId}"), keys);
         var allowedKeys = manifest.Attempts.Select(a => a.CacheKey).Where(key => key is not null).ToHashSet();
+        var resultsKey = AzdoListCacheKeys.TestResultsComplete(fixture.Options, Org, Project, RunId, "Failed");
+        allowedKeys.Add(resultsKey[..^3] + "page:0");
+        allowedKeys.Add(AzdoListCacheKeys.TestResultsWindow(fixture.Options, Org, Project, RunId, "Failed", 0, int.MaxValue));
         Assert.All(keys.Where(key => key.StartsWith("azdo:", StringComparison.Ordinal)),
             key => Assert.True(allowedKeys.Contains(key) || key.Contains($":{BuildId}:", StringComparison.Ordinal) ||
                 key.EndsWith($":{BuildId}", StringComparison.Ordinal), $"Unrelated AzDO key exported: {key}"));

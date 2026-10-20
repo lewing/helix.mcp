@@ -1751,6 +1751,22 @@ public sealed partial class AzdoBuildCollector
             }
         }
 
+        if (attempt.Operation == "list_test_results" && cached.TrimStart().StartsWith('{'))
+        {
+            try
+            {
+                var index = JsonSerializer.Deserialize<AzdoPagedEvidence>(cached, AzdoBuildQueries.JsonOptions);
+                if (index is not { PagedList: true, SourceComplete: true })
+                    return (false, AcquisitionErrorKind.InvalidResponse, "Collected test-result index is incomplete.");
+                foreach (var _ in new AzdoPagedEvidenceList<AzdoTestResult>(_cacheStore, attempt.CacheKey, index))
+                    ct.ThrowIfCancellationRequested();
+            }
+            catch (Exception ex) when (ex is InvalidDataException or JsonException)
+            {
+                return (false, AcquisitionErrorKind.InvalidResponse, "Collected test-result backing pages failed verification.");
+            }
+        }
+
         return (true, AcquisitionErrorKind.NotInSnapshot, "");
     }
 

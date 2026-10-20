@@ -44,6 +44,21 @@ public sealed class AzdoBuildSetQueryTests : IDisposable
         return (new CachingAzdoApiClient(api, store, options, token), store, options, handler);
     }
     private static AzdoBuildFilter PrFilter() => new() { PrNumber = "42", RepositoryId = "dotnet/runtime", RepositoryType = "GitHub", MaxTime = Capture };
+    private AzdoBuildCollector Collector(IAzdoApiClient client, ICacheStore store, CacheOptions options)
+    {
+        var token = Substitute.For<IAzdoTokenAccessor>();
+        token.AuthStatusAsync(Arg.Any<CancellationToken>()).Returns(new AzdoAuthStatus { Path = "anonymous" });
+        var helix = Substitute.For<IHelixApiClient>();
+        var http = new HttpClient(); _disposables.Add(http);
+        return new(new AzdoService(client, null, cacheOptions: options), client,
+            new HelixService(helix, http), helix, token, Substitute.For<IHelixTokenAccessor>(), options, store);
+    }
+
+    private static HttpResponseMessage EmptyBuildEvidence(HttpRequestMessage request) =>
+        request.RequestUri!.AbsolutePath.EndsWith("timeline", StringComparison.Ordinal)
+            ? Json(new { id = "timeline", records = new[] { new { id = "00000000-0000-0000-0000-000000000001",
+                name = "Build", type = "Stage", state = "completed", result = "succeeded" } } })
+            : int.TryParse(request.RequestUri!.Segments.Last(), out var id) ? Json(Build(id)) : Json(new { value = Array.Empty<object>() });
 
     [Fact]
     public async Task ProviderFiltersAreForwarded_AndCommaTagsAreFilteredLocally()
@@ -100,6 +115,80 @@ public sealed class AzdoBuildSetQueryTests : IDisposable
         Assert.True(complete.Complete); Assert.Equal(203, complete.Count);
         Assert.Equal(prefix.EffectiveQuery.MaxTime, complete.EffectiveQuery.MaxTime);
         Assert.Equal(2, c.Handler.Urls.Count);
+    }
+
+    [Fact]
+    public async Task ResumingWithoutIncreasingThresholdRetainsThePartialCacheKey()
+    {
+        var c = Client(_ => Json(new { value = Enumerable.Range(1, 200).Select(i => Build(i)) }, "next"));
+        var request = new AzdoBuildQueryRequest { Filter = PrFilter(), All = true, MaxDiscoveryBuilds = 50 };
+        var first = await c.Client.QueryBuildsAsync("o", "p", request);
+        var resumed = await c.Client.QueryBuildsAsync("o", "p", request with { Frozen = true, ResumeCacheKey = first.CacheKey });
+        Assert.False(resumed.SourceComplete);
+        Assert.Equal(first.CacheKey, resumed.CacheKey);
+        Assert.NotNull(await c.Store.GetMetadataIgnoringTtlAsync(resumed.CacheKey!));
+        Assert.Single(c.Handler.Urls);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("null")]
+    public async Task MissingResumeCheckpointDoesNotRediscoverDifferentMembership(string? checkpoint)
+    {
+        var c = Client(_ => Json(new { value = new[] { Build(99) } }));
+        var key = AzdoCacheKeys.MetadataKey(c.Options, "o", "p", $"builds:v2:{AzdoBuildQueries.Hash(PrFilter())}:window:0:50");
+        if (checkpoint is not null) await c.Store.SetMetadataAsync(key, checkpoint, TimeSpan.FromHours(4));
+        await Assert.ThrowsAsync<InvalidDataException>(() => c.Client.QueryBuildsAsync("o", "p",
+            new() { Filter = PrFilter(), All = true, Frozen = true, ResumeCacheKey = key }));
+        Assert.Empty(c.Handler.Urls);
+    }
+
+    [Fact]
+    public async Task FreshDiscoveryDoesNotReplaceFrozenCheckpointOrItsBackingPages()
+    {
+        var firstCapture = true;
+        var c = Client(request => Query(request.RequestUri!).ContainsKey("continuationToken")
+            ? Json(new { value = new[] { Build(2) } })
+            : firstCapture ? Json(new { value = new[] { Build(1) } }, "next") : Json(new { value = new[] { Build(99) } }));
+        var request = new AzdoBuildQueryRequest { Filter = PrFilter(), All = true, MaxDiscoveryBuilds = 1 };
+        var prefix = await c.Client.QueryBuildsAsync("o", "p", request);
+        firstCapture = false;
+        var fresh = await c.Client.QueryBuildsAsync("o", "p", request with { MaxDiscoveryBuilds = null });
+        Assert.Equal(99, Assert.Single(fresh.Results).Id);
+        var resumed = await c.Client.QueryBuildsAsync("o", "p",
+            request with { MaxDiscoveryBuilds = null, Frozen = true, ResumeCacheKey = prefix.CacheKey });
+        Assert.Equal(new[] { 1, 2 }, resumed.Results.Select(b => b.Id));
+        Assert.Equal(prefix.CapturedAt, resumed.CapturedAt);
+    }
+
+    [Fact]
+    public async Task DefinitionsFollowAllPagesAndPrTriggerRejectsAnotherPr()
+    {
+        var c = Client(request => request.RequestUri!.AbsolutePath.EndsWith("definitions", StringComparison.Ordinal)
+            ? Query(request.RequestUri!).ContainsKey("continuationToken")
+                ? Json(new { value = new[] { new { id = 4, name = "runtime", path = "\\B" } } })
+                : Json(new { value = new[] { new { id = 3, name = "runtime", path = "\\A" } } }, "definitions-next")
+            : Json(new { value = new[] { Build(1), Build(2) with { Definition = new() { Id = 4 }, TriggerInfo = new() { PrNumber = "43" } } } }));
+        var result = await c.Client.QueryBuildsAsync("o", "p", new() { Filter = PrFilter() with { DefinitionName = "runtime" }, All = true });
+        Assert.Equal(new[] { 3, 4 }, result.ResolvedDefinitions.Select(d => d.Id));
+        Assert.Equal(1, Assert.Single(result.Results).Id);
+        Assert.True(result.SourceComplete);
+        Assert.Equal(3, c.Handler.Urls.Count);
+    }
+
+    [Fact]
+    public async Task ScanThresholdCheckpointsWithoutClaimingExhaustionAndAllowLargeContinues()
+    {
+        var c = Client(request => Query(request.RequestUri!).ContainsKey("continuationToken")
+            ? Json(new { value = new[] { Build(5001) } })
+            : Json(new { value = Enumerable.Range(1, 5000).Select(i => Build(i, "succeeded")) }, "next"));
+        var request = new AzdoBuildQueryRequest { Filter = PrFilter() with { Result = "failed" }, All = true, MaxScanBuilds = 5000 };
+        var first = await c.Client.QueryBuildsAsync("o", "p", request);
+        Assert.Empty(first.Results); Assert.False(first.SourceComplete); Assert.Null(first.Total);
+        Assert.Equal(5000, first.Scanned);
+        var resumed = await c.Client.QueryBuildsAsync("o", "p", request with { MaxScanBuilds = null, Frozen = true, ResumeCacheKey = first.CacheKey });
+        Assert.Equal(5001, Assert.Single(resumed.Results).Id);
+        Assert.True(resumed.Complete); Assert.Equal(5001, resumed.Scanned);
     }
 
     [Fact]
@@ -212,6 +301,242 @@ public sealed class AzdoBuildSetQueryTests : IDisposable
         var offline = new CachingAzdoApiClient(new OfflineAzdoApiClient(), offlineStore, offlineOptions);
         Assert.Equal(10005, (await offline.GetTestResultsAsync("o", "p", 1, int.MaxValue, "Passed,Failed")).Count);
         Assert.Equal(10, (await offline.GetTestResultsAsync("o", "p", 1, int.MaxValue, "Failed")).Count);
+    }
+
+    [Fact]
+    public async Task InterruptedTestResultStreamingVerifiesCheckpointBeforeContinuing()
+    {
+        var interrupted = true;
+        var c = Client(request =>
+        {
+            var offset = int.Parse(Query(request.RequestUri!)["$skip"], System.Globalization.CultureInfo.InvariantCulture);
+            if (offset == 1000 && interrupted)
+                return new(HttpStatusCode.Forbidden) { Content = new StringContent("Access denied") };
+            return Json(new { value = Enumerable.Range(offset + 1, offset == 0 ? 1000 : 1).Select(id => new { id, outcome = "Failed" }) });
+        });
+        await Assert.ThrowsAsync<HlxAcquisitionException>(() => c.Client.GetTestResultsAsync("o", "p", 7, int.MaxValue, "Failed"));
+        var checkpointKey = AzdoListCacheKeys.TestResultsWindow(c.Options, "o", "p", 7, "Failed", 0, int.MaxValue);
+        using var checkpoint = JsonDocument.Parse((await c.Store.GetMetadataIgnoringTtlAsync(checkpointKey))!);
+        var pageKey = checkpoint.RootElement.GetProperty("pages")[0].GetProperty("key").GetString()!;
+        await c.Store.SetMetadataAsync(pageKey, "[]", TimeSpan.FromHours(4));
+        interrupted = false;
+        await Assert.ThrowsAsync<InvalidDataException>(() => c.Client.GetTestResultsAsync("o", "p", 7, int.MaxValue, "Failed"));
+        Assert.Equal(2, c.Handler.Urls.Count);
+        Assert.Null(await c.Store.GetMetadataIgnoringTtlAsync(AzdoListCacheKeys.TestResultsComplete(c.Options, "o", "p", 7, "Failed")));
+    }
+
+    [Fact]
+    public async Task CoveredReplayRejectsDescriptorThatNoLongerMatchesManifestCapture()
+    {
+        var c = Client(_ => Json(new { value = new[] { Build(1) } }));
+        var source = await c.Client.QueryBuildsAsync("o", "p", new() { Filter = PrFilter(), All = true });
+        var json = (await c.Store.GetMetadataIgnoringTtlAsync(source.CacheKey!))!;
+        var index = JsonSerializer.Deserialize<AzdoBuildQuerySource>(json, AzdoBuildQueries.JsonOptions)!;
+        var manifestDirectory = Path.Combine(c.Options.GetEffectiveCacheRoot(), "manifest");
+        Directory.CreateDirectory(manifestDirectory);
+        await File.WriteAllTextAsync(Path.Combine(manifestDirectory, "hlx-collect-manifest.json"),
+            JsonSerializer.Serialize(new CollectManifest
+            {
+                SchemaVersion = 2, Kind = "hlx.collect.azdo-builds",
+                Source = new()
+                {
+                    Org = "o", Project = "p", Query = source.Query, EffectiveQuery = source.EffectiveQuery, QueryHash = source.QueryHash,
+                    Discovery = new(source.CacheKey!, true, 1, 1, 1, 1, source.CapturedAt, source.ViewId)
+                }
+            }, AzdoBuildQueries.JsonOptions));
+        await c.Store.SetMetadataAsync(source.CacheKey!, JsonSerializer.Serialize(index with { CapturedAt = index.CapturedAt.AddMinutes(1) },
+            AzdoBuildQueries.JsonOptions), TimeSpan.FromHours(4));
+        var offline = new CachingAzdoApiClient(new OfflineAzdoApiClient(), c.Store,
+            c.Options with { EvalMode = true, CacheRoot = c.Options.GetEffectiveCacheRoot() });
+        await Assert.ThrowsAsync<InvalidDataException>(() => offline.QueryBuildsAsync("o", "p",
+            new() { Filter = PrFilter() with { Result = "failed" }, All = true }));
+        Assert.Single(c.Handler.Urls);
+    }
+
+    [Theory]
+    [InlineData("metadata")]
+    [InlineData("evidence")]
+    public async Task FailedBuildDoesNotDropOtherMembersAndManifestRoundTrips(string scope)
+    {
+        var c = Client(request => request.RequestUri!.AbsolutePath.EndsWith("builds", StringComparison.Ordinal)
+            ? Json(new { value = new[] { Build(1), Build(2) } })
+            : request.RequestUri!.AbsolutePath.EndsWith("/builds/1", StringComparison.Ordinal)
+                ? new(HttpStatusCode.Forbidden) { Content = new StringContent("Access denied") }
+                : EmptyBuildEvidence(request));
+        var result = await Collector(c.Client, c.Store, c.Options).CollectAzdoBuildsAsync(new()
+        {
+            Query = new() { Org = "o", Project = "p", PrNumber = "42", MaxTime = Capture }, BuildScope = scope,
+            Collection = new() { ManifestPath = Path.Combine(_root, "manifest.json"), RetryCount = 1 }
+        });
+        Assert.False(result.Manifest.Complete); Assert.Equal(2, result.Manifest.ExitCode);
+        Assert.Collection(result.Manifest.Builds!,
+            member => { Assert.Equal(1, member.BuildId); Assert.False(member.Complete); Assert.Equal(2, member.ExitCode); },
+            member => { Assert.Equal(2, member.BuildId); Assert.True(member.Complete); Assert.Equal(0, member.ExitCode); });
+        var persisted = JsonSerializer.Deserialize<CollectManifest>(await File.ReadAllTextAsync(result.ManifestPath), AzdoBuildQueries.JsonOptions)!;
+        Assert.Equal(2, persisted.SchemaVersion); Assert.Equal("hlx.collect.azdo-builds", persisted.Kind);
+        Assert.Equal(2, persisted.Builds!.Count);
+        Assert.All(persisted.Attempts.Where(a => a.Id.StartsWith("build:", StringComparison.Ordinal)),
+            a => Assert.True(a.Resource.ContainsKey("buildId")));
+        Assert.Equal(persisted.Attempts.Count, persisted.Attempts.Select(a => a.Id).Distinct().Count());
+        Assert.DoesNotContain(Directory.EnumerateFiles(c.Options.GetEffectiveCacheRoot(), "*", SearchOption.AllDirectories),
+            file => Path.GetFileName(file).IndexOfAny([':', '<', '>', '|', '?', '*']) >= 0);
+    }
+
+    [Theory]
+    [InlineData(false, 2)]
+    [InlineData(true, 1)]
+    public async Task OptionalBytePhaseFailureDoesNotDropLaterBuilds(bool hardError, int exitCode)
+    {
+        var c = Client(request =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("builds", StringComparison.Ordinal))
+                return Json(new { value = new[] { Build(1), Build(2) } });
+            if (request.RequestUri!.AbsolutePath.EndsWith("/test/runs", StringComparison.Ordinal) &&
+                Query(request.RequestUri!)["buildUri"].EndsWith("/1", StringComparison.Ordinal))
+            {
+                if (hardError) throw new InvalidOperationException("private diagnostic not for the manifest");
+                return new(HttpStatusCode.Forbidden) { Content = new StringContent("Access denied") };
+            }
+            return EmptyBuildEvidence(request);
+        });
+        var result = await Collector(c.Client, c.Store, c.Options).CollectAzdoBuildsAsync(new()
+        {
+            Query = new() { Org = "o", Project = "p", PrNumber = "42", MaxTime = Capture },
+            Collection = new() { ManifestPath = Path.Combine(_root, "manifest.json"), TestScope = "none",
+                DownloadTestAttachments = "*", RetryCount = 1 }
+        });
+        Assert.Equal(2, result.Manifest.Builds!.Count);
+        Assert.Contains(c.Handler.Urls, url => new Uri(url).AbsolutePath.EndsWith("/test/runs", StringComparison.Ordinal) &&
+            Query(new Uri(url))["buildUri"].EndsWith("/2", StringComparison.Ordinal));
+        Assert.Contains(result.Manifest.Attempts, a => a.Id.StartsWith("build:1:", StringComparison.Ordinal) &&
+            a.Phase == "azdo_bytes" && a.Error?.Kind == (hardError ? AcquisitionErrorKind.TransportError : AcquisitionErrorKind.AccessDenied));
+        Assert.False(result.Manifest.Builds![0].Complete);
+        Assert.Equal(exitCode, result.Manifest.Builds![0].ExitCode);
+        Assert.Equal(exitCode, result.Manifest.ExitCode);
+        Assert.DoesNotContain("private diagnostic", await File.ReadAllTextAsync(result.ManifestPath));
+    }
+
+    [Fact]
+    public async Task ArtifactByteSelectionUsesEachMembersBuildUrl()
+    {
+        var c = Client(request => request.RequestUri!.AbsolutePath.EndsWith("builds", StringComparison.Ordinal)
+            ? Json(new { value = new[] { Build(1), Build(2) } }) : EmptyBuildEvidence(request));
+        var result = await Collector(c.Client, c.Store, c.Options).CollectAzdoBuildsAsync(new()
+        {
+            Query = new() { Org = "o", Project = "p", MaxTime = Capture },
+            Collection = new() { ManifestPath = Path.Combine(_root, "manifest.json"), DownloadAzdoArtifacts = "*" }
+        });
+        Assert.Equal(2, result.Manifest.ExitCode);
+        Assert.Equal(2, result.Manifest.Attempts.Count(a => a.Phase == "azdo_bytes" && a.Skip?.Kind == "no_matches"));
+        Assert.DoesNotContain(result.Manifest.IncompleteDetails, d => d.Code == "collector_hard_error");
+    }
+
+    [Fact]
+    public async Task SetAttachmentAllowanceOverridesDefaultPerBuildPlanningThreshold()
+    {
+        var c = Client(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("builds", StringComparison.Ordinal)) return Json(new { value = new[] { Build(1) } });
+            if (path.EndsWith("/test/runs", StringComparison.Ordinal)) return Json(new { value = new[] { new { id = 7, totalTests = 1001 } } });
+            if (path.EndsWith("/results", StringComparison.Ordinal))
+            {
+                var skip = Query(request.RequestUri!).TryGetValue("$skip", out var value) ? int.Parse(value, System.Globalization.CultureInfo.InvariantCulture) : 0;
+                return Json(new { value = Enumerable.Range(skip + 1, Math.Min(1000, Math.Max(0, 1001 - skip)))
+                    .Select(id => new { id, outcome = "Failed" }) });
+            }
+            return EmptyBuildEvidence(request);
+        });
+        var result = await Collector(c.Client, c.Store, c.Options).CollectAzdoBuildsAsync(new()
+        {
+            Query = new() { Org = "o", Project = "p", PrNumber = "42", MaxTime = Capture },
+            MaxSetTestAttachments = 1001,
+            Collection = new() { ManifestPath = Path.Combine(_root, "manifest.json"), RetryCount = 1 }
+        });
+        Assert.True(result.Manifest.Complete, JsonSerializer.Serialize(result.Manifest.IncompleteDetails));
+        Assert.Equal(1001, result.Manifest.Policy.Caps.MaxTestAttachments);
+        Assert.Equal(1001, result.Manifest.Attempts.Count(a => a.Operation == "list_test_attachments"));
+    }
+
+    [Fact]
+    public async Task ExplicitlyDisabledEvidencePhasesAreNotIncomplete()
+    {
+        var c = Client(request => request.RequestUri!.AbsolutePath.EndsWith("builds", StringComparison.Ordinal)
+            ? Json(new { value = new[] { Build(1), Build(2) } }) : EmptyBuildEvidence(request));
+        var result = await Collector(c.Client, c.Store, c.Options).CollectAzdoBuildsAsync(new()
+        {
+            Query = new() { Org = "o", Project = "p", MaxTime = Capture },
+            Collection = new() { ManifestPath = Path.Combine(_root, "manifest.json"), TestScope = "none", HelixScope = "none", LogScope = "none" }
+        });
+        Assert.True(result.Manifest.Complete); Assert.Equal(0, result.Manifest.ExitCode);
+        Assert.All(result.Manifest.Builds!, member => Assert.True(member.Complete));
+        Assert.Contains(result.Manifest.Attempts, a => a.Skip?.Kind == "policy_excluded");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FinalVerificationDetectsResultPageLossAfterAnEarlierMemberCompleted(bool priorPolicyDeferral)
+    {
+        var c = Client(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("builds", StringComparison.Ordinal)) return Json(new { value = new[] { Build(1), Build(2) } });
+            if (path.EndsWith("/test/runs", StringComparison.Ordinal))
+                return Query(request.RequestUri!)["buildUri"].EndsWith("/1", StringComparison.Ordinal)
+                    ? Json(new { value = Enumerable.Range(7, priorPolicyDeferral ? 2 : 1).Select(id => new { id, totalTests = 1 }) })
+                    : Json(new { value = Array.Empty<object>() });
+            if (path.EndsWith("/results", StringComparison.Ordinal)) return Json(new { value = new[] { new { id = 1, outcome = "Failed" } } });
+            return EmptyBuildEvidence(request);
+        });
+        var result = await Collector(c.Client, c.Store, c.Options).CollectAzdoBuildsAsync(new()
+        {
+            Query = new() { Org = "o", Project = "p", MaxTime = Capture },
+            MaxSetTestResults = priorPolicyDeferral ? 1 : 10000,
+            Collection = new() { ManifestPath = Path.Combine(_root, "manifest.json"), TestAttachmentScope = "none",
+                MaxConcurrency = 1, AllowIncomplete = priorPolicyDeferral }
+        }, message =>
+        {
+            if (message.StartsWith("Collecting build 2 ", StringComparison.Ordinal))
+            {
+                var pageKey = AzdoListCacheKeys.TestResultsComplete(c.Options, "o", "p", 7, "Failed")[..^3] + "page:0";
+                c.Store.SetMetadataAsync(pageKey, "[]", TimeSpan.FromHours(4)).GetAwaiter().GetResult();
+            }
+        });
+        Assert.False(result.Manifest.Complete); Assert.Equal(2, result.Manifest.ExitCode);
+        Assert.False(result.Manifest.Builds![0].Complete); Assert.True(result.Manifest.Builds![1].Complete);
+        Assert.Contains(result.Manifest.Attempts, a => a.Id.StartsWith("build:1:", StringComparison.Ordinal) &&
+            a.Operation == "list_test_results" && a.Error?.Kind == AcquisitionErrorKind.InvalidResponse);
+        if (priorPolicyDeferral)
+        {
+            Assert.Contains(result.Manifest.IncompleteDetails, d => d.Code == "test_result_limit");
+            Assert.Contains(result.Manifest.IncompleteDetails, d => d.Code == "fetch_failed");
+        }
+    }
+
+    [Theory]
+    [InlineData(false, 2)]
+    [InlineData(true, 0)]
+    public async Task PolicyOnlyDeferralHonorsAllowIncompleteWithoutPretendingComplete(bool allowIncomplete, int exitCode)
+    {
+        var c = Client(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("builds", StringComparison.Ordinal)) return Json(new { value = new[] { Build(1) } });
+            if (path.EndsWith("/test/runs", StringComparison.Ordinal)) return Json(new { value = new[] { new { id = 7, totalTests = 2 } } });
+            if (path.EndsWith("/results", StringComparison.Ordinal)) return Json(new { value = new[] { new { id = 1, outcome = "Failed" }, new { id = 2, outcome = "Failed" } } });
+            return EmptyBuildEvidence(request);
+        });
+        var result = await Collector(c.Client, c.Store, c.Options).CollectAzdoBuildsAsync(new()
+        {
+            Query = new() { Org = "o", Project = "p", MaxTime = Capture }, MaxSetTestAttachments = 1,
+            Collection = new() { ManifestPath = Path.Combine(_root, "manifest.json"), AllowIncomplete = allowIncomplete }
+        });
+        Assert.False(result.Manifest.Complete); Assert.Equal(exitCode, result.Manifest.ExitCode);
+        Assert.False(Assert.Single(result.Manifest.Builds!).Complete);
+        Assert.Equal(exitCode, result.Manifest.Builds![0].ExitCode);
+        Assert.Contains(result.Manifest.IncompleteDetails, d => d.Code == "test_attachment_limit" && d.Message.Contains("--allow-large", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.Manifest.IncompleteDetails, d => d.Code == "evidence_incomplete");
     }
 
     [Fact]

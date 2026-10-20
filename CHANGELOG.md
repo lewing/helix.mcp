@@ -22,6 +22,13 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ### Fixed
 
+- Build-set resume preserves the original checkpoint and full-data pages across newer
+  browsing captures; missing or mismatched discovery evidence cannot silently change membership.
+- Build-set byte transfers use each member's build URL and isolate failures so later members
+  still run. Explicit set attachment allowances, policy exclusions, `--allow-incomplete`,
+  and per-member/aggregate exit codes retain their intended semantics.
+- Streamed test-result checkpoints and collected backing pages are verified before reuse
+  and completion; corrupt offline paged-list JSON retains the structured cache-error contract.
 - Artifact cache publication now retries Windows file-replacement contention and accepts
   an already-published destination only when its length and SHA-256 match, avoiding
   failures when concurrent readers omit delete sharing.
