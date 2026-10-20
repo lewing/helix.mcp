@@ -8,6 +8,12 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+### Fixed
+
+- Artifact cache publication now retries Windows file-replacement contention and accepts
+  an already-published destination only when its length and SHA-256 match, avoiding
+  failures when concurrent readers omit delete sharing.
+
 ## [0.12.0] - 2026-10-19
 
 ### Added
