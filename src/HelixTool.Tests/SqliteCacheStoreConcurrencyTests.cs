@@ -209,6 +209,57 @@ public class SqliteCacheStoreConcurrencyTests : IDisposable
         await Task.WhenAll(tasks);
     }
 
+    [Theory]
+    [InlineData("original")]
+    [InlineData("changed!")]
+    [InlineData("short")]
+    public async Task ArtifactPublish_ReaderWithoutDeleteSharing_VerifiesExistingContent(string replacement)
+    {
+        const string key = "job:locked-artifact:wi:test:file:data.bin";
+        var original = "original"u8.ToArray();
+        var content = System.Text.Encoding.UTF8.GetBytes(replacement);
+        await _store.StartupMaintenance;
+        await _store.SetArtifactAsync(key, new MemoryStream(original));
+
+        var artifactsDir = Path.Combine(_opts.GetEffectiveCacheRoot(), "artifacts");
+        var path = Assert.Single(Directory.GetFiles(artifactsDir, "*", SearchOption.AllDirectories));
+
+        // Leave only the destination file, as if another writer has not committed its row yet.
+        // A silently skipped publish must not pass the identical-content case.
+        using (var conn = new Microsoft.Data.Sqlite.SqliteConnection(
+            $"Data Source={Path.Combine(_opts.GetEffectiveCacheRoot(), "cache.db")}"))
+        {
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "DELETE FROM cache_artifacts WHERE cache_key = @key;";
+            cmd.Parameters.AddWithValue("@key", key);
+            Assert.Equal(1, cmd.ExecuteNonQuery());
+        }
+
+        // This handle deterministically blocks replacement on Windows for the entire retry
+        // budget. Unix permits the rename, so it also exercises successful publication there.
+        using var reader = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        await _store.SetArtifactAsync(key, new MemoryStream(content));
+
+        Assert.Empty(Directory.GetFiles(artifactsDir, "*.tmp.*", SearchOption.AllDirectories));
+        using var result = await _store.GetArtifactAsync(key);
+        if (OperatingSystem.IsWindows() && replacement != "original")
+        {
+            // Neither matching length alone nor mere destination existence proves success.
+            Assert.Null(result);
+            using var retained = new MemoryStream();
+            await reader.CopyToAsync(retained);
+            Assert.Equal(original, retained.ToArray());
+        }
+        else
+        {
+            Assert.NotNull(result);
+            using var published = new MemoryStream();
+            await result.CopyToAsync(published);
+            Assert.Equal(content, published.ToArray());
+        }
+    }
+
     // =========================================================================
     // Concurrent status + eviction
     // =========================================================================

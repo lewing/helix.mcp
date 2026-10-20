@@ -466,43 +466,24 @@ public sealed class SqliteCacheStore : ICacheStore
             throw;
         }
 
-        // Choose the publication primitive up front from destination existence:
-        //   - Absent: File.Move keeps the original atomic create/rename behavior.
-        //   - Present: File.Replace (Win32 ReplaceFile) is required instead. Per its documented
-        //     contract it opens the destination itself with
-        //     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, so — unlike
-        //     File.Move(overwrite: true)'s MoveFileEx/MOVEFILE_REPLACE_EXISTING, which can fail
-        //     with a Windows sharing violation against an open destination even when the opener
-        //     used FileShare.Read|Delete or FileShare.ReadWrite|Delete (SnapshotExporter's and
-        //     GetArtifactAsync's own share flags) — it still succeeds and atomically swaps the
-        //     destination's identity to tempPath's bytes while those readers keep their handle.
-        // Win32 can still briefly hold the destination exclusively during another ReplaceFile;
-        // retry that narrow sharing/access-denied window, then treat the write as a cache miss
-        // rather than failing the caller or recording a success row for an unpublished temp file.
-        var destinationExisted = File.Exists(fullPath);
-        var published = false;
+        // Replace preserves existing readers' handles; Move atomically creates an absent file.
+        // Retry contention, accepting an identical competing publication or otherwise skipping
+        // the cache write without recording a row for bytes that were never published.
         try
         {
-            published = await TryPublishArtifactAsync(tempPath, fullPath, destinationExisted, ct);
-            if (!published)
+            if (!await TryPublishArtifactAsync(tempPath, fullPath, ct))
                 return;
         }
         finally
         {
-            // Only reached without cleanup on the success path (published == true), where the
-            // primitive above already consumed/renamed tempPath. On any failure or skipped-cache
-            // path, tempPath still holds the only copy of the new bytes and would otherwise leak.
-            if (!published)
+            // An identical destination also counts as success, but leaves our temp file behind.
+            try
             {
-                try
-                {
-                    File.Delete(tempPath);
-                }
-                catch (Exception cleanupEx) when (cleanupEx is IOException or UnauthorizedAccessException)
-                {
-                    // Best-effort: an orphaned temp file is preferable to masking the real
-                    // publication failure that is already propagating out of this method.
-                }
+                File.Delete(tempPath);
+            }
+            catch (Exception cleanupEx) when (cleanupEx is IOException or UnauthorizedAccessException)
+            {
+                // Best-effort cleanup must not mask publication failure or cancellation.
             }
         }
 
@@ -677,7 +658,6 @@ public sealed class SqliteCacheStore : ICacheStore
     private static async Task<bool> TryPublishArtifactAsync(
         string tempPath,
         string fullPath,
-        bool destinationExisted,
         CancellationToken ct)
     {
         for (var attempt = 0; attempt < ArtifactFileRetryCount; attempt++)
@@ -685,27 +665,45 @@ public sealed class SqliteCacheStore : ICacheStore
             ct.ThrowIfCancellationRequested();
             try
             {
-                if (destinationExisted)
+                if (File.Exists(fullPath))
                     File.Replace(tempPath, fullPath, destinationBackupFileName: null);
                 else
-                    File.Move(tempPath, fullPath, overwrite: true);
+                    File.Move(tempPath, fullPath);
                 return true;
             }
             catch (Exception ex) when (IsArtifactPublishRetryable(ex))
             {
                 if (attempt + 1 == ArtifactFileRetryCount)
-                    return false;
+                    break;
                 await Task.Delay(ArtifactFileRetryDelay, ct);
             }
         }
 
-        return false;
+        // Windows ReplaceFile can report ERROR_UNABLE_TO_REMOVE_REPLACED rather than
+        // ERROR_SHARING_VIOLATION when a reader omits delete sharing. A competing writer's
+        // identical bytes are already usable even if that handle outlives our retry budget.
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            await using var pending = new FileStream(tempPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            await using var destination = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (pending.Length != destination.Length)
+                return false;
+
+            var expectedHash = await SHA256.HashDataAsync(pending, ct);
+            var actualHash = await SHA256.HashDataAsync(destination, ct);
+            return expectedHash.AsSpan().SequenceEqual(actualHash);
+        }
+        catch (Exception ex) when (IsArtifactPublishRetryable(ex))
+        {
+            return false;
+        }
     }
 
     private static bool IsArtifactOpenRetryable(Exception ex) =>
         ex is FileNotFoundException or DirectoryNotFoundException || IsArtifactSharingException(ex);
 
-    private static bool IsArtifactPublishRetryable(Exception ex) => IsArtifactSharingException(ex);
+    private static bool IsArtifactPublishRetryable(Exception ex) => ex is IOException or UnauthorizedAccessException;
 
     private static bool IsArtifactSharingException(Exception ex) =>
         ex is IOException ioEx && (ioEx.HResult == ErrorSharingViolation || ioEx.HResult == ErrorAccessDenied) ||
