@@ -14,11 +14,11 @@ public sealed partial class IndependentReviewRegressionTests
     [Theory]
     [InlineData(9999, null, true)]
     [InlineData(10000, null, true)]
-    [InlineData(10001, null, false)]
-    [InlineData(10001, 10000L, false)]
+    [InlineData(10001, null, true)]
+    [InlineData(10001, 10000L, true)]
     [InlineData(10001, 10001L, true)]
     [InlineData(1405433, 2000000L, true)]
-    public async Task AllResultGuard_EnforcesEstimateBoundaryAndExplicitConsent(
+    public async Task ExplicitAllResults_ProceedBeyondPlanningEstimates(
         int estimate, long? budget, bool allowed)
     {
         using var fixture = new Fixture();
@@ -35,22 +35,11 @@ public sealed partial class IndependentReviewRegressionTests
         Assert.Equal(allowed ? 1 : 0, ResultRequests(fixture).Count);
         Assert.Equal(budget ?? CollectPolicy.DefaultMaxTestResults, result.Manifest.Policy.Caps.MaxTestResults);
         Assert.Equal(budget.HasValue, result.Manifest.Policy.MaxTestResultsExplicit);
-        if (!allowed)
-        {
-            var skip = Assert.Single(result.Manifest.Attempts, a => a.Skip?.Kind == "test_result_limit");
-            Assert.Equal("skipped", skip.Outcome);
-            Assert.True(skip.Required);
-            Assert.Equal((long)estimate, skip.Resource["requestedCount"]);
-            Assert.Equal(budget ?? CollectPolicy.DefaultMaxTestResults, skip.Resource["maxTestResults"]);
-            Assert.Contains($"--max-test-results {estimate}", skip.Skip!.Message, StringComparison.Ordinal);
-            Assert.Contains(result.Manifest.IncompleteDetails, d => d.Code == "test_result_limit" &&
-                Convert.ToInt64(d.Resource!["requestedCount"]) == estimate);
-            Assert.Empty(AttachmentRequests(fixture));
-        }
+        Assert.DoesNotContain(result.Manifest.Attempts, a => a.Skip?.Kind == "test_result_limit");
     }
 
     [Fact]
-    public async Task AllResultGuard_SumsAcrossRunsWithoutIntOverflow()
+    public async Task ExplicitAllResults_LargeRunEstimatesRemainAdvisory()
     {
         using var fixture = new Fixture();
         fixture.Handler.TestRuns =
@@ -61,10 +50,9 @@ public sealed partial class IndependentReviewRegressionTests
 
         var result = await fixture.Collector.CollectAzdoBuildAsync(fixture.Policy with { TestScope = "all" });
 
-        var skip = Assert.Single(result.Manifest.Attempts, a => a.Skip?.Kind == "test_result_limit");
-        Assert.Equal(2L * int.MaxValue, skip.Resource["requestedCount"]);
-        Assert.Empty(ResultRequests(fixture));
-        Assert.Equal(2, result.Manifest.ExitCode);
+        Assert.True(result.Manifest.Complete);
+        Assert.Equal(2, ResultRequests(fixture).Count);
+        Assert.Equal(0, result.Manifest.ExitCode);
     }
 
     [Fact]
@@ -99,9 +87,9 @@ public sealed partial class IndependentReviewRegressionTests
     }
 
     [Theory]
-    [InlineData(false, 2)]
+    [InlineData(false, 0)]
     [InlineData(true, 0)]
-    public async Task ResultGuard_AllowIncompleteKeepsGapAndJsonStdoutClean(bool allowIncomplete, int expectedExit)
+    public async Task ExplicitAllResults_JsonStdoutRemainsCleanBeyondPlanningThreshold(bool allowIncomplete, int expectedExit)
     {
         using var fixture = new Fixture();
         fixture.Handler.TestRuns = [new() { Id = RunId, TotalTests = 10_001 }];
@@ -109,26 +97,24 @@ public sealed partial class IndependentReviewRegressionTests
         var manifest = await fixture.InvokeCliAsync(fixture.Options.CacheRoot, null,
             testScope: "all", allowIncomplete: allowIncomplete, expectedExit: expectedExit);
 
-        Assert.False(manifest.Complete);
+        Assert.True(manifest.Complete);
         Assert.Equal(expectedExit, manifest.ExitCode);
-        Assert.Contains(manifest.IncompleteDetails, d => d.Code == "test_result_limit");
         using var json = JsonDocument.Parse(fixture.LastStdout);
-        Assert.False(json.RootElement.GetProperty("complete").GetBoolean());
+        Assert.True(json.RootElement.GetProperty("complete").GetBoolean());
         Assert.Contains("10001 estimated result(s)", fixture.LastStderr, StringComparison.Ordinal);
-        Assert.Contains("All-result collection skipped", fixture.LastStderr, StringComparison.Ordinal);
-        Assert.Contains("--max-test-results 10001", fixture.LastStderr, StringComparison.Ordinal);
-        Assert.Empty(ResultRequests(fixture));
+        Assert.Contains("streaming beyond", fixture.LastStderr, StringComparison.Ordinal);
+        Assert.Single(ResultRequests(fixture));
     }
 
     [Fact]
-    public async Task ResultGuard_ResumeCannotBypassRefusalAndRaisedBudgetRehydratesCache()
+    public async Task ExplicitAllResults_ResumeReusesEvidenceRegardlessOfPlanningBudget()
     {
         using var fixture = new Fixture();
         fixture.Handler.TestRuns = [new() { Id = RunId, TotalTests = 10_001 }];
         var policy = fixture.Policy with { TestScope = "all" };
         var refused = await fixture.Collector.CollectAzdoBuildAsync(policy);
-        Assert.False(refused.Manifest.Complete);
-        Assert.Empty(ResultRequests(fixture));
+        Assert.True(refused.Manifest.Complete);
+        Assert.Single(ResultRequests(fixture));
 
         var raised = await fixture.Collector.CollectAzdoBuildAsync(policy with { Resume = true, MaxTestResults = 10_001 });
         Assert.True(raised.Manifest.Complete);
@@ -139,10 +125,10 @@ public sealed partial class IndependentReviewRegressionTests
         Assert.Contains(replayed.Manifest.Attempts, a => a.Operation == "list_test_results" && a.Outcome == "cached");
 
         var reduced = await fixture.Collector.CollectAzdoBuildAsync(policy with { Resume = true });
-        Assert.False(reduced.Manifest.Complete);
-        Assert.Equal(2, reduced.Manifest.ExitCode);
+        Assert.True(reduced.Manifest.Complete);
+        Assert.Equal(0, reduced.Manifest.ExitCode);
         Assert.Single(ResultRequests(fixture));
-        Assert.Contains(reduced.Manifest.Attempts, a => a.Skip?.Kind == "test_result_limit");
+        Assert.DoesNotContain(reduced.Manifest.Attempts, a => a.Skip?.Kind == "test_result_limit");
     }
 
     [Fact]
@@ -204,7 +190,7 @@ public sealed partial class IndependentReviewRegressionTests
     }
 
     [Fact]
-    public async Task BroaderAttachments_RequireExplicitBudgetAndEnforceBuildWideDeterministicLimit()
+    public async Task ExplicitAllAttachments_ProceedWithoutBudgetUnlock()
     {
         using var fixture = new Fixture();
         fixture.Handler.TestRuns =
@@ -217,18 +203,13 @@ public sealed partial class IndependentReviewRegressionTests
                 [new() { Id = 3, Outcome = "Passed" }, new() { Id = 1, Outcome = "Passed" }, new() { Id = 2, Outcome = "Passed" }];
         var policy = fixture.Policy with { TestScope = "all", TestAttachmentScope = "all", MaxConcurrency = 2 };
 
-        var error = await Assert.ThrowsAsync<ArgumentException>(() => fixture.Collector.CollectAzdoBuildAsync(policy));
-        Assert.Contains("--max-test-attachments", error.Message, StringComparison.Ordinal);
-        Assert.Empty(fixture.Handler.Requests);
-        var limited = await fixture.Collector.CollectAzdoBuildAsync(policy with { MaxTestAttachments = 4 });
-        Assert.False(limited.Manifest.Complete);
-        Assert.Equal(2, limited.Manifest.ExitCode);
-        Assert.Equal(4, AttachmentRequests(fixture).Count);
-        Assert.Equal(new[] { (RunId, 1), (RunId, 2), (RunId, 3), (RunId + 1, 1) },
-            AttachmentRequests(fixture).Select(uri => (AttachmentRunId(uri), AttachmentResultId(uri))).Order());
-        var skip = Assert.Single(limited.Manifest.Attempts, a => a.Skip?.Kind == "test_attachment_limit");
-        Assert.Equal(2, skip.Resource["skippedCount"]);
-        Assert.Contains(limited.Manifest.IncompleteDetails, d => d.Code == "test_attachment_limit");
+        var result = await fixture.Collector.CollectAzdoBuildAsync(policy);
+        Assert.True(result.Manifest.Complete);
+        Assert.Equal(6, AttachmentRequests(fixture).Count);
+        var repeated = await fixture.Collector.CollectAzdoBuildAsync(policy with { MaxTestAttachments = 4 });
+        Assert.True(repeated.Manifest.Complete);
+        Assert.Equal(6, AttachmentRequests(fixture).Count);
+        Assert.DoesNotContain(repeated.Manifest.Attempts, a => a.Skip?.Kind == "test_attachment_limit");
     }
 
     [Fact]

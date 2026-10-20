@@ -5,6 +5,10 @@ namespace HelixTool.Core.Collect;
 
 public sealed record CollectManifest
 {
+    [JsonPropertyName("builds")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<CollectBuildMember>? Builds { get; init; }
+
     [JsonPropertyName("byteDownloads")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<AzDO.AzdoDownloadReport>? ByteDownloads { get; init; }
@@ -76,6 +80,22 @@ public sealed record CollectCommandInfo
 
 public sealed record CollectSourceInfo
 {
+    [JsonPropertyName("query")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AzDO.AzdoBuildFilter? Query { get; init; }
+    [JsonPropertyName("effectiveQuery")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AzDO.AzdoBuildFilter? EffectiveQuery { get; init; }
+    [JsonPropertyName("queryHash")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? QueryHash { get; init; }
+    [JsonPropertyName("resolvedDefinitions")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<AzDO.AzdoBuildDefinition>? ResolvedDefinitions { get; init; }
+    [JsonPropertyName("discovery")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CollectBuildDiscovery? Discovery { get; init; }
+
     [JsonPropertyName("provider")]
     public string Provider { get; init; } = "azdo";
 
@@ -188,6 +208,17 @@ public sealed record CollectRetryPolicyInfo
 
 public sealed record CollectCapsInfo
 {
+    [JsonPropertyName("maxBuilds"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MaxBuilds { get; init; }
+    [JsonPropertyName("maxDefinitions"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MaxDefinitions { get; init; }
+    [JsonPropertyName("maxScanBuilds"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MaxScanBuilds { get; init; }
+    [JsonPropertyName("maxSetTestResults"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? MaxSetTestResults { get; init; }
+    [JsonPropertyName("maxSetTestAttachments"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? MaxSetTestAttachments { get; init; }
+
     [JsonPropertyName("maxTestResults")]
     public long MaxTestResults { get; init; } = CollectPolicy.DefaultMaxTestResults;
 
@@ -377,3 +408,6 @@ public sealed record CollectIncompleteDetail
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyDictionary<string, object?>? Resource { get; init; }
 }
+
+public sealed record CollectBuildMember(int BuildId, string BuildUrl, bool Complete, int ExitCode, string AttemptIdPrefix);
+public sealed record CollectBuildDiscovery(string CacheKey, bool SourceComplete, int? Total, int Returned, int Scanned, int Pages, DateTimeOffset CapturedAt, string ViewId);

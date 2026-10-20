@@ -16,6 +16,11 @@ namespace HelixTool.Core.AzDO;
 /// </summary>
 public class AzdoService
 {
+    public Task<AzdoBuildQueryResult> QueryBuildsAsync(string org, string project, AzdoBuildQueryRequest request,
+        Action<string>? progress = null, CancellationToken ct = default)
+        => _client is CachingAzdoApiClient caching
+            ? caching.QueryBuildsAsync(org, project, request, progress, ct)
+            : new AzdoBuildQueryExecutor(_client).ExecuteAsync(org, project, request, progress, ct);
     private readonly IAzdoApiClient _client;
     private readonly IHelixApiClient? _helixApi;
     private readonly IAzdoAcquisitionFailureRecorder _failureRecorder;
@@ -197,6 +202,9 @@ public class AzdoService
     /// performing acquisition. Used by delivery/evidence helpers that must key materialized views to
     /// the same complete backing entry that <see cref="GetTimelineAsync"/> reads from.
     /// </summary>
+    public string ResolveBuildQueryCachePartition() => string.IsNullOrEmpty(_cacheOptions.AuthTokenHash)
+        ? "public" : "cache-" + _cacheOptions.AuthTokenHash;
+
     public (string CacheKey, string CachePartition) ResolveTimelineCacheIdentity(string buildIdOrUrl)
     {
         var (org, project, buildId) = AzdoIdResolver.Resolve(buildIdOrUrl);
@@ -877,8 +885,8 @@ public class AzdoService
         var total = all.Count;
         var offset = page.All ? 0 : page.Offset;
         var limit = page.All ? (int?)null : page.EffectiveLimit(defaultLimit);
-        var results = page.All
-            ? all.ToList()
+        IReadOnlyList<T> results = page.All
+            ? all
             : all.Skip(offset).Take(limit.GetValueOrDefault()).ToList();
         var complete = page.All || (offset == 0 && results.Count == total);
         var truncated = !complete;

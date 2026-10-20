@@ -313,7 +313,7 @@ public sealed partial class AzdoBuildCollector
             string? snapshotPath = null;
             manifest = manifest with { ByteDownloads = byteDownloads.Count == 0 ? null : byteDownloads,
                 SchemaVersion = byteDownloads.Count == 0 ? manifest.SchemaVersion : 2 };
-            await WriteManifestAsync(manifestPath, manifest, ct);
+            if (policy.PersistManifest) await WriteManifestAsync(manifestPath, manifest, ct);
             if (!string.IsNullOrWhiteSpace(policy.ExportPath))
             {
                 progress?.Invoke("Exporting snapshot...");
@@ -358,7 +358,7 @@ public sealed partial class AzdoBuildCollector
                         },
                         ExitCode = validation.IsValid ? exitCode : 1
                     };
-                    await WriteManifestAsync(manifestPath, manifest, ct);
+                    if (policy.PersistManifest) await WriteManifestAsync(manifestPath, manifest, ct);
                     File.Copy(manifestPath, snapshotManifestPath, overwrite: true);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
@@ -383,7 +383,7 @@ public sealed partial class AzdoBuildCollector
                             ValidationErrors = [ex.Message]
                         }
                     };
-                    await WriteManifestAsync(manifestPath, manifest, ct);
+                    if (policy.PersistManifest) await WriteManifestAsync(manifestPath, manifest, ct);
                 }
             }
 
@@ -426,7 +426,7 @@ public sealed partial class AzdoBuildCollector
         try
         {
             manifest = BuildHardErrorManifest(policy, startedAt, source, attempts, incomplete, ex);
-            await WriteManifestAsync(manifestPath, manifest, ct);
+            if (policy.PersistManifest) await WriteManifestAsync(manifestPath, manifest, ct);
         }
         catch (Exception ex2) when (ex2 is not OperationCanceledException || !ct.IsCancellationRequested)
         {
@@ -459,7 +459,7 @@ public sealed partial class AzdoBuildCollector
                 ],
                 Attempts = attempts
             };
-            await WriteManifestAsync(manifestPath, manifest, ct);
+            if (policy.PersistManifest) await WriteManifestAsync(manifestPath, manifest, ct);
         }
 
         progress?.Invoke($"hlx collect failed; wrote hard-error manifest: {manifestPath}");
@@ -744,17 +744,9 @@ public sealed partial class AzdoBuildCollector
             $"scope={policy.TestScope}, result budget={maxResults}, attachments={policy.TestAttachmentScope}, attachment budget={maxAttachments}.",
             force: true);
         if (allResults && estimatedResults > maxResults)
-        {
-            var message = $"All-result collection skipped: {estimatedResults} estimated results exceed " +
-                $"{(policy.MaxTestResults.HasValue ? "explicit" : "default")} --max-test-results {maxResults}. " +
-                $"Rerun with --max-test-results {estimatedResults} or larger, or use --test-scope failed.";
-            AddSkip(attempts, "azdo.test-results-budget", "azdo.tests", true, "azdo", "list_test_results",
-                Resource(("buildId", buildId), ("requestedCount", estimatedResults),
-                    ("maxTestResults", maxResults), ("budgetExplicit", policy.MaxTestResults.HasValue)),
-                "test_result_limit", message);
-            testProgress.Report(message, force: true);
-            return;
-        }
+            testProgress.Report($"Explicit all-result scope authorizes {estimatedResults} results; streaming beyond the {maxResults} planning threshold.", force: true);
+        if (policy.AllowLarge || policy.TestAttachmentScope.Equals("all", StringComparison.OrdinalIgnoreCase)) maxAttachments = long.MaxValue;
+        else if (policy.SetBudget is not null) maxAttachments = Math.Min(maxAttachments, policy.SetBudget.RemainingAttachments);
         testProgress.Report(allResults
             ? $"Tests: all-result budget accepted ({estimatedResults}/{maxResults}); attachments remain {policy.TestAttachmentScope}."
             : "Tests: failed-only result collection; all-result volume guard does not apply.", force: true);
@@ -769,6 +761,12 @@ public sealed partial class AzdoBuildCollector
 
         var testAttempts = await ForEachCollectAsync(runsEnvelope.Results, policy.MaxConcurrency, async (run, localAttempts) =>
         {
+            if (!allResults && !policy.AllowLarge && policy.SetBudget?.RemainingResults == 0)
+            {
+                AddSkip(localAttempts, $"azdo.test-results-limit:{run.Id}", "azdo.tests", true, "azdo", "list_test_results",
+                    Resource(("runId", run.Id)), "test_result_limit", "Run-wide unattended test threshold reached. Resume: " + string.Join(" ", RecoveryArgv(policy).Select(QuoteArgument)));
+                return;
+            }
             testProgress.Report($"Run {run.Id}: acquiring test results ({run.TotalTests} estimated total).", force: true);
             var resultsEnvelope = await testProgress.WithHeartbeatAsync(
                 $"Run {run.Id} test results",
@@ -796,25 +794,16 @@ public sealed partial class AzdoBuildCollector
                 return;
             }
 
+            policy.SetBudget?.AddResults(resultsEnvelope.Results.Count);
             var totalAcquired = Interlocked.Add(ref acquiredResults, resultsEnvelope.Results.Count);
             testProgress.Report(
                 $"Run {run.Id}: acquired {resultsEnvelope.Results.Count} result(s); build acquired {totalAcquired}.", force: true);
-            if (allResults && totalAcquired > maxResults)
-            {
-                AddSkip(localAttempts, $"azdo.test-results-budget:{run.Id}", "azdo.tests", true, "azdo", "list_test_results",
-                    Resource(("runId", run.Id), ("requestedCount", totalAcquired), ("maxTestResults", maxResults)),
-                    "test_result_limit",
-                    $"Provider results exceeded the build-wide estimate and --max-test-results {maxResults}. " +
-                    $"Rerun with --max-test-results {totalAcquired} or larger.");
-            }
-
             if (allResults)
             {
-                var failedResults = resultsEnvelope.Results
-                    .Where(result => string.Equals(result.Outcome, "Failed", StringComparison.OrdinalIgnoreCase))
-                    .ToList();
                 var failedCacheKey = AzdoListCacheKeys.TestResultsComplete(_cacheOptions, org, project, run.Id, "Failed");
-                var failedSerialized = JsonSerializer.Serialize(failedResults, s_jsonOptions);
+                var failedSerialized = resultsEnvelope.Results is AzdoPagedEvidenceList<AzdoTestResult>
+                    ? await _cacheStore.GetMetadataIgnoringTtlAsync(failedCacheKey, ct) ?? throw new InvalidDataException("Derived failed-result index is missing.")
+                    : JsonSerializer.Serialize(resultsEnvelope.Results.Where(result => string.Equals(result.Outcome, "Failed", StringComparison.OrdinalIgnoreCase)), s_jsonOptions);
                 await _cacheStore.SetMetadataAsync(
                     failedCacheKey,
                     failedSerialized,
@@ -846,7 +835,7 @@ public sealed partial class AzdoBuildCollector
             var eligibleCount = eligible.Count();
             attachmentPlans.Add(new TestAttachmentPlan(run.Id, eligibleCount,
                 resultsEnvelope.Results.Count - eligibleCount,
-                eligible.OrderBy(result => result.Id).Take((int)Math.Min(maxAttachments, int.MaxValue)).ToList()));
+                eligible.Take((int)Math.Min(maxAttachments, int.MaxValue)).Select(row => new AzdoTestResult { Id = row.Id }).ToList()));
         }, ct);
         attempts.AddRange(testAttempts);
 
@@ -874,12 +863,13 @@ public sealed partial class AzdoBuildCollector
                         ("skippedCount", skipped), ("maxTestAttachments", maxAttachments)),
                     "test_attachment_limit",
                     $"{skipped} eligible attachment-list request(s) skipped by build-wide --max-test-attachments {maxAttachments}. " +
-                    "Rerun with a larger --max-test-attachments to collect the remaining selected coverage.");
+                    $"Resume the same request: {string.Join(" ", RecoveryArgv(policy).Select(QuoteArgument))}");
             }
         }
         testProgress.Report(
             $"Attachments: selected {selected.Count}, excluded {excludedCount}, skipped by limit {limitedCount}; " +
             $"scope={policy.TestAttachmentScope}, budget={maxAttachments}.", force: true);
+        policy.SetBudget?.AddAttachments(selected.Count);
         long completedAttachments = 0;
         var attachmentAttempts = await testProgress.WithHeartbeatAsync(
             "Test attachments",
@@ -1449,11 +1439,11 @@ public sealed partial class AzdoBuildCollector
             {
                 var value = await action(ct);
                 stopwatch.Stop();
-                var serialized = JsonSerializer.Serialize(value, s_jsonOptions);
                 var cacheBytes = template.CacheKey is null
                     ? null
                     : await TryGetCacheByteCountAsync(template.CacheKey, metadata, template.Operation, ct);
-                var bytes = cacheBytes ?? Encoding.UTF8.GetByteCount(serialized);
+                var serialized = cacheBytes.HasValue ? null : JsonSerializer.Serialize(value, s_jsonOptions);
+                var bytes = cacheBytes ?? Encoding.UTF8.GetByteCount(serialized!);
                 AppendAttempt(attempts, template with
                 {
                     StartedAt = started,
@@ -1462,7 +1452,7 @@ public sealed partial class AzdoBuildCollector
                     AttemptCount = attemptCount,
                     Outcome = resumeAsCached ? "cached" : "ok",
                     Bytes = bytes,
-                    Sha256 = cacheBytes is null ? Sha256Hex(Encoding.UTF8.GetBytes(serialized)) : null,
+                    Sha256 = cacheBytes is null ? Sha256Hex(Encoding.UTF8.GetBytes(serialized!)) : null,
                     Paging = pagingSelector?.Invoke(value)
                 });
                 return value;
@@ -1809,6 +1799,7 @@ public sealed partial class AzdoBuildCollector
         string manifestPath,
         CancellationToken ct)
     {
+        if (policy.PriorAttempts is not null) return policy.PriorAttempts;
         if (!policy.Resume || !File.Exists(manifestPath))
             return new Dictionary<string, CollectFetchAttempt>(StringComparer.Ordinal);
 
@@ -1979,8 +1970,6 @@ public sealed partial class AzdoBuildCollector
             throw new ArgumentOutOfRangeException(nameof(policy), "Test result and attachment budgets must be greater than 0.");
         if (!IsOneOf(policy.TestAttachmentScope, "diagnostic", "all", "none"))
             throw new ArgumentException("Invalid --test-attachment-scope. Must be diagnostic, all, or none.", nameof(policy));
-        if (policy.TestAttachmentScope.Equals("all", StringComparison.OrdinalIgnoreCase) && policy.MaxTestAttachments is null)
-            throw new ArgumentException("--test-attachment-scope all requires an explicit positive --max-test-attachments.", nameof(policy));
         if (!IsOneOf(policy.HelixScope, "suggested", "none"))
             throw new ArgumentException("Invalid --helix-scope. Must be suggested or none.", nameof(policy));
         if (policy.MaxFileBytes < 0 || policy.MaxTotalBytes < 0)

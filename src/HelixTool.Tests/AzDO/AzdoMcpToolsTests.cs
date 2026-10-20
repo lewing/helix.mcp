@@ -103,7 +103,7 @@ public class AzdoMcpToolsTests
         await _mockApi.Received(1).ListBuildsAsync(
             Arg.Any<string>(), Arg.Any<string>(),
             Arg.Is<AzdoBuildFilter>(f =>
-                f.Top == 5 &&
+                f.Top == null &&
                 f.Branch == "refs/heads/main" &&
                 f.DefinitionId == 42 &&
                 f.StatusFilter == "completed"),
@@ -115,8 +115,8 @@ public class AzdoMcpToolsTests
     {
         var builds = new List<AzdoBuild>
         {
-            new() { Id = 1, BuildNumber = "b1" },
-            new() { Id = 2, BuildNumber = "b2" }
+            new() { Id = 1, BuildNumber = "b1", QueueTime = DateTimeOffset.UnixEpoch },
+            new() { Id = 2, BuildNumber = "b2", QueueTime = DateTimeOffset.UnixEpoch }
         };
         _mockApi.ListBuildsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>())
             .Returns(builds);
@@ -722,7 +722,7 @@ public class AzdoMcpToolsTests
             Arg.Is<AzdoBuildFilter>(f =>
                 f.MinTime == minTime &&
                 f.MaxTime == maxTime &&
-                f.QueryOrder == "finishTimeDescending"),
+                f.QueryOrder == "finishtimedescending"),
             Arg.Any<CancellationToken>());
     }
 

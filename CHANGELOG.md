@@ -8,6 +8,18 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+### Added
+
+- Query-backed `azdo_builds` / `hlx azdo builds`: definition-name resolution (including
+  duplicate-name unions), build-number globs, tags, result/reason and repository filters;
+  opt-in compact projection, stable output paging, full/all file delivery and exact recovery.
+- `hlx collect azdo-builds --query <file>` collects a captured build set into one schema-v2
+  manifest and existing-format snapshot. Complete paged query evidence supports credential-free
+  exact and provably covered-subset replay. Unattended thresholds checkpoint with an exact
+  same-query `--allow-large --resume` action; they do not cap interactive discovery.
+- Explicit all-test collection streams hash-verified source pages instead of refusing estimates
+  above 10,000; explicit all-attachment selection no longer requires a numeric unlock.
+
 ### Fixed
 
 - Artifact cache publication now retries Windows file-replacement contention and accepts

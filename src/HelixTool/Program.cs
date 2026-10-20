@@ -140,6 +140,7 @@ app.Add<AzdoCommands>();
 app.Add<AzdoDownloadCommands>();
 app.Add<SnapshotCommands>();
 app.Add<CollectCommands>();
+app.Add<CollectBuildSetCommands>();
 // When no command is specified: default to MCP server mode if stdin is redirected
 // (e.g. piped or launched by an MCP host), otherwise show help text for interactive use.
 app.Run(args.Length == 0 ? (Console.IsInputRedirected ? ["mcp"] : ["--help"]) : args);
@@ -1585,15 +1586,37 @@ public class AzdoCommands
     /// <param name="maxTime">Upper bound on the build time field selected by queryOrder. With the default queryOrder (queueTimeDescending), filters by queueTime. Use finishTimeDescending to filter by finishTime, etc. (ISO 8601).</param>
     /// <param name="queryOrder">Order results by time field (e.g. finishTimeDescending). Default: queueTimeDescending.</param>
     /// <param name="json">Output as structured JSON.</param>
+    /// <param name="definitionName">Pipeline exact name or * / ? glob; duplicate exact names form a union.</param>
+    /// <param name="buildNumber">Build-number exact value or glob; local predicates run before logical paging.</param>
+    /// <param name="tags">Required tag CSV, with AND semantics and preserved case. Query JSON/MCP arrays support literal commas inside tags.</param>
+    /// <param name="result">Exact build result: none, succeeded, partiallySucceeded, failed, canceled.</param>
+    /// <param name="reason">One Azure DevOps build reason.</param>
+    /// <param name="repositoryId">Provider repository identity, not an assumed display name.</param>
+    /// <param name="repositoryType">Repository provider, e.g. GitHub or TfsGit.</param>
+    /// <param name="projection">full preserves fields; compact returns navigation fields.</param>
+    /// <param name="offset">Nonnegative logical selected-build offset.</param>
+    /// <param name="limit">Positive output count alias for top; no collection-derived maximum.</param>
+    /// <param name="viewId">Prior captured-view fingerprint; refuses shifted membership.</param>
+    /// <param name="all">Request the entire selected set through streaming or verified file delivery.</param>
+    /// <param name="delivery">auto, inline, file or chunked. References are readable with hlx_read_evidence.</param>
+    /// <param name="output">Stream the requested JSON payload to a path outside an active read-only snapshot.</param>
+    /// <param name="allowLarge">Accepted for compatibility; interactive discovery has no collection quota.</param>
+    /// <param name="allowTruncated">Return exit zero for an inline partial page without changing its completeness.</param>
+    /// <param name="rawJson">Emit the legacy bare array; combine all and projection full for full-set raw access.</param>
     [McpEquivalent("azdo_builds")]
     [Command("azdo builds")]
     public async Task Builds(string org = "dnceng-public", string project = "public",
         int top = 20, string? branch = null, string? prNumber = null,
         int? definitionId = null, string? status = null,
         DateTimeOffset? minTime = null, DateTimeOffset? maxTime = null,
-        string? queryOrder = null, bool json = false, bool schema = false)
+        string? queryOrder = null, bool json = false, bool schema = false,
+        string? definitionName = null, string? buildNumber = null, string? tags = null,
+        string? result = null, string? reason = null, string? repositoryId = null, string? repositoryType = null,
+        string projection = "full", int offset = 0, int? limit = null, string? viewId = null,
+        bool all = false, string delivery = "auto", string? output = null, bool allowLarge = false,
+        bool allowTruncated = false, bool rawJson = false)
     {
-        if (Commands.TryPrintSchema<IReadOnlyList<AzdoBuild>>(schema))
+        if (Commands.TryPrintSchema<AzdoBuildQueryResult>(schema))
             return;
 
         queryOrder = AzdoService.NormalizeQueryOrder(queryOrder);
@@ -1616,13 +1639,78 @@ public class AzdoCommands
             QueryOrder = queryOrder
         };
 
-        var builds = await _svc.ListBuildsAsync(org, project, filter);
-
-        if (json)
+        if (limit.HasValue && top != limit.Value && Environment.GetCommandLineArgs().Any(arg => arg == "--top" || arg.StartsWith("--top=", StringComparison.Ordinal)))
+            throw new ArgumentException("Conflicting explicit --top and --limit values.");
+        filter = filter with { DefinitionName = definitionName, BuildNumber = buildNumber, Tags = tags?.Split(','),
+            Result = result, Reason = reason, RepositoryId = repositoryId, RepositoryType = repositoryType };
+        if (delivery is not "auto" and not "inline" and not "file" and not "chunked") throw new ArgumentException("delivery must be auto, inline, file or chunked.");
+        var page = await _svc.QueryBuildsAsync(org, project, new AzdoBuildQueryRequest
         {
-            Console.WriteLine(JsonSerializer.Serialize(builds, s_jsonOptions));
+            Filter = filter, Projection = projection, Offset = offset, Limit = limit, ViewId = viewId, All = all
+        }, message => Console.Error.WriteLine(message));
+        var builds = page.Results;
+        var argv = new List<string> { "azdo", "builds", "--org", org, "--project", project, "--json" };
+        void Add(string name, string? value) { if (value is not null) { argv.Add(name); argv.Add(value); } }
+        Add("--branch", branch); Add("--pr-number", prNumber); Add("--definition-id", definitionId?.ToString(CultureInfo.InvariantCulture));
+        Add("--definition-name", definitionName); Add("--build-number", buildNumber); Add("--tags", tags);
+        Add("--result", result); Add("--reason", reason); Add("--repository-id", repositoryId); Add("--repository-type", repositoryType);
+        Add("--status", status); Add("--min-time", minTime?.ToString("O", CultureInfo.InvariantCulture)); Add("--max-time", maxTime?.ToString("O", CultureInfo.InvariantCulture));
+        Add("--query-order", queryOrder); Add("--projection", projection); Add("--limit", (limit ?? top).ToString(CultureInfo.InvariantCulture));
+        Add("--offset", page.NextOffset?.ToString(CultureInfo.InvariantCulture)); Add("--view-id", page.ViewId);
+        var recoveryArgv = argv.ToList();
+        var offsetFlag = recoveryArgv.IndexOf("--offset");
+        if (offsetFlag >= 0 && offsetFlag + 1 < recoveryArgv.Count) recoveryArgv[offsetFlag + 1] = "0";
+        else { recoveryArgv.Add("--offset"); recoveryArgv.Add("0"); }
+        recoveryArgv.Add("--all"); recoveryArgv.Add("--delivery"); recoveryArgv.Add("file");
+        page = page with
+        {
+            Next = page.NextOffset is null ? null : new { offset = page.NextOffset, limit = limit ?? top, viewId = page.ViewId, argv = new[] { "hlx" }.Concat(argv).ToArray() },
+            Recovery = page.Recovery ?? (!page.Complete && page.NextOffset is null ? new { argv = new[] { "hlx" }.Concat(recoveryArgv).ToArray() } : null)
+        };
+        async Task WritePayloadAsync(Stream stream)
+        {
+            if (rawJson) await JsonSerializer.SerializeAsync(stream, page.Rows, s_jsonOptions);
+            else
+            {
+                var standard = page.ToListEnvelope();
+                await JsonSerializer.SerializeAsync(stream, new
+                {
+                    standard.Ok, standard.Results, standard.Returned, standard.Total, standard.Offset, standard.Limit,
+                    standard.Complete, standard.Truncated, page.Next, standard.Cache, standard.Note,
+                    page.Org, page.Project, page.Query, page.EffectiveQuery, page.ResolvedDefinitions,
+                    page.CapturedAt, page.SourceComplete, page.Scanned, page.Pages, page.ViewId, page.QueryHash,
+                    page.Projection, page.IncompleteDetails, page.Recovery
+                }, s_jsonOptions);
+            }
+        }
+        if (output is not null)
+        {
+            if (!TryGuardOutputDestination(output, out var guardError)) throw new ArgumentException(guardError);
+            var path = Path.GetFullPath(output); Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await using (var file = File.Create(path)) await WritePayloadAsync(file);
+            Console.WriteLine(JsonSerializer.Serialize(new { output = path, returned = page.Count, sourceComplete = page.SourceComplete, complete = true, next = page.Next }, s_jsonOptions));
             return;
         }
+        if (delivery is "file" or "chunked")
+        {
+            var partition = _svc.ResolveBuildQueryCachePartition();
+            await using var spool = _evidenceStore.CreateSpool(partition);
+            await WritePayloadAsync(spool); await spool.FlushAsync(); spool.Position = 0;
+            var descriptor = await _evidenceStore.PutStreamAsync(spool, "application/json", page.ViewId, page.CacheKey, partition);
+            Console.WriteLine(JsonSerializer.Serialize(new { delivery = descriptor,
+                recovery = new { tool = "hlx_read_evidence", arguments = new { evidenceId = descriptor.EvidenceId, offsetBytes = 0, lengthBytes = 2048 } }, next = page.Next }, s_jsonOptions));
+            return;
+        }
+        if (!page.Complete && !allowTruncated) Environment.ExitCode = 2;
+        if (rawJson && (page.Next ?? page.Recovery) is { } rawRecovery)
+            Console.Error.WriteLine("Continue: " + JsonSerializer.Serialize(rawRecovery, s_jsonOptions));
+        if (json || rawJson)
+        {
+            await WritePayloadAsync(Console.OpenStandardOutput()); Console.WriteLine();
+            return;
+        }
+        if (page.Next is not null) Console.Error.WriteLine("Continue: " + JsonSerializer.Serialize(page.Next, s_jsonOptions));
+        else if (page.Recovery is not null) Console.Error.WriteLine("Recover: " + JsonSerializer.Serialize(page.Recovery, s_jsonOptions));
 
         if (builds.Count == 0)
         {
@@ -1632,18 +1720,18 @@ public class AzdoCommands
 
         foreach (var b in builds)
         {
-            var result = b.Result ?? b.Status ?? "unknown";
+            var buildResult = b.Result ?? b.Status ?? "unknown";
             var defName = b.Definition?.Name ?? "?";
             Console.Write($"  #{b.Id} ");
 
-            if (result.Equals("succeeded", StringComparison.OrdinalIgnoreCase))
+            if (buildResult.Equals("succeeded", StringComparison.OrdinalIgnoreCase))
                 Console.ForegroundColor = ConsoleColor.Green;
-            else if (result.Equals("failed", StringComparison.OrdinalIgnoreCase))
+            else if (buildResult.Equals("failed", StringComparison.OrdinalIgnoreCase))
                 Console.ForegroundColor = ConsoleColor.Red;
             else
                 Console.ForegroundColor = ConsoleColor.Yellow;
 
-            Console.Write($"[{result}]");
+            Console.Write($"[{buildResult}]");
             Console.ResetColor();
             Console.Write($" {defName}");
             if (b.SourceBranch is not null)

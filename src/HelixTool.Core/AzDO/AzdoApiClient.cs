@@ -11,13 +11,12 @@ namespace HelixTool.Core.AzDO;
 /// HTTP-based implementation of <see cref="IAzdoApiClient"/>.
 /// Uses Azure DevOps REST API v7.0 with Bearer or Basic auth.
 /// </summary>
-public sealed partial class AzdoApiClient : IAzdoApiClient
+public sealed partial class AzdoApiClient : IAzdoApiClient, IAzdoBuildPageSource
 {
     private const int ErrorBodySnippetLimit = 500;
     /// <summary>
-    /// Maximum Azure DevOps continuation-token pages followed by one list request before
-    /// failing closed as <c>invalid_response</c>. This prevents malformed provider
-    /// responses from making scanner/collector commands loop forever.
+    /// Legacy page-batch guideline, retained for source compatibility. Legitimate longer
+    /// traversals remain accessible; repeated-token/URL/shape guards detect actual corruption.
     /// </summary>
     public const int MaxContinuationPages = 1000;
     private const int MaxTestResultsPerRequest = 10_000;
@@ -65,7 +64,37 @@ public sealed partial class AzdoApiClient : IAzdoApiClient
             ct);
     }
 
-    public async Task<IReadOnlyList<AzdoBuild>> ListBuildsAsync(string org, string project, AzdoBuildFilter filter, CancellationToken ct = default)
+    public Task<IReadOnlyList<AzdoBuild>> ListBuildsAsync(string org, string project, AzdoBuildFilter filter, CancellationToken ct = default)
+        => GetListAsync<AzdoBuild>(org, project, BuildListUrl(org, project, filter), "list_builds", Resource(org, project), ct);
+
+    public Task<AzdoProviderPage<AzdoBuild>> GetBuildsPageAsync(string org, string project, AzdoBuildFilter filter,
+        string? continuationToken = null, CancellationToken ct = default)
+        => GetQueryPageAsync<AzdoBuild>(org, project, BuildListUrl(org, project, filter with { Top = 200 }), continuationToken, "list_builds", ct);
+
+    private async Task<AzdoProviderPage<T>> GetQueryPageAsync<T>(string org, string project, string url,
+        string? continuationToken, string operation, CancellationToken ct)
+    {
+        if (continuationToken is not null) url = WithQueryParameter(url, "continuationToken", continuationToken);
+        var resource = Resource(org, project);
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        var credential = await ApplyAuthAsync(request, ct);
+        using var response = await SendAsync(request, operation, resource, ct);
+        ThrowOnAuthFailure(response, org, project, credential, operation, resource);
+        await ThrowOnUnexpectedError(response, operation, resource, ct);
+        ThrowOnNonJsonSuccess(response, org, project, credential, operation, resource);
+        var body = await ReadResponseBodyAsync(response, operation, resource, ct);
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object || !TryGetPropertyCaseInsensitive(doc.RootElement, "value", out var value) || value.ValueKind != JsonValueKind.Array)
+                throw InvalidResponse(operation, resource, "AzDO list response is missing array property 'value'.");
+            var rows = JsonSerializer.Deserialize<AzdoListResponse<T>>(body, s_jsonOptions)!.Value;
+            return new AzdoProviderPage<T>(rows, ReadContinuationToken(response));
+        }
+        catch (JsonException ex) { throw InvalidResponse(operation, resource, "Malformed AzDO query page.", ex, response.StatusCode); }
+    }
+
+    private string BuildListUrl(string org, string project, AzdoBuildFilter filter)
     {
         // Normalize once at the semantic boundary — URL construction is where the value's meaning is consumed.
         var f = AzdoBuildFilterNormalizer.Normalize(filter);
@@ -86,6 +115,16 @@ public sealed partial class AzdoApiClient : IAzdoApiClient
             queryParams.Add($"branchName={Uri.EscapeDataString(f.Branch)}");
         }
 
+        if (f.DefinitionIds is { Count: > 0 })
+            queryParams.Add($"definitions={string.Join(",", f.DefinitionIds)}");
+        if (f.Result is not null) queryParams.Add($"resultFilter={Uri.EscapeDataString(f.Result)}");
+        if (f.Reason is not null) queryParams.Add($"reasonFilter={Uri.EscapeDataString(f.Reason)}");
+        if (f.BuildNumber is not null && !f.BuildNumber.Contains('?') && !f.BuildNumber.TrimEnd('*').Contains('*'))
+            queryParams.Add($"buildNumber={Uri.EscapeDataString(f.BuildNumber)}");
+        if (f.Tags is { Count: > 0 } && !f.Tags.Any(t => t.Contains(',')))
+            queryParams.Add($"tagFilters={Uri.EscapeDataString(string.Join(",", f.Tags))}");
+        if (f.RepositoryId is not null) queryParams.Add($"repositoryId={Uri.EscapeDataString(f.RepositoryId)}");
+        if (f.RepositoryType is not null) queryParams.Add($"repositoryType={Uri.EscapeDataString(f.RepositoryType)}");
         if (f.DefinitionId is > 0)
             queryParams.Add($"definitions={f.DefinitionId}");
 
@@ -103,15 +142,13 @@ public sealed partial class AzdoApiClient : IAzdoApiClient
         queryParams.Add($"queryOrder={Uri.EscapeDataString(queryOrder)}");
 
         var path = "build/builds?" + string.Join("&", queryParams);
-        var url = BuildUrl(org, project, path);
-        return await GetListAsync<AzdoBuild>(
-            org,
-            project,
-            url,
-            "list_builds",
-            Resource(org, project),
-            ct);
+        return BuildUrl(org, project, path);
     }
+
+    public async Task<IReadOnlyList<AzdoBuildDefinition>> ListDefinitionsAsync(string org, string project, string name, CancellationToken ct = default)
+        => await GetListAsync<AzdoBuildDefinition>(org, project,
+            BuildUrl(org, project, "build/definitions?name=" + Uri.EscapeDataString(name)),
+            "list_definitions", Resource(org, project), ct);
 
     public async Task<AzdoTimeline?> GetTimelineAsync(string org, string project, int buildId, CancellationToken ct = default)
     {
@@ -242,6 +279,23 @@ public sealed partial class AzdoApiClient : IAzdoApiClient
         }
 
         return runs;
+    }
+
+    internal async IAsyncEnumerable<IReadOnlyList<AzdoTestResult>> StreamTestResultsAsync(string org, string project, int runId,
+        string? outcomes, int offset, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        const int pageSize = 1000;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        while (true)
+        {
+            var url = BuildUrl(org, project, $"test/runs/{runId}/results?$top={pageSize}&$skip={offset}&outcomes={Uri.EscapeDataString(outcomes ?? AzdoBuildFilterDefaults.Outcomes)}");
+            var page = await GetListAsync<AzdoTestResult>(org, project, url, "list_test_results", Resource(org, project, ("runId", runId)), ct, requestedLimit: pageSize);
+            if (page.Count > 0 && !seen.Add(AzdoBuildQueries.Digest(string.Join(",", page.Select(r => r.Id)))))
+                throw InvalidResponse("list_test_results", Resource(org, project, ("runId", runId)), "Provider repeated a test-result page.");
+            yield return page;
+            if (page.Count < pageSize) yield break;
+            offset = checked(offset + page.Count);
+        }
     }
 
     public async Task<IReadOnlyList<AzdoTestResult>> GetTestResultsAsync(string org, string project, int runId, int top = 200, string? outcomes = null, CancellationToken ct = default)
@@ -414,14 +468,6 @@ public sealed partial class AzdoApiClient : IAzdoApiClient
         do
         {
             pageCount++;
-            if (pageCount > MaxContinuationPages)
-            {
-                throw InvalidResponse(
-                    operation,
-                    ContinuationResource(resource, pageCount, continuationToken, "max_pages_exceeded"),
-                    $"AzDO {operation} returned more than {MaxContinuationPages} continuation pages; refusing to return a partial list as complete.");
-            }
-
             if (!seenUrls.Add(nextUrl))
             {
                 throw InvalidResponse(

@@ -50,8 +50,8 @@ public sealed class AzdoMcpTools
 
     [McpServerTool(Name = "azdo_builds", Title = "AzDO Build List", ReadOnly = true, Idempotent = true, UseStructuredContent = true,
                    OutputSchemaType = typeof(MinimalObjectSchema)),
-     Description("List recent Azure DevOps (AzDO) builds for a project. Filter by PR, branch, definition, or status.")]
-    public async Task<LimitedResults<AzdoBuild>> Builds(
+     Description("Find AzDO builds by PR/branch, pipeline, build number, tags, result, reason and time. Full fields remain accessible through exact pages or file delivery; compact is optional. Large explicit queries run without collection quotas. Missing snapshot coverage requires live recollection.")]
+    public async Task<AzdoBuildQueryResult> Builds(
         [Description("Azure DevOps organization. Default: dnceng-public"), AllowedValues("dnceng-public", "dnceng", "devdiv")] string org = "dnceng-public",
         [Description("Azure DevOps project. Default: public"), AllowedValues("public", "internal")] string project = "public",
         [Description("Maximum results to return. Default: 20")] int top = 20,
@@ -62,7 +62,21 @@ public sealed class AzdoMcpTools
         [Description("Lower bound on queue/start/finish time (ISO 8601). Pair with queryOrder to choose which time field is filtered.")] DateTimeOffset? minTime = null,
         [Description("Upper bound on queue/start/finish time (ISO 8601). Pair with queryOrder to choose which time field is filtered.")] DateTimeOffset? maxTime = null,
         [Description("Order results by time field. AzDO interprets minTime/maxTime against the field matching this order (e.g. finishTimeDescending → filter by finishTime). Default: queueTimeDescending"),
-         AllowedValues("queueTimeAscending", "queueTimeDescending", "startTimeAscending", "startTimeDescending", "finishTimeAscending", "finishTimeDescending")] string? queryOrder = null)
+         AllowedValues("queueTimeAscending", "queueTimeDescending", "startTimeAscending", "startTimeDescending", "finishTimeAscending", "finishTimeDescending")] string? queryOrder = null,
+        [Description("Pipeline exact name or glob; duplicate names form a union.")] string? definitionName = null,
+        [Description("Build number exact value or glob.")] string? buildNumber = null,
+        [Description("Required tags, AND semantics; case preserved.")] string[]? tags = null,
+        [Description("Exact build result: none, succeeded, partiallySucceeded, failed, canceled.")] string? result = null,
+        [Description("Exact Azure DevOps build reason.")] string? reason = null,
+        [Description("Provider repository identity (not display name).")] string? repositoryId = null,
+        [Description("Repository provider, e.g. GitHub or TfsGit.")] string? repositoryType = null,
+        [Description("full preserves source fields; compact returns navigation fields.")] string projection = "full",
+        [Description("Logical selected-build offset.")] int offset = 0,
+        [Description("Positive output count alias for top; not a collection quota.")] int? limit = null,
+        [Description("Fingerprint from the previous page; detects shifted membership.")] string? viewId = null,
+        [Description("Positive inline byte shaping target; larger evidence remains accessible.")] long maxResponseBytes = 12288,
+        [Description("auto, inline, file or chunked; file/chunked return a verified evidence reference.")] string delivery = "auto",
+        [Description("Request the entire selected build set.")] bool all = false)
     {
         // If org looks like a URL, extract org/project from it
         (org, project) = TryExtractOrgProjectFromUrl(org, project);
@@ -83,9 +97,47 @@ public sealed class AzdoMcpTools
             QueryOrder = queryOrder
         };
 
-        return await McpExceptionHandler.RunServiceCallAsync(
-            async () => CreateLimitedResults(await _svc.ListBuildsAsync(org, project, filter), top),
-            "list builds");
+        filter = filter with { DefinitionName = definitionName, BuildNumber = buildNumber, Tags = tags,
+            Result = result, Reason = reason, RepositoryId = repositoryId, RepositoryType = repositoryType };
+        if (maxResponseBytes <= 0 || delivery is not "auto" and not "inline" and not "file" and not "chunked")
+            throw new McpException("Positive maxResponseBytes and delivery auto/inline/file/chunked are required.");
+        var request = new AzdoBuildQueryRequest { Filter = filter, Projection = projection, Offset = offset,
+            Limit = limit, ViewId = viewId, All = all };
+        var data = await McpExceptionHandler.RunServiceCallAsync(
+            () => _svc.QueryBuildsAsync(org, project, request, message => Console.Error.WriteLine(message)), "list builds");
+        return await ShapeBuildQueryAsync(data, request, maxResponseBytes, delivery);
+
+    }
+
+    private async Task<AzdoBuildQueryResult> ShapeBuildQueryAsync(AzdoBuildQueryResult data, AzdoBuildQueryRequest request, long maxResponseBytes, string delivery)
+    {
+        var effective = McpPresentationBudget.ClampMaxResponseBytes(maxResponseBytes);
+        object? Next(int? nextOffset, bool fullSelection = false) => nextOffset is null ? null : new
+        {
+            tool = "azdo_builds", arguments = new
+            {
+                org = data.Org, project = data.Project, branch = request.Filter.Branch, prNumber = request.Filter.PrNumber,
+                definitionId = request.Filter.DefinitionId, definitionName = request.Filter.DefinitionName,
+                buildNumber = request.Filter.BuildNumber, tags = request.Filter.Tags, result = request.Filter.Result,
+                reason = request.Filter.Reason, repositoryId = request.Filter.RepositoryId, repositoryType = request.Filter.RepositoryType,
+                status = request.Filter.StatusFilter, minTime = request.Filter.MinTime, maxTime = request.Filter.MaxTime,
+                queryOrder = request.Filter.QueryOrder, projection = request.Projection, offset = nextOffset,
+                limit = request.Limit ?? request.Filter.Top ?? 20, viewId = data.ViewId, maxResponseBytes, delivery = fullSelection ? "file" : delivery, all = fullSelection || request.All
+            }
+        };
+        var shaped = data with { Next = Next(data.NextOffset), Recovery = data.Recovery ?? (!data.Complete && data.NextOffset is null ? Next(0, true) : null), RequestedMaxResponseBytes = maxResponseBytes, EffectiveMaxResponseBytes = effective };
+        if (data.Count <= 20 && delivery is not "file" and not "chunked" && McpPresentationBudget.MeasureAny(shaped) <= effective - 256) return shaped;
+        // A file preserves the entire requested representation, including full fields and original page coordinates.
+        var partition = _svc.ResolveBuildQueryCachePartition();
+        await using var spool = _evidenceStore.CreateSpool(partition);
+        await JsonSerializer.SerializeAsync(spool, shaped, AzdoBuildQueries.JsonOptions);
+        await spool.FlushAsync(); spool.Position = 0;
+        var descriptor = await _evidenceStore.PutStreamAsync(spool, "application/json", data.ViewId, data.CacheKey, partition);
+        return shaped with
+        {
+            Results = [], Query = new(), EffectiveQuery = new(), ResolvedDefinitions = [], Next = null, Complete = false, Delivery = descriptor,
+            Recovery = new { kind = "evidence", tool = "hlx_read_evidence", arguments = new { evidenceId = descriptor.EvidenceId, offsetBytes = 0, lengthBytes = 2048, encoding = "utf8" } }
+        };
     }
 
     [McpServerTool(Name = "azdo_timeline", Title = "AzDO Build Timeline", ReadOnly = true, Idempotent = true, UseStructuredContent = true,
