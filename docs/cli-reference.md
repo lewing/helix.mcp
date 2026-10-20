@@ -728,6 +728,8 @@ All single-build retry/concurrency/cache/export/resume/log/test/attachment/Helix
 policy flags are supported. Members run sequentially with the existing resource semaphore
 (default six), avoiding a nested concurrency multiplier. Required evidence for the whole
 set precedes optional binary transfers; those share retained/source-byte budgets.
+Each member's Helix bytes consume the retained-byte allowance once; completed AzDO transfers
+remain charged to the set's retained/source-byte budgets even if later metadata acquisition fails.
 Provider failures are isolated per build, including during optional transfers: later members
 are still collected, and each failed member retains its own attempts and exit code.
 An explicit `--max-set-test-attachments` replaces the default per-build attachment allowance
@@ -744,13 +746,20 @@ changing criteria is a new collection. Progress goes to stderr; cancellation ret
 Resume reads a capture-specific checkpoint before newer browsing captures and verifies its
 capture identity, manifest SHA-256 and backing pages. Refreshing the same query cannot replace
 that checkpoint, including when discovery finished but only some members were collected.
+Build-query and streamed test-result pages (including derived failed results) use
+content-addressed identities, so concurrent captures cannot overwrite another index's pages.
+Missing or corrupt streamed pages are classified cache acquisition errors, not internal failures.
+Covered offline queries that omit an upper-time bound use the source's captured ceiling.
+`--resume` requires the original manifest to exist before discovery starts; if it is missing,
+omit `--resume` to start a fresh capture.
 Missing or mismatched discovery evidence returns `complete=false`, exit 2 and
 `discovery_recapture_required` with an exact fresh-capture command. That command omits
 `--resume`, keeps the original query/cache, uses a new manifest/export destination and
 honors `--allow-large`; it reacquires membership rather than reusing the suspect capture.
 To deliberately start over yourself, omit `--resume` and choose a new `--manifest` path.
 Policy-excluded phases remain complete; `--allow-incomplete` permits exit 0 for policy-only
-deferrals without changing `complete=false`. Acquisition failures exit 2; internal hard
+deferrals, including build/definition/scan thresholds, without changing `complete=false`.
+Acquisition failures (including discovery) exit 2; internal hard
 errors remain exit 1 even when other builds finish. Full discovery builds stay cache-backed;
 the collection passes retain member IDs, not every full provider object.
 

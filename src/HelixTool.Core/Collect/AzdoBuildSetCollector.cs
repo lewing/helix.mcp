@@ -98,8 +98,10 @@ public sealed partial class AzdoBuildCollector
             policy = policy with { Argv = argv };
         }
         CollectManifest? previous = null;
-        if (policy.Resume && File.Exists(path))
+        if (policy.Resume)
         {
+            if (!File.Exists(path))
+                throw new ArgumentException($"Resume manifest '{path}' is missing. Omit --resume to start a fresh capture.");
             previous = JsonSerializer.Deserialize<CollectManifest>(await File.ReadAllTextAsync(path, ct), s_jsonOptions);
             AzdoBuildSetQuery? priorSemantic = null;
             if (previous?.Command.Options.TryGetValue("semanticQuery", out var priorQuery) == true)
@@ -157,6 +159,7 @@ public sealed partial class AzdoBuildCollector
         {
             AzdoBuildQueryResult? discovery = null;
             string? discoveryError = null;
+            Exception? discoveryInternalError = null;
             await RunAsync(attempts, new Dictionary<string, CollectFetchAttempt>(),
                 CreateAttempt("azdo.builds", "discovery", true, "azdo", "list_builds",
                     Resource(("org", set.Query.Org), ("project", set.Query.Project)), null),
@@ -196,6 +199,11 @@ public sealed partial class AzdoBuildCollector
                     catch (Exception ex) when (ex is InvalidDataException or JsonException or ArgumentException)
                     {
                         discoveryError = ex.Message;
+                        throw;
+                    }
+                    catch (Exception ex) when (ex is not Acquisition.HlxAcquisitionException && ex is not OperationCanceledException)
+                    {
+                        discoveryInternalError = ex;
                         throw;
                     }
                 }, metadata: true, ct);
@@ -238,6 +246,7 @@ public sealed partial class AzdoBuildCollector
                     await SaveAsync();
                     return new CollectResult(manifest, path, manifest.Snapshot.Path);
                 }
+                if (discoveryInternalError is not null) throw discoveryInternalError;
                 var failure = attempts.LastOrDefault(a => a.Id == "azdo.builds")?.Error;
                 if (failure is not null) throw new Acquisition.HlxAcquisitionException(failure);
                 throw new InvalidOperationException("Build discovery did not complete; see the discovery attempt.");
@@ -334,6 +343,7 @@ public sealed partial class AzdoBuildCollector
                         MaxTotalStreamBytes = Math.Max(0, policy.MaxTotalStreamBytes - streamCount)
                     };
                     var byteAttempts = new List<CollectFetchAttempt>();
+                    var downloaded = new List<AzdoDownloadReport>();
                     try
                     {
                         AzdoEvidencePlan? plan = null;
@@ -349,12 +359,9 @@ public sealed partial class AzdoBuildCollector
                                 byteAttempts.AddRange(helixBytes);
                                 var used = helixBytes.Where(a => a.Outcome is "ok" or "cached").Sum(a => a.Bytes ?? 0);
                                 byteCount += used;
-                                bytePolicy = bytePolicy with { MaxTotalBytes = Math.Max(0, policy.MaxTotalBytes - byteCount) };
                             }
                         }
-                        var downloaded = await CollectAzdoBytesAsync(byteAttempts, bytePolicy, set.Query.Org, set.Query.Project, buildId, plan, progress, ct);
-                        byteCount += downloaded.Sum(r => r.Bytes); streamCount += downloaded.Sum(r => r.StreamedBytes);
-                        reports.AddRange(downloaded);
+                        await CollectAzdoBytesAsync(byteAttempts, bytePolicy, set.Query.Org, set.Query.Project, buildId, plan, progress, ct, downloaded);
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
                     {
@@ -368,6 +375,12 @@ public sealed partial class AzdoBuildCollector
                         var memberIndex = members.FindIndex(m => m.BuildId == buildId);
                         members[memberIndex] = members[memberIndex] with { Complete = false,
                             ExitCode = members[memberIndex].ExitCode == 1 || ex is not Acquisition.HlxAcquisitionException ? 1 : 2 };
+                    }
+                    finally
+                    {
+                        byteCount += downloaded.Sum(r => r.Bytes);
+                        streamCount += downloaded.Sum(r => r.StreamedBytes);
+                        reports.AddRange(downloaded);
                     }
                     foreach (var attempt in byteAttempts)
                     {
@@ -429,6 +442,13 @@ public sealed partial class AzdoBuildCollector
             manifest = manifest with { Source = source, Attempts = attempts, Builds = members, Complete = false, ExitCode = 2, IncompleteDetails = incomplete };
             await WriteManifestAsync(path, manifest, CancellationToken.None);
             throw;
+        }
+        catch (Acquisition.HlxAcquisitionException ex)
+        {
+            incomplete.Add(new CollectIncompleteDetail { Code = "fetch_failed", Message = ex.Message });
+            finished = true;
+            await SaveAsync();
+            return new CollectResult(manifest, path, manifest.Snapshot.Path);
         }
         catch (Exception ex)
         {

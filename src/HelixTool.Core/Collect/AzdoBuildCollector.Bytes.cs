@@ -8,9 +8,9 @@ public sealed partial class AzdoBuildCollector
 {
     private async Task<List<AzdoDownloadReport>> CollectAzdoBytesAsync(List<CollectFetchAttempt> attempts,
         CollectPolicy policy, string org, string project, int buildId, AzdoEvidencePlan? evidencePlan,
-        Action<string>? progress, CancellationToken ct)
+        Action<string>? progress, CancellationToken ct, List<AzdoDownloadReport>? completedReports = null)
     {
-        var reports = new List<AzdoDownloadReport>();
+        var reports = completedReports ?? new List<AzdoDownloadReport>();
         var artifactsRequested = policy.DownloadAzdoArtifacts is not null || policy.DownloadArtifactMembers is not null ||
             policy.ArtifactByteScope != "auto" || policy.ArtifactByteMode != "auto";
         if (!artifactsRequested && policy.DownloadTestAttachments is null) return reports;

@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Text.Json;
 using HelixTool.Core.Cache;
+using HelixTool.Core.Acquisition;
 
 namespace HelixTool.Core.AzDO;
 
@@ -15,14 +16,25 @@ internal sealed class AzdoPagedEvidenceList<T>(ICacheStore cache, string complet
     public int Count => index.Total;
     private IReadOnlyList<T> Read(AzdoCachedPage page)
     {
-        var prefix = completeKey[..^3] + "page:";
-        if (!page.Key.StartsWith(prefix, StringComparison.Ordinal)) throw new InvalidDataException("Paged evidence key is outside its source partition.");
-        var json = cache.GetMetadataIgnoringTtlAsync(page.Key).GetAwaiter().GetResult()
-            ?? throw new InvalidDataException("Paged evidence is missing a backing page.");
-        if (AzdoBuildQueries.Digest(json) != page.Sha256) throw new InvalidDataException("Paged evidence hash verification failed.");
-        var rows = JsonSerializer.Deserialize<T[]>(json, AzdoBuildQueries.JsonOptions)!;
-        if (rows.Length != page.Count) throw new InvalidDataException("Paged evidence count verification failed.");
-        return rows;
+        try
+        {
+            var prefix = completeKey[..^3] + "page:";
+            if (!page.Key.StartsWith(prefix, StringComparison.Ordinal)) throw new InvalidDataException("Paged evidence key is outside its source partition.");
+            var json = cache.GetMetadataIgnoringTtlAsync(page.Key).GetAwaiter().GetResult()
+                ?? throw new InvalidDataException("Paged evidence is missing a backing page.");
+            if (AzdoBuildQueries.Digest(json) != page.Sha256) throw new InvalidDataException("Paged evidence hash verification failed.");
+            var rows = JsonSerializer.Deserialize<T[]>(json, AzdoBuildQueries.JsonOptions)
+                ?? throw new InvalidDataException("Paged evidence contains null instead of a page.");
+            if (rows.Length != page.Count) throw new InvalidDataException("Paged evidence count verification failed.");
+            return rows;
+        }
+        catch (Exception ex) when (ex is InvalidDataException or JsonException)
+        {
+            throw new HlxAcquisitionException(AcquisitionErrorFactory.Create(
+                AcquisitionErrorKind.InvalidResponse, "cache", "read_paged_evidence",
+                new Dictionary<string, object?> { ["key"] = page.Key },
+                $"Cached evidence page '{page.Key}' is missing or corrupt: {ex.Message}"));
+        }
     }
     public T this[int position]
     {

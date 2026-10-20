@@ -493,8 +493,8 @@ public sealed partial class CachingAzdoApiClient : IAzdoApiClient, IAzdoCachedBu
                     }
                     await foreach (var rows in api.StreamTestResultsAsync(org, project, runId, normalizedOutcomes, pages.Sum(p => p.Count), ct))
                     {
-                        var pk = completeKey[..^3] + "page:" + pages.Count;
                         var body = JsonSerializer.Serialize(rows, AzdoBuildQueries.JsonOptions);
+                        var pk = completeKey[..^3] + "page:" + AzdoBuildQueries.Digest(body);
                         await _cache.SetMetadataAsync(pk, body, CompletedTtl, ct);
                         pages.Add(new AzdoCachedPage(pk, rows.Count, AzdoBuildQueries.Digest(body)));
                         await _cache.SetMetadataAsync(checkpointKey, JsonSerializer.Serialize(new AzdoPagedEvidence(true, false, pages), AzdoBuildQueries.JsonOptions), CompletedTtl, ct);
@@ -511,8 +511,8 @@ public sealed partial class CachingAzdoApiClient : IAzdoApiClient, IAzdoCachedBu
                             var failed = JsonSerializer.Deserialize<AzdoTestResult[]>(sourceJson, AzdoBuildQueries.JsonOptions)!
                                 .Where(r => string.Equals(r.Outcome, "Failed", StringComparison.OrdinalIgnoreCase)).ToArray();
                             if (failed.Length == 0) continue;
-                            var fk = failedKey[..^3] + "page:" + failedPages.Count;
                             var body = JsonSerializer.Serialize(failed, AzdoBuildQueries.JsonOptions);
+                            var fk = failedKey[..^3] + "page:" + AzdoBuildQueries.Digest(body);
                             await _cache.SetMetadataAsync(fk, body, CompletedTtl, ct);
                             failedPages.Add(new AzdoCachedPage(fk, failed.Length, AzdoBuildQueries.Digest(body)));
                         }

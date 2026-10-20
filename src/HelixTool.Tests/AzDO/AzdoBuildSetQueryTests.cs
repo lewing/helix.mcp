@@ -14,7 +14,7 @@ using Xunit;
 
 namespace HelixTool.Tests.AzDO;
 
-public sealed class AzdoBuildSetQueryTests : IDisposable
+public sealed partial class AzdoBuildSetQueryTests : IDisposable
 {
     private readonly string _root = Path.Combine(Directory.GetCurrentDirectory(), ".test-runtime", "buildsets", Guid.NewGuid().ToString("N"));
     private readonly List<IDisposable> _disposables = [];
@@ -229,9 +229,11 @@ public sealed class AzdoBuildSetQueryTests : IDisposable
     }
 
     [Theory]
-    [InlineData("metadata")]
-    [InlineData("evidence")]
-    public async Task CollectionExportsAndReplaysExactAndCoveredSubsetWithoutCredentials(string scope)
+    [InlineData("metadata", false)]
+    [InlineData("evidence", false)]
+    [InlineData("metadata", true)]
+    [InlineData("evidence", true)]
+    public async Task CollectionExportsAndReplaysExactAndCoveredSubsetWithoutCredentials(string scope, bool omitMaxTime)
     {
         var c = Client(request => request.RequestUri!.AbsolutePath.EndsWith("definitions", StringComparison.Ordinal)
             ? Json(new { value = new[] { new { id = 3, name = "runtime", path = "\\A" } } })
@@ -258,9 +260,10 @@ public sealed class AzdoBuildSetQueryTests : IDisposable
         var offline = new CachingAzdoApiClient(new OfflineAzdoApiClient(), offlineStore, offlineOptions);
         var all = await offline.QueryBuildsAsync("o", "p", new() { Filter = PrFilter() with { DefinitionName = "runtime" }, All = true });
         Assert.Equal(3, all.Count);
-        var failed = await offline.QueryBuildsAsync("o", "p", new() { Filter = PrFilter() with { DefinitionName = "runtime", Result = "failed" }, Limit = 1, Projection = "compact" });
+        var failedFilter = PrFilter() with { DefinitionName = "runtime", Result = "failed", MaxTime = omitMaxTime ? null : Capture };
+        var failed = await offline.QueryBuildsAsync("o", "p", new() { Filter = failedFilter, Limit = 1, Projection = "compact" });
         Assert.Single(failed.Results); Assert.Equal(2, failed.Total); Assert.False(failed.Complete);
-        var last = await offline.QueryBuildsAsync("o", "p", new() { Filter = PrFilter() with { DefinitionName = "runtime", Result = "failed" }, Offset = 1, Limit = 1, Projection = "compact", ViewId = failed.ViewId });
+        var last = await offline.QueryBuildsAsync("o", "p", new() { Filter = failedFilter, Offset = 1, Limit = 1, Projection = "compact", ViewId = failed.ViewId });
         Assert.Single(last.Results); Assert.False(last.Complete); Assert.Null(last.NextOffset);
         var wider = await Assert.ThrowsAsync<HlxAcquisitionException>(() => offline.QueryBuildsAsync("o", "p", new() { Filter = PrFilter() with { DefinitionName = "runtime", RepositoryId = "other" }, All = true }));
         Assert.Equal(AcquisitionErrorKind.NotInSnapshot, wider.Error.Kind); Assert.True(wider.Error.Resource.ContainsKey("recovery"));
@@ -320,7 +323,9 @@ public sealed class AzdoBuildSetQueryTests : IDisposable
         var pageKey = checkpoint.RootElement.GetProperty("pages")[0].GetProperty("key").GetString()!;
         await c.Store.SetMetadataAsync(pageKey, "[]", TimeSpan.FromHours(4));
         interrupted = false;
-        await Assert.ThrowsAsync<InvalidDataException>(() => c.Client.GetTestResultsAsync("o", "p", 7, int.MaxValue, "Failed"));
+        var failure = await Assert.ThrowsAsync<HlxAcquisitionException>(() => c.Client.GetTestResultsAsync("o", "p", 7, int.MaxValue, "Failed"));
+        Assert.Equal("cache", failure.Error.Provider);
+        Assert.Equal(pageKey, failure.Error.Resource["key"]);
         Assert.Equal(2, c.Handler.Urls.Count);
         Assert.Null(await c.Store.GetMetadataIgnoringTtlAsync(AzdoListCacheKeys.TestResultsComplete(c.Options, "o", "p", 7, "Failed")));
     }
@@ -563,7 +568,9 @@ public sealed class AzdoBuildSetQueryTests : IDisposable
         {
             if (message.StartsWith("Collecting build 2 ", StringComparison.Ordinal))
             {
-                var pageKey = AzdoListCacheKeys.TestResultsComplete(c.Options, "o", "p", 7, "Failed")[..^3] + "page:0";
+                var key = AzdoListCacheKeys.TestResultsComplete(c.Options, "o", "p", 7, "Failed");
+                var index = JsonSerializer.Deserialize<AzdoPagedEvidence>(c.Store.GetMetadataIgnoringTtlAsync(key).GetAwaiter().GetResult()!, AzdoBuildQueries.JsonOptions)!;
+                var pageKey = index.Pages[0].Key;
                 c.Store.SetMetadataAsync(pageKey, "[]", TimeSpan.FromHours(4)).GetAwaiter().GetResult();
             }
         });

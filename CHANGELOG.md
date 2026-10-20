@@ -22,6 +22,14 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ### Fixed
 
+- Build-set covered replay consistently uses the captured upper-time bound. Build-query
+  and streamed test-result pages now have immutable content-addressed identities, including
+  derived failed results; missing/corrupt streamed pages return classified cache errors.
+- Build-set resume rejects a missing manifest before discovery. Policy-only build/definition/
+  scan deferrals honor `--allow-incomplete`; discovery acquisition failures retain exit 2
+  rather than becoming internal hard errors.
+- Build-set byte budgets charge current-member Helix bytes once and preserve completed AzDO
+  transfer usage and reports when a later operation in the member's byte phase fails.
 - Build-set resume preserves the original checkpoint and full-data pages across newer
   browsing captures, including fully discovered sets with deferred members. Resume verifies
   manifest capture identity and membership hashes; missing or mismatched discovery returns

@@ -384,7 +384,9 @@ public sealed class AzdoBuildQueryExecutor(IAzdoApiClient client, ICacheStore? c
         {
             if (source.QueryHash != AzdoBuildQueries.Hash(source.Query) ||
                 !key.StartsWith(Key(org, project, $"builds:v2:{source.QueryHash}:"), StringComparison.Ordinal) ||
-                source.QueryHash != hash && !AzdoBuildQueries.Covers(source.Query, query))
+                source.QueryHash != hash && !AzdoBuildQueries.Covers(
+                    source.Query with { MaxTime = source.EffectiveQuery.MaxTime },
+                    query with { MaxTime = query.MaxTime ?? source.EffectiveQuery.MaxTime }))
                 throw new InvalidDataException("Invalid build-query coverage descriptor.");
             foreach (var pk in source.PageKeys)
             {
@@ -447,15 +449,7 @@ public sealed class AzdoBuildQueryExecutor(IAzdoApiClient client, ICacheStore? c
                 var pageRows = page.Results.Where(b => AzdoBuildQueries.Matches(b, query with { MaxTime = effective.MaxTime }) && ids.Add(b.Id)).ToArray();
                 rows.AddRange(pageRows.Select(IndexRow));
                 var pageJson = JsonSerializer.Serialize(pageRows, AzdoBuildQueries.JsonOptions);
-                var ordinal = pages.Count;
-                var pk = Key(org, project, $"builds:v2:{hash}:page:{ordinal}");
-                // Captures of the same semantic query share Q. Never overwrite a frozen capture's backing pages.
-                if (cache is not null)
-                {
-                    while (await cache.GetMetadataIgnoringTtlAsync(pk, ct) is { } existing &&
-                        (existing != pageJson || pages.Contains(pk)))
-                        pk = Key(org, project, $"builds:v2:{hash}:page:{checked(++ordinal)}");
-                }
+                var pk = Key(org, project, $"builds:v2:{hash}:page:{AzdoBuildQueries.Digest(pageJson)}");
                 pages.Add(pk);
                 for (var i = 0; i < pageRows.Length; i++) locations[pageRows[i].Id] = (pk, i);
                 pageHashes[pk] = AzdoBuildQueries.Digest(pageJson);

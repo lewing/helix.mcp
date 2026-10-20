@@ -1761,7 +1761,7 @@ public sealed partial class AzdoBuildCollector
                 foreach (var _ in new AzdoPagedEvidenceList<AzdoTestResult>(_cacheStore, attempt.CacheKey, index))
                     ct.ThrowIfCancellationRequested();
             }
-            catch (Exception ex) when (ex is InvalidDataException or JsonException)
+            catch (Exception ex) when (ex is InvalidDataException or JsonException or HlxAcquisitionException)
             {
                 return (false, AcquisitionErrorKind.InvalidResponse, "Collected test-result backing pages failed verification.");
             }
@@ -2055,7 +2055,7 @@ public sealed partial class AzdoBuildCollector
         };
 
     private static bool IsPolicyAllowedIncomplete(CollectIncompleteDetail detail)
-        => detail.Code is "fetch_skipped" or "test_result_limit" or "test_attachment_limit" && detail.Resource is not null;
+        => detail.Code is "fetch_skipped" or "test_result_limit" or "test_attachment_limit" or "build_set_threshold" && detail.Resource is not null;
 
     private static TimeSpan GetRetryDelay(CollectPolicy policy, AcquisitionError error, int attemptCount)
     {

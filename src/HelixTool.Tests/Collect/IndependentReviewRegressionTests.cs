@@ -266,7 +266,8 @@ public sealed partial class IndependentReviewRegressionTests
         Assert.Contains(AzdoCacheKeys.MetadataKey(fixture.Options, Org, Project, $"build:{BuildId}"), keys);
         var allowedKeys = manifest.Attempts.Select(a => a.CacheKey).Where(key => key is not null).ToHashSet();
         var resultsKey = AzdoListCacheKeys.TestResultsComplete(fixture.Options, Org, Project, RunId, "Failed");
-        allowedKeys.Add(resultsKey[..^3] + "page:0");
+        var index = JsonSerializer.Deserialize<AzdoPagedEvidence>((await fixture.Store.GetMetadataIgnoringTtlAsync(resultsKey))!, AzdoBuildQueries.JsonOptions)!;
+        allowedKeys.UnionWith(index.Pages.Select(page => page.Key));
         allowedKeys.Add(AzdoListCacheKeys.TestResultsWindow(fixture.Options, Org, Project, RunId, "Failed", 0, int.MaxValue));
         Assert.All(keys.Where(key => key.StartsWith("azdo:", StringComparison.Ordinal)),
             key => Assert.True(allowedKeys.Contains(key) || key.Contains($":{BuildId}:", StringComparison.Ordinal) ||
