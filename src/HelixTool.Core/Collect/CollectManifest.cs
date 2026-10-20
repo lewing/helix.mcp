@@ -410,4 +410,4 @@ public sealed record CollectIncompleteDetail
 }
 
 public sealed record CollectBuildMember(int BuildId, string BuildUrl, bool Complete, int ExitCode, string AttemptIdPrefix);
-public sealed record CollectBuildDiscovery(string CacheKey, bool SourceComplete, int? Total, int Returned, int Scanned, int Pages, DateTimeOffset CapturedAt, string ViewId);
+public sealed record CollectBuildDiscovery(string CacheKey, bool SourceComplete, int? Total, int Returned, int Scanned, int Pages, DateTimeOffset CapturedAt, string ViewId, string? Sha256 = null);

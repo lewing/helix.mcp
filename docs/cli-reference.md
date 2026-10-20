@@ -741,11 +741,18 @@ partial manifest and exact original argv plus `--allow-large --resume`, the orig
 manifest paths and a fresh export destination. Run that returned argv rather than guessing
 which numeric cap to increase. Resume preserves the original ceiling/mapping/membership;
 changing criteria is a new collection. Progress goes to stderr; cancellation retains work.
-Resume reads the named checkpoint before newer browsing captures and verifies its backing
-pages. A missing checkpoint is an error, not permission to silently discover a different set.
+Resume reads a capture-specific checkpoint before newer browsing captures and verifies its
+capture identity, manifest SHA-256 and backing pages. Refreshing the same query cannot replace
+that checkpoint, including when discovery finished but only some members were collected.
+Missing or mismatched discovery evidence returns `complete=false`, exit 2 and
+`discovery_recapture_required` with an exact fresh-capture command. That command omits
+`--resume`, keeps the original query/cache, uses a new manifest/export destination and
+honors `--allow-large`; it reacquires membership rather than reusing the suspect capture.
+To deliberately start over yourself, omit `--resume` and choose a new `--manifest` path.
 Policy-excluded phases remain complete; `--allow-incomplete` permits exit 0 for policy-only
 deferrals without changing `complete=false`. Acquisition failures exit 2; internal hard
-errors remain exit 1 even when other builds finish.
+errors remain exit 1 even when other builds finish. Full discovery builds stay cache-backed;
+the collection passes retain member IDs, not every full provider object.
 
 Schema-v2 manifests use `kind="hlx.collect.azdo-builds"`, `source.query`, `effectiveQuery`,
 `queryHash`, resolved definition IDs/paths, discovery cache/completeness/count/scan/capture/

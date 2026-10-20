@@ -23,7 +23,15 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 ### Fixed
 
 - Build-set resume preserves the original checkpoint and full-data pages across newer
-  browsing captures; missing or mismatched discovery evidence cannot silently change membership.
+  browsing captures, including fully discovered sets with deferred members. Resume verifies
+  manifest capture identity and membership hashes; missing or mismatched discovery returns
+  an explicit incomplete result with an exact, usable fresh-capture command.
+- Expired or completed streamed test-result checkpoints start fresh at offset zero;
+  only unexpired interrupted acquisitions continue from their verified prefix.
+- Streaming test-result acquisition records classified provider failures under the complete
+  results key, preserving the original error during offline snapshot replay.
+- Build-set collection retains only selected member IDs between passes, avoiding retention
+  of every full provider build object for large captures.
 - Build-set byte transfers use each member's build URL and isolate failures so later members
   still run. Explicit set attachment allowances, policy exclusions, `--allow-incomplete`,
   and per-member/aggregate exit codes retain their intended semantics.

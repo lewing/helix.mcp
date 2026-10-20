@@ -91,7 +91,7 @@ public sealed class CollectBuildSetCommands(IServiceProvider services)
             manifestPath = result.ManifestPath, snapshotPath = result.SnapshotPath, complete = result.Manifest.Complete,
             builds = result.Manifest.Builds?.Count ?? 0, total = result.Manifest.Source.Discovery?.Total,
             exitCode = result.Manifest.ExitCode, incompleteCodes = result.Manifest.IncompleteDetails.Select(d => d.Code).Distinct(),
-            recovery = result.Manifest.IncompleteDetails.Where(d => d.Code == "build_set_threshold").Select(d => d.Resource)
+            recovery = result.Manifest.IncompleteDetails.Where(d => d.Code is "build_set_threshold" or "discovery_recapture_required").Select(d => d.Resource)
         }, AzdoBuildQueries.JsonOptions));
         else Console.WriteLine($"Build-set collection: {result.Manifest.Builds?.Count ?? 0} builds; complete={result.Manifest.Complete}; manifest={result.ManifestPath}");
     }

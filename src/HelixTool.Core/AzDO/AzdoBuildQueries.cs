@@ -30,6 +30,10 @@ public sealed record AzdoBuildQueryRequest
     public int? MaxDiscoveryBuilds { get; init; }
     public int? MaxScanBuilds { get; init; }
     public string? ResumeCacheKey { get; init; }
+    public DateTimeOffset? ResumeCapturedAt { get; init; }
+    public string? ResumeViewId { get; init; }
+    public string? ResumeDescriptorSha256 { get; init; }
+    public bool FreshCapture { get; init; }
     public int? MaxDefinitions { get; init; }
     public IReadOnlyList<AzdoBuildDefinition>? FrozenDefinitions { get; init; }
     public Func<AzdoBuildQuerySource, string, CancellationToken, Task>? Checkpoint { get; init; }
@@ -286,20 +290,29 @@ public sealed class AzdoBuildQueryExecutor(IAzdoApiClient client, ICacheStore? c
         if (request.ResumeCacheKey is not null &&
             (!key.StartsWith(Key(org, project, $"builds:v2:{hash}:"), StringComparison.Ordinal) || !AzdoCacheKeys.TryParse(key, out _)))
             throw new ArgumentException("Discovery checkpoint does not match the query or partition.");
-        var json = cache is null ? null : request.ResumeCacheKey is not null
+        var json = cache is null || request.FreshCapture ? null : request.ResumeCacheKey is not null
             ? await cache.GetMetadataIgnoringTtlAsync(key, ct) : await cache.GetMetadataAsync(key, ct);
         if (request.ResumeCacheKey is not null && json is null)
             throw new InvalidDataException("Discovery checkpoint is missing; restore the original collection cache before resuming.");
         var source = json is null ? null : JsonSerializer.Deserialize<AzdoBuildQuerySource>(json, AzdoBuildQueries.JsonOptions);
         if (request.ResumeCacheKey is not null && source is null)
             throw new InvalidDataException("Discovery checkpoint is invalid; restore the original collection cache before resuming.");
+        if (request.ResumeCacheKey is not null && source is not null &&
+            (request.ResumeCapturedAt is { } expectedCapture && source.CapturedAt != expectedCapture ||
+             request.ResumeViewId is { } expectedView && expectedView != source.ViewId &&
+                expectedView != AzdoBuildQueries.Digest(hash + ":" + source.ViewId + ":" + request.Projection) ||
+             request.ResumeDescriptorSha256 is { } expectedSha && AzdoBuildQueries.Digest(json!) != expectedSha))
+            throw new InvalidDataException("Discovery checkpoint capture or membership does not match the original manifest.");
         if (source is not null && !_options.EvalMode && !request.Frozen && request.ResumeCacheKey is null && DateTimeOffset.UtcNow - source.CapturedAt > TimeSpan.FromSeconds(30)) source = null;
-        if (source is null && _options.EvalMode && cache is not null)
+        if (_options.EvalMode && cache is not null && request.ResumeCacheKey is null)
         {
-            source = await FindCoveredSourceAsync(org, project, query, ct);
-            if (source is not null) key = Key(org, project, $"builds:v2:{source.QueryHash}:all");
+            if (await FindCoveredSourceAsync(org, project, query, ct) is { } covered)
+            {
+                source = covered.Source;
+                key = covered.Key;
+            }
         }
-        if (source is null && !_options.EvalMode && cache is not null && request.Checkpoint is null)
+        if (source is null && !_options.EvalMode && cache is not null && request.Checkpoint is null && !request.FreshCapture)
         {
             var browsingKey = Key(org, project, $"builds:v2:{hash}:window:0:{int.MaxValue}");
             var browsingJson = await cache.GetMetadataAsync(browsingKey, ct);
@@ -324,7 +337,8 @@ public sealed class AzdoBuildQueryExecutor(IAzdoApiClient client, ICacheStore? c
                     var manifest = JsonSerializer.Deserialize<Collect.CollectManifest>(await File.ReadAllTextAsync(manifestPath, ct), AzdoBuildQueries.JsonOptions);
                     if (manifest?.Kind == "hlx.collect.azdo-builds" && manifest.Source.Org == org && manifest.Source.Project == project &&
                         manifest.Source.QueryHash == hash && manifest.Source.Discovery is { SourceComplete: false } discovery &&
-                        discovery.CacheKey.StartsWith(Key(org, project, $"builds:v2:{hash}:window:"), StringComparison.Ordinal))
+                        (discovery.CacheKey.StartsWith(Key(org, project, $"builds:v2:{hash}:window:"), StringComparison.Ordinal) ||
+                         discovery.CacheKey.StartsWith(Key(org, project, $"builds:v2:{hash}:capture:"), StringComparison.Ordinal) && AzdoCacheKeys.TryParse(discovery.CacheKey, out _)))
                     { windowKey = discovery.CacheKey; savedWindow = await cache.GetMetadataAsync(windowKey, ct); }
                 }
             }
@@ -403,7 +417,7 @@ public sealed class AzdoBuildQueryExecutor(IAzdoApiClient client, ICacheStore? c
                     SourceComplete = false, QueryHash = hash, CapturedAt = DateTimeOffset.UtcNow, ViewId = AzdoBuildQueries.Digest(hash + ":definitions") };
                 key = Key(org, project, $"builds:v2:{hash}:window:0:{request.MaxDiscoveryBuilds ?? int.MaxValue}");
                 if (cache is not null) await cache.SetMetadataAsync(key, JsonSerializer.Serialize(source, AzdoBuildQueries.JsonOptions), Retention, ct);
-                if (request.Checkpoint is not null) await request.Checkpoint(source, key, ct);
+                if (request.Checkpoint is not null) await SaveCaptureAsync(source, ct);
             }
             var discoveryTarget = request.MaxDiscoveryBuilds ?? (!request.All ? (long)request.Offset + (request.Limit ?? request.Filter.Top ?? 20) : (long?)null);
             while (!exhausted && !definitionDeferred && (discoveryTarget is null || rows.Count < discoveryTarget))
@@ -459,7 +473,7 @@ public sealed class AzdoBuildQueryExecutor(IAzdoApiClient client, ICacheStore? c
                 };
                 var checkpointKey = Key(org, project, $"builds:v2:{hash}:window:0:{request.MaxDiscoveryBuilds ?? int.MaxValue}");
                 if (cache is not null) await cache.SetMetadataAsync(exhausted ? completeKey : checkpointKey, JsonSerializer.Serialize(source, AzdoBuildQueries.JsonOptions), Retention, ct);
-                if (request.Checkpoint is not null) await request.Checkpoint(source, exhausted ? completeKey : checkpointKey, ct);
+                if (request.Checkpoint is not null) await SaveCaptureAsync(source, ct);
                 progress?.Invoke($"Scanned {scanned} builds; selected {rows.Count}; sourceComplete={exhausted}.");
                 if (!exhausted && (discoveryTarget is { } max && rows.Count >= max || request.MaxScanBuilds is { } scanMax && scanned >= scanMax))
                 { key = checkpointKey; break; }
@@ -471,7 +485,10 @@ public sealed class AzdoBuildQueryExecutor(IAzdoApiClient client, ICacheStore? c
                 if (cache is not null) await cache.SetMetadataAsync(key, JsonSerializer.Serialize(source, AzdoBuildQueries.JsonOptions), Retention, ct);
             }
         }
-        if (source.SourceComplete) key = Key(org, project, $"builds:v2:{source.QueryHash}:all");
+        var capturePrefix = Key(org, project, $"builds:v2:{source.QueryHash}:capture:");
+        if (source.SourceComplete && !key.StartsWith(capturePrefix, StringComparison.Ordinal)) key = Key(org, project, $"builds:v2:{source.QueryHash}:all");
+        if (!_options.EvalMode && (request.Checkpoint is not null || request.ResumeCacheKey?.StartsWith(capturePrefix, StringComparison.Ordinal) == true))
+            key = await SaveCaptureAsync(source, ct);
         rows = rows.Where(b => AzdoBuildQueries.Matches(b, query)).ToList();
         var order = query.QueryOrder ?? "queueTimeDescending";
         DateTimeOffset? Time(AzdoBuild b) => order.StartsWith("finish", StringComparison.OrdinalIgnoreCase) ? b.FinishTime : order.StartsWith("start", StringComparison.OrdinalIgnoreCase) ? b.StartTime : b.QueueTime;
@@ -499,6 +516,16 @@ public sealed class AzdoBuildQueryExecutor(IAzdoApiClient client, ICacheStore? c
             Recovery = source.SourceComplete || !_options.EvalMode ? null : MissingSnapshot(org, project, query).Error.Resource["recovery"],
             IncompleteDetails = source.SourceComplete ? [] : ["source_incomplete"]
         };
+
+        async Task<string> SaveCaptureAsync(AzdoBuildQuerySource capture, CancellationToken token)
+        {
+            var captureJson = JsonSerializer.Serialize(capture, AzdoBuildQueries.JsonOptions);
+            var captureKey = Key(org, project, $"builds:v2:{capture.QueryHash}:capture:{AzdoBuildQueries.Digest(captureJson)}");
+            if (cache is not null)
+                await cache.SetMetadataAsync(captureKey, captureJson, Retention, token);
+            if (request.Checkpoint is not null) await request.Checkpoint(capture, captureKey, token);
+            return captureKey;
+        }
     }
 
     private HlxAcquisitionException MissingSnapshot(string org, string project, AzdoBuildFilter f)
@@ -534,7 +561,7 @@ public sealed class AzdoBuildQueryExecutor(IAzdoApiClient client, ICacheStore? c
             (message.Contains("incompatib", StringComparison.OrdinalIgnoreCase) || message.Contains("not supported", StringComparison.OrdinalIgnoreCase));
     }
 
-    private async Task<AzdoBuildQuerySource?> FindCoveredSourceAsync(string org, string project, AzdoBuildFilter query, CancellationToken ct)
+    private async Task<(AzdoBuildQuerySource Source, string Key)?> FindCoveredSourceAsync(string org, string project, AzdoBuildFilter query, CancellationToken ct)
     {
         var path = Path.Combine(_options.GetEffectiveCacheRoot(), "manifest", "hlx-collect-manifest.json");
         if (!File.Exists(path)) return null;
@@ -544,16 +571,18 @@ public sealed class AzdoBuildQueryExecutor(IAzdoApiClient client, ICacheStore? c
         var effectiveCovered = covered with { MaxTime = manifest.Source.EffectiveQuery?.MaxTime ?? covered.MaxTime };
         var requestedCoverage = query with { MaxTime = query.MaxTime ?? effectiveCovered.MaxTime };
         if (!AzdoBuildQueries.Covers(effectiveCovered, requestedCoverage)) return null;
-        var expected = Key(org, project, $"builds:v2:{AzdoBuildQueries.Hash(covered)}:all");
-        if (discovery.CacheKey != expected) return null;
+        var prefix = Key(org, project, $"builds:v2:{AzdoBuildQueries.Hash(covered)}:");
+        var expected = discovery.CacheKey;
+        if (expected != prefix + "all" && !(expected.StartsWith(prefix + "capture:", StringComparison.Ordinal) && AzdoCacheKeys.TryParse(expected, out _))) return null;
         var saved = await cache!.GetMetadataAsync(expected, ct);
         if (saved is null) return null;
         var source = JsonSerializer.Deserialize<AzdoBuildQuerySource>(saved, AzdoBuildQueries.JsonOptions);
         if (source is null || !source.SourceComplete || source.QueryHash != manifest.Source.QueryHash ||
             source.QueryHash != AzdoBuildQueries.Hash(covered) || source.QueryHash != AzdoBuildQueries.Hash(source.Query) ||
-            source.CapturedAt != discovery.CapturedAt || source.EffectiveQuery.MaxTime != effectiveCovered.MaxTime)
+            source.CapturedAt != discovery.CapturedAt || source.EffectiveQuery.MaxTime != effectiveCovered.MaxTime ||
+            discovery.Sha256 is { } sha && AzdoBuildQueries.Digest(saved) != sha)
             throw new InvalidDataException("Build-query coverage descriptor does not match the collected discovery.");
-        return source;
+        return (source, expected);
     }
 }
 

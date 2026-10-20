@@ -156,49 +156,101 @@ public sealed partial class AzdoBuildCollector
         try
         {
             AzdoBuildQueryResult? discovery = null;
+            string? discoveryError = null;
             await RunAsync(attempts, new Dictionary<string, CollectFetchAttempt>(),
                 CreateAttempt("azdo.builds", "discovery", true, "azdo", "list_builds",
                     Resource(("org", set.Query.Org), ("project", set.Query.Project)), null),
                 policy, async acquisitionToken =>
                 {
-                    discovery = await _azdoClient.QueryBuildsAsync(set.Query.Org, set.Query.Project,
-                new AzdoBuildQueryRequest
-                {
-                    Filter = filter, All = true, Frozen = policy.Resume || source.Discovery is not null, ResumeCacheKey = source.Discovery?.CacheKey,
-                    MaxDiscoveryBuilds = policy.AllowLarge ? null : set.MaxBuilds,
-                    MaxScanBuilds = policy.AllowLarge || set.MaxBuilds > 50 && set.MaxScanBuilds == 5000 ? null : set.MaxScanBuilds,
-                    MaxDefinitions = policy.AllowLarge || set.MaxBuilds > 50 && set.MaxDefinitions == 25 ? null : set.MaxDefinitions,
-                    FrozenDefinitions = source.Discovery is not null ? source.ResolvedDefinitions : null,
-                    Checkpoint = async (checkpoint, key, token) =>
+                    try
                     {
-                        source = source with
-                        {
-                            Query = checkpoint.Query, EffectiveQuery = checkpoint.EffectiveQuery, QueryHash = checkpoint.QueryHash,
-                            ResolvedDefinitions = checkpoint.ResolvedDefinitions,
-                            Discovery = new CollectBuildDiscovery(key, checkpoint.SourceComplete, checkpoint.SourceComplete ? checkpoint.SelectedCount : null,
-                                checkpoint.SelectedCount, checkpoint.Scanned, checkpoint.PageKeys.Count, checkpoint.CapturedAt, checkpoint.ViewId)
-                        };
-                        await SaveAsync();
+                        discovery = await _azdoClient.QueryBuildsAsync(set.Query.Org, set.Query.Project,
+                            new AzdoBuildQueryRequest
+                            {
+                                Filter = filter, All = true, Frozen = policy.Resume || source.Discovery is not null, ResumeCacheKey = source.Discovery?.CacheKey,
+                                ResumeCapturedAt = source.Discovery?.CapturedAt, ResumeViewId = source.Discovery?.ViewId,
+                                ResumeDescriptorSha256 = source.Discovery?.Sha256 ??
+                                    previous?.Attempts.FirstOrDefault(a => a.CacheKey == source.Discovery?.CacheKey && a.Sha256 is not null)?.Sha256,
+                                FreshCapture = !policy.Resume && source.Discovery is null,
+                                MaxDiscoveryBuilds = policy.AllowLarge ? null : set.MaxBuilds,
+                                MaxScanBuilds = policy.AllowLarge || set.MaxBuilds > 50 && set.MaxScanBuilds == 5000 ? null : set.MaxScanBuilds,
+                                MaxDefinitions = policy.AllowLarge || set.MaxBuilds > 50 && set.MaxDefinitions == 25 ? null : set.MaxDefinitions,
+                                FrozenDefinitions = source.Discovery is not null ? source.ResolvedDefinitions : null,
+                                Checkpoint = async (checkpoint, key, token) =>
+                                {
+                                    source = source with
+                                    {
+                                        Query = checkpoint.Query, EffectiveQuery = checkpoint.EffectiveQuery, QueryHash = checkpoint.QueryHash,
+                                        ResolvedDefinitions = checkpoint.ResolvedDefinitions,
+                                        Discovery = new CollectBuildDiscovery(key, checkpoint.SourceComplete, checkpoint.SourceComplete ? checkpoint.SelectedCount : null,
+                                            checkpoint.SelectedCount, checkpoint.Scanned, checkpoint.PageKeys.Count, checkpoint.CapturedAt,
+                                            AzdoBuildQueries.Digest(checkpoint.QueryHash + ":" + checkpoint.ViewId + ":full"),
+                                            AzdoBuildQueries.Digest(JsonSerializer.Serialize(checkpoint, AzdoBuildQueries.JsonOptions)))
+                                    };
+                                    await SaveAsync();
+                                }
+                            }, progress, acquisitionToken);
+                        return new CollectBuildDiscovery(discovery.CacheKey!, discovery.SourceComplete, discovery.Total,
+                            discovery.Count, discovery.Scanned, discovery.Pages, discovery.CapturedAt, discovery.ViewId);
                     }
-                }, progress, acquisitionToken);
-                    return new CollectBuildDiscovery(discovery.CacheKey!, discovery.SourceComplete, discovery.Total,
-                        discovery.Count, discovery.Scanned, discovery.Pages, discovery.CapturedAt, discovery.ViewId);
+                    catch (Exception ex) when (ex is InvalidDataException or JsonException or ArgumentException)
+                    {
+                        discoveryError = ex.Message;
+                        throw;
+                    }
                 }, metadata: true, ct);
             if (discovery is null)
             {
+                if (discoveryError is not null)
+                {
+                    var argv = RecoveryArgv(policy).ToList();
+                    for (var i = argv.Count - 1; i >= 0; i--)
+                    {
+                        if (argv[i].StartsWith("--resume=", StringComparison.Ordinal)) argv.RemoveAt(i);
+                        else if (argv[i] == "--resume")
+                        {
+                            if (i + 1 < argv.Count && bool.TryParse(argv[i + 1], out _)) argv.RemoveAt(i + 1);
+                            argv.RemoveAt(i);
+                        }
+                    }
+                    var manifestFlag = argv.IndexOf("--manifest");
+                    var freshPath = Path.ChangeExtension(path, $"recaptured-{Guid.NewGuid():N}.json");
+                    if (manifestFlag >= 0) argv[manifestFlag + 1] = freshPath;
+                    else
+                    {
+                        var assignedManifest = argv.FindIndex(arg => arg.StartsWith("--manifest=", StringComparison.Ordinal));
+                        argv[assignedManifest] = "--manifest=" + freshPath;
+                    }
+                    var recoveryCommand = string.Join(" ", argv.Select(QuoteArgument));
+                    incomplete.Add(new CollectIncompleteDetail
+                    {
+                        Code = "discovery_recapture_required",
+                        Message = discoveryError + " Start a fresh capture (omit --resume): " + recoveryCommand,
+                        Resource = new Dictionary<string, object?>
+                        {
+                            ["argv"] = argv.ToArray(),
+                            ["command"] = recoveryCommand,
+                            ["manifestPath"] = freshPath,
+                            ["executionHost"] = OperatingSystem.IsWindows() ? "powershell" : "posix"
+                        }
+                    });
+                    finished = true;
+                    await SaveAsync();
+                    return new CollectResult(manifest, path, manifest.Snapshot.Path);
+                }
                 var failure = attempts.LastOrDefault(a => a.Id == "azdo.builds")?.Error;
                 if (failure is not null) throw new Acquisition.HlxAcquisitionException(failure);
                 throw new InvalidOperationException("Build discovery did not complete; see the discovery attempt.");
             }
+            var discoveryJson = await _cacheStore.GetMetadataIgnoringTtlAsync(discovery.CacheKey!, ct)
+                ?? throw new InvalidDataException("Discovery checkpoint is missing from the cache.");
             source = source with
             {
                 Query = discovery.Query, EffectiveQuery = discovery.EffectiveQuery, QueryHash = discovery.QueryHash,
                 ResolvedDefinitions = discovery.ResolvedDefinitions,
                 Discovery = new CollectBuildDiscovery(discovery.CacheKey!, discovery.SourceComplete, discovery.Total,
-                    discovery.Count, discovery.Scanned, discovery.Pages, discovery.CapturedAt, discovery.ViewId)
+                    discovery.Count, discovery.Scanned, discovery.Pages, discovery.CapturedAt, discovery.ViewId, AzdoBuildQueries.Digest(discoveryJson))
             };
-            var discoveryJson = await _cacheStore.GetMetadataIgnoringTtlAsync(discovery.CacheKey!, ct)
-                ?? throw new InvalidDataException("Discovery checkpoint is missing from the cache.");
             attempts.Add(new CollectFetchAttempt
             {
                 Id = "azdo.builds:" + discovery.QueryHash, Phase = "discovery", Required = true, Provider = "azdo", Operation = "list_builds",
@@ -217,33 +269,34 @@ public sealed partial class AzdoBuildCollector
                     Code = "build_set_threshold", Message = "Discovery membership retained. Continue the same query: " + string.Join(" ", argv.Select(QuoteArgument)),
                     Resource = new Dictionary<string, object?>
                     {
-                        ["argv"] = argv, ["manifestPath"] = path,
+                        ["argv"] = argv,
+                        ["manifestPath"] = path,
                         ["executionHost"] = OperatingSystem.IsWindows() ? "powershell" : "posix",
                         ["command"] = string.Join(" ", argv.Select(QuoteArgument))
                     }
                 });
                 if (!discovery.SourceComplete && discovery.Count == 0) planned = 0;
             }
-            var selected = discovery.Results.Take(planned).ToArray();
+            var selected = discovery.Results.Take(planned).Select(build => build.Id).ToArray();
             var setBudget = new CollectSetBudget(set.MaxSetTestResults, set.MaxSetTestAttachments);
             // One build at a time; the existing phase semaphore bounds total run concurrency, never N builds times N phases.
-            foreach (var build in selected)
+            foreach (var buildId in selected)
             {
                 ct.ThrowIfCancellationRequested();
-                var url = $"https://dev.azure.com/{Uri.EscapeDataString(set.Query.Org)}/{Uri.EscapeDataString(set.Query.Project)}/_build/results?buildId={build.Id}";
-                progress?.Invoke($"Collecting build {build.Id} ({members.Count + 1}/{selected.Length})...");
+                var url = $"https://dev.azure.com/{Uri.EscapeDataString(set.Query.Org)}/{Uri.EscapeDataString(set.Query.Project)}/_build/results?buildId={buildId}";
+                progress?.Invoke($"Collecting build {buildId} ({members.Count + 1}/{selected.Length})...");
                 if (set.BuildScope == "metadata")
                 {
                     var fetched = await RunAsync(attempts, previous?.Attempts.ToDictionary(a => a.Id, a => a, StringComparer.Ordinal) ?? new Dictionary<string, CollectFetchAttempt>(),
-                        CreateAttempt($"build:{build.Id}:azdo.build", "azdo_root", true, "azdo", "get_build",
-                            Resource(("org", set.Query.Org), ("project", set.Query.Project), ("buildId", build.Id)),
-                            AzdoCacheKeys.MetadataKey(_cacheOptions, set.Query.Org, set.Query.Project, $"build:{build.Id}")),
-                        policy, token => _azdoClient.GetBuildAsync(set.Query.Org, set.Query.Project, build.Id, token), metadata: true, ct);
-                    members.Add(new CollectBuildMember(build.Id, url, fetched is not null, fetched is not null ? 0 : 2, $"build:{build.Id}:"));
+                        CreateAttempt($"build:{buildId}:azdo.build", "azdo_root", true, "azdo", "get_build",
+                            Resource(("org", set.Query.Org), ("project", set.Query.Project), ("buildId", buildId)),
+                            AzdoCacheKeys.MetadataKey(_cacheOptions, set.Query.Org, set.Query.Project, $"build:{buildId}")),
+                        policy, token => _azdoClient.GetBuildAsync(set.Query.Org, set.Query.Project, buildId, token), metadata: true, ct);
+                    members.Add(new CollectBuildMember(buildId, url, fetched is not null, fetched is not null ? 0 : 2, $"build:{buildId}:"));
                 }
                 else
                 {
-                    var prefix = $"build:{build.Id}:";
+                    var prefix = $"build:{buildId}:";
                     var prior = previous?.Attempts.Where(a => a.Id.StartsWith(prefix, StringComparison.Ordinal))
                         .ToDictionary(a => a.Id[prefix.Length..], a => a, StringComparer.Ordinal);
                     var memberPolicy = policy with
@@ -258,13 +311,13 @@ public sealed partial class AzdoBuildCollector
                         attempts.Add(attempt with
                         {
                             Id = prefix + attempt.Id, ParentId = attempt.ParentId is null ? null : prefix + attempt.ParentId,
-                            Resource = new Dictionary<string, object?>(attempt.Resource) { ["buildId"] = build.Id }
+                            Resource = new Dictionary<string, object?>(attempt.Resource) { ["buildId"] = buildId }
                         });
                     incomplete.AddRange(result.Manifest.IncompleteDetails.Select(detail => detail with
                     {
-                        Resource = new Dictionary<string, object?>(detail.Resource ?? new Dictionary<string, object?>()) { ["buildId"] = build.Id }
+                        Resource = new Dictionary<string, object?>(detail.Resource ?? new Dictionary<string, object?>()) { ["buildId"] = buildId }
                     }));
-                    members.Add(new CollectBuildMember(build.Id, url, result.Manifest.Complete, result.Manifest.ExitCode, $"build:{build.Id}:"));
+                    members.Add(new CollectBuildMember(buildId, url, result.Manifest.Complete, result.Manifest.ExitCode, $"build:{buildId}:"));
                 }
                 await SaveAsync();
             }
@@ -272,11 +325,11 @@ public sealed partial class AzdoBuildCollector
             long streamCount = 0;
             if (set.BuildScope == "evidence")
             {
-                foreach (var build in selected)
+                foreach (var buildId in selected)
                 {
                     var bytePolicy = policy with
                     {
-                        BuildIdOrUrl = $"https://dev.azure.com/{Uri.EscapeDataString(set.Query.Org)}/{Uri.EscapeDataString(set.Query.Project)}/_build/results?buildId={build.Id}",
+                        BuildIdOrUrl = $"https://dev.azure.com/{Uri.EscapeDataString(set.Query.Org)}/{Uri.EscapeDataString(set.Query.Project)}/_build/results?buildId={buildId}",
                         MaxTotalBytes = Math.Max(0, policy.MaxTotalBytes - byteCount),
                         MaxTotalStreamBytes = Math.Max(0, policy.MaxTotalStreamBytes - streamCount)
                     };
@@ -288,7 +341,7 @@ public sealed partial class AzdoBuildCollector
                         {
                             var preparation = new List<CollectFetchAttempt>();
                             plan = await CollectEvidencePlanPagesAsync(preparation, new Dictionary<string, CollectFetchAttempt>(), incomplete,
-                                bytePolicy, set.Query.Org, set.Query.Project, build.Id, ct);
+                                bytePolicy, set.Query.Org, set.Query.Project, buildId, ct);
                             if (policy.DownloadHelixFiles is not null && plan is not null)
                             {
                                 await CollectHelixSuggestedFetchesAsync(preparation, new Dictionary<string, CollectFetchAttempt>(), bytePolicy, plan, ct);
@@ -299,7 +352,7 @@ public sealed partial class AzdoBuildCollector
                                 bytePolicy = bytePolicy with { MaxTotalBytes = Math.Max(0, policy.MaxTotalBytes - byteCount) };
                             }
                         }
-                        var downloaded = await CollectAzdoBytesAsync(byteAttempts, bytePolicy, set.Query.Org, set.Query.Project, build.Id, plan, progress, ct);
+                        var downloaded = await CollectAzdoBytesAsync(byteAttempts, bytePolicy, set.Query.Org, set.Query.Project, buildId, plan, progress, ct);
                         byteCount += downloaded.Sum(r => r.Bytes); streamCount += downloaded.Sum(r => r.StreamedBytes);
                         reports.AddRange(downloaded);
                     }
@@ -310,18 +363,18 @@ public sealed partial class AzdoBuildCollector
                         incomplete.AddRange(failure.IncompleteDetails.Select(detail => detail with
                         {
                             Code = ex is Acquisition.HlxAcquisitionException ? "fetch_failed" : detail.Code,
-                            Resource = new Dictionary<string, object?>(detail.Resource ?? new Dictionary<string, object?>()) { ["buildId"] = build.Id }
+                            Resource = new Dictionary<string, object?>(detail.Resource ?? new Dictionary<string, object?>()) { ["buildId"] = buildId }
                         }));
-                        var memberIndex = members.FindIndex(m => m.BuildId == build.Id);
+                        var memberIndex = members.FindIndex(m => m.BuildId == buildId);
                         members[memberIndex] = members[memberIndex] with { Complete = false,
                             ExitCode = members[memberIndex].ExitCode == 1 || ex is not Acquisition.HlxAcquisitionException ? 1 : 2 };
                     }
                     foreach (var attempt in byteAttempts)
                     {
-                        var id = $"build:{build.Id}:" + attempt.Id;
+                        var id = $"build:{buildId}:" + attempt.Id;
                         attempts.RemoveAll(a => a.Id == id);
-                        attempts.Add(attempt with { Id = id, ParentId = attempt.ParentId is null ? null : $"build:{build.Id}:" + attempt.ParentId,
-                            Resource = new Dictionary<string, object?>(attempt.Resource) { ["buildId"] = build.Id } });
+                        attempts.Add(attempt with { Id = id, ParentId = attempt.ParentId is null ? null : $"build:{buildId}:" + attempt.ParentId,
+                            Resource = new Dictionary<string, object?>(attempt.Resource) { ["buildId"] = buildId } });
                     }
                     await SaveAsync();
                 }

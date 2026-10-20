@@ -479,44 +479,49 @@ public sealed partial class CachingAzdoApiClient : IAzdoApiClient, IAzdoCachedBu
 
             if (_inner is AzdoApiClient api)
             {
-                var checkpointKey = AzdoListCacheKeys.TestResultsWindow(_options, org, project, runId, normalizedOutcomes, 0, int.MaxValue);
-                var saved = await _cache.GetMetadataIgnoringTtlAsync(checkpointKey, ct);
-                var checkpoint = saved?.TrimStart().StartsWith('{') == true ? JsonSerializer.Deserialize<AzdoPagedEvidence>(saved, AzdoBuildQueries.JsonOptions) : null;
-                var pages = checkpoint?.Pages.ToList() ?? [];
-                if (checkpoint is not null)
+                return await CallAndMaybeRecordAsync<IReadOnlyList<AzdoTestResult>>(async () =>
                 {
-                    foreach (var _ in new AzdoPagedEvidenceList<AzdoTestResult>(_cache, completeKey, checkpoint))
-                        ct.ThrowIfCancellationRequested();
-                }
-                await foreach (var rows in api.StreamTestResultsAsync(org, project, runId, normalizedOutcomes, pages.Sum(p => p.Count), ct))
-                {
-                    var pk = completeKey[..^3] + "page:" + pages.Count;
-                    var body = JsonSerializer.Serialize(rows, AzdoBuildQueries.JsonOptions);
-                    await _cache.SetMetadataAsync(pk, body, CompletedTtl, ct);
-                    pages.Add(new AzdoCachedPage(pk, rows.Count, AzdoBuildQueries.Digest(body)));
-                    await _cache.SetMetadataAsync(checkpointKey, JsonSerializer.Serialize(new AzdoPagedEvidence(true, false, pages), AzdoBuildQueries.JsonOptions), CompletedTtl, ct);
-                }
-                var index = new AzdoPagedEvidence(true, true, pages);
-                if (normalizedOutcomes?.Split(',').Contains("Failed", StringComparer.OrdinalIgnoreCase) == true && !normalizedOutcomes.Equals("Failed", StringComparison.OrdinalIgnoreCase))
-                {
-                    var failedKey = AzdoListCacheKeys.TestResultsComplete(_options, org, project, runId, "Failed");
-                    var failedPages = new List<AzdoCachedPage>();
-                    foreach (var page in pages)
+                    var checkpointKey = AzdoListCacheKeys.TestResultsWindow(_options, org, project, runId, normalizedOutcomes, 0, int.MaxValue);
+                    var saved = await _cache.GetMetadataAsync(checkpointKey, ct);
+                    var checkpoint = saved?.TrimStart().StartsWith('{') == true ? JsonSerializer.Deserialize<AzdoPagedEvidence>(saved, AzdoBuildQueries.JsonOptions) : null;
+                    if (checkpoint is not { PagedList: true, SourceComplete: false }) checkpoint = null;
+                    var pages = checkpoint?.Pages.ToList() ?? [];
+                    if (checkpoint is not null)
                     {
-                        var sourceJson = await _cache.GetMetadataIgnoringTtlAsync(page.Key, ct) ?? throw new InvalidDataException("Test-result page disappeared.");
-                        if (AzdoBuildQueries.Digest(sourceJson) != page.Sha256) throw new InvalidDataException("Test-result page changed before deriving failed results.");
-                        var failed = JsonSerializer.Deserialize<AzdoTestResult[]>(sourceJson, AzdoBuildQueries.JsonOptions)!
-                            .Where(r => string.Equals(r.Outcome, "Failed", StringComparison.OrdinalIgnoreCase)).ToArray();
-                        if (failed.Length == 0) continue;
-                        var fk = failedKey[..^3] + "page:" + failedPages.Count;
-                        var body = JsonSerializer.Serialize(failed, AzdoBuildQueries.JsonOptions);
-                        await _cache.SetMetadataAsync(fk, body, CompletedTtl, ct);
-                        failedPages.Add(new AzdoCachedPage(fk, failed.Length, AzdoBuildQueries.Digest(body)));
+                        foreach (var _ in new AzdoPagedEvidenceList<AzdoTestResult>(_cache, completeKey, checkpoint))
+                            ct.ThrowIfCancellationRequested();
                     }
-                    await _cache.SetMetadataAsync(failedKey, JsonSerializer.Serialize(new AzdoPagedEvidence(true, true, failedPages), AzdoBuildQueries.JsonOptions), CompletedTtl, ct);
-                }
-                await _cache.SetMetadataAsync(completeKey, JsonSerializer.Serialize(index, AzdoBuildQueries.JsonOptions), CompletedTtl, ct);
-                return new AzdoPagedEvidenceList<AzdoTestResult>(_cache, completeKey, index);
+                    await foreach (var rows in api.StreamTestResultsAsync(org, project, runId, normalizedOutcomes, pages.Sum(p => p.Count), ct))
+                    {
+                        var pk = completeKey[..^3] + "page:" + pages.Count;
+                        var body = JsonSerializer.Serialize(rows, AzdoBuildQueries.JsonOptions);
+                        await _cache.SetMetadataAsync(pk, body, CompletedTtl, ct);
+                        pages.Add(new AzdoCachedPage(pk, rows.Count, AzdoBuildQueries.Digest(body)));
+                        await _cache.SetMetadataAsync(checkpointKey, JsonSerializer.Serialize(new AzdoPagedEvidence(true, false, pages), AzdoBuildQueries.JsonOptions), CompletedTtl, ct);
+                    }
+                    var index = new AzdoPagedEvidence(true, true, pages);
+                    if (normalizedOutcomes?.Split(',').Contains("Failed", StringComparer.OrdinalIgnoreCase) == true && !normalizedOutcomes.Equals("Failed", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var failedKey = AzdoListCacheKeys.TestResultsComplete(_options, org, project, runId, "Failed");
+                        var failedPages = new List<AzdoCachedPage>();
+                        foreach (var page in pages)
+                        {
+                            var sourceJson = await _cache.GetMetadataIgnoringTtlAsync(page.Key, ct) ?? throw new InvalidDataException("Test-result page disappeared.");
+                            if (AzdoBuildQueries.Digest(sourceJson) != page.Sha256) throw new InvalidDataException("Test-result page changed before deriving failed results.");
+                            var failed = JsonSerializer.Deserialize<AzdoTestResult[]>(sourceJson, AzdoBuildQueries.JsonOptions)!
+                                .Where(r => string.Equals(r.Outcome, "Failed", StringComparison.OrdinalIgnoreCase)).ToArray();
+                            if (failed.Length == 0) continue;
+                            var fk = failedKey[..^3] + "page:" + failedPages.Count;
+                            var body = JsonSerializer.Serialize(failed, AzdoBuildQueries.JsonOptions);
+                            await _cache.SetMetadataAsync(fk, body, CompletedTtl, ct);
+                            failedPages.Add(new AzdoCachedPage(fk, failed.Length, AzdoBuildQueries.Digest(body)));
+                        }
+                        await _cache.SetMetadataAsync(failedKey, JsonSerializer.Serialize(new AzdoPagedEvidence(true, true, failedPages), AzdoBuildQueries.JsonOptions), CompletedTtl, ct);
+                    }
+                    await _cache.SetMetadataAsync(completeKey, JsonSerializer.Serialize(index, AzdoBuildQueries.JsonOptions), CompletedTtl, ct);
+                    await _cache.SetMetadataAsync(checkpointKey, JsonSerializer.Serialize(index, AzdoBuildQueries.JsonOptions), CompletedTtl, ct);
+                    return new AzdoPagedEvidenceList<AzdoTestResult>(_cache, completeKey, index);
+                }, completeKey, TestTtl, static () => Task.FromResult(true), ct);
             }
 
             var completeResult = await CallAndMaybeRecordAsync(

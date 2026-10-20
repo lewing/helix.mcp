@@ -210,6 +210,7 @@ internal static class AzdoCacheKeys
     private static bool IsBuildQuerySuffix(ReadOnlySpan<string> s, string version)
         => s.Length >= 4 && s[1] == version && IsPathHash(s[2]) &&
            (s.Length == 4 && s[3] == "all" || s.Length == 5 && s[3] == "page" && IsInteger(s[4]) ||
+            s.Length == 5 && s[0] == "builds" && s[3] == "capture" && IsPathHash(s[4]) ||
             s.Length == 6 && s[3] == "window" && IsInteger(s[4]) && IsInteger(s[5]));
 
     private static bool IsPathHash(string value) => value.Length == 64 && value.All(Uri.IsHexDigit);
