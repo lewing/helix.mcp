@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using HelixTool.Core.AzDO;
 using HelixTool.Mcp.Tools;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
@@ -42,7 +43,8 @@ public class LimitedResultsOutputSchemaTests
         typeof(AzdoMcpTools)
             .GetMethods(BindingFlags.Instance | BindingFlags.Public)
             .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() is not null)
-            .Where(m => UnwrapLimitedResultsItem(m.ReturnType) is not null)
+            // Build discovery now returns a query envelope but retains the same minimal wire schema.
+            .Where(m => UnwrapLimitedResultsItem(m.ReturnType) is not null || m.ReturnType == typeof(Task<AzdoBuildQueryResult>))
             .Select(m => new object[] { m });
 
     /// <summary>

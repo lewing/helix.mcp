@@ -305,20 +305,16 @@ public sealed class AzdoPagingPr1CliTests
     }
 
     [Fact]
-    public async Task BuildChanges_ContinuationPageCap_FailsInvalidResponse()
+    public async Task BuildChanges_ValidTraversalBeyondLegacyPageBatchRemainsAccessible()
     {
-        var handler = ContinuationTokenHandler.UniqueTokensForever();
+        var handler = ContinuationTokenHandler.MoreThanOneBatch();
         var tokenAccessor = Substitute.For<IAzdoTokenAccessor>();
         using var httpClient = new HttpClient(handler);
         var client = new AzdoApiClient(httpClient, tokenAccessor);
 
-        var ex = await Assert.ThrowsAsync<HlxAcquisitionException>(
-            () => client.GetBuildChangesAsync("dnceng-public", "public", 42));
-
-        AcquisitionAssertions.Error(ex, AcquisitionErrorKind.InvalidResponse, "azdo", "list_build_changes");
-        AcquisitionAssertions.Resource(ex.Error, "pageCount", AzdoApiClient.MaxContinuationPages + 1);
-        AcquisitionAssertions.Resource(ex.Error, "continuationReason", "max_pages_exceeded");
-        Assert.Equal(AzdoApiClient.MaxContinuationPages, handler.RequestUris.Count);
+        var changes = await client.GetBuildChangesAsync("dnceng-public", "public", 42);
+        Assert.Equal(AzdoApiClient.MaxContinuationPages + 1, changes.Count);
+        Assert.Equal(AzdoApiClient.MaxContinuationPages + 1, handler.RequestUris.Count);
     }
 
     private static global::AzdoCommands CreateCommands(IAzdoApiClient api)
@@ -541,8 +537,8 @@ public sealed class AzdoPagingPr1CliTests
         public static ContinuationTokenHandler RepeatedToken() =>
             new(requestNumber => requestNumber <= 2 ? "same-page" : null);
 
-        public static ContinuationTokenHandler UniqueTokensForever() =>
-            new(requestNumber => $"page-{requestNumber}");
+        public static ContinuationTokenHandler MoreThanOneBatch() =>
+            new(requestNumber => requestNumber <= AzdoApiClient.MaxContinuationPages ? $"page-{requestNumber}" : null);
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {

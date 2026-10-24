@@ -8,8 +8,54 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+### Added
+
+- Query-backed `azdo_builds` / `hlx azdo builds`: definition-name resolution (including
+  duplicate-name unions), build-number globs, tags, result/reason and repository filters;
+  opt-in compact projection, stable output paging, full/all file delivery and exact recovery.
+- `hlx collect azdo-builds --query <file>` collects a captured build set into one schema-v2
+  manifest and existing-format snapshot. Complete paged query evidence supports credential-free
+  exact and provably covered-subset replay. Unattended thresholds checkpoint with an exact
+  same-query `--allow-large --resume` action; they do not cap interactive discovery.
+- Explicit all-test collection streams hash-verified source pages instead of refusing estimates
+  above 10,000; explicit all-attachment selection no longer requires a numeric unlock.
+
 ### Fixed
 
+- Build-set internal hard-error details use the same generic message as single-build
+  collection, never persisting unclassified exception text.
+- Failed discovery resumes record provider errors separately from the original capture;
+  retrying can continue that checkpoint without rediscovering its membership.
+- All-outcome collection rebuilds derived failed-result evidence from verified captured
+  pages after index eviction, with matching four-hour retention.
+- Build-set artifact byte scope/mode are normalized before planning and transfers.
+- Member result/attachment threshold recovery retains the aggregate export context and
+  chooses a fresh snapshot destination without enabling per-member exports.
+- Build-set resume reuses successful cached Helix files with member-local attempt IDs,
+  avoiding repeated transfers or replacing prior successes with download failures.
+- Build-set covered replay consistently uses the captured upper-time bound. Build-query
+  and streamed test-result pages now have immutable content-addressed identities, including
+  derived failed results; missing/corrupt streamed pages return classified cache errors.
+- Build-set resume rejects a missing manifest before discovery. Policy-only build/definition/
+  scan deferrals honor `--allow-incomplete`; discovery acquisition failures retain exit 2
+  rather than becoming internal hard errors.
+- Build-set byte budgets charge current-member Helix bytes once and preserve completed AzDO
+  transfer usage and reports when a later operation in the member's byte phase fails.
+- Build-set resume preserves the original checkpoint and full-data pages across newer
+  browsing captures, including fully discovered sets with deferred members. Resume verifies
+  manifest capture identity and membership hashes; missing or mismatched discovery returns
+  an explicit incomplete result with an exact, usable fresh-capture command.
+- Expired or completed streamed test-result checkpoints start fresh at offset zero;
+  only unexpired interrupted acquisitions continue from their verified prefix.
+- Streaming test-result acquisition records classified provider failures under the complete
+  results key, preserving the original error during offline snapshot replay.
+- Build-set collection retains only selected member IDs between passes, avoiding retention
+  of every full provider build object for large captures.
+- Build-set byte transfers use each member's build URL and isolate failures so later members
+  still run. Explicit set attachment allowances, policy exclusions, `--allow-incomplete`,
+  and per-member/aggregate exit codes retain their intended semantics.
+- Streamed test-result checkpoints and collected backing pages are verified before reuse
+  and completion; corrupt offline paged-list JSON retains the structured cache-error contract.
 - Artifact cache publication now retries Windows file-replacement contention and accepts
   an already-published destination only when its length and SHA-256 match, avoiding
   failures when concurrent readers omit delete sharing.

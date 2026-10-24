@@ -85,8 +85,22 @@ public sealed partial class CachingAzdoApiClient : IAzdoApiClient, IAzdoCachedBu
         return result;
     }
 
+    public async Task<AzdoBuildQueryResult> QueryBuildsAsync(string org, string project, AzdoBuildQueryRequest request,
+        Action<string>? progress = null, CancellationToken ct = default)
+    {
+        await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
+        return await new AzdoBuildQueryExecutor(_inner, _enabled ? _cache : null, _options)
+            .ExecuteAsync(org, project, request, progress, ct);
+    }
+
+    public Task<IReadOnlyList<AzdoBuildDefinition>> ListDefinitionsAsync(string org, string project, string name, CancellationToken ct = default)
+        => _inner.ListDefinitionsAsync(org, project, name, ct);
+
     public async Task<IReadOnlyList<AzdoBuild>> ListBuildsAsync(string org, string project, AzdoBuildFilter filter, CancellationToken ct = default)
     {
+        if (filter.DefinitionName is not null || filter.DefinitionIds is not null || filter.BuildNumber is not null || filter.Tags is not null ||
+            filter.Result is not null || filter.Reason is not null || filter.RepositoryId is not null || filter.RepositoryType is not null)
+            return (await QueryBuildsAsync(org, project, new AzdoBuildQueryRequest { Filter = filter, All = filter.Top is null }, ct: ct)).Results;
         if (!_enabled) return await _inner.ListBuildsAsync(org, project, filter, ct);
 
         await EnsureAuthTokenHashAsync(ct).ConfigureAwait(false);
@@ -463,6 +477,42 @@ public sealed partial class CachingAzdoApiClient : IAzdoApiClient, IAzdoCachedBu
             if (_options.EvalMode)
                 await ThrowFirstReplayedSnapshotErrorIfPresentAsync([completeKey, legacyAllKey], ct);
 
+            if (_inner is AzdoApiClient api)
+            {
+                return await CallAndMaybeRecordAsync<IReadOnlyList<AzdoTestResult>>(async () =>
+                {
+                    var checkpointKey = AzdoListCacheKeys.TestResultsWindow(_options, org, project, runId, normalizedOutcomes, 0, int.MaxValue);
+                    var saved = await _cache.GetMetadataAsync(checkpointKey, ct);
+                    var checkpoint = saved?.TrimStart().StartsWith('{') == true ? JsonSerializer.Deserialize<AzdoPagedEvidence>(saved, AzdoBuildQueries.JsonOptions) : null;
+                    if (checkpoint is not { PagedList: true, SourceComplete: false }) checkpoint = null;
+                    var pages = checkpoint?.Pages.ToList() ?? [];
+                    if (checkpoint is not null)
+                    {
+                        foreach (var _ in new AzdoPagedEvidenceList<AzdoTestResult>(_cache, completeKey, checkpoint))
+                            ct.ThrowIfCancellationRequested();
+                    }
+                    await foreach (var rows in api.StreamTestResultsAsync(org, project, runId, normalizedOutcomes, pages.Sum(p => p.Count), ct))
+                    {
+                        var body = JsonSerializer.Serialize(rows, AzdoBuildQueries.JsonOptions);
+                        var pk = completeKey[..^3] + "page:" + AzdoBuildQueries.Digest(body);
+                        await _cache.SetMetadataAsync(pk, body, CompletedTtl, ct);
+                        pages.Add(new AzdoCachedPage(pk, rows.Count, AzdoBuildQueries.Digest(body)));
+                        await _cache.SetMetadataAsync(checkpointKey, JsonSerializer.Serialize(new AzdoPagedEvidence(true, false, pages), AzdoBuildQueries.JsonOptions), CompletedTtl, ct);
+                    }
+                    var index = new AzdoPagedEvidence(true, true, pages);
+                    if (normalizedOutcomes?.Split(',').Contains("Failed", StringComparer.OrdinalIgnoreCase) == true && !normalizedOutcomes.Equals("Failed", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var failedKey = AzdoListCacheKeys.TestResultsComplete(_options, org, project, runId, "Failed");
+                        var failedIndex = await new AzdoPagedEvidenceList<AzdoTestResult>(_cache, completeKey, index)
+                            .FilterAsync(failedKey, result => string.Equals(result.Outcome, "Failed", StringComparison.OrdinalIgnoreCase), CompletedTtl, ct);
+                        await _cache.SetMetadataAsync(failedKey, JsonSerializer.Serialize(failedIndex, AzdoBuildQueries.JsonOptions), CompletedTtl, ct);
+                    }
+                    await _cache.SetMetadataAsync(completeKey, JsonSerializer.Serialize(index, AzdoBuildQueries.JsonOptions), CompletedTtl, ct);
+                    await _cache.SetMetadataAsync(checkpointKey, JsonSerializer.Serialize(index, AzdoBuildQueries.JsonOptions), CompletedTtl, ct);
+                    return new AzdoPagedEvidenceList<AzdoTestResult>(_cache, completeKey, index);
+                }, completeKey, TestTtl, static () => Task.FromResult(true), ct);
+            }
+
             var completeResult = await CallAndMaybeRecordAsync(
                 () => _inner.GetTestResultsAsync(org, project, runId, top, normalizedOutcomes, ct),
                 completeKey,
@@ -721,12 +771,12 @@ public sealed partial class CachingAzdoApiClient : IAzdoApiClient, IAzdoCachedBu
     /// Safely deserialize a cached JSON value. Returns default(T) if the cached
     /// data is corrupt or unparseable, treating it as a cache miss rather than crashing.
     /// </summary>
-    private static T? TryDeserialize<T>(string? cached, bool throwOnCorrupt = false, string? key = null)
+    private static T? TryDeserialize<T>(string? cached, bool throwOnCorrupt = false, string? key = null, JsonSerializerOptions? options = null)
     {
         if (cached is null) return default;
         try
         {
-            return JsonSerializer.Deserialize<T>(cached);
+            return JsonSerializer.Deserialize<T>(cached, options);
         }
         catch (JsonException ex)
         {
@@ -764,9 +814,14 @@ public sealed partial class CachingAzdoApiClient : IAzdoApiClient, IAzdoCachedBu
         await ThrowReplayedSnapshotErrorIfPresentAsync(keys[0], ct);
     }
 
-    private async Task<List<T>?> ReadCachedListAsync<T>(string key, CancellationToken ct, bool acceptEmpty = true)
+    private async Task<IReadOnlyList<T>?> ReadCachedListAsync<T>(string key, CancellationToken ct, bool acceptEmpty = true)
     {
         var cached = await _cache.GetMetadataAsync(key, ct);
+        if (cached?.TrimStart().StartsWith('{') == true)
+        {
+            var index = TryDeserialize<AzdoPagedEvidence>(cached, _options.EvalMode, key, AzdoBuildQueries.JsonOptions);
+            if (index is { PagedList: true, SourceComplete: true }) return new AzdoPagedEvidenceList<T>(_cache, key, index);
+        }
         var deserialized = TryDeserialize<List<T>>(cached, _options.EvalMode, key);
         if (deserialized is null)
             return null;

@@ -190,7 +190,25 @@ HLX_EVAL_SNAPSHOT=/tmp/my-snapshot hlx mcp
 
 The exported manifest lives at `manifest/hlx-collect-manifest.json`; read it to distinguish complete snapshots from declared gaps before handing the snapshot to an offline scanner. See the [scanner workflow](docs/cli-reference.md#scanner-workflow) and [collect command reference](docs/cli-reference.md#collect-commands).
 
-All-result collection is opt-in for large builds: `--test-scope all` checks the build-wide test-run totals before acquiring results and skips estimates above 10,000 unless an explicit sufficient `--max-test-results` is supplied. For example, use `--test-scope all --max-test-results 2000000` for a build with up to two million estimated results. Attachment metadata remains limited to diagnostic outcomes by default (at most 1,000 requests), independently of result scope. Broader coverage requires `--test-attachment-scope all --max-test-attachments <budget>`. Refused/limited coverage stays `complete=false` with a policy skip and exit 2; `--allow-incomplete` only changes the exit code for policy-only gaps. Collection progress and five-second acquisition heartbeats go to stderr, keeping `--json` stdout clean.
+Explicit `--test-scope all` streams every supported result outcome through cache-backed pages, including builds above 10,000 results. It does not request passed-result attachments: diagnostic attachment selection remains the default. Explicit `--test-attachment-scope all` is independently honored without a numeric unlock. Unattended attachment fan-out can defer with an exact same-request `--allow-large --resume` command. Progress and acquisition heartbeats go to stderr; JSON stdout stays parseable.
+
+### Query-backed build sets
+
+`hlx azdo builds` / `azdo_builds` discover builds by pipeline exact name/glob (duplicate names form a union), build number/glob, required tags, result/reason, repository, PR/branch and queue/start/finish time. Full fields and the interactive top=20 default are preserved; `--projection compact` is opt-in. CLI JSON adds source completeness, exact counts when known, cache provenance and stable `viewId` continuation. Full/all payloads remain obtainable through `--output`, file delivery and `hlx_read_evidence`; interactive queries have no collector quota.
+
+```bash
+hlx azdo builds --definition-name '*wasm*' --result failed --projection compact --json
+hlx azdo builds --pr-number 12345 --repository-id dotnet/runtime --repository-type GitHub --all --output builds.json
+hlx collect azdo-builds --query build-query.json --cache-dir ./build-cache --export ./build-snapshot --json
+```
+
+The strict version-1 query JSON contains semantic filters, not paging/output settings. Build-set collection freezes discovery before member evidence, persists one schema-v2 manifest, then exports one existing-format snapshot. Metadata-only scope is available with `--build-scope metadata`. Complete query evidence replays credential-free at different limits/projections and supports provably narrower queries (for example, failed-only from an all-result PR set); uncovered scope returns `not_in_snapshot` with an exact live recollection/new-snapshot action.
+
+The unattended defaults—50 builds, 25 definitions, 5,000 scanned builds, 10,000 run-wide test results and 1,000 attachment requests—are planning safeguards, **not access gates**. Explicit larger allowances are honored; `--allow-large --resume` continues the same captured query/checkpoint and waives logical thresholds, not auth, integrity or actual storage checks. See the [CLI reference](docs/cli-reference.md#hlx-collect-azdo-builds---query-path-options) for query format and recovery.
+
+Build-set resume preserves discovery checkpoints even after provider failures and reuses
+successful cached Helix file transfers. Result/attachment recovery commands retain the
+aggregate export context and select a fresh destination; existing snapshots are never overwritten.
 
 ## MCP Tools
 
@@ -213,7 +231,7 @@ All-result collection is opt-in for large builds: `--test-scope all` checks the 
 | Tool | Description |
 |------|-------------|
 | `azdo_build` | Build details (status, result, branch, timing, URL). Accepts URLs or integer IDs. |
-| `azdo_builds` | List recent builds. Filter by branch, PR, definition, status, or time range (`minTime`/`maxTime`/`queryOrder`). |
+| `azdo_builds` | Discover builds by pipeline name/glob, build number, tags, result/reason, repository, PR/branch and time; full/compact pages or verified file delivery. |
 | `azdo_timeline` | Triage an AzDO build timeline: errors/Helix-first Jobs/Tasks, short deduplicated issue previews (with counts), log IDs, and ancestor context. Defaults to `projection=triage` (at most 10 rows, Phase rows omitted); `filter` defaults to `failed` for ordinary triage, or `all` once an explicit `recordId`/`parentId`/`type`/`result`/`state`/`name` selector is given with no preset. Also supports `projection=compact\|full\|summary`, paging via `offset`/`limit`/`viewId`/`next`, and `maxResponseBytes` (default 12288, inline shaping target — not a data-access ceiling). Full/complete selections stay reachable via `delivery=file`/`all` and `hlx_read_evidence`, never refused. |
 | `azdo_log` | Log content for a specific build step (last N lines, default 500). |
 | `azdo_search_log` | Search a specific build log or all ranked build logs for a pattern with context lines. |

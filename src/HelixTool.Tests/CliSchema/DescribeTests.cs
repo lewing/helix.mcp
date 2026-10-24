@@ -169,7 +169,24 @@ public class DescribeTests
             parameter => AssertParameter(parameter, "maxTime", "DateTimeOffset?", "null", isPositional: false),
             parameter => AssertParameter(parameter, "queryOrder", "String", "null", isPositional: false),
             parameter => AssertParameter(parameter, "json", "Boolean", "false", isPositional: false),
-            parameter => AssertParameter(parameter, "schema", "Boolean", "false", isPositional: false));
+            parameter => AssertParameter(parameter, "schema", "Boolean", "false", isPositional: false),
+            parameter => AssertParameter(parameter, "definitionName", "String", "null", isPositional: false),
+            parameter => AssertParameter(parameter, "buildNumber", "String", "null", isPositional: false),
+            parameter => AssertParameter(parameter, "tags", "String", "null", isPositional: false),
+            parameter => AssertParameter(parameter, "result", "String", "null", isPositional: false),
+            parameter => AssertParameter(parameter, "reason", "String", "null", isPositional: false),
+            parameter => AssertParameter(parameter, "repositoryId", "String", "null", isPositional: false),
+            parameter => AssertParameter(parameter, "repositoryType", "String", "null", isPositional: false),
+            parameter => AssertParameter(parameter, "projection", "String", "full", isPositional: false),
+            parameter => AssertParameter(parameter, "offset", "Int32", "0", isPositional: false),
+            parameter => AssertParameter(parameter, "limit", "Int32?", "null", isPositional: false),
+            parameter => AssertParameter(parameter, "viewId", "String", "null", isPositional: false),
+            parameter => AssertParameter(parameter, "all", "Boolean", "false", isPositional: false),
+            parameter => AssertParameter(parameter, "delivery", "String", "auto", isPositional: false),
+            parameter => AssertParameter(parameter, "output", "String", "null", isPositional: false),
+            parameter => AssertParameter(parameter, "allowLarge", "Boolean", "false", isPositional: false),
+            parameter => AssertParameter(parameter, "allowTruncated", "Boolean", "false", isPositional: false),
+            parameter => AssertParameter(parameter, "rawJson", "Boolean", "false", isPositional: false));
     }
 
     private static CommandRegistry.CommandInfo GetCommand(string route)

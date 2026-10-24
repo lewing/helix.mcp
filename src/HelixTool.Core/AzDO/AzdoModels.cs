@@ -17,6 +17,9 @@ public sealed record AzdoListResponse<T>
 /// <summary>AzDO build (GET _apis/build/builds/{id}).</summary>
 public sealed record AzdoBuild
 {
+    [JsonExtensionData]
+    public IDictionary<string, System.Text.Json.JsonElement>? Properties { get; init; }
+
     [JsonPropertyName("id")]
     public int Id { get; init; }
 
@@ -96,6 +99,8 @@ public sealed record AzdoBuildRepository
 /// <summary>Nested build definition reference.</summary>
 public sealed record AzdoBuildDefinition
 {
+    [JsonPropertyName("path")]
+    public string? Path { get; init; }
     [JsonPropertyName("id")]
     public int Id { get; init; }
 
@@ -156,11 +161,26 @@ public sealed record AzdoTriggerInfo
 /// <summary>Query parameters for filtering builds (client-side, not serialized from API).</summary>
 public sealed record AzdoBuildFilter
 {
+    public string? DefinitionName { get; init; }
+    public IReadOnlyList<int>? DefinitionIds { get; init; }
+    public string? BuildNumber { get; init; }
+    public IReadOnlyList<string>? Tags { get; init; }
+    public string? Result { get; init; }
+    public string? Reason { get; init; }
+    public string? RepositoryId { get; init; }
+    public string? RepositoryType { get; init; }
     public string? PrNumber { get; init; }
     public string? Branch { get; init; }
     public int? DefinitionId { get; init; }
     public int? Top { get; init; }
+    [JsonPropertyName("status")]
     public string? StatusFilter { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? StatusApplied { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TimeField { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CompatibilityStrategy { get; init; }
     public DateTimeOffset? MinTime { get; init; }
     public DateTimeOffset? MaxTime { get; init; }
     public string? QueryOrder { get; init; }

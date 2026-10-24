@@ -111,24 +111,24 @@ public class LimitedResultsTests
     }
 
     [Fact]
-    public async Task Builds_WhenResultCountMatchesTop_SetsTruncatedMetadata()
+    public async Task Builds_WhenProviderExhaustsExactlyAtTop_IsComplete()
     {
         var mockApi = Substitute.For<IAzdoApiClient>();
         mockApi.ListBuildsAsync("dnceng-public", "public", Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>())
             .Returns([
-                new AzdoBuild { Id = 1, BuildNumber = "b1" },
-                new AzdoBuild { Id = 2, BuildNumber = "b2" },
-                new AzdoBuild { Id = 3, BuildNumber = "b3" }
+                new AzdoBuild { Id = 1, BuildNumber = "b1", QueueTime = DateTimeOffset.UnixEpoch },
+                new AzdoBuild { Id = 2, BuildNumber = "b2", QueueTime = DateTimeOffset.UnixEpoch },
+                new AzdoBuild { Id = 3, BuildNumber = "b3", QueueTime = DateTimeOffset.UnixEpoch }
             ]);
 
         var tools = CreateTools(mockApi);
 
         var result = await tools.Builds(top: 3);
 
-        Assert.True(result.Truncated);
-        Assert.NotNull(result.Note);
-        Assert.Contains("limited to 3", result.Note);
-        Assert.Contains("higher 'top' value", result.Note);
+        Assert.False(result.Truncated);
+        Assert.True(result.SourceComplete);
+        Assert.Equal(3, result.Total);
+        Assert.Null(result.Next);
     }
 
     [Fact]
@@ -137,8 +137,8 @@ public class LimitedResultsTests
         var mockApi = Substitute.For<IAzdoApiClient>();
         mockApi.ListBuildsAsync("dnceng-public", "public", Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>())
             .Returns([
-                new AzdoBuild { Id = 1, BuildNumber = "b1" },
-                new AzdoBuild { Id = 2, BuildNumber = "b2" }
+                new AzdoBuild { Id = 1, BuildNumber = "b1", QueueTime = DateTimeOffset.UnixEpoch },
+                new AzdoBuild { Id = 2, BuildNumber = "b2", QueueTime = DateTimeOffset.UnixEpoch }
             ]);
 
         var tools = CreateTools(mockApi);
