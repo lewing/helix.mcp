@@ -206,6 +206,10 @@ The strict version-1 query JSON contains semantic filters, not paging/output set
 
 The unattended defaults—50 builds, 25 definitions, 5,000 scanned builds, 10,000 run-wide test results and 1,000 attachment requests—are planning safeguards, **not access gates**. Explicit larger allowances are honored; `--allow-large --resume` continues the same captured query/checkpoint and waives logical thresholds, not auth, integrity or actual storage checks. See the [CLI reference](docs/cli-reference.md#hlx-collect-azdo-builds---query-path-options) for query format and recovery.
 
+Build-set resume preserves discovery checkpoints even after provider failures and reuses
+successful cached Helix file transfers. Result/attachment recovery commands retain the
+aggregate export context and select a fresh destination; existing snapshots are never overwritten.
+
 ## MCP Tools
 
 ### Helix Tools (9)

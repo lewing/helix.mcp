@@ -503,20 +503,9 @@ public sealed partial class CachingAzdoApiClient : IAzdoApiClient, IAzdoCachedBu
                     if (normalizedOutcomes?.Split(',').Contains("Failed", StringComparer.OrdinalIgnoreCase) == true && !normalizedOutcomes.Equals("Failed", StringComparison.OrdinalIgnoreCase))
                     {
                         var failedKey = AzdoListCacheKeys.TestResultsComplete(_options, org, project, runId, "Failed");
-                        var failedPages = new List<AzdoCachedPage>();
-                        foreach (var page in pages)
-                        {
-                            var sourceJson = await _cache.GetMetadataIgnoringTtlAsync(page.Key, ct) ?? throw new InvalidDataException("Test-result page disappeared.");
-                            if (AzdoBuildQueries.Digest(sourceJson) != page.Sha256) throw new InvalidDataException("Test-result page changed before deriving failed results.");
-                            var failed = JsonSerializer.Deserialize<AzdoTestResult[]>(sourceJson, AzdoBuildQueries.JsonOptions)!
-                                .Where(r => string.Equals(r.Outcome, "Failed", StringComparison.OrdinalIgnoreCase)).ToArray();
-                            if (failed.Length == 0) continue;
-                            var body = JsonSerializer.Serialize(failed, AzdoBuildQueries.JsonOptions);
-                            var fk = failedKey[..^3] + "page:" + AzdoBuildQueries.Digest(body);
-                            await _cache.SetMetadataAsync(fk, body, CompletedTtl, ct);
-                            failedPages.Add(new AzdoCachedPage(fk, failed.Length, AzdoBuildQueries.Digest(body)));
-                        }
-                        await _cache.SetMetadataAsync(failedKey, JsonSerializer.Serialize(new AzdoPagedEvidence(true, true, failedPages), AzdoBuildQueries.JsonOptions), CompletedTtl, ct);
+                        var failedIndex = await new AzdoPagedEvidenceList<AzdoTestResult>(_cache, completeKey, index)
+                            .FilterAsync(failedKey, result => string.Equals(result.Outcome, "Failed", StringComparison.OrdinalIgnoreCase), CompletedTtl, ct);
+                        await _cache.SetMetadataAsync(failedKey, JsonSerializer.Serialize(failedIndex, AzdoBuildQueries.JsonOptions), CompletedTtl, ct);
                     }
                     await _cache.SetMetadataAsync(completeKey, JsonSerializer.Serialize(index, AzdoBuildQueries.JsonOptions), CompletedTtl, ct);
                     await _cache.SetMetadataAsync(checkpointKey, JsonSerializer.Serialize(index, AzdoBuildQueries.JsonOptions), CompletedTtl, ct);

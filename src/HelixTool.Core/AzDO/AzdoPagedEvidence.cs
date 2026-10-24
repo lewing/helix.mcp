@@ -36,6 +36,23 @@ internal sealed class AzdoPagedEvidenceList<T>(ICacheStore cache, string complet
                 $"Cached evidence page '{page.Key}' is missing or corrupt: {ex.Message}"));
         }
     }
+    internal async Task<AzdoPagedEvidence> FilterAsync(string targetKey, Func<T, bool> predicate, TimeSpan retention, CancellationToken ct)
+    {
+        var pages = new List<AzdoCachedPage>();
+        foreach (var page in index.Pages)
+        {
+            ct.ThrowIfCancellationRequested();
+            var rows = Read(page).Where(predicate).ToArray();
+            if (rows.Length == 0) continue;
+            var body = JsonSerializer.Serialize(rows, AzdoBuildQueries.JsonOptions);
+            var hash = AzdoBuildQueries.Digest(body);
+            var key = targetKey[..^3] + "page:" + hash;
+            await cache.SetMetadataAsync(key, body, retention, ct);
+            pages.Add(new AzdoCachedPage(key, rows.Length, hash));
+        }
+        return new AzdoPagedEvidence(true, index.SourceComplete, pages);
+    }
+
     public T this[int position]
     {
         get

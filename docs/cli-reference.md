@@ -746,9 +746,17 @@ changing criteria is a new collection. Progress goes to stderr; cancellation ret
 Resume reads a capture-specific checkpoint before newer browsing captures and verifies its
 capture identity, manifest SHA-256 and backing pages. Refreshing the same query cannot replace
 that checkpoint, including when discovery finished but only some members were collected.
+A provider failure while resuming discovery is recorded separately and does not delete the
+capture; retry the same resume after resolving access or service errors. Successful cached
+Helix files are reused using each member's prior attempts instead of downloading again.
+Member test-result/attachment deferrals also choose a fresh aggregate export destination;
+per-member exports remain disabled.
 Build-query and streamed test-result pages (including derived failed results) use
 content-addressed identities, so concurrent captures cannot overwrite another index's pages.
 Missing or corrupt streamed pages are classified cache acquisition errors, not internal failures.
+If only the derived failed-result index was evicted, all-outcome collection rebuilds it from
+verified captured pages without fetching the results again; the derived pages/index share
+four-hour retention. Artifact byte scope/mode values are case-insensitive in both collection passes.
 Covered offline queries that omit an upper-time bound use the source's captured ceiling.
 `--resume` requires the original manifest to exist before discovery starts; if it is missing,
 omit `--resume` to start a fresh capture.

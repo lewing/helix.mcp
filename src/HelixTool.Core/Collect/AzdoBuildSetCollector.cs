@@ -58,7 +58,11 @@ public sealed partial class AzdoBuildCollector
     public async Task<CollectResult> CollectAzdoBuildsAsync(CollectBuildSetPolicy set,
         Action<string>? progress = null, CancellationToken ct = default)
     {
-        var policy = set.Collection;
+        var policy = set.Collection with
+        {
+            ArtifactByteScope = set.Collection.ArtifactByteScope.ToLowerInvariant(),
+            ArtifactByteMode = set.Collection.ArtifactByteMode.ToLowerInvariant()
+        };
         ValidatePolicy(policy);
         if (_cacheOptions.EvalMode) throw new InvalidOperationException("Collection requires live mode; unset HLX_EVAL_SNAPSHOT and export a new snapshot.");
         if (_cacheOptions.MaxSizeBytes <= 0) throw new InvalidOperationException("Build-set collection requires caching.");
@@ -109,6 +113,16 @@ public sealed partial class AzdoBuildCollector
             if (previous?.Kind != "hlx.collect.azdo-builds" || previous.Source.Org != set.Query.Org || previous.Source.Project != set.Query.Project ||
                 priorSemantic is null || JsonSerializer.Serialize(priorSemantic, AzdoBuildQueries.JsonOptions) != JsonSerializer.Serialize(set.Query, AzdoBuildQueries.JsonOptions))
                 throw new ArgumentException("Resume requires the original semantic query and build-set manifest.");
+        }
+        IReadOnlyDictionary<string, CollectFetchAttempt> MemberPriorAttempts(int buildId)
+        {
+            var prefix = $"build:{buildId}:";
+            return previous?.Attempts.Where(a => a.Id.StartsWith(prefix, StringComparison.Ordinal))
+                .ToDictionary(a => a.Id[prefix.Length..], a => a with
+                {
+                    Id = a.Id[prefix.Length..],
+                    ParentId = a.ParentId?.StartsWith(prefix, StringComparison.Ordinal) == true ? a.ParentId[prefix.Length..] : a.ParentId
+                }, StringComparer.Ordinal) ?? new Dictionary<string, CollectFetchAttempt>();
         }
         var attempts = new List<CollectFetchAttempt>();
         var incomplete = new List<CollectIncompleteDetail>();
@@ -306,11 +320,10 @@ public sealed partial class AzdoBuildCollector
                 else
                 {
                     var prefix = $"build:{buildId}:";
-                    var prior = previous?.Attempts.Where(a => a.Id.StartsWith(prefix, StringComparison.Ordinal))
-                        .ToDictionary(a => a.Id[prefix.Length..], a => a, StringComparer.Ordinal);
+                    var prior = MemberPriorAttempts(buildId);
                     var memberPolicy = policy with
                     {
-                        BuildIdOrUrl = url, ManifestPath = path, PersistManifest = false, ExportPath = null, PriorAttempts = prior, SetBudget = setBudget,
+                        BuildIdOrUrl = url, ManifestPath = path, PersistManifest = false, ExportPath = null, RecoveryExportPath = policy.ExportPath, PriorAttempts = prior, SetBudget = setBudget,
                         MaxTestAttachments = policy.MaxTestAttachments ?? set.MaxSetTestAttachments,
                         DownloadAzdoArtifacts = null, DownloadArtifactMembers = null, DownloadTestAttachments = null, DownloadHelixFiles = null,
                         ArtifactByteScope = "auto", ArtifactByteMode = "auto"
@@ -342,6 +355,7 @@ public sealed partial class AzdoBuildCollector
                         MaxTotalBytes = Math.Max(0, policy.MaxTotalBytes - byteCount),
                         MaxTotalStreamBytes = Math.Max(0, policy.MaxTotalStreamBytes - streamCount)
                     };
+                    var prior = MemberPriorAttempts(buildId);
                     var byteAttempts = new List<CollectFetchAttempt>();
                     var downloaded = new List<AzdoDownloadReport>();
                     try
@@ -350,11 +364,11 @@ public sealed partial class AzdoBuildCollector
                         if (policy.DownloadHelixFiles is not null || policy.ArtifactByteScope != "auto" || policy.ArtifactByteMode != "auto")
                         {
                             var preparation = new List<CollectFetchAttempt>();
-                            plan = await CollectEvidencePlanPagesAsync(preparation, new Dictionary<string, CollectFetchAttempt>(), incomplete,
+                            plan = await CollectEvidencePlanPagesAsync(preparation, prior, incomplete,
                                 bytePolicy, set.Query.Org, set.Query.Project, buildId, ct);
                             if (policy.DownloadHelixFiles is not null && plan is not null)
                             {
-                                await CollectHelixSuggestedFetchesAsync(preparation, new Dictionary<string, CollectFetchAttempt>(), bytePolicy, plan, ct);
+                                await CollectHelixSuggestedFetchesAsync(preparation, prior, bytePolicy, plan, ct);
                                 var helixBytes = preparation.Where(a => a.Operation == "download_helix_file").ToArray();
                                 byteAttempts.AddRange(helixBytes);
                                 var used = helixBytes.Where(a => a.Outcome is "ok" or "cached").Sum(a => a.Bytes ?? 0);
@@ -450,9 +464,9 @@ public sealed partial class AzdoBuildCollector
             await SaveAsync();
             return new CollectResult(manifest, path, manifest.Snapshot.Path);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            incomplete.Add(new CollectIncompleteDetail { Code = "collector_hard_error", Message = ex.Message });
+            incomplete.Add(new CollectIncompleteDetail { Code = "collector_hard_error", Message = UnclassifiedInternalErrorMessage });
             finished = true;
             await SaveAsync();
             manifest = manifest with { ExitCode = 1 }; await WriteManifestAsync(path, manifest, ct);

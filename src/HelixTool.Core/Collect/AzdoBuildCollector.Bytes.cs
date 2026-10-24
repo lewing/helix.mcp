@@ -220,8 +220,8 @@ public sealed partial class AzdoBuildCollector
         if (!argv.Contains("--resume")) argv.Add("--resume");
         Set("--cache-dir", _cacheOptions.GetBaseCacheRoot());
         Set("--manifest", ResolveManifestPath(policy));
-        if (policy.ExportPath is not null)
-            Set("--export", Path.GetFullPath(policy.ExportPath) + $".resumed-{Guid.NewGuid():N}");
+        if ((policy.ExportPath ?? policy.RecoveryExportPath) is { } exportPath)
+            Set("--export", Path.GetFullPath(exportPath) + $".resumed-{Guid.NewGuid():N}");
         return new[] { "hlx" }.Concat(argv.Select(Acquisition.AcquisitionRedaction.RedactSensitiveUrls)).ToArray();
 
         void Add(string flag, string? value) { if (value is not null) { argv.Add(flag); argv.Add(value); } }

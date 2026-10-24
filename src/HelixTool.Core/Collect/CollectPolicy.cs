@@ -5,6 +5,7 @@ namespace HelixTool.Core.Collect;
 public sealed record CollectPolicy
 {
     internal CollectSetBudget? SetBudget { get; init; }
+    internal string? RecoveryExportPath { get; init; }
     internal bool PersistManifest { get; init; } = true;
     internal IReadOnlyDictionary<string, CollectFetchAttempt>? PriorAttempts { get; init; }
 

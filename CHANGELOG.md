@@ -22,6 +22,17 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ### Fixed
 
+- Build-set internal hard-error details use the same generic message as single-build
+  collection, never persisting unclassified exception text.
+- Failed discovery resumes record provider errors separately from the original capture;
+  retrying can continue that checkpoint without rediscovering its membership.
+- All-outcome collection rebuilds derived failed-result evidence from verified captured
+  pages after index eviction, with matching four-hour retention.
+- Build-set artifact byte scope/mode are normalized before planning and transfers.
+- Member result/attachment threshold recovery retains the aggregate export context and
+  chooses a fresh snapshot destination without enabling per-member exports.
+- Build-set resume reuses successful cached Helix files with member-local attempt IDs,
+  avoiding repeated transfers or replacing prior successes with download failures.
 - Build-set covered replay consistently uses the captured upper-time bound. Build-query
   and streamed test-result pages now have immutable content-addressed identities, including
   derived failed results; missing/corrupt streamed pages return classified cache errors.

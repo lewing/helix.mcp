@@ -442,7 +442,7 @@ public sealed class AzdoBuildQueryExecutor(IAzdoApiClient client, ICacheStore? c
                 catch (HlxAcquisitionException ex)
                 {
                     if (cache is not null && AcquisitionFailureRecorderPolicy.IsRecordable(ex.Error))
-                        await cache.SetAcquisitionErrorAsync(key, ex.Error, Retention, ct);
+                        await cache.SetAcquisitionErrorAsync(source is null ? key : key + ":error", ex.Error, Retention, ct);
                     throw;
                 }
                 scanned += page.Results.Count;

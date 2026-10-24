@@ -56,6 +56,8 @@ public sealed partial class AzdoBuildCollector
         _cacheStore = cacheStore;
     }
 
+    private const string UnclassifiedInternalErrorMessage = "hlx collect failed unexpectedly due to an unclassified internal error.";
+
     /// <summary>
     /// Collects evidence for one AzDO build and always returns a <see cref="CollectResult"/>
     /// rather than throwing, except for genuine caller cancellation (an <see cref="OperationCanceledException"/>
@@ -486,7 +488,7 @@ public sealed partial class AzdoBuildCollector
                 // carry secrets (tokens, SAS query strings) or a raw stack trace, and this message
                 // is persisted to disk in the manifest. Classified AcquisitionError messages are
                 // already redacted by AcquisitionErrorFactory/HlxAcquisitionException and are safe.
-                "hlx collect failed unexpectedly due to an unclassified internal error.");
+                UnclassifiedInternalErrorMessage);
 
         var now = DateTimeOffset.UtcNow;
         var hardErrorAttempt = new CollectFetchAttempt
@@ -801,13 +803,14 @@ public sealed partial class AzdoBuildCollector
             if (allResults)
             {
                 var failedCacheKey = AzdoListCacheKeys.TestResultsComplete(_cacheOptions, org, project, run.Id, "Failed");
-                var failedSerialized = resultsEnvelope.Results is AzdoPagedEvidenceList<AzdoTestResult>
-                    ? await _cacheStore.GetMetadataIgnoringTtlAsync(failedCacheKey, ct) ?? throw new InvalidDataException("Derived failed-result index is missing.")
+                var failedSerialized = resultsEnvelope.Results is AzdoPagedEvidenceList<AzdoTestResult> pagedResults
+                    ? JsonSerializer.Serialize(await pagedResults.FilterAsync(failedCacheKey,
+                        result => string.Equals(result.Outcome, "Failed", StringComparison.OrdinalIgnoreCase), TimeSpan.FromHours(4), ct), AzdoBuildQueries.JsonOptions)
                     : JsonSerializer.Serialize(resultsEnvelope.Results.Where(result => string.Equals(result.Outcome, "Failed", StringComparison.OrdinalIgnoreCase)), s_jsonOptions);
                 await _cacheStore.SetMetadataAsync(
                     failedCacheKey,
                     failedSerialized,
-                    TestMetadataTtl,
+                    TimeSpan.FromHours(4),
                     ct);
                 var now = DateTimeOffset.UtcNow;
                 AppendAttempt(localAttempts, new CollectFetchAttempt
