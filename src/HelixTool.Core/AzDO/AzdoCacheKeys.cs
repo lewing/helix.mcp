@@ -53,7 +53,11 @@ internal static class AzdoCacheKeys
     public static string HashFilter(AzdoBuildFilter filter)
     {
         var normalized = AzdoBuildFilterNormalizer.Normalize(filter);
-        var json = JsonSerializer.Serialize(normalized, s_stableCacheKeyOptions);
+        var json = JsonSerializer.Serialize(new
+        {
+            normalized.PrNumber, normalized.Branch, normalized.DefinitionId, normalized.Top,
+            normalized.StatusFilter, normalized.MinTime, normalized.MaxTime, normalized.QueryOrder
+        }, s_stableCacheKeyOptions);
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(json));
         return Convert.ToHexString(hash)[..12].ToLowerInvariant();
     }
@@ -179,7 +183,8 @@ internal static class AzdoCacheKeys
         return suffix[0] switch
         {
             "build" => suffix.Length == 2 && IsInteger(suffix[1]),
-            "builds" => suffix.Length == 2,
+            "builds" => suffix.Length == 2 || IsBuildQuerySuffix(suffix, "v2"),
+            "definitions" => IsBuildQuerySuffix(suffix, "v1"),
             "timeline" => suffix.Length == 2 && IsInteger(suffix[1]),
             "log" => suffix.Length == 3 && IsInteger(suffix[1]) && IsInteger(suffix[2]),
             "log-fresh" => suffix.Length == 3 && IsInteger(suffix[1]) && IsInteger(suffix[2]),
@@ -202,6 +207,12 @@ internal static class AzdoCacheKeys
         };
     }
 
+    private static bool IsBuildQuerySuffix(ReadOnlySpan<string> s, string version)
+        => s.Length >= 4 && s[1] == version && IsPathHash(s[2]) &&
+           (s.Length == 4 && s[3] == "all" || s.Length == 5 && s[3] == "page" && IsInteger(s[4]) ||
+            s.Length == 5 && s[0] == "builds" && s[3] == "capture" && IsPathHash(s[4]) ||
+            s.Length == 6 && s[3] == "window" && IsInteger(s[4]) && IsInteger(s[5]));
+
     private static bool IsPathHash(string value) => value.Length == 64 && value.All(Uri.IsHexDigit);
     private static bool IsAttachmentByteSuffix(ReadOnlySpan<string> suffix, bool member, bool catalog)
         => suffix.Length == (member ? 8 : 7) && suffix[1] == "v1" && IsInteger(suffix[2])
@@ -222,7 +233,8 @@ internal static class AzdoCacheKeys
     private static bool IsValidTestResultsSuffix(ReadOnlySpan<string> suffix)
         => suffix.Length == 5 && suffix[1] == "v2" && IsInteger(suffix[2]) && IsInteger(suffix[3])
         || suffix.Length == 5 && suffix[1] == "v3" && IsInteger(suffix[2]) && suffix[4] == "all"
-        || suffix.Length == 7 && suffix[1] == "v3" && IsInteger(suffix[2]) && suffix[4] == "window" && IsInteger(suffix[5]) && IsInteger(suffix[6]);
+        || suffix.Length == 7 && suffix[1] == "v3" && IsInteger(suffix[2]) && suffix[4] == "window" && IsInteger(suffix[5]) && IsInteger(suffix[6])
+        || suffix.Length == 6 && suffix[1] == "v3" && IsInteger(suffix[2]) && suffix[4] == "page" && IsInteger(suffix[5]);
 
     private static bool IsValidTestAttachmentsSuffix(ReadOnlySpan<string> suffix)
         => suffix.Length == 4 && IsInteger(suffix[1]) && IsInteger(suffix[2]) && IsInteger(suffix[3])

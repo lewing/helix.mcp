@@ -4,6 +4,11 @@ namespace HelixTool.Core.Collect;
 
 public sealed record CollectPolicy
 {
+    internal CollectSetBudget? SetBudget { get; init; }
+    internal string? RecoveryExportPath { get; init; }
+    internal bool PersistManifest { get; init; } = true;
+    internal IReadOnlyDictionary<string, CollectFetchAttempt>? PriorAttempts { get; init; }
+
     public const long DefaultMaxTestResults = 10_000;
     public const long DefaultMaxTestAttachments = 1_000;
 
@@ -75,3 +80,13 @@ public sealed record CollectCompleteness(
     bool Complete,
     int ExitCode,
     IReadOnlyList<CollectIncompleteDetail> IncompleteDetails);
+
+internal sealed class CollectSetBudget(long maxResults, long maxAttachments)
+{
+    private long _results;
+    private long _attachments;
+    public long RemainingResults => Math.Max(0, maxResults - Interlocked.Read(ref _results));
+    public long RemainingAttachments => Math.Max(0, maxAttachments - Interlocked.Read(ref _attachments));
+    public void AddResults(int count) => Interlocked.Add(ref _results, count);
+    public void AddAttachments(int count) => Interlocked.Add(ref _attachments, count);
+}

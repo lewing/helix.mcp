@@ -6,6 +6,15 @@ namespace HelixTool.Core.AzDO;
 /// </summary>
 public interface IAzdoApiClient
 {
+    async Task<AzdoProviderPage<AzdoBuild>> GetBuildsPageAsync(string org, string project, AzdoBuildFilter filter,
+        string? continuationToken = null, CancellationToken ct = default)
+        => new(await ListBuildsAsync(org, project, filter with { Top = null }, ct), null);
+
+    Task<IReadOnlyList<AzdoBuildDefinition>> ListDefinitionsAsync(string org, string project, string name, CancellationToken ct = default)
+        => throw new NotSupportedException("Definition lookup is unavailable from this client.");
+    Task<AzdoBuildQueryResult> QueryBuildsAsync(string org, string project, AzdoBuildQueryRequest request,
+        Action<string>? progress = null, CancellationToken ct = default)
+        => new AzdoBuildQueryExecutor(this).ExecuteAsync(org, project, request, progress, ct);
     Task<IReadOnlyList<AzdoTestAttachment>> GetRunTestAttachmentsAsync(string org, string project, int runId, int top = 50, CancellationToken ct = default)
         => throw new NotSupportedException("Run attachments are unavailable from this client.");
     Task<AzdoByteStream> OpenArtifactAsync(string org, string project, int buildId, AzdoBuildArtifact artifact,

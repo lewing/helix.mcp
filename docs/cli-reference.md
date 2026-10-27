@@ -131,17 +131,38 @@ hlx azdo build 12345678
 hlx azdo build "https://dev.azure.com/dnceng-public/public/_build/results?buildId=12345678"
 ```
 
-### `hlx azdo builds [--branch B] [--pr-number N] [--definition-id D] [--status S] [--top N] [--min-time ISO8601] [--max-time ISO8601] [--query-order ORDER]`
+### `hlx azdo builds [options]`
 
-List recent builds for a project. Defaults to `dnceng-public/public`.
+Discover builds; defaults remain `dnceng-public/public`, full fields and top=20.
 
 ```bash
-hlx azdo builds --branch main
-hlx azdo builds --pr-number 12345 --top 5
-hlx azdo builds --min-time 2026-06-01T00:00:00Z --max-time 2026-06-24T00:00:00Z --query-order finishTimeDescending
+hlx azdo builds --branch main --json
+hlx azdo builds --definition-name '*wasm*' --result failed --projection compact --json
+hlx azdo builds --pr-number 12345 --repository-id dotnet/runtime --repository-type GitHub --all --output builds.json
 ```
 
-`--min-time` and `--max-time` filter the time field determined by `--query-order`. For example, `--query-order finishTimeDescending` means both bounds apply to finish time. Default `--query-order` is `queueTimeDescending`.
+| Flags | Meaning |
+|---|---|
+| `--org`, `--project` | AzDO source context; retained in continuation and full build URLs. |
+| `--branch`, `--pr-number` | Mutually exclusive; short branches normalize to `refs/heads/` without changing case. PR candidates use `refs/pull/N/merge` and validate returned PR metadata. A PR number alone is not repository-global identity. |
+| `--definition-id`, `--definition-name` | Mutually exclusive. Names use exact equality unless `*`/`?` appears; duplicate exact names form a union with IDs/paths, zero matches is complete empty. |
+| `--build-number` | Exact/prefix provider search; other globs are applied locally before logical paging. |
+| `--tags <csv>` | Required tags, AND semantics, case preserved. MCP/JSON query arrays can represent a literal comma inside one tag; such predicates are applied locally. |
+| `--result` | `none`, `succeeded`, `partiallySucceeded`, `failed`, `canceled`. |
+| `--reason` | One provider reason: `none`, `manual`, `individualCI`, `batchedCI`, `schedule`, `scheduleForced`, `userCreated`, `validateShelveset`, `checkInShelveset`, `pullRequest`, `buildCompletion`, `resourceTrigger`, `triggered`, `all`. |
+| `--repository-id`, `--repository-type` | Provider identity and type, e.g. `dotnet/runtime`, `GitHub`; not an assumed repository display name. |
+| `--status`, `--min-time`, `--max-time`, `--query-order` | Bounds use the requested queue/start/finish time field. Default order is `queueTimeDescending`; no automatic finish-time rewrite. Recognized provider status/order incompatibility keeps order/time and applies status locally. Nonterminal status plus finish-time order is invalid. |
+| `--projection full\|compact` | Full preserves provider fields; compact returns IDs, build number/status/result/reason, definition, branch/times, repository and full `webUrl`. |
+| `--top`, `--limit`, `--offset`, `--view-id` | Positive output counts and nonnegative logical offsets. Conflicting explicit aliases are invalid; `viewId` refuses shifted live membership. No collection-derived access maximum. |
+| `--all`, `--delivery auto\|inline\|file\|chunked`, `--output <path>` | Entire selected scope or explicit requested window, through streamed stdout, an output file or a verified private evidence reference. `hlx_read_evidence` reads references in advancing bounded chunks. Output must be outside an active read-only snapshot. |
+| `--json`, `--raw-json`, `--allow-truncated`, `--allow-large` | JSON includes list/source/query/definition/cache/continuation metadata; raw JSON is the bare row array (`--all --projection full --raw-json` preserves the old full-array representation). `--allow-truncated` changes only partial-list exit status. Interactive queries need no `--allow-large` unlock. |
+
+`total` is exact only after source exhaustion; provider wrapper `count` is not a global total.
+A nonzero final page remains `complete=false`, even when `next=null`; use its full-access
+recovery action. Inline partial lists exit 2; fully delivered explicit output/files exit 0.
+MCP adds `maxResponseBytes` (default 12,288) as a shaping target, never a data-size denial.
+Large full representations become verified files, not stripped fields or oversized inline JSON.
+Live browsing freshness is 30 seconds; frozen collection evidence has longer physical retention.
 
 ### `hlx azdo timeline <buildId> [options]`
 
@@ -659,6 +680,117 @@ of inline range selectors. `--resume true` reuses identical output;
 Use the same `--cache-dir DIR` as the originating CLI download when reading a
 reference produced under an explicitly selected live cache root.
 
+### `hlx collect azdo-builds --query <path> [options]`
+
+Collect the membership of a semantic query, then each member's evidence. This is one
+collection, one manifest and one export, not nested CLI invocations or child manifests.
+
+```json
+{
+  "schemaVersion": 1,
+  "org": "dnceng-public",
+  "project": "public",
+  "definitionName": "runtime",
+  "prNumber": "12345",
+  "repositoryId": "dotnet/runtime",
+  "repositoryType": "GitHub",
+  "status": "completed",
+  "result": null,
+  "queryOrder": "queueTimeDescending",
+  "minTime": "2026-09-25T00:00:00Z",
+  "maxTime": "2026-10-03T00:00:00Z"
+}
+```
+
+`--query` is a JSON **file path**, not inline JSON, a URL or a query language. It accepts
+the semantic filter names/types listed above (tags as a string array and PR number as a
+string), including `definitionId`, `branch`, `buildNumber`, `reason`. Unknown properties,
+including `top`, `limit`, `projection` and delivery/collection settings, are rejected.
+
+```bash
+hlx collect azdo-builds --query build-query.json --build-scope evidence \
+  --cache-dir ./build-cache --export ./build-snapshot --json
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--build-scope evidence\|metadata` | `evidence` | Evidence delegates existing per-build phases; metadata stores membership and complete build metadata only. |
+| `--max-builds` | 50 | Unattended member planning threshold; explicit higher counts are honored. |
+| `--max-definitions` | 25 | Unattended name-resolution planning threshold, never an interactive definition limit. |
+| `--max-scan-builds` | 5000 | Unattended discovery scan threshold; collect-only, not a browsing quota. |
+| `--max-set-test-results` | 10000 | Run-wide unattended result planning threshold. Explicit `--test-scope all` streams complete results beyond it. |
+| `--max-set-test-attachments` | 1000 | Run-wide unattended attachment-list planning threshold; explicit all-attachment scope is separately honored. |
+| `--allow-large` | false | Waive logical unattended thresholds for the original query; real headroom/auth/integrity constraints remain. |
+| `--json` | false | Compact report: manifest/snapshot paths, counts, exit code, incomplete codes and recovery. |
+| `--json-manifest` | false | Explicitly print the full persisted aggregate manifest. |
+
+All single-build retry/concurrency/cache/export/resume/log/test/attachment/Helix/binary
+policy flags are supported. Members run sequentially with the existing resource semaphore
+(default six), avoiding a nested concurrency multiplier. Required evidence for the whole
+set precedes optional binary transfers; those share retained/source-byte budgets.
+Each member's Helix bytes consume the retained-byte allowance once; completed AzDO transfers
+remain charged to the set's retained/source-byte budgets even if later metadata acquisition fails.
+Provider failures are isolated per build, including during optional transfers: later members
+are still collected, and each failed member retains its own attempts and exit code.
+An explicit `--max-set-test-attachments` replaces the default per-build attachment allowance
+unless `--max-test-attachments` supplies a separate per-build limit.
+`--export` without `--cache-dir` uses an isolated `.hlx-collections/<id>` run cache, not the
+shared cache. Keep the printed cache and manifest paths for continuation.
+
+Discovery records an omitted upper-time bound as a capture ceiling in `effectiveQuery`,
+without changing the replayable caller query. Default deferral saves a discovery checkpoint,
+partial manifest and exact original argv plus `--allow-large --resume`, the original cache/
+manifest paths and a fresh export destination. Run that returned argv rather than guessing
+which numeric cap to increase. Resume preserves the original ceiling/mapping/membership;
+changing criteria is a new collection. Progress goes to stderr; cancellation retains work.
+Resume reads a capture-specific checkpoint before newer browsing captures and verifies its
+capture identity, manifest SHA-256 and backing pages. Refreshing the same query cannot replace
+that checkpoint, including when discovery finished but only some members were collected.
+A provider failure while resuming discovery is recorded separately and does not delete the
+capture; retry the same resume after resolving access or service errors. Successful cached
+Helix files are reused using each member's prior attempts instead of downloading again.
+Member test-result/attachment deferrals also choose a fresh aggregate export destination;
+per-member exports remain disabled.
+Build-query and streamed test-result pages (including derived failed results) use
+content-addressed identities, so concurrent captures cannot overwrite another index's pages.
+Missing or corrupt streamed pages are classified cache acquisition errors, not internal failures.
+If only the derived failed-result index was evicted, all-outcome collection rebuilds it from
+verified captured pages without fetching the results again; the derived pages/index share
+four-hour retention. Artifact byte scope/mode values are case-insensitive in both collection passes.
+Covered offline queries that omit an upper-time bound use the source's captured ceiling.
+`--resume` requires the original manifest to exist before discovery starts; if it is missing,
+omit `--resume` to start a fresh capture.
+Missing or mismatched discovery evidence returns `complete=false`, exit 2 and
+`discovery_recapture_required` with an exact fresh-capture command. That command omits
+`--resume`, keeps the original query/cache, uses a new manifest/export destination and
+honors `--allow-large`; it reacquires membership rather than reusing the suspect capture.
+To deliberately start over yourself, omit `--resume` and choose a new `--manifest` path.
+Policy-excluded phases remain complete; `--allow-incomplete` permits exit 0 for policy-only
+deferrals, including build/definition/scan thresholds, without changing `complete=false`.
+Acquisition failures (including discovery) exit 2; internal hard
+errors remain exit 1 even when other builds finish. Full discovery builds stay cache-backed;
+the collection passes retain member IDs, not every full provider object.
+
+Schema-v2 manifests use `kind="hlx.collect.azdo-builds"`, `source.query`, `effectiveQuery`,
+`queryHash`, resolved definition IDs/paths, discovery cache/completeness/count/scan/capture/
+view metadata, bounded `builds[]` membership rows and flat globally unique attempts. Child
+manifests are not nested. Source pages and membership hashes are verified before export.
+Existing single-build v1 manifests remain readable/resumable; snapshot SQLite stays schema v2.
+
+Complete `builds:v2:<query-hash>:all` descriptors refer to full-data page keys; output caps,
+projection and offsets do not change semantic identity. Definition mappings use
+`definitions:v1:<mapping-hash>:all`; partial windows are not complete keys. Legacy 12-hex
+build-list keys remain readable using their original hashing contract. An existing collect
+manifest can prove a complete source is a superset of a narrower query (result/status/reason,
+definition/repository/branch/PR/tags/time). A failed-only set cannot prove all results, another
+repository or a different time field. Plain exported caches support exact complete queries,
+not unproven cross-query catalog discovery.
+
+Offline `not_in_snapshot` includes the exact same-resource semantic query file/evidence,
+**live-mode recollection** argv, new export destination and replay environment/command.
+Unset `HLX_EVAL_SNAPSHOT` before collecting; never mutate or recollect into the old snapshot.
+`--allow-large` does not create disk space: actual storage failures remain real failures.
+
 ### `hlx collect azdo-build <build-id-or-url> [options]`
 
 Collect deterministic evidence for an Azure DevOps build into the normal hlx cache (or an isolated cache root), optionally export that cache as a replayable snapshot, and write a manifest describing every fetch, skip, recorded failure, and gap.
@@ -700,10 +832,10 @@ The command cannot run when `HLX_EVAL_SNAPSHOT` is set or when caching is disabl
 | `--match <mode>` | `auto` | Evidence match strategy: `auto`, `source-id`, `normalized-exact`, or `exact`. |
 | `--job-results <csv>` | `failed,canceled` | Timeline job results targeted by evidence planning. Empty CSV falls back to `failed,canceled`. |
 | `--log-scope <failed\|all\|none>` | `failed` | `failed` collects logs for failed/non-succeeded timeline records, records with issues, and monitor records referenced by Helix failures; `all` collects every build log; `none` records a policy skip. |
-| `--test-scope <failed\|all\|none>` | `failed` | `failed` collects all test-run summaries and failed results; `all` collects every supported AzDO outcome, subject to the build-wide result guard; `none` records a policy skip. Attachment selection is independent. Supported outcomes include `Unspecified,None,Passed,Failed,Inconclusive,Timeout,Aborted,Blocked,NotExecuted,Warning,Error,NotApplicable,Paused,InProgress,NotImpacted`. |
-| `--max-test-results <long>` | `10000` (implicit) | All-result budget checked against the sum of run `totalTests` before result acquisition, including on resume. Above 10,000 estimated results, supply an explicit budget at least as large as the estimate. An insufficient budget records `test_result_limit`, `complete=false`, and exit 2; `--allow-incomplete` may change policy-only exit status to 0. Failed-only collection is unchanged. |
-| `--test-attachment-scope <diagnostic\|all\|none>` | `diagnostic` | Select attachment metadata independently of result scope. Diagnostic selects `Failed,Error,Timeout,Aborted,Inconclusive,Blocked,Warning`; other rows are recorded as aggregate policy exclusions. `all` requires an explicit positive `--max-test-attachments`; `none` excludes all attachment metadata. |
-| `--max-test-attachments <long>` | `1000` (implicit) | Build-wide cap on selected attachment-list requests. Eligible rows are selected deterministically by run/result ID. Remaining eligible coverage is recorded as `test_attachment_limit`, `complete=false`, and exit 2 by default. Resume/cache reads count toward selected coverage but avoid additional provider calls. |
+| `--test-scope <failed\|all\|none>` | `failed` | `failed` collects all test-run summaries and failed results; `all` explicitly authorizes every supported AzDO outcome, streamed through cache-backed pages; `none` records a policy skip. Attachment selection is independent. Supported outcomes include `Unspecified,None,Passed,Failed,Inconclusive,Timeout,Aborted,Blocked,NotExecuted,Warning,Error,NotApplicable,Paused,InProgress,NotImpacted`. |
+| `--max-test-results <long>` | `10000` (implicit) | Planning/progress threshold, not a gate on explicit `--test-scope all`. Larger source sets stream in bounded pages and retain checkpoints. Failed-only selection remains unchanged. |
+| `--test-attachment-scope <diagnostic\|all\|none>` | `diagnostic` | Select attachment metadata independently of result scope. Diagnostic selects `Failed,Error,Timeout,Aborted,Inconclusive,Blocked,Warning`; other rows are recorded as aggregate policy exclusions. Explicit `all` authorizes complete selected attachment lists without a numeric unlock; `none` excludes all attachment metadata. |
+| `--max-test-attachments <long>` | `1000` (implicit) | Build-wide unattended attachment planning threshold. Remaining diagnostic fan-out is recorded as `test_attachment_limit` with exact same-request `--allow-large --resume` recovery. Explicit all scope proceeds incrementally. Resume/cache reads avoid additional provider calls. |
 | `--helix-scope <suggested\|none>` | `suggested` | `suggested` follows Helix `suggestedFetches[]` from the evidence plan; `none` records a policy skip. |
 | `--download-helix-files <glob>` | `null` | Stream matching uploaded files after metadata collection. The old inferred 50 MiB ceiling and ordinary cache retention target no longer deny an explicit file. Deliberate planning thresholds defer with `planning_deferred` and an exact same-scope `--allow-large` resume action. |
 | `--max-file-bytes <long>` | legacy CLI value `52428800` | A deliberate Helix file planning bound when supplied explicitly; the implicit legacy value is not an access gate. `--allow-large` waives logical bounds. AzDO byte tools have no inferred per-object default. |
@@ -714,7 +846,7 @@ The command cannot run when `HLX_EVAL_SNAPSHOT` is set or when caching is disabl
 
 By default, the collector gathers build metadata, the full timeline, artifact metadata matching `--artifact-pattern`, the build logs list, the evidence plan, all Helix failure pages from that plan, full AzDO logs for failed/non-succeeded records, records with issues, and monitor records referenced by Helix failures, all test-run summaries, failed test results and their attachment metadata, and the evidence-plan Helix `suggestedFetches[]` (`helix_work_item`, full `helix_logs`, and `helix_files` metadata). The manifest also records source build fields, auth/replay metadata, cache root, policy, summary counts, and every attempt.
 
-For large builds, opt into all result rows explicitly, for example `--test-scope all --max-test-results 2000000`. This does **not** select attachment lists for every passed result: the default diagnostic attachment policy remains in effect. The collector reports run counts, estimated/acquired rows, guard decisions, attachment completion/exclusion/limit counts, and five-second elapsed heartbeats during long acquisitions to stderr. `--json` prints only the final manifest to stdout.
+For large builds, opt into all result rows explicitly with `--test-scope all`. This does **not** select attachment lists for every passed result: the default diagnostic attachment policy remains in effect. The collector reports run counts, estimated/acquired rows, guard decisions, attachment completion/exclusion/limit counts, and five-second elapsed heartbeats during long acquisitions to stderr. `--json` prints only the final manifest to stdout.
 
 By default, it does not download AzDO artifact ZIP/file bytes, binlogs, dumps, arbitrary Helix uploaded-file bytes, parsed TRX/xUnit derived summaries, search-result precomputations, MCP cursor/window variants, or any live fallback during offline replay. Helix uploaded-file metadata can still be collected through `helix_files`; pass `--download-helix-files <glob>` to cache and replay matching uploaded-file bytes offline.
 

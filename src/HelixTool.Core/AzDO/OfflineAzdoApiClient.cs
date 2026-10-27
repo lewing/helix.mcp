@@ -10,6 +10,9 @@ namespace HelixTool.Core.AzDO;
 /// </summary>
 public sealed class OfflineAzdoApiClient : IAzdoApiClient
 {
+    public Task<IReadOnlyList<AzdoBuildDefinition>> ListDefinitionsAsync(string org, string project, string name, CancellationToken ct = default)
+        => throw Blocked("list_definitions", Resource(org, project, ("definitionName", name)));
+
     public Task<IReadOnlyList<AzdoTestAttachment>> GetRunTestAttachmentsAsync(string org, string project, int runId, int top = 50, CancellationToken ct = default)
         => throw Blocked("list_run_test_attachments", Resource(org, project, ("runId", runId)));
     public Task<AzdoByteStream> OpenArtifactAsync(string org, string project, int buildId, AzdoBuildArtifact artifact,

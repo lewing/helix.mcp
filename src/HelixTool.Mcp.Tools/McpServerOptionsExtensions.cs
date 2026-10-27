@@ -38,6 +38,11 @@ public static class McpServerOptionsExtensions
         options.Filters.Request.CallToolFilters.Add(next => async (request, ct) =>
         {
             NormalizeArgumentAliases(request.Params, logger ?? CreateLogger(request.Services));
+            if (request.Params is { Name: "azdo_builds", Arguments: { } arguments } &&
+                arguments.TryGetValue("top", out var top) && arguments.TryGetValue("limit", out var limit) &&
+                top.ValueKind == JsonValueKind.Number && limit.ValueKind == JsonValueKind.Number &&
+                top.TryGetInt32(out var topCount) && limit.TryGetInt32(out var limitCount) && topCount != limitCount)
+                throw new McpException("Conflicting explicit top and limit values for azdo_builds.");
 
             try
             {

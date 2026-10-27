@@ -8,9 +8,9 @@ public sealed partial class AzdoBuildCollector
 {
     private async Task<List<AzdoDownloadReport>> CollectAzdoBytesAsync(List<CollectFetchAttempt> attempts,
         CollectPolicy policy, string org, string project, int buildId, AzdoEvidencePlan? evidencePlan,
-        Action<string>? progress, CancellationToken ct)
+        Action<string>? progress, CancellationToken ct, List<AzdoDownloadReport>? completedReports = null)
     {
-        var reports = new List<AzdoDownloadReport>();
+        var reports = completedReports ?? new List<AzdoDownloadReport>();
         var artifactsRequested = policy.DownloadAzdoArtifacts is not null || policy.DownloadArtifactMembers is not null ||
             policy.ArtifactByteScope != "auto" || policy.ArtifactByteMode != "auto";
         if (!artifactsRequested && policy.DownloadTestAttachments is null) return reports;
@@ -220,8 +220,8 @@ public sealed partial class AzdoBuildCollector
         if (!argv.Contains("--resume")) argv.Add("--resume");
         Set("--cache-dir", _cacheOptions.GetBaseCacheRoot());
         Set("--manifest", ResolveManifestPath(policy));
-        if (policy.ExportPath is not null)
-            Set("--export", Path.GetFullPath(policy.ExportPath) + $".resumed-{Guid.NewGuid():N}");
+        if ((policy.ExportPath ?? policy.RecoveryExportPath) is { } exportPath)
+            Set("--export", Path.GetFullPath(exportPath) + $".resumed-{Guid.NewGuid():N}");
         return new[] { "hlx" }.Concat(argv.Select(Acquisition.AcquisitionRedaction.RedactSensitiveUrls)).ToArray();
 
         void Add(string flag, string? value) { if (value is not null) { argv.Add(flag); argv.Add(value); } }

@@ -209,6 +209,44 @@ public class McpServerOptionsExtensionsTests
     }
 
     [Fact]
+    public async Task StrictOptions_ConflictingExplicitDefaultTopAndLimitAreRejected()
+    {
+        var tools = CreateAzdoTools(out _);
+        var handler = CreateStrictFilteredToolHandler("azdo_builds", tools);
+        var request = CreateRequest("azdo_builds", Arguments(("top", 20), ("limit", 10)));
+        var error = await Assert.ThrowsAsync<McpException>(async () => await handler(request, CancellationToken.None));
+        Assert.Contains("Conflicting", error.Message);
+    }
+
+    [Fact]
+    public async Task StrictOptions_BuildResultSurvivesToolsCallBinding()
+    {
+        var tools = CreateAzdoTools(out var client);
+        client.ListBuildsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<AzdoBuildFilter>(), Arg.Any<CancellationToken>())
+            .Returns(new List<AzdoBuild>());
+        var handler = CreateStrictFilteredToolHandler("azdo_builds", tools);
+        var request = CreateRequest("azdo_builds", Arguments(("result", "failed")));
+        await handler(request, CancellationToken.None);
+        await client.Received(1).ListBuildsAsync(Arg.Any<string>(), Arg.Any<string>(),
+            Arg.Is<AzdoBuildFilter>(f => f.Result == "failed"), Arg.Any<CancellationToken>());
+        Assert.True(request.Params!.Arguments!.ContainsKey("result"));
+        Assert.False(request.Params.Arguments.ContainsKey("resultFilter"));
+    }
+
+    [Fact]
+    public async Task StrictOptions_TimelineResultSurvivesToolsCallBinding()
+    {
+        var tools = CreateAzdoTools(out var client);
+        client.GetTimelineAsync("dnceng-public", "public", 42, Arg.Any<CancellationToken>())
+            .Returns(new AzdoTimeline { Id = "timeline", Records = [] });
+        var handler = CreateStrictFilteredToolHandler("azdo_timeline", tools);
+        var request = CreateRequest("azdo_timeline", Arguments(("buildIdOrUrl", "42"), ("result", "failed")));
+        await handler(request, CancellationToken.None);
+        Assert.True(request.Params!.Arguments!.ContainsKey("result"));
+        Assert.False(request.Params.Arguments.ContainsKey("resultFilter"));
+    }
+
+    [Fact]
     public async Task StrictOptions_ResultAliasReachesService_ViaAzdoSearchTimeline()
     {
         // 'result' is the historical alias; the filter renames it to 'resultFilter' before strict

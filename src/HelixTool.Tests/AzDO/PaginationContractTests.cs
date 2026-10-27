@@ -233,13 +233,14 @@ public class PaginationContractTests
         var tools = CreateAzdoTools(mockApi);
 
         // Act: call without top parameter
-        await tools.Builds();
+        var page = await tools.Builds();
 
-        // Assert: should have passed top=20 to service
+        // Logical top stays 20; discovery's provider batches are independent of output limits.
+        Assert.Equal(20, page.Limit);
         await mockApi.Received(1).ListBuildsAsync(
             Arg.Any<string>(),
             Arg.Any<string>(),
-            Arg.Is<AzdoBuildFilter>(f => f.Top == 20),
+            Arg.Is<AzdoBuildFilter>(f => f.Top == null),
             Arg.Any<CancellationToken>());
     }
 

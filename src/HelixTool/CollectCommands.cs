@@ -50,9 +50,9 @@ public sealed class CollectCommands
     /// <param name="jobResults">Comma-separated timeline job results targeted by evidence planning.</param>
     /// <param name="logScope">AzDO log scope: failed, all, or none. Default: failed.</param>
     /// <param name="testScope">AzDO test scope: failed, all, or none. Default: failed.</param>
-    /// <param name="maxTestResults">Build-wide all-outcome result budget. Default: 10000. Larger builds require an explicit budget at least as large as the estimated result count; refusal is a manifested policy skip (exit 2).</param>
+    /// <param name="maxTestResults">Build-wide result planning threshold, default 10000. Explicit test-scope all streams complete results beyond the threshold.</param>
     /// <param name="testAttachmentScope">Attachment metadata selection, independent of test scope: diagnostic (default), all, or none. Diagnostic selects Failed, Error, Timeout, Aborted, Inconclusive, Blocked, and Warning. All requires an explicit --max-test-attachments.</param>
-    /// <param name="maxTestAttachments">Build-wide attachment-list request cap. Default: 1000 for diagnostic scope. Scope all requires an explicit positive cap; over-cap coverage is manifested as incomplete.</param>
+    /// <param name="maxTestAttachments">Unattended diagnostic attachment-list planning threshold, default 1000. Explicit all scope proceeds without a numeric unlock; diagnostic deferral includes exact allow-large/resume recovery.</param>
     /// <param name="helixScope">Helix scope: suggested or none. Default: suggested.</param>
     /// <param name="downloadHelixFiles">Opt-in Helix uploaded-file glob. Explicit files are not denied by the old 50 MiB default or ordinary cache target; deliberate planning thresholds return an exact --allow-large resume action.</param>
     /// <param name="maxFileBytes">Deliberate Helix file planning threshold when explicitly supplied. The legacy 52428800 default is not an explicit-file access gate; AzDO bytes have no inferred per-object threshold.</param>
@@ -289,7 +289,7 @@ public sealed class CollectCommands
         Environment.ExitCode = result.Manifest.ExitCode;
     }
 
-    private static bool TryParseRetryKinds(
+    internal static bool TryParseRetryKinds(
         string value,
         out IReadOnlySet<AcquisitionErrorKind> retryKinds,
         out string? error)
@@ -328,7 +328,7 @@ public sealed class CollectCommands
         return value is "not_found" or "access_denied" or "rate_limited" or "timeout" or "transport_error" or "invalid_response" or "not_in_snapshot";
     }
 
-    private static bool TryParseDuration(string value, out TimeSpan duration)
+    internal static bool TryParseDuration(string value, out TimeSpan duration)
     {
         if (TimeSpan.TryParse(value, out duration))
             return true;
