@@ -20,8 +20,9 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
   `--schema` now describes the envelope.
 - **Partial `hlx azdo builds` pages exit 2** (#167). When more matching builds exist beyond the
   inline page (e.g. the default top=20), the CLI exits `2` and prints a `Continue:`/`Recover:`
-  action to stderr unless `--allow-truncated` is supplied. Use `--all`, `--output` or
-  `--delivery file|chunked` for the complete selection; fully delivered output exits 0.
+  action to stderr unless `--allow-truncated` is supplied. Use `--all` for the complete
+  selection, optionally with `--output` or `--delivery file|chunked` to deliver it; without
+  `--all` those flags write only the requested page (default 20) and exit 0.
 - **Conflicting explicit `top`/`limit` are rejected** for `azdo_builds` / `hlx azdo builds` (#167).
 
 ### Added
@@ -32,9 +33,10 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
   branch/PR/definition/status/time filters. Full fields and the interactive top=20 default
   are preserved; `projection=compact` is opt-in.
 - **Stable build-list paging and delivery** (#167): `offset`/`limit`/`viewId`/`next` paging
-  with capture-anchored view IDs that refuse shifted live membership; `--all`,
-  `delivery=auto|inline|file|chunked` and `--output` deliver the entire selection or a
-  requested window as streamed output or verified evidence readable via `hlx_read_evidence`.
+  with capture-anchored view IDs that refuse shifted live membership. `--all` / `all=true`
+  requests the entire selection; `delivery=auto|inline|file|chunked` and `--output` choose how
+  that selection or the requested window is delivered (streamed output or verified evidence
+  readable via `hlx_read_evidence`) and do not by themselves widen the window.
   MCP adds `maxResponseBytes` (default 12,288) as a shaping target, never a data-size denial.
   `total` is exact only after source exhaustion.
 - **`hlx collect azdo-builds --query <file>`** (#167) collects a strict version-1 semantic query
