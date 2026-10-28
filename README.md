@@ -194,7 +194,7 @@ Explicit `--test-scope all` streams every supported result outcome through cache
 
 ### Query-backed build sets
 
-`hlx azdo builds` / `azdo_builds` discover builds by pipeline exact name/glob (duplicate names form a union), build number/glob, required tags, result/reason, repository, PR/branch and queue/start/finish time. Full fields and the interactive top=20 default are preserved; `--projection compact` is opt-in. CLI JSON adds source completeness, exact counts when known, cache provenance and stable `viewId` continuation. Full/all payloads remain obtainable through `--output`, file delivery and `hlx_read_evidence`; interactive queries have no collector quota.
+`hlx azdo builds` / `azdo_builds` discover builds by pipeline exact name/glob (duplicate names form a union), build number/glob, required tags, result/reason, repository, PR/branch and queue/start/finish time. Full fields and the interactive top=20 default are preserved; `--projection compact` is opt-in. CLI JSON adds source completeness, exact counts when known, cache provenance and stable `viewId` continuation. Complete sets require `--all` (MCP `all=true`); `--output`, file delivery and `hlx_read_evidence` are optional ways to deliver them, and on their own carry only the requested page; interactive queries have no collector quota.
 
 ```bash
 hlx azdo builds --definition-name '*wasm*' --result failed --projection compact --json

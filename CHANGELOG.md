@@ -8,57 +8,111 @@ For releases prior to v0.7.6, see the [GitHub Releases page](https://github.com/
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-28
+
+### Breaking changes
+
+- **`hlx azdo builds --json` returns a list envelope** (#167). JSON output now wraps rows in
+  `.results[]` with `complete`/`truncated`/`total`/`next`, source/query/definition/cache
+  metadata, `viewId` and recovery actions instead of the bare build array. Update scripts from
+  `.[]` to `.results[]`, or use `--raw-json` for the bare row array
+  (`--all --projection full --raw-json` preserves the old full-array representation).
+  `--schema` now describes the envelope.
+- **Partial `hlx azdo builds` pages exit 2** (#167). When more matching builds exist beyond the
+  inline page (e.g. the default top=20), the CLI exits `2` and prints a `Continue:`/`Recover:`
+  action to stderr unless `--allow-truncated` is supplied. Use `--all` for the complete
+  selection, optionally with `--output` or `--delivery file|chunked` to deliver it; without
+  `--all` those flags write only the requested page (default 20) and exit 0.
+- **Conflicting explicit `top`/`limit` are rejected** for `azdo_builds` / `hlx azdo builds` (#167).
+
 ### Added
 
-- Query-backed `azdo_builds` / `hlx azdo builds`: definition-name resolution (including
-  duplicate-name unions), build-number globs, tags, result/reason and repository filters;
-  opt-in compact projection, stable output paging, full/all file delivery and exact recovery.
-- `hlx collect azdo-builds --query <file>` collects a captured build set into one schema-v2
-  manifest and existing-format snapshot. Complete paged query evidence supports credential-free
-  exact and provably covered-subset replay. Unattended thresholds checkpoint with an exact
-  same-query `--allow-large --resume` action; they do not cap interactive discovery.
-- Explicit all-test collection streams hash-verified source pages instead of refusing estimates
-  above 10,000; explicit all-attachment selection no longer requires a numeric unlock.
+- **Query-backed build discovery** (#167): `azdo_builds` / `hlx azdo builds` add definition-name
+  exact/glob resolution (duplicate names form a union), build-number globs, required tags,
+  `result`/`reason` and `repositoryId`/`repositoryType` filters alongside the existing
+  branch/PR/definition/status/time filters. Full fields and the interactive top=20 default
+  are preserved; `projection=compact` is opt-in.
+- **Stable build-list paging and delivery** (#167): `offset`/`limit`/`viewId`/`next` paging
+  with capture-anchored view IDs that refuse shifted live membership. `--all` / `all=true`
+  requests the entire selection; `delivery=auto|inline|file|chunked` and `--output` choose how
+  that selection or the requested window is delivered (streamed output or verified evidence
+  readable via `hlx_read_evidence`) and do not by themselves widen the window.
+  MCP adds `maxResponseBytes` (default 12,288) as a shaping target, never a data-size denial.
+  `total` is exact only after source exhaustion.
+- **`hlx collect azdo-builds --query <file>`** (#167) collects a strict version-1 semantic query
+  file into one schema-v2 aggregate manifest (`kind="hlx.collect.azdo-builds"`) and one
+  existing-format snapshot. `--build-scope evidence|metadata` selects per-member evidence
+  phases or membership plus build metadata only; `--json` prints a compact report and
+  `--json-manifest` prints the full persisted manifest. Complete paged query evidence supports
+  credential-free exact and provably covered-subset offline replay; existing single-build v1
+  manifests remain readable/resumable.
+- **Collection-only build-set planning thresholds** (#167): `--max-builds` (50),
+  `--max-definitions` (25), `--max-scan-builds` (5,000), `--max-set-test-results` (10,000) and
+  `--max-set-test-attachments` (1,000) are overridable unattended safeguards, not interactive
+  discovery limits. Deferral saves a discovery checkpoint and returns the exact original argv
+  plus `--allow-large --resume` with a fresh export destination.
+- **Streamed test-result evidence** (#167): explicit `--test-scope all` streams every supported
+  outcome through hash-verified, content-addressed cache pages instead of refusing estimates
+  above 10,000; explicit `--test-attachment-scope all` no longer requires a numeric
+  `--max-test-attachments` unlock.
+
+### Changed
+
+- **`--max-test-results` / `--max-test-attachments` are planning thresholds** (#167), not gates
+  on explicit `all` scopes. Diagnostic attachment fan-out over the threshold records
+  `test_attachment_limit` with an exact same-request `--allow-large --resume` recovery.
+- **AzDO list continuation** (#167): legitimate traversals beyond the legacy continuation page
+  batch are now returned instead of failing as `invalid_response`; repeated-token/URL/shape
+  guards still detect provider corruption.
+- **`azdo_builds` completeness** (#167): a provider that exhausts exactly at `top` is reported as
+  complete rather than truncated; responses include source completeness, exact totals when
+  known, cache provenance and continuation metadata.
 
 ### Fixed
 
-- Build-set internal hard-error details use the same generic message as single-build
-  collection, never persisting unclassified exception text.
-- Failed discovery resumes record provider errors separately from the original capture;
-  retrying can continue that checkpoint without rediscovering its membership.
-- All-outcome collection rebuilds derived failed-result evidence from verified captured
-  pages after index eviction, with matching four-hour retention.
-- Build-set artifact byte scope/mode are normalized before planning and transfers.
-- Member result/attachment threshold recovery retains the aggregate export context and
-  chooses a fresh snapshot destination without enabling per-member exports.
-- Build-set resume reuses successful cached Helix files with member-local attempt IDs,
-  avoiding repeated transfers or replacing prior successes with download failures.
-- Build-set covered replay consistently uses the captured upper-time bound. Build-query
-  and streamed test-result pages now have immutable content-addressed identities, including
-  derived failed results; missing/corrupt streamed pages return classified cache errors.
-- Build-set resume rejects a missing manifest before discovery. Policy-only build/definition/
-  scan deferrals honor `--allow-incomplete`; discovery acquisition failures retain exit 2
-  rather than becoming internal hard errors.
-- Build-set byte budgets charge current-member Helix bytes once and preserve completed AzDO
-  transfer usage and reports when a later operation in the member's byte phase fails.
-- Build-set resume preserves the original checkpoint and full-data pages across newer
-  browsing captures, including fully discovered sets with deferred members. Resume verifies
-  manifest capture identity and membership hashes; missing or mismatched discovery returns
-  an explicit incomplete result with an exact, usable fresh-capture command.
-- Expired or completed streamed test-result checkpoints start fresh at offset zero;
-  only unexpired interrupted acquisitions continue from their verified prefix.
-- Streaming test-result acquisition records classified provider failures under the complete
-  results key, preserving the original error during offline snapshot replay.
-- Build-set collection retains only selected member IDs between passes, avoiding retention
-  of every full provider build object for large captures.
-- Build-set byte transfers use each member's build URL and isolate failures so later members
-  still run. Explicit set attachment allowances, policy exclusions, `--allow-incomplete`,
-  and per-member/aggregate exit codes retain their intended semantics.
-- Streamed test-result checkpoints and collected backing pages are verified before reuse
-  and completion; corrupt offline paged-list JSON retains the structured cache-error contract.
-- Artifact cache publication now retries Windows file-replacement contention and accepts
-  an already-published destination only when its length and SHA-256 match, avoiding
-  failures when concurrent readers omit delete sharing.
+- **Strict MCP binding for `result`** (#167): the new `azdo_builds` `result` filter (and
+  `azdo_timeline` `result`) bind directly under strict tools/call binding and are not rewritten
+  to `resultFilter`; that alias stays scoped to `azdo_search_timeline`, with regression coverage.
+- **Windows artifact-publish race** (#166): artifact cache publication retries Windows
+  file-replacement contention and accepts an already-published destination only when its
+  length and SHA-256 match, avoiding failures when concurrent readers omit delete sharing.
+- **Build-set collection hardening** (#167):
+  - Internal hard-error details use the same generic message as single-build collection,
+    never persisting unclassified exception text.
+  - Failed discovery resumes record provider errors separately from the original capture;
+    retrying can continue that checkpoint without rediscovering its membership.
+  - Resume rejects a missing manifest before discovery, verifies manifest capture identity and
+    membership hashes, and preserves the original checkpoint and full-data pages across newer
+    browsing captures; missing or mismatched discovery returns `discovery_recapture_required`
+    with an exact, usable fresh-capture command.
+  - Resume reuses successful cached Helix files with member-local attempt IDs, avoiding
+    repeated transfers or replacing prior successes with download failures.
+  - Covered replay consistently uses the captured upper-time bound.
+  - Policy-only build/definition/scan deferrals honor `--allow-incomplete`; discovery
+    acquisition failures retain exit 2 rather than becoming internal hard errors.
+  - Byte budgets charge current-member Helix bytes once and preserve completed AzDO transfer
+    usage and reports when a later operation in the member's byte phase fails.
+  - Byte transfers use each member's build URL and isolate failures so later members still
+    run; artifact byte scope/mode are normalized before planning and transfers.
+  - Member result/attachment threshold recovery retains the aggregate export context and
+    chooses a fresh snapshot destination without enabling per-member exports.
+  - Collection retains only selected member IDs between passes, avoiding retention of every
+    full provider build object for large captures.
+- **Streamed test-result integrity** (#167):
+  - Build-query and streamed test-result pages (including derived failed results) have
+    immutable content-addressed identities; missing/corrupt streamed pages return classified
+    cache errors, and corrupt offline paged-list JSON retains the structured cache-error contract.
+  - Checkpoints and collected backing pages are verified before reuse and completion; expired
+    or completed checkpoints start fresh at offset zero, and only unexpired interrupted
+    acquisitions continue from their verified prefix.
+  - Provider failures are recorded under the complete results key, preserving the original
+    error during offline snapshot replay.
+  - All-outcome collection rebuilds derived failed-result evidence from verified captured pages
+    after index eviction, with matching four-hour retention.
+
+### Dependencies
+
+- Bumped `zizmorcore/zizmor-action` from 0.6.4 to 0.7.1 (SHA-pinned) in the zizmor workflow (#168).
 
 ## [0.12.0] - 2026-10-19
 

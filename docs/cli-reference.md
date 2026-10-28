@@ -154,12 +154,13 @@ hlx azdo builds --pr-number 12345 --repository-id dotnet/runtime --repository-ty
 | `--status`, `--min-time`, `--max-time`, `--query-order` | Bounds use the requested queue/start/finish time field. Default order is `queueTimeDescending`; no automatic finish-time rewrite. Recognized provider status/order incompatibility keeps order/time and applies status locally. Nonterminal status plus finish-time order is invalid. |
 | `--projection full\|compact` | Full preserves provider fields; compact returns IDs, build number/status/result/reason, definition, branch/times, repository and full `webUrl`. |
 | `--top`, `--limit`, `--offset`, `--view-id` | Positive output counts and nonnegative logical offsets. Conflicting explicit aliases are invalid; `viewId` refuses shifted live membership. No collection-derived access maximum. |
-| `--all`, `--delivery auto\|inline\|file\|chunked`, `--output <path>` | Entire selected scope or explicit requested window, through streamed stdout, an output file or a verified private evidence reference. `hlx_read_evidence` reads references in advancing bounded chunks. Output must be outside an active read-only snapshot. |
+| `--all`, `--delivery auto\|inline\|file\|chunked`, `--output <path>` | `--all` requests the entire selected scope; without it only the requested window (default 20) is selected. `--delivery`/`--output` choose streamed stdout, an output file or a verified private evidence reference and do not widen the window by themselves. `hlx_read_evidence` reads references in advancing bounded chunks. Output must be outside an active read-only snapshot. |
 | `--json`, `--raw-json`, `--allow-truncated`, `--allow-large` | JSON includes list/source/query/definition/cache/continuation metadata; raw JSON is the bare row array (`--all --projection full --raw-json` preserves the old full-array representation). `--allow-truncated` changes only partial-list exit status. Interactive queries need no `--allow-large` unlock. |
 
 `total` is exact only after source exhaustion; provider wrapper `count` is not a global total.
 A nonzero final page remains `complete=false`, even when `next=null`; use its full-access
-recovery action. Inline partial lists exit 2; fully delivered explicit output/files exit 0.
+recovery action. Inline partial lists exit 2; explicit `--output`/`--delivery file|chunked`
+writes exit 0 whether or not the selection is complete, so pass `--all` for the complete set.
 MCP adds `maxResponseBytes` (default 12,288) as a shaping target, never a data-size denial.
 Large full representations become verified files, not stripped fields or oversized inline JSON.
 Live browsing freshness is 30 seconds; frozen collection evidence has longer physical retention.
