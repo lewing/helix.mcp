@@ -1004,7 +1004,7 @@ Updated AzDO list commands emit `{ ok, results, returned, total, offset, limit, 
 - `azdo_download_test_attachments` — Stream run/result attachment and dump bytes or explicitly selected ZIP members; no content-type size gates
 
 ## Authentication
-Set HELIX_ACCESS_TOKEN env var for internal Helix jobs. Public jobs need no auth.
+Run `hlx login` for internal Helix jobs (used by CLI and stdio MCP; restart the MCP server after login). HELIX_ACCESS_TOKEN env var overrides the stored token. Public jobs need no auth.
 Set AZDO_TOKEN env var for internal AzDO projects. Falls back to `az account get-access-token`. Public projects (e.g., dnceng-public) need no auth.
 
 ## Input

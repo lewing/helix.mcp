@@ -291,7 +291,7 @@ hlx auth-status    # Check current auth status
 hlx logout         # Remove stored token
 ```
 
-**Token resolution:** `HELIX_ACCESS_TOKEN` env var → stored credential via `git credential` → error with helpful message.
+**Token resolution** (CLI and stdio MCP server): `HELIX_ACCESS_TOKEN` env var → stored credential from `hlx login` (via `git credential`; on macOS, falls back to reading the Keychain directly if `git` can't reach it) → unauthenticated. Unauthenticated requests still work for public jobs; internal jobs return an access-denied error suggesting `hlx login` or `HELIX_ACCESS_TOKEN`.
 
 ### Azure DevOps
 
@@ -318,7 +318,7 @@ To resolve:
 • Set AZDO_TOKEN to a Personal Access Token with Build(read) + Test(read) scopes
 ```
 
-Pass tokens via MCP config:
+The stdio MCP server (`hlx mcp`, which `dotnet dnx lewing.helix.mcp` runs) uses the token stored by `hlx login`, so no Helix config is needed after logging in. The token is resolved once per server process — restart the MCP server after `hlx login`. To override it (or where no credential store is available, such as containers), pass tokens via MCP config:
 
 ```json
 {
@@ -336,7 +336,7 @@ Pass tokens via MCP config:
 }
 ```
 
-The HTTP MCP server supports per-request auth via `Authorization: Bearer <token>` headers, with isolated cache per client. Set `HLX_API_KEY` to gate server access.
+The HTTP MCP server supports per-request auth via `Authorization: Bearer <token>` headers (falling back to `HELIX_ACCESS_TOKEN`; it does not read `hlx login` credentials), with isolated cache per client. Set `HLX_API_KEY` to gate server access.
 
 ## Installation
 
