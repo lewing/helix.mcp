@@ -4,6 +4,7 @@
 
 using HelixTool.Core;
 using HelixTool.Core.Helix;
+using NSubstitute;
 using Xunit;
 
 namespace HelixTool.Tests;
@@ -58,5 +59,42 @@ public class HelixTokenAccessorTests
 
         Assert.NotNull(accessor);
         Assert.Equal("test", accessor.GetAccessToken());
+    }
+}
+
+// Uses the internal (store, envToken) ctor so tests never read the real HELIX_ACCESS_TOKEN.
+public class ChainedHelixTokenAccessorTests
+{
+    private readonly ICredentialStore _store = Substitute.For<ICredentialStore>();
+
+    [Fact]
+    public async Task EnvToken_WinsWithoutCallingStore()
+    {
+        var accessor = new ChainedHelixTokenAccessor(_store, "env-token");
+
+        Assert.Equal("env-token", accessor.GetAccessToken());
+        Assert.Equal(TokenSource.EnvironmentVariable, accessor.Source);
+        await _store.DidNotReceiveWithAnyArgs().GetTokenAsync(default!, default!, default);
+    }
+
+    [Fact]
+    public void NoEnvToken_UsesStoredCredential()
+    {
+        _store.GetTokenAsync("helix.dot.net", "helix-api-token", Arg.Any<CancellationToken>()).Returns("stored-token");
+        var accessor = new ChainedHelixTokenAccessor(_store, envToken: null);
+
+        Assert.Equal("stored-token", accessor.GetAccessToken());
+        Assert.Equal(TokenSource.StoredCredential, accessor.Source);
+    }
+
+    [Fact]
+    public void StoreThrows_ResolvesToNoneInsteadOfThrowing()
+    {
+        _store.GetTokenAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new InvalidOperationException("git not found"));
+        var accessor = new ChainedHelixTokenAccessor(_store, envToken: null);
+
+        Assert.Null(accessor.GetAccessToken());
+        Assert.Equal(TokenSource.None, accessor.Source);
     }
 }
