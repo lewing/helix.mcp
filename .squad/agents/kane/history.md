@@ -70,3 +70,7 @@ All user-facing surfaces now document Helix integration and collector workflow. 
 
 Fixed two remaining Markdown issues per Dallas final release approval gate. Corrected docs/cli-reference.md manifest path example: base `/tmp/hlx-collect-cache/<guid>`, `GetEffectiveCacheRoot` appends `public`, `ResolveManifestPath` writes there. Final example: `<guid>/public/hlx-collect-manifest.json`. Confirmed final breaking/security/data-loss/features/fixes release notes with required-evidence retention, atomic optional headroom/resume accounting, classified SDK discovery fallback. v0.11.0 shipped with all documentation corrected and verified.
 
+
+### 2026-11-17 — stdio MCP stored-credential auth docs
+
+Fixed README token-resolution line (chain ends unauthenticated, not an error — public jobs work; internal jobs get the `HelixAcquisition` access-denied hint), added README MCP-config note that stdio MCP (`hlx mcp`; `dnx lewing.helix.mcp` with redirected stdin defaults to `mcp`, Program.cs:146) uses the `hlx login` token, resolved once per process (`ChainedHelixTokenAccessor` caches) so restart after login; HTTP MCP (`HttpContextHelixTokenAccessor`) uses header → `HELIX_ACCESS_TOKEN`, never the keychain. Updated llms-txt auth line. macOS keychain fallback (`MacKeychainCredentialStore` via `/usr/bin/security`) is read-only and only used when git credential returns null/throws. docs/cli-reference.md and helix-cli SKILL.md were already accurate; Docker example's empty `HELIX_ACCESS_TOKEN` is fine (no keychain in container). No test asserts llms-txt text.

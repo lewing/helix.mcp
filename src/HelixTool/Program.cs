@@ -39,7 +39,7 @@ services.AddHttpClient("AzDO", c =>
     c.Timeout = TimeSpan.FromMinutes(5);
     HelixToolUserAgent.Apply(c);
 }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
-services.AddSingleton<ICredentialStore, GitCredentialStore>();
+services.AddSingleton<ICredentialStore>(_ => FallbackCredentialStore.CreateDefault());
 services.AddSingleton<ChainedHelixTokenAccessor>();
 services.AddSingleton<IHelixTokenAccessor>(sp => sp.GetRequiredService<ChainedHelixTokenAccessor>());
 services.AddSingleton<IHelixApiClientFactory>(sp =>
@@ -68,16 +68,11 @@ if (!string.IsNullOrEmpty(evalSnapshotDir))
 }
 else
 {
-services.AddSingleton<CacheOptions>(_ =>
-{
-    // Don't resolve Helix auth eagerly — let it be lazy so MCP/AzDO commands
-    // can start without prompting for Helix credentials.
-    var opts = new CacheOptions { AuthTokenHash = null };
-    var maxStr = Environment.GetEnvironmentVariable("HLX_CACHE_MAX_SIZE_MB");
-    if (int.TryParse(maxStr, out var mb))
-        opts = opts with { MaxSizeBytes = (long)mb * 1024 * 1024 };
-    return opts;
-});
+// The Helix token (env var or stored credential) is resolved on first CacheOptions use, not at startup,
+// and partitions the cache root so private job data never lands in the shared public cache.
+services.AddSingleton<CacheOptions>(sp => CacheOptions.ForHelixToken(
+    sp.GetRequiredService<IHelixTokenAccessor>().GetAccessToken(),
+    Environment.GetEnvironmentVariable("HLX_CACHE_MAX_SIZE_MB")));
 services.AddSingleton<ICacheStore>(sp => new SqliteCacheStore(sp.GetRequiredService<CacheOptions>()));
 // Defer Helix token resolution — only resolves when a Helix command is invoked.
 services.AddSingleton(sp => new Lazy<HelixApiClient>(() =>
@@ -1004,7 +999,7 @@ Updated AzDO list commands emit `{ ok, results, returned, total, offset, limit, 
 - `azdo_download_test_attachments` — Stream run/result attachment and dump bytes or explicitly selected ZIP members; no content-type size gates
 
 ## Authentication
-Set HELIX_ACCESS_TOKEN env var for internal Helix jobs. Public jobs need no auth.
+Run `hlx login` for internal Helix jobs (used by CLI and stdio MCP; restart the MCP server after login). HELIX_ACCESS_TOKEN env var overrides the stored token. Public jobs need no auth.
 Set AZDO_TOKEN env var for internal AzDO projects. Falls back to `az account get-access-token`. Public projects (e.g., dnceng-public) need no auth.
 
 ## Input
@@ -1044,98 +1039,7 @@ Available as `failureCategory` in JSON and MCP output.
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
         builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
-        builder.Services.AddHttpClient("HelixDownload", c =>
-        {
-            c.Timeout = TimeSpan.FromMinutes(5);
-            HelixToolUserAgent.Apply(c);
-        });
-        builder.Services.AddHttpClient("AzDO", c =>
-        {
-            c.Timeout = TimeSpan.FromMinutes(5);
-            HelixToolUserAgent.Apply(c);
-        }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
-        builder.Services.AddSingleton<IHelixTokenAccessor>(_ =>
-            new EnvironmentHelixTokenAccessor(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
-        builder.Services.AddSingleton<IHelixApiClientFactory>(sp =>
-            new HelixApiClientFactory(sp.GetRequiredService<IHttpClientFactory>().CreateClient("HelixDownload")));
-
-        var mcpEvalSnapshotDir = Environment.GetEnvironmentVariable("HLX_EVAL_SNAPSHOT");
-        if (!string.IsNullOrEmpty(mcpEvalSnapshotDir))
-        {
-            var resolvedSnapshot = Path.GetFullPath(mcpEvalSnapshotDir);
-            var azdoPartition = EvalSnapshotAzdoPartitionSelector.Select(resolvedSnapshot);
-            var evalOptions = new CacheOptions
-            {
-                CacheRoot = resolvedSnapshot,
-                EvalMode = true,
-                CacheRootHash = null,
-                AuthTokenHash = azdoPartition.AuthTokenHash,
-            };
-            builder.Services.AddEvalModeCore(evalOptions);
-            builder.Services.AddSingleton<AzdoService>(sp =>
-                new AzdoService(
-                    sp.GetRequiredService<IAzdoApiClient>(),
-                    sp.GetRequiredService<IHelixApiClient>(),
-                    sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>(),
-                    sp.GetRequiredService<CacheOptions>()));
-        }
-        else
-        {
-        builder.Services.AddSingleton<CacheOptions>(_ =>
-        {
-            var opts = new CacheOptions { AuthTokenHash = null };
-            var maxStr = Environment.GetEnvironmentVariable("HLX_CACHE_MAX_SIZE_MB");
-            if (int.TryParse(maxStr, out var mb))
-                opts = opts with { MaxSizeBytes = (long)mb * 1024 * 1024 };
-            return opts;
-        });
-        builder.Services.AddSingleton<ICacheStore>(sp => new SqliteCacheStore(sp.GetRequiredService<CacheOptions>()));
-        builder.Services.AddSingleton(sp => new Lazy<HelixApiClient>(() =>
-        {
-            var token = sp.GetRequiredService<IHelixTokenAccessor>().GetAccessToken();
-            return new HelixApiClient(token, sp.GetRequiredService<IHttpClientFactory>().CreateClient("HelixDownload"));
-        }));
-        builder.Services.AddSingleton<HelixApiClient>(sp => sp.GetRequiredService<Lazy<HelixApiClient>>().Value);
-        builder.Services.AddSingleton<IHelixApiClient>(sp =>
-            new CachingHelixApiClient(
-                sp.GetRequiredService<HelixApiClient>(),
-                sp.GetRequiredService<ICacheStore>(),
-                sp.GetRequiredService<CacheOptions>()));
-        builder.Services.AddSingleton<HelixService>(sp =>
-            new HelixService(
-                sp.GetRequiredService<IHelixApiClient>(),
-                sp.GetRequiredService<IHttpClientFactory>().CreateClient("HelixDownload")));
-
-        // AzDO services — same decorator pattern as Helix
-        builder.Services.AddSingleton<IAzdoTokenAccessor, AzCliAzdoTokenAccessor>();
-        builder.Services.AddSingleton<AzdoApiClient>(sp =>
-            new AzdoApiClient(
-                sp.GetRequiredService<IHttpClientFactory>().CreateClient("AzDO"),
-                sp.GetRequiredService<IAzdoTokenAccessor>(),
-                sp.GetRequiredService<CacheOptions>()));
-        builder.Services.AddSingleton<IAzdoApiClient>(sp =>
-            new CachingAzdoApiClient(
-                sp.GetRequiredService<AzdoApiClient>(),
-                sp.GetRequiredService<ICacheStore>(),
-                sp.GetRequiredService<CacheOptions>(),
-                sp.GetRequiredService<IAzdoTokenAccessor>()));
-        builder.Services.AddSingleton<IAzdoAcquisitionFailureRecorder>(sp =>
-            new CachingAzdoAcquisitionFailureRecorder(
-                sp.GetRequiredService<ICacheStore>(),
-                sp.GetRequiredService<CacheOptions>()));
-        // Inject IHelixApiClient so GetHelixJobsAsync can use the canonical Helix-side Job.ListAsync(source) path (#92)
-        builder.Services.AddSingleton<AzdoService>(sp =>
-            new AzdoService(
-                sp.GetRequiredService<IAzdoApiClient>(),
-                sp.GetRequiredService<IHelixApiClient>(),
-                sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>(),
-                sp.GetRequiredService<CacheOptions>()));
-        }
-
-        // Shared evidence delivery store (P0-1 design 2.1a); backs hlx_read_evidence for the stdio MCP server.
-        builder.Services.AddSingleton<HelixTool.Core.Delivery.IEvidenceDeliveryStore>(sp =>
-            new HelixTool.Core.Delivery.FileEvidenceDeliveryStore(sp.GetRequiredService<CacheOptions>()));
-        builder.Services.AddSingleton<AzdoDownloadService>();
+        ConfigureStdioMcpServices(builder.Services, Environment.GetEnvironmentVariable("HLX_EVAL_SNAPSHOT"));
 
         builder.Services
             .AddMcpServer(options =>
@@ -1159,6 +1063,102 @@ Available as `failureCategory` in JSON and MCP output.
             .WithToolsFromAssembly(typeof(HelixMcpTools).Assembly, McpPresentationBudget.ProductionToolJsonOptions)
             .WithResourcesFromAssembly(typeof(HelixMcpTools).Assembly);
         await builder.Build().RunAsync();
+    }
+
+    /// <summary>
+    /// Registers the stdio MCP server's services (HTTP clients, Helix auth chain, Helix/AzDO clients,
+    /// evidence store). Does not register logging or the MCP server itself.
+    /// </summary>
+    /// <param name="evalSnapshotDir">Value of <c>HLX_EVAL_SNAPSHOT</c>; non-empty selects offline eval mode.</param>
+    public static void ConfigureStdioMcpServices(IServiceCollection services, string? evalSnapshotDir)
+    {
+        services.AddHttpClient("HelixDownload", c =>
+        {
+            c.Timeout = TimeSpan.FromMinutes(5);
+            HelixToolUserAgent.Apply(c);
+        });
+        services.AddHttpClient("AzDO", c =>
+        {
+            c.Timeout = TimeSpan.FromMinutes(5);
+            HelixToolUserAgent.Apply(c);
+        }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+        services.AddSingleton<ICredentialStore>(_ => FallbackCredentialStore.CreateDefault());
+        services.AddSingleton<IHelixTokenAccessor>(sp =>
+            new ChainedHelixTokenAccessor(sp.GetRequiredService<ICredentialStore>()));
+        services.AddSingleton<IHelixApiClientFactory>(sp =>
+            new HelixApiClientFactory(sp.GetRequiredService<IHttpClientFactory>().CreateClient("HelixDownload")));
+
+        if (!string.IsNullOrEmpty(evalSnapshotDir))
+        {
+            var resolvedSnapshot = Path.GetFullPath(evalSnapshotDir);
+            var azdoPartition = EvalSnapshotAzdoPartitionSelector.Select(resolvedSnapshot);
+            var evalOptions = new CacheOptions
+            {
+                CacheRoot = resolvedSnapshot,
+                EvalMode = true,
+                CacheRootHash = null,
+                AuthTokenHash = azdoPartition.AuthTokenHash,
+            };
+            services.AddEvalModeCore(evalOptions);
+            services.AddSingleton<AzdoService>(sp =>
+                new AzdoService(
+                    sp.GetRequiredService<IAzdoApiClient>(),
+                    sp.GetRequiredService<IHelixApiClient>(),
+                    sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>(),
+                    sp.GetRequiredService<CacheOptions>()));
+        }
+        else
+        {
+        services.AddSingleton<CacheOptions>(sp => CacheOptions.ForHelixToken(
+            sp.GetRequiredService<IHelixTokenAccessor>().GetAccessToken(),
+            Environment.GetEnvironmentVariable("HLX_CACHE_MAX_SIZE_MB")));
+        services.AddSingleton<ICacheStore>(sp => new SqliteCacheStore(sp.GetRequiredService<CacheOptions>()));
+        services.AddSingleton(sp => new Lazy<HelixApiClient>(() =>
+        {
+            var token = sp.GetRequiredService<IHelixTokenAccessor>().GetAccessToken();
+            return new HelixApiClient(token, sp.GetRequiredService<IHttpClientFactory>().CreateClient("HelixDownload"));
+        }));
+        services.AddSingleton<HelixApiClient>(sp => sp.GetRequiredService<Lazy<HelixApiClient>>().Value);
+        services.AddSingleton<IHelixApiClient>(sp =>
+            new CachingHelixApiClient(
+                sp.GetRequiredService<HelixApiClient>(),
+                sp.GetRequiredService<ICacheStore>(),
+                sp.GetRequiredService<CacheOptions>()));
+        services.AddSingleton<HelixService>(sp =>
+            new HelixService(
+                sp.GetRequiredService<IHelixApiClient>(),
+                sp.GetRequiredService<IHttpClientFactory>().CreateClient("HelixDownload")));
+
+        // AzDO services — same decorator pattern as Helix
+        services.AddSingleton<IAzdoTokenAccessor, AzCliAzdoTokenAccessor>();
+        services.AddSingleton<AzdoApiClient>(sp =>
+            new AzdoApiClient(
+                sp.GetRequiredService<IHttpClientFactory>().CreateClient("AzDO"),
+                sp.GetRequiredService<IAzdoTokenAccessor>(),
+                sp.GetRequiredService<CacheOptions>()));
+        services.AddSingleton<IAzdoApiClient>(sp =>
+            new CachingAzdoApiClient(
+                sp.GetRequiredService<AzdoApiClient>(),
+                sp.GetRequiredService<ICacheStore>(),
+                sp.GetRequiredService<CacheOptions>(),
+                sp.GetRequiredService<IAzdoTokenAccessor>()));
+        services.AddSingleton<IAzdoAcquisitionFailureRecorder>(sp =>
+            new CachingAzdoAcquisitionFailureRecorder(
+                sp.GetRequiredService<ICacheStore>(),
+                sp.GetRequiredService<CacheOptions>()));
+        // Inject IHelixApiClient so GetHelixJobsAsync can use the canonical Helix-side Job.ListAsync(source) path (#92)
+        services.AddSingleton<AzdoService>(sp =>
+            new AzdoService(
+                sp.GetRequiredService<IAzdoApiClient>(),
+                sp.GetRequiredService<IHelixApiClient>(),
+                sp.GetRequiredService<IAzdoAcquisitionFailureRecorder>(),
+                sp.GetRequiredService<CacheOptions>()));
+        }
+
+        // Shared evidence delivery store (P0-1 design 2.1a); backs hlx_read_evidence for the stdio MCP server.
+        services.AddSingleton<HelixTool.Core.Delivery.IEvidenceDeliveryStore>(sp =>
+            new HelixTool.Core.Delivery.FileEvidenceDeliveryStore(sp.GetRequiredService<CacheOptions>()));
+        services.AddSingleton<AzdoDownloadService>();
     }
 
     /// <summary>Clear all cached data across ALL auth contexts.</summary>
@@ -1200,7 +1200,8 @@ Available as `failureCategory` in JSON and MCP output.
         var options = ConsoleApp.ServiceProvider!.GetRequiredService<CacheOptions>();
         var status = await cache.GetStatusAsync();
 
-        var context = options.AuthTokenHash != null ? $"authenticated (cache-{options.AuthTokenHash})" : "public (unauthenticated)";
+        var contextHash = options.CacheRootHash ?? options.AuthTokenHash;
+        var context = contextHash != null ? $"authenticated (cache-{contextHash})" : "public (unauthenticated)";
         Console.WriteLine($"Cache status ({context}):");
         Console.WriteLine($"  Cache dir:       {options.GetEffectiveCacheRoot()}");
         Console.WriteLine($"  Max size:        {FormatBytes(status.MaxSizeBytes)}");
@@ -1331,7 +1332,16 @@ Available as `failureCategory` in JSON and MCP output.
     [Command("logout")]
     public async Task Logout()
     {
-        await _credentialStore.DeleteTokenAsync("helix.dot.net", "helix-api-token");
+        try
+        {
+            await _credentialStore.DeleteTokenAsync("helix.dot.net", "helix-api-token");
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.Error.WriteLine($"\u26a0 Token was not removed: {ex.Message}");
+            Environment.ExitCode = 1;
+            return;
+        }
         Console.WriteLine("\u2713 Token removed from credential store.");
 
         if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")))

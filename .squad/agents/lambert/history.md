@@ -124,3 +124,25 @@ Added 26 cases in `TimelineFourthReviewRegressionTests`: eight exact/over-coveri
 Pinned **ed4e9d6** baseline: **14 failed/12 passed/26 cases**, warning-free. All eight covering issue-limit cases incorrectly exited 2; both ancestor-expanded partial pages incorrectly exited 0; four complete matrix combinations incorrectly exited 2. Twelve incomplete controls remained green. Durable rule: issue coverage alone cannot replace overall projector completeness, because complete issues can coexist with a missing ancestor or a partial record selection. Ripley's final shared `IsLogicallyComplete` uses the actual pre-receipt `result.Complete`; receipt row clearing and delivery flags do not alter that captured truth.
 
 After readiness, authoritative current-worktree verification: **216 passed/0 failed focused; 2600 passed/0 failed/9 skipped/2609 total full suite**, no compiler warnings. Logs: session `files/lambert-timeline/fourth-red-baseline.log`, `fourth-focused-current.log`, `fourth-full-current.log`. No remaining covered implementation bugs; no production edits, commits or branch changes by Lambert. Build/test slot released.
+
+### 2026-11-17 — Stored-credential fallback tests (166cce4)
+
+Added 14 cases: `FallbackCredentialStoreTests` (6), `MacKeychainCredentialStoreTests` (5, incl. LF/CRLF theory), and `ChainedHelixTokenAccessorTests` (3, appended to `Helix/HelixTokenAccessorTests.cs`). All use NSubstitute doubles for `ICredentialStore`/`IProcessRunner` and the internal `(store, envToken)` ctor, so no real Keychain, git credential, or `HELIX_ACCESS_TOKEN` is touched. Red-checked `StoreThrows_ResolvesToNoneInsteadOfThrowing` by temporarily removing the accessor's catch: it fails pre-fix. Full suite: 2907 passed/0 failed/9 skipped.
+
+Learning: when temporarily reverting a production file via `cp`/`mv` backup, the restored file keeps an older mtime than the build output, so MSBuild skips recompiling and tests run against the stale (reverted) DLL. `touch` the restored file before re-running.
+
+Skipped the stdio MCP DI-wiring test: `Mcp()` builds and runs its host inline, so asserting `IHelixTokenAccessor` resolves to `ChainedHelixTokenAccessor` needs a production refactor (e.g. extract an internal `ConfigureStdioMcpServices(IServiceCollection)`). Proposed, not implemented.
+
+### 2026-11-17 — Stdio MCP auth wiring test (6e4f72a)
+
+Added `StdioMcpServiceWiringTests.LiveMode_ResolvesChainedTokenAccessorOverFallbackCredentialStore` in `Helix/HelixTokenAccessorTests.cs` using Ripley's extracted `Commands.ConfigureStdioMcpServices(services, null)`. Asserts resolved types only; never calls `GetAccessToken`, so no git/keychain access. Red-checked by restoring the env-only `EnvironmentHelixTokenAccessor` registration (fails: Actual `EnvironmentHelixTokenAccessor`), then restored and touched Program.cs. Full suite: 2908 passed/0 failed/9 skipped.
+
+### 2026-11-17 — PR #176 review follow-up tests (c3ff635)
+
+Added 6 cases: `FallbackCredentialStoreTests` delete-verification (leftover token throws naming host without leaking token; null/empty theory succeeds; fallback lookup failure succeeds), `ProcessRunnerTests.CallerCancellation_ThrowsOperationCanceledAndKillsChild` (in `MacKeychainCredentialStoreTests.cs`, `[UnixOnlyFact]`), and `LogoutCommandTests` (in `Helix/HelixTokenAccessorTests.cs`; exit 1, "Token was not removed" on stderr, no success line). Red-checked against c3ff635~1 production files: 3 failed/9 passed (leftover delete, logout, process kill). Full suite: 2914 passed/0 failed/9 skipped.
+
+Learning: to assert a child process is killed without a PID seam, give it a unique argument (e.g. `/bin/sleep 3000.<random6>`) and poll `pgrep -f`. A red run against unfixed code leaks that child; clean it up by PID afterwards. Pre-fix cancellation already threw OCE, so only the kill assertion discriminates.
+
+### 2026-11-17 — Stdio cache partition isolation tests (53a6bc0)
+
+Added 3 cases to `StdioMcpServiceWiringTests` (`Helix/HelixTokenAccessorTests.cs`): theory `LiveMode_CacheRootPartitionedByResolvedHelixToken` (token → `cache-{ComputeTokenHash}`, null → `public`) and `TokenedStdioCache_IsNotVisibleToUnauthenticatedHttpCacheOnSharedBase` (real SqliteCacheStore write in stdio tokened root, miss from CacheRootHash-null HTTP-style store on the same temp base). Wiring uses `ConfigureStdioMcpServices` plus a substitute `IHelixTokenAccessor` registered last (last registration wins), with `CacheRoot` set on the resolved singleton before any store is created. Red-checked against 53a6bc0~1 Program.cs: tokened case and isolation test fail; null case stays green as expected. Full suite: 2917 passed/0 failed/9 skipped.
