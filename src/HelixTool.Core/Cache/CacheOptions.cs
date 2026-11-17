@@ -94,6 +94,19 @@ public record CacheOptions
     }
 
     /// <summary>
+    /// Live (non-eval) options for the CLI and stdio MCP hosts. The cache root is partitioned by the
+    /// resolved Helix token (<c>{base}/cache-{hash}</c>); a null/empty token uses the shared
+    /// <c>{base}/public</c> root. <paramref name="maxSizeMb"/> is the raw <c>HLX_CACHE_MAX_SIZE_MB</c> value.
+    /// </summary>
+    public static CacheOptions ForHelixToken(string? helixToken, string? maxSizeMb)
+    {
+        var opts = new CacheOptions { CacheRootHash = ComputeTokenHash(helixToken) };
+        if (int.TryParse(maxSizeMb, out var mb))
+            opts = opts with { MaxSizeBytes = (long)mb * 1024 * 1024 };
+        return opts;
+    }
+
+    /// <summary>
     /// Compute a short deterministic hash of an access token or auth context for cache partitioning.
     /// Returns null if token is null/empty.
     /// </summary>

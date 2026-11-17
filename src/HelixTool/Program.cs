@@ -68,16 +68,11 @@ if (!string.IsNullOrEmpty(evalSnapshotDir))
 }
 else
 {
-services.AddSingleton<CacheOptions>(_ =>
-{
-    // Don't resolve Helix auth eagerly — let it be lazy so MCP/AzDO commands
-    // can start without prompting for Helix credentials.
-    var opts = new CacheOptions { AuthTokenHash = null };
-    var maxStr = Environment.GetEnvironmentVariable("HLX_CACHE_MAX_SIZE_MB");
-    if (int.TryParse(maxStr, out var mb))
-        opts = opts with { MaxSizeBytes = (long)mb * 1024 * 1024 };
-    return opts;
-});
+// The Helix token (env var or stored credential) is resolved on first CacheOptions use, not at startup,
+// and partitions the cache root so private job data never lands in the shared public cache.
+services.AddSingleton<CacheOptions>(sp => CacheOptions.ForHelixToken(
+    sp.GetRequiredService<IHelixTokenAccessor>().GetAccessToken(),
+    Environment.GetEnvironmentVariable("HLX_CACHE_MAX_SIZE_MB")));
 services.AddSingleton<ICacheStore>(sp => new SqliteCacheStore(sp.GetRequiredService<CacheOptions>()));
 // Defer Helix token resolution — only resolves when a Helix command is invoked.
 services.AddSingleton(sp => new Lazy<HelixApiClient>(() =>
@@ -1114,14 +1109,9 @@ Available as `failureCategory` in JSON and MCP output.
         }
         else
         {
-        services.AddSingleton<CacheOptions>(_ =>
-        {
-            var opts = new CacheOptions { AuthTokenHash = null };
-            var maxStr = Environment.GetEnvironmentVariable("HLX_CACHE_MAX_SIZE_MB");
-            if (int.TryParse(maxStr, out var mb))
-                opts = opts with { MaxSizeBytes = (long)mb * 1024 * 1024 };
-            return opts;
-        });
+        services.AddSingleton<CacheOptions>(sp => CacheOptions.ForHelixToken(
+            sp.GetRequiredService<IHelixTokenAccessor>().GetAccessToken(),
+            Environment.GetEnvironmentVariable("HLX_CACHE_MAX_SIZE_MB")));
         services.AddSingleton<ICacheStore>(sp => new SqliteCacheStore(sp.GetRequiredService<CacheOptions>()));
         services.AddSingleton(sp => new Lazy<HelixApiClient>(() =>
         {
@@ -1210,7 +1200,8 @@ Available as `failureCategory` in JSON and MCP output.
         var options = ConsoleApp.ServiceProvider!.GetRequiredService<CacheOptions>();
         var status = await cache.GetStatusAsync();
 
-        var context = options.AuthTokenHash != null ? $"authenticated (cache-{options.AuthTokenHash})" : "public (unauthenticated)";
+        var contextHash = options.CacheRootHash ?? options.AuthTokenHash;
+        var context = contextHash != null ? $"authenticated (cache-{contextHash})" : "public (unauthenticated)";
         Console.WriteLine($"Cache status ({context}):");
         Console.WriteLine($"  Cache dir:       {options.GetEffectiveCacheRoot()}");
         Console.WriteLine($"  Max size:        {FormatBytes(status.MaxSizeBytes)}");
