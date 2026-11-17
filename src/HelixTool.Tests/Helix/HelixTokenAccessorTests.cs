@@ -3,6 +3,7 @@
 // Will compile once Ripley's IHelixTokenAccessor.cs lands in HelixTool.Core.
 
 using HelixTool.Core;
+using HelixTool.Core.Cache;
 using HelixTool.Core.Helix;
 using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
@@ -112,6 +113,55 @@ public class StdioMcpServiceWiringTests
         // Only resolve types; never call GetAccessToken, which would hit git/keychain.
         Assert.IsType<ChainedHelixTokenAccessor>(provider.GetRequiredService<IHelixTokenAccessor>());
         Assert.IsType<FallbackCredentialStore>(provider.GetRequiredService<ICredentialStore>());
+    }
+
+    // Substitute accessor registered last wins, so no real token/git/keychain lookup happens.
+    private static ServiceProvider BuildStdioProvider(string? helixToken)
+    {
+        var services = new ServiceCollection();
+        Commands.ConfigureStdioMcpServices(services, evalSnapshotDir: null);
+        var accessor = Substitute.For<IHelixTokenAccessor>();
+        accessor.GetAccessToken().Returns(helixToken);
+        services.AddSingleton(accessor);
+        return services.BuildServiceProvider();
+    }
+
+    [Theory]
+    [InlineData("stdio-secret-token")]
+    [InlineData(null)]
+    public void LiveMode_CacheRootPartitionedByResolvedHelixToken(string? helixToken)
+    {
+        using var provider = BuildStdioProvider(helixToken);
+        var options = provider.GetRequiredService<CacheOptions>();
+        options.CacheRoot = Path.Combine(Path.GetTempPath(), $"hlx-test-{Guid.NewGuid():N}");
+
+        var expectedLeaf = helixToken is null ? "public" : $"cache-{CacheOptions.ComputeTokenHash(helixToken)}";
+        Assert.Equal(Path.Combine(options.CacheRoot, expectedLeaf), options.GetEffectiveCacheRoot());
+    }
+
+    [Fact]
+    public async Task TokenedStdioCache_IsNotVisibleToUnauthenticatedHttpCacheOnSharedBase()
+    {
+        var sharedBase = Path.Combine(Path.GetTempPath(), $"hlx-test-{Guid.NewGuid():N}");
+        try
+        {
+            using (var provider = BuildStdioProvider("stdio-secret-token"))
+            {
+                var stdioOptions = provider.GetRequiredService<CacheOptions>();
+                stdioOptions.CacheRoot = sharedBase;
+                using var stdioStore = new SqliteCacheStore(stdioOptions);
+                await stdioStore.SetMetadataAsync("job:private:details", "{\"Name\":\"private\"}", TimeSpan.FromHours(1));
+                Assert.NotNull(await stdioStore.GetMetadataAsync("job:private:details"));
+            }
+
+            // HTTP MCP without a Helix token: CacheRootHash null on the same base.
+            using var httpStore = new SqliteCacheStore(new CacheOptions { CacheRoot = sharedBase });
+            Assert.Null(await httpStore.GetMetadataAsync("job:private:details"));
+        }
+        finally
+        {
+            CacheTestCleanup.DeleteRoot(sharedBase);
+        }
     }
 }
 
