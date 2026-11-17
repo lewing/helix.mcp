@@ -4,6 +4,7 @@
 
 using HelixTool.Core;
 using HelixTool.Core.Helix;
+using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
 using Xunit;
 
@@ -96,5 +97,20 @@ public class ChainedHelixTokenAccessorTests
 
         Assert.Null(accessor.GetAccessToken());
         Assert.Equal(TokenSource.None, accessor.Source);
+    }
+}
+
+public class StdioMcpServiceWiringTests
+{
+    [Fact]
+    public void LiveMode_ResolvesChainedTokenAccessorOverFallbackCredentialStore()
+    {
+        var services = new ServiceCollection();
+        Commands.ConfigureStdioMcpServices(services, evalSnapshotDir: null);
+        using var provider = services.BuildServiceProvider();
+
+        // Only resolve types; never call GetAccessToken, which would hit git/keychain.
+        Assert.IsType<ChainedHelixTokenAccessor>(provider.GetRequiredService<IHelixTokenAccessor>());
+        Assert.IsType<FallbackCredentialStore>(provider.GetRequiredService<ICredentialStore>());
     }
 }

@@ -132,3 +132,7 @@ Added 14 cases: `FallbackCredentialStoreTests` (6), `MacKeychainCredentialStoreT
 Learning: when temporarily reverting a production file via `cp`/`mv` backup, the restored file keeps an older mtime than the build output, so MSBuild skips recompiling and tests run against the stale (reverted) DLL. `touch` the restored file before re-running.
 
 Skipped the stdio MCP DI-wiring test: `Mcp()` builds and runs its host inline, so asserting `IHelixTokenAccessor` resolves to `ChainedHelixTokenAccessor` needs a production refactor (e.g. extract an internal `ConfigureStdioMcpServices(IServiceCollection)`). Proposed, not implemented.
+
+### 2026-11-17 — Stdio MCP auth wiring test (6e4f72a)
+
+Added `StdioMcpServiceWiringTests.LiveMode_ResolvesChainedTokenAccessorOverFallbackCredentialStore` in `Helix/HelixTokenAccessorTests.cs` using Ripley's extracted `Commands.ConfigureStdioMcpServices(services, null)`. Asserts resolved types only; never calls `GetAccessToken`, so no git/keychain access. Red-checked by restoring the env-only `EnvironmentHelixTokenAccessor` registration (fails: Actual `EnvironmentHelixTokenAccessor`), then restored and touched Program.cs. Full suite: 2908 passed/0 failed/9 skipped.
