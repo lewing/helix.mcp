@@ -75,6 +75,9 @@ public sealed class GitCredentialStore : ICredentialStore
             UseShellExecute = false,
             CreateNoWindow = true
         };
+        // Lookups must never block on an interactive username/password prompt.
+        if (subcommand == "fill")
+            psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
 
         Process process;
         try

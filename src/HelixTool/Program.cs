@@ -39,7 +39,7 @@ services.AddHttpClient("AzDO", c =>
     c.Timeout = TimeSpan.FromMinutes(5);
     HelixToolUserAgent.Apply(c);
 }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
-services.AddSingleton<ICredentialStore, GitCredentialStore>();
+services.AddSingleton<ICredentialStore>(_ => FallbackCredentialStore.CreateDefault());
 services.AddSingleton<ChainedHelixTokenAccessor>();
 services.AddSingleton<IHelixTokenAccessor>(sp => sp.GetRequiredService<ChainedHelixTokenAccessor>());
 services.AddSingleton<IHelixApiClientFactory>(sp =>
@@ -1054,8 +1054,9 @@ Available as `failureCategory` in JSON and MCP output.
             c.Timeout = TimeSpan.FromMinutes(5);
             HelixToolUserAgent.Apply(c);
         }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
-        builder.Services.AddSingleton<IHelixTokenAccessor>(_ =>
-            new EnvironmentHelixTokenAccessor(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")));
+        builder.Services.AddSingleton<ICredentialStore>(_ => FallbackCredentialStore.CreateDefault());
+        builder.Services.AddSingleton<IHelixTokenAccessor>(sp =>
+            new ChainedHelixTokenAccessor(sp.GetRequiredService<ICredentialStore>()));
         builder.Services.AddSingleton<IHelixApiClientFactory>(sp =>
             new HelixApiClientFactory(sp.GetRequiredService<IHttpClientFactory>().CreateClient("HelixDownload")));
 
