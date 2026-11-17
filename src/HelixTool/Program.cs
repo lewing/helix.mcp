@@ -1341,7 +1341,16 @@ Available as `failureCategory` in JSON and MCP output.
     [Command("logout")]
     public async Task Logout()
     {
-        await _credentialStore.DeleteTokenAsync("helix.dot.net", "helix-api-token");
+        try
+        {
+            await _credentialStore.DeleteTokenAsync("helix.dot.net", "helix-api-token");
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.Error.WriteLine($"\u26a0 Token was not removed: {ex.Message}");
+            Environment.ExitCode = 1;
+            return;
+        }
         Console.WriteLine("\u2713 Token removed from credential store.");
 
         if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("HELIX_ACCESS_TOKEN")))

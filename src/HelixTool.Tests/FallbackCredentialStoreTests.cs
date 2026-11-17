@@ -77,6 +77,7 @@ public class FallbackCredentialStoreTests
 
         await _primary.Received(1).StoreTokenAsync(Host, User, "new-token", Arg.Any<CancellationToken>());
         await _primary.Received(1).DeleteTokenAsync(Host, User, Arg.Any<CancellationToken>());
-        Assert.Empty(_fallback.ReceivedCalls());
+        await _fallback.DidNotReceiveWithAnyArgs().StoreTokenAsync(default!, default!, default!, default);
+        await _fallback.DidNotReceiveWithAnyArgs().DeleteTokenAsync(default!, default!, default);
     }
 }

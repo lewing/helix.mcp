@@ -26,7 +26,7 @@ public class MacKeychainCredentialStoreTests
 
         await _runner.Received(1).RunAsync(
             "/usr/bin/security",
-            Arg.Is<IReadOnlyList<string>>(a => a.SequenceEqual(new[] { "find-internet-password", "-s", Host, "-a", User, "-w" })),
+            Arg.Is<IReadOnlyList<string>>(a => a.SequenceEqual(new[] { "find-internet-password", "-s", Host, "-a", User, "-r", "htps", "-w" })),
             Arg.Any<TimeSpan>(),
             Arg.Any<CancellationToken>());
     }

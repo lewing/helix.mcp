@@ -14,7 +14,8 @@ public interface IProcessRunner
     /// <summary>
     /// Run <paramref name="fileName"/> with <paramref name="arguments"/> (no shell) and capture stdout.
     /// Throws <see cref="InvalidOperationException"/> if the process cannot be started and
-    /// <see cref="TimeoutException"/> if it does not exit within <paramref name="timeout"/>.
+    /// <see cref="TimeoutException"/> if it does not exit within <paramref name="timeout"/>. On timeout or
+    /// caller cancellation the process tree is killed; caller cancellation throws <see cref="OperationCanceledException"/>.
     /// </summary>
     Task<ProcessRunResult> RunAsync(string fileName, IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken ct = default);
 }
@@ -60,9 +61,11 @@ public sealed class ProcessRunner : IProcessRunner
             {
                 await process.WaitForExitAsync(timeoutCts.Token);
             }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
                 try { process.Kill(entireProcessTree: true); } catch { }
+                if (ct.IsCancellationRequested)
+                    throw;
                 throw new TimeoutException($"'{fileName}' timed out after {timeout.TotalSeconds}s.");
             }
 

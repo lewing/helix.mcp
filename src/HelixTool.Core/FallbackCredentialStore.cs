@@ -2,7 +2,8 @@ namespace HelixTool.Core;
 
 /// <summary>
 /// Composite <see cref="ICredentialStore"/>: reads from <c>primary</c> and, when that returns null
-/// or throws, from an optional read-only <c>readFallback</c>. Store and delete always go to <c>primary</c>.
+/// or throws, from an optional read-only <c>readFallback</c>. Store and delete always go to <c>primary</c>;
+/// delete then verifies the credential is no longer readable through <c>readFallback</c>.
 /// </summary>
 public sealed class FallbackCredentialStore : ICredentialStore
 {
@@ -49,6 +50,35 @@ public sealed class FallbackCredentialStore : ICredentialStore
     public Task StoreTokenAsync(string host, string username, string token, CancellationToken ct = default)
         => _primary.StoreTokenAsync(host, username, token, ct);
 
-    public Task DeleteTokenAsync(string host, string username, CancellationToken ct = default)
-        => _primary.DeleteTokenAsync(host, username, ct);
+    /// <summary>
+    /// Deletes via the primary, then checks the read fallback. Throws <see cref="InvalidOperationException"/>
+    /// if the fallback still returns a non-empty token (e.g. git could not reach the macOS Keychain). A fallback
+    /// lookup failure other than cancellation is ignored.
+    /// </summary>
+    public async Task DeleteTokenAsync(string host, string username, CancellationToken ct = default)
+    {
+        await _primary.DeleteTokenAsync(host, username, ct);
+
+        if (_readFallback is null)
+            return;
+
+        string? remaining;
+        try
+        {
+            remaining = await _readFallback.GetTokenAsync(host, username, ct);
+        }
+        catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
+        {
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(remaining))
+        {
+            throw new InvalidOperationException(
+                $"The credential for {host} is still present in the OS keychain after 'git credential reject' " +
+                "(git may not be able to reach the keychain in this environment). " +
+                $"On macOS, remove it with: security delete-internet-password -s {host} -a {username} -r htps " +
+                "— or run 'hlx logout' from a regular terminal.");
+        }
+    }
 }

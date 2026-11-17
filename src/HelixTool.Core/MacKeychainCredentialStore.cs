@@ -1,7 +1,7 @@
 namespace HelixTool.Core;
 
 /// <summary>
-/// Read-only macOS Keychain lookup via <c>/usr/bin/security find-internet-password</c>.
+/// Read-only macOS Keychain lookup via <c>/usr/bin/security find-internet-password</c> (HTTPS items only).
 /// Used as a fallback when <c>git credential fill</c> cannot reach the keychain (for example,
 /// when a bundled git without <c>credential.helper</c> is first on PATH). Reads the internet
 /// password that <c>git-credential-osxkeychain</c> stores for the host/account pair.
@@ -29,7 +29,7 @@ public sealed class MacKeychainCredentialStore : ICredentialStore
 
         var result = await _processRunner.RunAsync(
             SecurityPath,
-            ["find-internet-password", "-s", host, "-a", username, "-w"],
+            ["find-internet-password", "-s", host, "-a", username, "-r", "htps", "-w"],
             ProcessTimeout,
             ct);
 
