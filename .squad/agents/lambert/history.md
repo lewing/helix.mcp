@@ -136,3 +136,9 @@ Skipped the stdio MCP DI-wiring test: `Mcp()` builds and runs its host inline, s
 ### 2026-11-17 — Stdio MCP auth wiring test (6e4f72a)
 
 Added `StdioMcpServiceWiringTests.LiveMode_ResolvesChainedTokenAccessorOverFallbackCredentialStore` in `Helix/HelixTokenAccessorTests.cs` using Ripley's extracted `Commands.ConfigureStdioMcpServices(services, null)`. Asserts resolved types only; never calls `GetAccessToken`, so no git/keychain access. Red-checked by restoring the env-only `EnvironmentHelixTokenAccessor` registration (fails: Actual `EnvironmentHelixTokenAccessor`), then restored and touched Program.cs. Full suite: 2908 passed/0 failed/9 skipped.
+
+### 2026-11-17 — PR #176 review follow-up tests (c3ff635)
+
+Added 6 cases: `FallbackCredentialStoreTests` delete-verification (leftover token throws naming host without leaking token; null/empty theory succeeds; fallback lookup failure succeeds), `ProcessRunnerTests.CallerCancellation_ThrowsOperationCanceledAndKillsChild` (in `MacKeychainCredentialStoreTests.cs`, `[UnixOnlyFact]`), and `LogoutCommandTests` (in `Helix/HelixTokenAccessorTests.cs`; exit 1, "Token was not removed" on stderr, no success line). Red-checked against c3ff635~1 production files: 3 failed/9 passed (leftover delete, logout, process kill). Full suite: 2914 passed/0 failed/9 skipped.
+
+Learning: to assert a child process is killed without a PID seam, give it a unique argument (e.g. `/bin/sleep 3000.<random6>`) and poll `pgrep -f`. A red run against unfixed code leaks that child; clean it up by PID afterwards. Pre-fix cancellation already threw OCE, so only the kill assertion discriminates.

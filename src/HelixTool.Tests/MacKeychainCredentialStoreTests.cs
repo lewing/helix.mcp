@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using HelixTool.Core;
 using NSubstitute;
 using Xunit;
@@ -59,5 +61,49 @@ public class MacKeychainCredentialStoreTests
         var store = new MacKeychainCredentialStore(_runner);
 
         Assert.Null(await store.GetTokenAsync(Host, User));
+    }
+}
+
+internal sealed class UnixOnlyFactAttribute : FactAttribute
+{
+    public UnixOnlyFactAttribute()
+    {
+        if (OperatingSystem.IsWindows())
+            Skip = "Requires /bin/sleep and /usr/bin/pgrep.";
+    }
+}
+
+public class ProcessRunnerTests
+{
+    [UnixOnlyFact]
+    public async Task CallerCancellation_ThrowsOperationCanceledAndKillsChild()
+    {
+        // Unique duration lets pgrep find exactly this child without a PID seam.
+        var marker = (3000 + Random.Shared.Next(1, 999_999) / 1_000_000.0).ToString("F6", CultureInfo.InvariantCulture);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        var sw = Stopwatch.StartNew();
+
+        var ex = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => new ProcessRunner().RunAsync("/bin/sleep", [marker], TimeSpan.FromMinutes(1), cts.Token));
+
+        Assert.IsNotType<TimeoutException>(ex);
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(10), $"Cancellation took {sw.Elapsed}.");
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (IsRunning(marker) && DateTime.UtcNow < deadline)
+            await Task.Delay(50);
+        Assert.False(IsRunning(marker), "Child /bin/sleep should be killed on caller cancellation.");
+    }
+
+    private static bool IsRunning(string marker)
+    {
+        using var pgrep = Process.Start(new ProcessStartInfo("/usr/bin/pgrep", ["-f", $"sleep {marker}"])
+        {
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+        })!;
+        pgrep.StandardOutput.ReadToEnd();
+        pgrep.WaitForExit();
+        return pgrep.ExitCode == 0;
     }
 }

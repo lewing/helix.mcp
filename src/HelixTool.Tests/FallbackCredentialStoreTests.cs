@@ -80,4 +80,42 @@ public class FallbackCredentialStoreTests
         await _fallback.DidNotReceiveWithAnyArgs().StoreTokenAsync(default!, default!, default!, default);
         await _fallback.DidNotReceiveWithAnyArgs().DeleteTokenAsync(default!, default!, default);
     }
+
+    [Fact]
+    public async Task Delete_FallbackStillHasToken_ThrowsWithoutLeakingToken()
+    {
+        _fallback.GetTokenAsync(Host, User, Arg.Any<CancellationToken>()).Returns("leftover-secret");
+        var store = new FallbackCredentialStore(_primary, _fallback);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => store.DeleteTokenAsync(Host, User));
+
+        await _primary.Received(1).DeleteTokenAsync(Host, User, Arg.Any<CancellationToken>());
+        Assert.Contains(Host, ex.Message);
+        Assert.DoesNotContain("leftover-secret", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public async Task Delete_FallbackHasNoToken_Succeeds(string? remaining)
+    {
+        _fallback.GetTokenAsync(Host, User, Arg.Any<CancellationToken>()).Returns(remaining);
+        var store = new FallbackCredentialStore(_primary, _fallback);
+
+        await store.DeleteTokenAsync(Host, User);
+
+        await _primary.Received(1).DeleteTokenAsync(Host, User, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Delete_FallbackLookupFails_Succeeds()
+    {
+        _fallback.GetTokenAsync(Host, User, Arg.Any<CancellationToken>())
+            .ThrowsAsync(new TimeoutException("security timed out"));
+        var store = new FallbackCredentialStore(_primary, _fallback);
+
+        await store.DeleteTokenAsync(Host, User);
+
+        await _primary.Received(1).DeleteTokenAsync(Host, User, Arg.Any<CancellationToken>());
+    }
 }

@@ -114,3 +114,45 @@ public class StdioMcpServiceWiringTests
         Assert.IsType<FallbackCredentialStore>(provider.GetRequiredService<ICredentialStore>());
     }
 }
+
+public class LogoutCommandTests
+{
+    [Fact]
+    public async Task Logout_TokenStillInKeychain_ReportsFailureWithExitCode1()
+    {
+        var store = Substitute.For<ICredentialStore>();
+        store.DeleteTokenAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new InvalidOperationException("still present for helix.dot.net"));
+        var commands = new global::Commands(
+            new Lazy<HelixService>(() => throw new InvalidOperationException("HelixService not needed")),
+            store,
+            new ChainedHelixTokenAccessor(store, envToken: null));
+
+        await TestConsoleCapture.Lock.WaitAsync();
+        var originalOut = Console.Out;
+        var originalError = Console.Error;
+        var originalExitCode = Environment.ExitCode;
+        using var stdout = new StringWriter();
+        using var stderr = new StringWriter();
+        int exitCode;
+        try
+        {
+            Environment.ExitCode = 0;
+            Console.SetOut(stdout);
+            Console.SetError(stderr);
+            await commands.Logout();
+            exitCode = Environment.ExitCode;
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            Console.SetError(originalError);
+            Environment.ExitCode = originalExitCode;
+            TestConsoleCapture.Lock.Release();
+        }
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("Token was not removed", stderr.ToString());
+        Assert.DoesNotContain("Token removed", stdout.ToString());
+    }
+}
